@@ -252,6 +252,12 @@ class SafetyGateService:
         deadline_seconds: float,
         publish_wait: WaitPublisher | None = None,
     ) -> SafetyGateHandle:
+        """Take every required gate in canonical order, or release what was taken.
+
+        ``deadline_seconds`` bounds how long admission *waits* for a contended gate, not
+        whether it gets to try: every gate is attempted at least once, so a budget smaller
+        than one database round trip cannot defer an uncontended attempt.
+        """
         requirements = SafetyRequirements.validate(requirements.gates)
         if deadline_seconds <= 0:
             raise SafetyGateTimeoutError("safety-gate admission deadline elapsed")
@@ -276,8 +282,6 @@ class SafetyGateService:
                 while True:
                     if await _value(cancelled()):
                         raise SafetyGateCancelledError("safety-gate admission cancelled")
-                    if time.monotonic() >= deadline:
-                        raise SafetyGateTimeoutError("safety-gate admission deadline elapsed")
                     try:
                         locked = bool(await connection.fetchval(query, advisory_key(requirement)))
                     except (OSError, asyncpg.PostgresError) as exc:
@@ -289,6 +293,8 @@ class SafetyGateService:
                     if locked:
                         acquired.append(requirement)
                         break
+                    if time.monotonic() >= deadline:
+                        raise SafetyGateTimeoutError("safety-gate admission deadline elapsed")
                     if not waiting_published:
                         await _publish(publish_wait, _friendly_wait_reason(requirement))
                         waiting_published = True

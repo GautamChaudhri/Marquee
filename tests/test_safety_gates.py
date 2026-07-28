@@ -186,6 +186,31 @@ async def test_partial_acquisition_is_released_when_cancelled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_uncontended_gates_are_attempted_even_after_the_deadline_elapsed() -> None:
+    """The deadline bounds waiting for a contended gate, not the first attempt.
+
+    A cancellation check is one database round trip; on a slow host it can outlast a small
+    admission budget. Admission must still take a free gate instead of deferring a job that
+    nothing was holding.
+    """
+    service = SafetyGateService(connection_factory=_connection, poll_seconds=0.02)
+
+    async def slow_cancellation_check() -> bool:
+        await asyncio.sleep(0.2)
+        return False
+
+    handle = await service.acquire(
+        SafetyRequirements.ordinary(media_file_identity="media:uncontended"),
+        cancelled=slow_cancellation_check,
+        deadline_seconds=0.05,
+    )
+    try:
+        assert len(handle.acquired) == 2
+    finally:
+        await handle.release()
+
+
+@pytest.mark.asyncio
 async def test_numbered_permits_are_independent() -> None:
     service = SafetyGateService(connection_factory=_connection, poll_seconds=0.02)
     first = await service.acquire(

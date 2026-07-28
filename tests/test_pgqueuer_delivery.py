@@ -1001,7 +1001,9 @@ async def test_real_gate_contention_defers_without_attempt_then_executes_once(
     """A PgQueuer delivery defers gate contention before creating an attempt."""
 
     job_id, _ticket_id = await _canonical_ticket(db)
-    monkeypatch.setattr(settings, "JOB_ADMISSION_TIMEOUT_SECONDS", 0.05)
+    # Small enough that the held blocker defers admission promptly, large enough that the
+    # pre-lock cancellation round trip cannot consume the whole budget on a slow host.
+    monkeypatch.setattr(settings, "JOB_ADMISSION_TIMEOUT_SECONDS", 0.25)
     blocker = await SafetyGateService().acquire(
         SafetyRequirements.exclusive_maintenance(),
         cancelled=lambda: False,
@@ -1023,7 +1025,12 @@ async def test_real_gate_contention_defers_without_attempt_then_executes_once(
                 heartbeat_timeout=timedelta(seconds=1),
             )
         )
-        job = None
+        # The diagnostics below must be plain values read while the instance is loaded: a
+        # cancelled scope leaves `job` expired, and an ORM attribute read outside the await
+        # would raise MissingGreenlet and bury the real assertion.
+        last_phase: str | None = None
+        last_outcome: str | None = None
+        last_attention: dict | None = None
         try:
             try:
                 with anyio.move_on_after(10) as deferral_scope:
@@ -1031,48 +1038,51 @@ async def test_real_gate_contention_defers_without_attempt_then_executes_once(
                         await db.rollback()
                         db.expire_all()
                         job = await db.get(Job, job_id)
-                        if (
-                            job is not None
-                            and (job.attention or {}).get("code") == "admission_deferral_pending"
-                        ):
+                        if job is not None:
+                            last_phase = job.phase
+                            last_outcome = job.outcome
+                            last_attention = job.attention
+                        if (last_attention or {}).get("code") == "admission_deferral_pending":
                             break
                         await asyncio.sleep(0.02)
                 assert not deferral_scope.cancel_called, (
                     "PgQueuer did not persist admission deferral within 10 seconds; "
-                    f"last_phase={getattr(job, 'phase', None)!r}, "
-                    f"last_outcome={getattr(job, 'outcome', None)!r}, "
-                    f"last_attention={getattr(job, 'attention', None)!r}"
+                    f"last_phase={last_phase!r}, last_outcome={last_outcome!r}, "
+                    f"last_attention={last_attention!r}"
                 )
-                assert job is not None
-                assert job.phase == "queued"
+                assert last_phase == "queued"
                 attempts = list(
                     await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id))
                 )
                 assert attempts == []
-                assert (job.attention or {}).get("defer_count") == 1
+                assert (last_attention or {}).get("defer_count") == 1
             finally:
                 await blocker.release()
 
-            with anyio.move_on_after(15) as terminal_scope:
+            # Wide enough to absorb one extra rung of the admission deferral ladder
+            # (1s, 5s, 30s) on a slow host instead of reporting a false failure.
+            with anyio.move_on_after(40) as terminal_scope:
                 while True:
                     await db.rollback()
                     db.expire_all()
                     job = await db.get(Job, job_id)
-                    if job is not None and job.phase == "terminal":
+                    if job is not None:
+                        last_phase = job.phase
+                        last_outcome = job.outcome
+                        last_attention = job.attention
+                    if last_phase == "terminal":
                         break
                     await asyncio.sleep(0.02)
             assert not terminal_scope.cancel_called, (
-                "PgQueuer did not redeliver the deferred job within 15 seconds; "
-                f"last_phase={getattr(job, 'phase', None)!r}, "
-                f"last_outcome={getattr(job, 'outcome', None)!r}, "
-                f"last_attention={getattr(job, 'attention', None)!r}"
+                "PgQueuer did not redeliver the deferred job within 40 seconds; "
+                f"last_phase={last_phase!r}, last_outcome={last_outcome!r}, "
+                f"last_attention={last_attention!r}"
             )
         finally:
             app.shutdown.set()
             await asyncio.wait_for(manager, timeout=5)
 
-    assert job is not None
-    assert (job.phase, job.outcome) == ("terminal", "succeeded")
+    assert (last_phase, last_outcome) == ("terminal", "succeeded")
     attempts = list(await db.scalars(select(JobAttempt).where(JobAttempt.job_id == job_id)))
     assert len(attempts) == 1
 
