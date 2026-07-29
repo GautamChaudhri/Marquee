@@ -67,7 +67,7 @@ describe('TV poster tile display data', () => {
 		]);
 	});
 
-	it('returns placeholders for exactly the missing show and seasons', () => {
+	it('uses the series title only for the show placeholder', () => {
 		const item: TvRunQueueItem = {
 			series: { id: 1, title: 'Example', year: 2024, tmdb_id: 123, poster_url: null },
 			show_poster_missing: true,
@@ -80,9 +80,27 @@ describe('TV poster tile display data', () => {
 		};
 
 		expect(runPosterPlaceholders(item)).toEqual([
-			{ label: 'Show' },
-			{ label: 'S01' },
-			{ label: 'S02' }
+			{
+				label: 'Show',
+				title: 'Example',
+				year: 2024,
+				gradientKey: 'Example',
+				centerTitle: false
+			},
+			{
+				label: 'S01',
+				title: 'S01',
+				year: null,
+				gradientKey: 'Example',
+				centerTitle: true
+			},
+			{
+				label: 'S02',
+				title: 'S02',
+				year: null,
+				gradientKey: 'Example',
+				centerTitle: true
+			}
 		]);
 	});
 });

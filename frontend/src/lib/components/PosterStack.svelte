@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { gradientFor } from '$lib/display';
 	import type { CandidateView } from '$lib/api/types';
+	import { rankCaption } from '$lib/pipeline/rank-display';
 
 	let {
 		members,
 		selectable = true,
 		inspected = false,
+		displayRank = null,
 		onSelect,
 		onToggle
 	}: {
@@ -13,6 +15,8 @@
 		selectable?: boolean;
 		/** Ring highlight when this stack's representative is the inspected poster. */
 		inspected?: boolean;
+		/** Position in the current flat grid, when it differs from the archived candidate rank. */
+		displayRank?: number | null;
 		onSelect?: (c: CandidateView) => void;
 		onToggle?: () => void;
 	} = $props();
@@ -21,7 +25,16 @@
 	const representative = $derived(members[0]);
 	const showBadge = $derived(count > 1);
 	const g = $derived(gradientFor(representative?.orig_filename ?? ''));
-	const tag = $derived(representative.stack_rank != null ? String(representative.stack_rank) : '');
+	const visibleRank = $derived(displayRank ?? representative.rank);
+	const visibleRankCaption = $derived(rankCaption(visibleRank));
+	const designLabel = $derived(
+		representative.stack_rank != null ? `Design ${representative.stack_rank}` : ''
+	);
+	const stackTitle = $derived(
+		[visibleRankCaption, designLabel, `${count} variant${count === 1 ? '' : 's'}`]
+			.filter(Boolean)
+			.join(' · ')
+	);
 	let imgFailed = $state(false);
 </script>
 
@@ -39,6 +52,8 @@
 	}}
 	role="button"
 	tabindex={selectable ? 0 : -1}
+	title={stackTitle}
+	aria-label={stackTitle}
 	style="--c0:{g[0]}; --c1:{g[1]}"
 >
 	<div class="art" class:inspected>
@@ -54,7 +69,7 @@
 		{/if}
 	</div>
 	<div class="cap">
-		<span class="cap-main mono">{tag}</span>
+		<span class="cap-main mono">{visibleRankCaption}</span>
 	</div>
 	{#if showBadge}
 		<span class="stack-badge mono">{count}</span>

@@ -8,23 +8,34 @@
 		year,
 		posterStatus,
 		posterUrl = null,
+		gradientKey = title,
+		centerTitle = false,
 		rounded = true
 	}: {
 		title: string;
 		year?: number | null;
 		posterStatus?: PosterStatus;
 		posterUrl?: string | null;
+		/** Stable seed for the fallback gradient when the visible title is abbreviated. */
+		gradientKey?: string;
+		/** Center fallback metadata without changing the layout of regular thumbnails. */
+		centerTitle?: boolean;
 		rounded?: boolean;
 	} = $props();
 
-	const g = $derived(gradientFor(title));
+	const g = $derived(gradientFor(gradientKey));
 	const status = $derived(posterStatus ? posterStatusMeta[posterStatus] : null);
 
 	let imgFailed = $state(false);
 	const showImg = $derived(!!posterUrl && !imgFailed);
 </script>
 
-<div class="poster" class:flat={!rounded} style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}">
+<div
+	class="poster"
+	class:flat={!rounded}
+	class:centered-title={centerTitle}
+	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}"
+>
 	{#if showImg}
 		<img src={posterUrl} alt={title} class="cover" onerror={() => (imgFailed = true)} />
 	{/if}
@@ -77,6 +88,14 @@
 		text-shadow: 0 1px 6px var(--poster-shade);
 		position: relative;
 		z-index: 1;
+	}
+	.poster.centered-title .meta {
+		position: absolute;
+		inset: 0;
+		display: grid;
+		place-content: center;
+		padding: 8px;
+		text-align: center;
 	}
 	.title {
 		font-size: 12px;

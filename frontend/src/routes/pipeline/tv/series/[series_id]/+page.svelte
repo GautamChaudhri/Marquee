@@ -4,7 +4,7 @@
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import { approveTvAuto, resetSeriesPosters, useShowPoster } from '$lib/api/pipeline-tv';
+	import { approveTvAuto, resetSeriesPosters } from '$lib/api/pipeline-tv';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
@@ -18,6 +18,12 @@
 		return number === 0 ? 'S00' : `S${String(number).padStart(2, '0')}`;
 	}
 
+	function statusLabel(status: string): string {
+		if (status === 'completed') return 'Completed';
+		if (status === 'flagged_manual') return 'Needs manual review';
+		return status.replaceAll('_', ' ');
+	}
+
 	type RailItem = {
 		key: string;
 		label: string;
@@ -25,7 +31,6 @@
 		posterUrl: string | null;
 		status: string;
 		score: number | null;
-		seasonId?: number;
 		official?: boolean;
 		flaggedNoCandidates?: boolean;
 	};
@@ -54,7 +59,6 @@
 				posterUrl: season.auto_pick_poster_url,
 				status: season.run.status,
 				score: season.run.counts?.ranked ?? null,
-				seasonId: season.season_id,
 				official: season.official_pick?.applied === 'primary_stack',
 				flaggedNoCandidates: season.flagged_no_candidates
 			});
@@ -100,16 +104,6 @@
 			toast(e instanceof Error ? e.message : 'Reset failed', 'bad');
 		} finally {
 			resetBusy = false;
-		}
-	}
-
-	async function fallbackToShowPoster(seasonId: number) {
-		try {
-			await useShowPoster(fetch, seasonId);
-			toast('Show poster applied to season', 'good');
-			goto(`/pipeline/tv/series/${data.series?.id}`);
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Fallback failed', 'bad');
 		}
 	}
 </script>
@@ -164,28 +158,29 @@
 							<strong>{item.label}</strong>
 							{#if item.official}<span class="official">OFFICIAL PICK</span>{/if}
 						</div>
-						<div class="sub-row">
-							<StatusDot
-								tone={item.status === 'completed'
-									? 'good'
-									: item.status === 'flagged_manual'
-										? 'gold'
-										: 'muted'}
-								size={6}
-							/>
-							<span>{item.status}</span>
-							{#if item.score != null}<span class="mono">{item.score}</span>{/if}
-						</div>
-						{#if item.flaggedNoCandidates && item.seasonId}
-							<button
-								class="btn-sec small"
-								onclick={(e) => {
-									e.stopPropagation();
-									fallbackToShowPoster(item.seasonId!);
-								}}
-							>
-								Use show poster
-							</button>
+						{#if item.flaggedNoCandidates}
+							<div class="manual-status">
+								<StatusDot tone="bad" size={7} />
+								<div>
+									<span class="manual-title">Needs attention</span>
+									<span class="manual-copy">No qualifying poster found</span>
+								</div>
+							</div>
+						{:else}
+							<div class="sub-row">
+								<StatusDot
+									tone={item.status === 'completed'
+										? 'good'
+										: item.status === 'flagged_manual'
+											? 'gold'
+											: 'muted'}
+									size={6}
+								/>
+								<span>{statusLabel(item.status)}</span>
+								{#if item.score != null}
+									<span class="candidate-count mono">{item.score} candidates</span>
+								{/if}
+							</div>
 						{/if}
 					</div>
 				</div>
@@ -286,6 +281,32 @@
 		color: var(--gold);
 		border: 1px solid color-mix(in srgb, var(--gold) 35%, var(--line2));
 	}
+	.manual-status {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		align-items: start;
+		gap: 7px;
+		padding: 1px 0;
+	}
+	.manual-status > div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.manual-title {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--bad);
+	}
+	.manual-copy {
+		font-size: 11px;
+		line-height: 1.35;
+		color: color-mix(in srgb, var(--bad) 72%, var(--muted));
+	}
+	.candidate-count {
+		color: var(--faint);
+		font-size: 11px;
+	}
 	.btn-gold,
 	.btn-sec {
 		padding: 9px 12px;
@@ -301,9 +322,5 @@
 		border: 1px solid var(--line2);
 		background: var(--panel2);
 		color: var(--text);
-	}
-	.small {
-		padding: 7px 10px;
-		font-size: 12px;
 	}
 </style>

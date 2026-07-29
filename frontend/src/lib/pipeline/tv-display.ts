@@ -9,6 +9,10 @@ export type TvPosterPreview = {
 
 export type TvPosterPlaceholder = {
 	label: string;
+	title: string;
+	year: number | null;
+	gradientKey: string;
+	centerTitle: boolean;
 };
 
 export function seasonLabel(number: number): string {
@@ -45,12 +49,27 @@ export function reviewPosterPreviews(item: TvReviewGroup): TvPosterPreview[] {
 
 export function runPosterPlaceholders(item: TvRunQueueItem): TvPosterPlaceholder[] {
 	const placeholders: TvPosterPlaceholder[] = [];
-	if (item.show_poster_missing) placeholders.push({ label: 'Show' });
+	if (item.show_poster_missing) {
+		placeholders.push({
+			label: 'Show',
+			title: item.series.title,
+			year: item.series.year,
+			gradientKey: item.series.title,
+			centerTitle: false
+		});
+	}
 
 	for (const season of [...item.missing_seasons].sort(
 		(left, right) => left.number - right.number
 	)) {
-		placeholders.push({ label: seasonLabel(season.number) });
+		const label = seasonLabel(season.number);
+		placeholders.push({
+			label,
+			title: label,
+			year: null,
+			gradientKey: item.series.title,
+			centerTitle: true
+		});
 	}
 	return placeholders;
 }

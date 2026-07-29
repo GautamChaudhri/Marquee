@@ -19,6 +19,7 @@
 		ocrRegionLabel,
 		rejectionTag
 	} from '$lib/pipeline/ocr-display';
+	import { flatDisplayRanks } from '$lib/pipeline/rank-display';
 	import { rejectAllCopy } from '$lib/pipeline/review-copy';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
@@ -361,6 +362,13 @@
 		return out;
 	});
 
+	/** Captions follow the cards currently visible in the flat grid, rather than
+	 *  mixing archived candidate ranks with design-stack ranks. Expanded variants
+	 *  keep their stack's base rank and use A/B/C… suffixes. */
+	const flatDisplayRankByFilename = $derived.by(() =>
+		flatDisplayRanks(groupedRanked, expandedStackIds)
+	);
+
 	function contribSegments(c: Record<string, number> | null) {
 		if (!c) return [];
 		const entries = Object.entries(c).filter(([, v]) => Number.isFinite(v));
@@ -687,7 +695,7 @@
 	</div>
 {:else if results}
 	<!-- ── Header / inspector hero ── -->
-	<div class="hero">
+	<div class="hero" class:has-ocr-evidence={inspectedOcrPanel !== null}>
 		<div
 			class="hero-poster"
 			style="--c0:{gradientFor(results.movie.title ?? '?')[0]}; --c1:{gradientFor(
@@ -751,58 +759,6 @@
 						</span>
 					{/if}
 				</div>
-
-				{#if inspectedOcrPanel?.kind === 'text'}
-					{@const evidence = inspectedOcrPanel.evidence}
-					<section class="ocr-evidence" aria-label="OCR captured text">
-						<div class="ocr-evidence-head">
-							<div>
-								<span class="ocr-evidence-title">OCR captured</span>
-								<span class="ocr-evidence-summary"
-									>{evidence.regions.length} detected region{evidence.regions.length === 1
-										? ''
-										: 's'}</span
-								>
-							</div>
-							<span class="ocr-evidence-state"
-								>{evidence.title_matched ? 'Title matched' : 'Title not matched'}</span
-							>
-						</div>
-						<div class="ocr-transcript">
-							<span class="ocr-evidence-label">OCR read</span>
-							<p class="mono">{evidence.detected_text}</p>
-						</div>
-						{#if evidence.regions.length > 0}
-							<div class="ocr-regions">
-								<span class="ocr-evidence-label">Detected regions</span>
-								<ul>
-									{#each evidence.regions as region, index (`${region.text}:${index}`)}
-										{@const confidence = ocrConfidenceLabel(region.confidence)}
-										<li>
-											<span class="ocr-region-kind">{ocrRegionLabel(region)}</span>
-											<code>{region.text}</code>
-											{#if confidence}<span class="ocr-confidence mono">{confidence}</span>{/if}
-											{#if region.is_significant}
-												<span class="ocr-significant">Counts toward rejection</span>
-											{/if}
-										</li>
-									{/each}
-								</ul>
-							</div>
-						{/if}
-					</section>
-				{:else if inspectedOcrPanel?.kind === 'error'}
-					<section class="ocr-evidence error" aria-label="OCR error">
-						<span class="ocr-evidence-title">OCR error</span>
-						<p class="ocr-error-message mono">{inspectedOcrPanel.message}</p>
-					</section>
-				{:else if inspectedOcrPanel?.kind === 'unavailable'}
-					<section class="ocr-evidence unavailable" aria-label="OCR details unavailable">
-						<span class="ocr-evidence-title">OCR details unavailable</span>
-						<p>{inspectedOcrPanel.message}</p>
-					</section>
-				{/if}
-
 				{#if inspected.explanations?.length}
 					<ul class="explain">
 						{#each inspected.explanations.slice(0, 5) as line, i (i)}<li>{line}</li>{/each}
@@ -878,6 +834,62 @@
 				</button>
 			</div>
 		</div>
+		{#if inspectedOcrPanel?.kind === 'text'}
+			{@const evidence = inspectedOcrPanel.evidence}
+			<aside class="hero-evidence">
+				<section class="ocr-evidence" aria-label="OCR captured text">
+					<div class="ocr-evidence-head">
+						<div>
+							<span class="ocr-evidence-title">OCR captured</span>
+							<span class="ocr-evidence-summary"
+								>{evidence.regions.length} detected region{evidence.regions.length === 1
+									? ''
+									: 's'}</span
+							>
+						</div>
+						<span class="ocr-evidence-state"
+							>{evidence.title_matched ? 'Title matched' : 'Title not matched'}</span
+						>
+					</div>
+					<div class="ocr-transcript">
+						<span class="ocr-evidence-label">OCR read</span>
+						<p class="mono">{evidence.detected_text}</p>
+					</div>
+					{#if evidence.regions.length > 0}
+						<div class="ocr-regions">
+							<span class="ocr-evidence-label">Detected regions</span>
+							<ul>
+								{#each evidence.regions as region, index (`${region.text}:${index}`)}
+									{@const confidence = ocrConfidenceLabel(region.confidence)}
+									<li>
+										<span class="ocr-region-kind">{ocrRegionLabel(region)}</span>
+										<code>{region.text}</code>
+										{#if confidence}<span class="ocr-confidence mono">{confidence}</span>{/if}
+										{#if region.is_significant}
+											<span class="ocr-significant">Counts toward rejection</span>
+										{/if}
+									</li>
+								{/each}
+							</ul>
+						</div>
+					{/if}
+				</section>
+			</aside>
+		{:else if inspectedOcrPanel?.kind === 'error'}
+			<aside class="hero-evidence">
+				<section class="ocr-evidence error" aria-label="OCR error">
+					<span class="ocr-evidence-title">OCR error</span>
+					<p class="ocr-error-message mono">{inspectedOcrPanel.message}</p>
+				</section>
+			</aside>
+		{:else if inspectedOcrPanel?.kind === 'unavailable'}
+			<aside class="hero-evidence">
+				<section class="ocr-evidence unavailable" aria-label="OCR details unavailable">
+					<span class="ocr-evidence-title">OCR details unavailable</span>
+					<p>{inspectedOcrPanel.message}</p>
+				</section>
+			</aside>
+		{/if}
 	</div>
 
 	{#if rankMode}
@@ -1064,6 +1076,8 @@
 									<PosterCandidateTile
 										candidate={c}
 										kind="ranked"
+										displayRank={flatDisplayRankByFilename.get(c.orig_filename)?.rank ?? null}
+										rankSuffix={flatDisplayRankByFilename.get(c.orig_filename)?.suffix ?? null}
 										selectable={tileSelectable}
 										inspected={inspected?.orig_filename === c.orig_filename}
 										onSelect={handlePosterSelect}
@@ -1074,6 +1088,7 @@
 							{:else}
 								<PosterStack
 									members={group}
+									displayRank={flatDisplayRankByFilename.get(group[0].orig_filename)?.rank ?? null}
 									selectable={tileSelectable}
 									inspected={inspected?.orig_filename === group[0].orig_filename}
 									onSelect={handlePosterSelect}
@@ -1084,6 +1099,10 @@
 							<PosterCandidateTile
 								candidate={item as CandidateView}
 								kind="ranked"
+								displayRank={flatDisplayRankByFilename.get((item as CandidateView).orig_filename)
+									?.rank ?? null}
+								rankSuffix={flatDisplayRankByFilename.get((item as CandidateView).orig_filename)
+									?.suffix ?? null}
 								selectable={tileSelectable}
 								inspected={inspected?.orig_filename === (item as CandidateView).orig_filename}
 								onSelect={handlePosterSelect}
@@ -1125,6 +1144,12 @@
 					<PosterCandidateTile
 						candidate={c}
 						kind={activeStage === 'ranked' ? 'ranked' : 'rejected'}
+						displayRank={activeStage === 'ranked'
+							? (flatDisplayRankByFilename.get(c.orig_filename)?.rank ?? null)
+							: null}
+						rankSuffix={activeStage === 'ranked'
+							? (flatDisplayRankByFilename.get(c.orig_filename)?.suffix ?? null)
+							: null}
 						selectable={tileSelectable}
 						inspected={inspected?.orig_filename === c.orig_filename}
 						onSelect={handlePosterSelect}
@@ -1210,9 +1235,28 @@
 		align-items: start;
 		margin-bottom: 24px;
 	}
+	.hero.has-ocr-evidence {
+		grid-template-columns: 168px minmax(0, 1fr) minmax(320px, 440px);
+	}
+	.hero-evidence {
+		grid-column: 3;
+		min-width: 0;
+	}
+	@media (max-width: 1040px) {
+		.hero.has-ocr-evidence {
+			grid-template-columns: 168px minmax(0, 1fr);
+		}
+		.hero-evidence {
+			grid-column: 2;
+		}
+	}
 	@media (max-width: 620px) {
-		.hero {
+		.hero,
+		.hero.has-ocr-evidence {
 			grid-template-columns: 1fr;
+		}
+		.hero-evidence {
+			grid-column: 1;
 		}
 	}
 	.hero-poster {

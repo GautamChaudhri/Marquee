@@ -2,6 +2,7 @@
 	import { gradientFor } from '$lib/display';
 	import type { CandidateView } from '$lib/api/types';
 	import { rejectionTag } from '$lib/pipeline/ocr-display';
+	import { rankCaption } from '$lib/pipeline/rank-display';
 
 	let {
 		candidate,
@@ -10,6 +11,8 @@
 		selected = false,
 		inspected = false,
 		badgeText = null,
+		displayRank = null,
+		rankSuffix = null,
 		onSelect,
 		accent = '',
 		onCollapse
@@ -21,6 +24,10 @@
 		/** Ring highlight when this tile is the one the hero inspector is showing. */
 		inspected?: boolean;
 		badgeText?: string | null;
+		/** Position in the current flat grid, when it differs from the archived candidate rank. */
+		displayRank?: number | null;
+		/** Variant suffix (A, B, C…) for a currently expanded stack. */
+		rankSuffix?: string | null;
 		onSelect?: (c: CandidateView) => void;
 		/** Optional CSS color for a left-edge accent (used by expanded stacks). */
 		accent?: string;
@@ -39,6 +46,9 @@
 				? `#${candidate.rank}`
 				: ''
 	);
+	const visibleRank = $derived(displayRank ?? candidate.rank);
+	const visibleRankCaption = $derived(rankCaption(visibleRank, rankSuffix));
+	const designLabel = $derived(stacked ? `Design ${tag}` : null);
 	const isAutoPick = $derived(
 		kind === 'ranked' &&
 			(stacked ? candidate.stack_rank === 1 && candidate.stack_pos === 1 : candidate.rank === 1)
@@ -47,6 +57,13 @@
 
 	const reason = $derived(rejectionTag(candidate));
 	const reasonDetail = $derived(candidate.rejection_explanation ?? reason);
+	const tileTitle = $derived(
+		kind === 'rejected'
+			? reasonDetail
+			: designLabel
+				? `${visibleRankCaption} · ${designLabel}`
+				: visibleRankCaption
+	);
 </script>
 
 <button
@@ -58,7 +75,7 @@
 	class:inspected
 	disabled={!selectable}
 	onclick={() => onSelect?.(candidate)}
-	title={kind === 'rejected' ? reasonDetail : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
+	title={tileTitle}
 	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}; --group-accent:{accent}"
 >
 	<div class="art">
@@ -82,7 +99,7 @@
 	</div>
 	<div class="cap" class:has-collapse={onCollapse != null}>
 		{#if kind === 'ranked'}
-			<span class="cap-main">{stacked ? tag : `Rank ${candidate.rank}`}</span>
+			<span class="cap-main">{visibleRankCaption}</span>
 		{:else}
 			<span class="cap-main bad-text" title={reasonDetail}>{reason}</span>
 		{/if}

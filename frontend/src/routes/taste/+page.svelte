@@ -277,7 +277,7 @@
 <SectionHeader title="Key Art Engine" subtitle="Taste profile & bounded preference residual" />
 
 <div class="library-switch">
-	<button class:active={library === 'movies'} onclick={() => setLibrary('movies')}>Movies</button>
+	<button class:active={library === 'movies'} onclick={() => setLibrary('movies')}>Films</button>
 	<button class:active={library === 'tv'} onclick={() => setLibrary('tv')}>Television</button>
 </div>
 

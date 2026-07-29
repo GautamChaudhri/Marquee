@@ -5,6 +5,7 @@
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
@@ -202,6 +203,8 @@
 	{/snippet}
 </SectionHeader>
 
+<PosterLibraryToggle active="television" />
+
 <ConfirmDialog
 	open={resetOpen}
 	title="Reset {reviewQueue.total_series} shows?"
@@ -261,8 +264,10 @@
 					{#each placeholders as placeholder (placeholder.label)}
 						<div class="preview-tile preview-placeholder" title={placeholder.label}>
 							<PosterThumb
-								title={item.series.title}
-								year={item.series.year}
+								title={placeholder.title}
+								year={placeholder.year}
+								gradientKey={placeholder.gradientKey}
+								centerTitle={placeholder.centerTitle}
 								posterStatus="missing"
 							/>
 							<span>{placeholder.label}</span>

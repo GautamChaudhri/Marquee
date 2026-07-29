@@ -4,6 +4,7 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
+	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
@@ -295,6 +296,8 @@
 		</button>
 	{/snippet}
 </SectionHeader>
+
+<PosterLibraryToggle active="films" />
 
 {#if data.onboarding && data.onboarding.state !== 'personalized'}
 	<a
