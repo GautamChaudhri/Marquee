@@ -330,6 +330,40 @@ def _log_dedup_removal(removal: DedupRemoval) -> None:
 NEUTRAL_REVIEW_ORDER = "source_family_round_robin_sha256_v1"
 SCORED_REVIEW_ORDER = "scored_rank_v1"
 
+# Upper bound on rejected-candidate images archived per run for the review UI's
+# per-stage tabs. These are evidence only — never objectively eligible — so the
+# cap is about artifact volume, not correctness.
+MAX_REVIEW_EVIDENCE = 120
+
+
+def build_review_evidence(records: dict[str, CandidateScore]) -> list[dict[str, object]]:
+    """The rejected candidates whose image the review UI can still show.
+
+    Deliberately *not* part of ``review.survivors``: these failed an objective
+    gate, so they carry ``objective_eligible: False`` and are archived under a
+    separate key. A candidate only qualifies if its image is actually on disk,
+    which excludes the resolution gate — that one rejects on TMDB metadata
+    before anything is downloaded.
+    """
+    evidence: list[dict[str, object]] = []
+    for name in sorted(records):
+        if len(evidence) >= MAX_REVIEW_EVIDENCE:
+            break
+        record = records[name]
+        if record.rank is not None:
+            continue
+        if not record.image_path.is_file():
+            continue
+        evidence.append(
+            {
+                "reference": record.orig_filename,
+                "position": len(evidence),
+                "objective_eligible": False,
+                "original_download": bool(record.original_download),
+            }
+        )
+    return evidence
+
 
 def build_run_payload(
     *,
@@ -405,6 +439,12 @@ def build_run_payload(
             "order_algorithm": review_order_algorithm,
             "survivors": ordered_survivors,
             "eligible_count": len(ordered_survivors),
+            "archived_count": 0,
+            "truncated_count": 0,
+        },
+        "review_evidence": {
+            "version": 1,
+            "candidates": build_review_evidence(records),
             "archived_count": 0,
             "truncated_count": 0,
         },

@@ -232,8 +232,10 @@ async def _register_candidate_files(
     subject_key: str,
     run_id: str,
     member: dict[str, Any],
+    files_key: str = "candidate_files",
+    role: str = "review_candidate",
 ) -> dict[str, Any]:
-    raw = member.get("candidate_files")
+    raw = member.get(files_key)
     if not isinstance(raw, dict):
         return {}
     artifacts: dict[str, Any] = {}
@@ -254,10 +256,13 @@ async def _register_candidate_files(
                 content_type="image/jpeg",
                 metadata={
                     "family": "poster_pipeline",
-                    "role": "review_candidate",
+                    "role": role,
                     "candidate_reference": reference,
                     "subject_key": subject_key,
                     "run_id": run_id,
+                    # Only the top stack representatives are re-fetched at full
+                    # resolution; everything else — and every reject — is w500.
+                    "provider_size": "w500" if role == "rejected_candidate" else "mixed",
                 },
             )
         except Exception:  # noqa: BLE001 - candidate evidence is best-effort
@@ -266,12 +271,45 @@ async def _register_candidate_files(
     return artifacts
 
 
+def _attach_evidence_artifacts(document: dict[str, Any], artifacts: dict[str, Any]) -> None:
+    """Freeze artifact identity into the run archive's rejected-candidate block.
+
+    Separate from the survivor block on purpose: these entries stay
+    ``objective_eligible: False`` and are never a source of review eligibility —
+    they exist so the review UI can render what each gate threw away.
+    """
+    block = document.get("review_evidence")
+    entries = block.get("candidates") if isinstance(block, dict) else None
+    if not isinstance(block, dict) or not isinstance(entries, list):
+        return
+    retained: list[dict[str, Any]] = []
+    for entry in entries[:_MAX_COUNT]:
+        if not isinstance(entry, dict):
+            continue
+        reference = entry.get("reference")
+        artifact = artifacts.get(reference) if isinstance(reference, str) else None
+        if artifact is None:
+            continue
+        entry["position"] = len(retained)
+        entry["objective_eligible"] = False
+        entry["artifact_id"] = artifact.id
+        entry["artifact_checksum"] = artifact.checksum
+        entry["artifact_storage_key"] = artifact.storage_key
+        retained.append(entry)
+    block["candidates"] = retained
+    block["archived_count"] = len(retained)
+    block["truncated_count"] = int(block.get("truncated_count") or 0) + (
+        len(entries) - len(retained)
+    )
+
+
 def _attach_candidate_artifacts(
     workspace_dir: Path,
     *,
     archive_file: str,
     run_id: str,
     artifacts: dict[str, Any],
+    evidence: dict[str, Any] | None = None,
 ) -> None:
     path = workspace_dir / archive_file
     if not path.is_file():
@@ -318,6 +356,9 @@ def _attach_candidate_artifacts(
     review["checksum"] = hashlib.sha256(
         json.dumps(checksum_input, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
+    # Deliberately outside the survivor checksum — evidence is not part of the
+    # eligibility contract it certifies.
+    _attach_evidence_artifacts(document, evidence or {})
     path.write_text(
         json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True)
     )
@@ -443,14 +484,31 @@ def _validated_member_results(
             for reference, filename in candidate_files.items()
         ) or set(candidate_files.values()) != expected_candidates:
             raise RuntimeError("poster group result candidate artifact attribution is invalid")
+        # Rejected candidates are review evidence, not primary output, but they
+        # are announced files and so must be attributed just as exactly.
+        rejected_files = member.get("rejected_files", {})
+        if not isinstance(rejected_files, dict):
+            raise RuntimeError("poster group result rejected artifact map is invalid")
+        expected_rejected = {
+            f"s{index:03d}-rejected-{position:03d}.jpg"
+            for position in range(len(rejected_files))
+        }
+        if any(
+            not isinstance(reference, str)
+            or not reference
+            or not isinstance(filename, str)
+            for reference, filename in rejected_files.items()
+        ) or set(rejected_files.values()) != expected_rejected:
+            raise RuntimeError("poster group result rejected artifact attribution is invalid")
         if member["status"] == "failed":
-            if archive_file is not None or candidate_files:
+            if archive_file is not None or candidate_files or rejected_files:
                 raise RuntimeError("failed poster group member contains primary artifacts")
         elif archive_file != f"run-{index:03d}.json":
             raise RuntimeError("poster group result archive attribution is invalid")
         if isinstance(archive_file, str):
             expected_files.add(archive_file)
         expected_files.update(candidate_files.values())
+        expected_files.update(rejected_files.values())
     if announced_files is not None and announced_files != expected_files:
         raise RuntimeError("poster group result and announced artifacts differ")
     return raw_members
@@ -581,6 +639,15 @@ async def execute_poster_pipeline_group(
             run_id=run_id,
             member=raw_member,
         )
+        rejected = await _register_candidate_files(
+            context,
+            workspace_dir,
+            subject_key=key,
+            run_id=run_id,
+            member=raw_member,
+            files_key="rejected_files",
+            role="rejected_candidate",
+        )
         selected_artifact = (
             candidates.get(recommendation.get("orig_filename"))
             if recommendation is not None
@@ -596,6 +663,7 @@ async def execute_poster_pipeline_group(
                     archive_file=archive_file,
                     run_id=run_id,
                     artifacts=candidates,
+                    evidence=rejected,
                 )
                 archive_artifact = await _register_file(
                     context,

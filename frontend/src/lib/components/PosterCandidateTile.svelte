@@ -66,6 +66,7 @@
 			<img
 				src={candidate.poster_url}
 				alt={candidate.orig_filename}
+				loading="lazy"
 				onerror={() => (imgFailed = true)}
 			/>
 		{/if}

@@ -34,6 +34,7 @@ from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.poster_parents import create_poster_parent
 from marquee.core.jobs.poster_submission import (
     PosterSelectionError,
     poster_child_idempotency_key,
@@ -53,7 +54,7 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
-from marquee.models import ArtworkEvent, Job, PipelineRun, Season, Series
+from marquee.models import ArtworkEvent, Job, JobArtifact, PipelineRun, Season, Series
 
 logger = logging.getLogger(__name__)
 
@@ -1080,6 +1081,193 @@ async def reset_tv_review_queue(db: Annotated[AsyncSession, Depends(get_db)]):
         "runs_cleared": len(review_runs),
         "posters_reset": len(series_rows) + len(season_rows),
     }
+
+
+async def _expire_series_run_artifacts(db: AsyncSession, run_ids: list[str]) -> int:
+    """Mark this series' pipeline evidence due for collection.
+
+    Scoped by the ``run_id`` stamped into each artifact's metadata, never by
+    ``job_id`` — one TV group job carries many series, and expiring by job would
+    take other shows' evidence with it. The bytes are removed by the nightly
+    ``job_retention_purge``; this only brings their expiry forward.
+    """
+    if not run_ids:
+        return 0
+    now = datetime.now(UTC)
+    artifacts = (
+        (
+            await db.execute(
+                select(JobArtifact).where(
+                    JobArtifact.status == "available",
+                    JobArtifact.kind.in_(("evidence_image", "command_report")),
+                    JobArtifact.artifact_metadata["run_id"].as_string().in_(run_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for artifact in artifacts:
+        artifact.expires_at = now
+    return len(artifacts)
+
+
+async def _reset_series_scope(
+    db: AsyncSession,
+    series_list: list[Series],
+    *,
+    idempotency_key: str,
+    scope_name: str,
+) -> JobSubmissionResponse:
+    """Start these shows over: drop their posters and runs so they re-enter the run queue.
+
+    Clearing the poster columns alone would not hold — the next library sync
+    re-detects the file on disk and fills them straight back in. So this goes
+    through ``poster_reset``, which deletes the deployed file (keeping the
+    backup), clears the columns, and closes the pending review runs that were
+    judging it.
+    """
+    series_ids = [series.id for series in series_list]
+    seasons = (
+        (
+            await db.execute(
+                select(Season)
+                .where(Season.series_id.in_(series_ids), season_downloaded())
+                .order_by(Season.series_id, Season.season_number)
+            )
+        )
+        .scalars()
+        .all()
+        if series_ids
+        else []
+    )
+    subjects: list[tuple[str, int]] = [("series", series_id) for series_id in series_ids]
+    subjects.extend(("season", season.id) for season in seasons)
+
+    runs = (
+        (
+            await db.execute(
+                select(PipelineRun).where(
+                    or_(
+                        and_(
+                            PipelineRun.media_type == "series",
+                            PipelineRun.series_id.in_(series_ids),
+                        ),
+                        and_(
+                            PipelineRun.media_type == "season",
+                            PipelineRun.season_id.in_([season.id for season in seasons]),
+                        ),
+                    ),
+                    PipelineRun.status != "running",
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if series_ids
+        else []
+    )
+
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_poster_parent(
+                db,
+                parent_job_type="poster_deploy_reset",
+                idempotency_key=idempotency_key,
+                trigger=TriggerKind.BATCH,
+                initiator=Initiator(kind="system", identifier="pipeline-tv-api"),
+                priority=40,
+                subjects=subjects,
+                scope_name=scope_name[:200],
+            )
+            expired = await _expire_series_run_artifacts(db, [run.run_id for run in runs])
+            # Closing the undecided runs is this endpoint's job, not the child's.
+            # ``poster_reset`` only retires reviews on the path where it actually
+            # deletes a file, and a show awaiting review usually has no deployed
+            # poster at all — nothing is deployed until someone approves. Leaving
+            # it to the child would strand exactly those shows: no poster to
+            # delete, so the review stays open, so the run queue keeps
+            # withholding them and they sit in Review forever.
+            reset_key = f"poster_reset_{int(time.time())}"
+            closed = 0
+            for run in runs:
+                if run.feedback_event_id is None:
+                    run.feedback_event_id = reset_key
+                    closed += 1
+                db.add(
+                    ArtworkEvent(
+                        media_type=run.media_type,
+                        series_id=run.series_id,
+                        season_id=run.season_id,
+                        action="series_reset",
+                        source="manual",
+                        detail=json.dumps({"run_id": run.run_id, "status": run.status}),
+                    )
+                )
+    except (SubmissionError, ValueError) as exc:
+        logger.warning("TV RESET REJECTED | scope=%s | %s", scope_name, exc)
+        raise HTTPException(status_code=422, detail="poster_reset_scope_invalid") from exc
+    logger.info(
+        "TV RESET | scope=%s | series=%d | subjects=%d | runs=%d | closed=%d | artifacts_expired=%d",
+        scope_name,
+        len(series_ids),
+        len(subjects),
+        len(runs),
+        closed,
+        expired,
+    )
+    return submission_response(result.parent)
+
+
+@router.post("/series/{series_id}/reset", status_code=202)
+async def reset_series_posters(
+    series_id: int,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
+    """Start one show over, returning it to the run queue."""
+    series = (await db.execute(select(Series).where(Series.id == series_id))).scalar_one_or_none()
+    if series is None:
+        raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    return await _reset_series_scope(
+        db,
+        [series],
+        idempotency_key=idempotency_key,
+        scope_name=f"Reset posters — {series.title}",
+    )
+
+
+@router.post("/review-queue/reset", status_code=202)
+async def reset_tv_review_queue_posters(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
+    """Start every show awaiting review over — the counterpart to approve-auto.
+
+    Scoped to the shows on the review queue, so a show that was already decided
+    keeps the poster its decision deployed.
+    """
+    candidates = await _tv_review_queue_candidates(db)
+    series_ids = sorted(
+        {run.series_id for run in _latest_tv_review_runs(list(candidates)).values() if run.series_id}
+    )
+    if not series_ids:
+        raise HTTPException(status_code=409, detail="No TV runs are awaiting review")
+    series_list = list(
+        (
+            await db.execute(select(Series).where(Series.id.in_(series_ids)).order_by(Series.title))
+        )
+        .scalars()
+        .all()
+    )
+    return await _reset_series_scope(
+        db,
+        series_list,
+        idempotency_key=idempotency_key,
+        scope_name=f"Reset posters — {len(series_list)} shows in review",
+    )
 
 
 # ---------------------------------------------------------------------------

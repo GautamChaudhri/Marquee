@@ -68,6 +68,89 @@ def test_poster_child_idempotency_key_is_deterministic_and_path_free():
     assert "/" not in first
 
 
+def _archived_candidate(**overrides) -> dict:
+    candidate = {
+        "orig_filename": "poster_a.jpg",
+        "artifact_id": 12,
+        "artifact_storage_key": "test/poster_a.jpg",
+        "artifact_checksum": "a" * 64,
+    }
+    candidate.update(overrides)
+    return candidate
+
+
+def test_provider_original_selection_carries_no_stored_identity() -> None:
+    """Nothing is staged yet, so pre-agreed local identity would be a lie."""
+    selection = PosterCandidateSelectionV1(
+        source="provider_original",
+        run_id="run-1",
+        candidate_reference="poster_a.jpg",
+    )
+    assert selection.storage_key is None
+    assert selection.expected_checksum is None
+
+    for forbidden in ({"storage_key": "test/x.jpg"}, {"artifact_id": 3}):
+        with pytest.raises(ValidationError, match="stored artifact identity"):
+            PosterCandidateSelectionV1(
+                source="provider_original",
+                run_id="run-1",
+                candidate_reference="poster_a.jpg",
+                **forbidden,
+            )
+    with pytest.raises(ValidationError, match="pre-agree a checksum"):
+        PosterCandidateSelectionV1(
+            source="provider_original",
+            run_id="run-1",
+            candidate_reference="poster_a.jpg",
+            expected_checksum="b" * 64,
+        )
+
+
+def test_stored_selections_still_require_a_key_and_checksum() -> None:
+    with pytest.raises(ValidationError, match="storage key and checksum"):
+        PosterCandidateSelectionV1(
+            source="pipeline_run", run_id="run-1", candidate_reference="poster_a.jpg"
+        )
+
+
+def test_only_original_size_candidates_deploy_from_stored_bytes() -> None:
+    """A w500 archive copy must not be published as the poster."""
+    from marquee.core.jobs.poster_submission import pipeline_candidate_selection
+
+    run = SimpleNamespace(run_id="run-1")
+
+    full = pipeline_candidate_selection(
+        run,
+        _archived_candidate(original_download=True),
+        allow_provider_original=True,
+    )
+    assert full.source == "pipeline_run"
+    assert full.artifact_id == 12
+
+    for candidate in (
+        _archived_candidate(original_download=False),  # download failed
+        _archived_candidate(),  # never attempted (rejected, or ranked past top-N)
+    ):
+        upgraded = pipeline_candidate_selection(
+            run, candidate, allow_provider_original=True
+        )
+        assert upgraded.source == "provider_original"
+        assert upgraded.candidate_reference == "poster_a.jpg"
+
+
+def test_onboarding_keeps_the_exact_artifact_contract() -> None:
+    """Onboarding proves the deployed bytes against its exemplar's artifact, so
+    it must never be silently switched to freshly re-fetched bytes."""
+    from marquee.core.jobs.poster_submission import pipeline_candidate_selection
+
+    selection = pipeline_candidate_selection(
+        SimpleNamespace(run_id="run-1"), _archived_candidate()
+    )
+
+    assert selection.source == "pipeline_run"
+    assert selection.expected_checksum == "a" * 64
+
+
 class _Fence:
     def __init__(self) -> None:
         self.intents: list[dict] = []

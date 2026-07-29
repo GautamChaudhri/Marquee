@@ -24,6 +24,7 @@ from marquee.api.results import (
     build_results_payload,
     diagnostic_candidates,
     feature_vector_from_archive,
+    find_review_evidence,
     find_review_survivor,
     poster_url,
 )
@@ -265,6 +266,44 @@ async def get_run_results(
     )
 
 
+async def _serve_candidate_artifact(
+    db: AsyncSession,
+    run: PipelineRun,
+    candidate: dict,
+    orig_filename: str,
+    *,
+    role: str,
+):
+    """Serve one archived candidate image after re-proving its whole identity."""
+    artifact_id = candidate.get("artifact_id")
+    if not isinstance(artifact_id, int):
+        raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
+    artifact = await db.get(JobArtifact, artifact_id)
+    metadata = (
+        artifact.artifact_metadata
+        if artifact is not None and isinstance(artifact.artifact_metadata, dict)
+        else {}
+    )
+    if (
+        artifact is None
+        or artifact.job_id != run.job_id
+        or artifact.attempt_id != run.attempt_id
+        or artifact.kind != "evidence_image"
+        or artifact.status != "available"
+        or artifact.storage_key != candidate.get("artifact_storage_key")
+        or artifact.checksum != candidate.get("artifact_checksum")
+        or metadata.get("family") != "poster_pipeline"
+        or metadata.get("role") != role
+        or metadata.get("candidate_reference") != orig_filename
+    ):
+        raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
+    try:
+        boundary, classified = await verify_physical_artifact(artifact)
+    except ArtifactError as exc:
+        raise HTTPException(status_code=404, detail="Candidate artifact unavailable") from exc
+    return boundary.response(classified)
+
+
 @router.get("/runs/{run_id}/posters/{orig_filename}")
 async def get_run_poster(
     run_id: str,
@@ -278,39 +317,23 @@ async def get_run_poster(
         raise HTTPException(status_code=404, detail="Run archive unavailable")
 
     candidate = find_review_survivor(archive, orig_filename)
-    if candidate is None:
-        raise HTTPException(
-            status_code=404, detail=f"No reviewable candidate {orig_filename!r} in run {run_id}"
+    if candidate is not None:
+        return await _serve_candidate_artifact(
+            db, run, candidate, orig_filename, role="review_candidate"
         )
 
-    artifact_id = candidate.get("artifact_id")
-    if isinstance(artifact_id, int):
-        artifact = await db.get(JobArtifact, artifact_id)
-        metadata = (
-            artifact.artifact_metadata
-            if artifact is not None and isinstance(artifact.artifact_metadata, dict)
-            else {}
+    # Not eligible for selection, but the review UI still shows it in the
+    # per-stage rejection tabs — served from a separate evidence block that
+    # confers no eligibility of its own.
+    rejected = find_review_evidence(archive, orig_filename)
+    if rejected is not None:
+        return await _serve_candidate_artifact(
+            db, run, rejected, orig_filename, role="rejected_candidate"
         )
-        if (
-            artifact is None
-            or artifact.job_id != run.job_id
-            or artifact.attempt_id != run.attempt_id
-            or artifact.kind != "evidence_image"
-            or artifact.status != "available"
-            or artifact.storage_key != candidate.get("artifact_storage_key")
-            or artifact.checksum != candidate.get("artifact_checksum")
-            or metadata.get("family") != "poster_pipeline"
-            or metadata.get("role") != "review_candidate"
-            or metadata.get("candidate_reference") != orig_filename
-        ):
-            raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
-        try:
-            boundary, classified = await verify_physical_artifact(artifact)
-        except ArtifactError as exc:
-            raise HTTPException(status_code=404, detail="Candidate artifact unavailable") from exc
-        return boundary.response(classified)
 
-    raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
+    raise HTTPException(
+        status_code=404, detail=f"No reviewable candidate {orig_filename!r} in run {run_id}"
+    )
 
 
 class RescoreRequest(BaseModel):

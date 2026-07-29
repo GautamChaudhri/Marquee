@@ -111,6 +111,9 @@ class PosterGroupMemberOutput:
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
     candidate_files: dict[str, str] = field(default_factory=dict)
+    # Rejected candidates kept only so the review UI's per-stage tabs can show
+    # them. Best-effort: a member is never failed over a missing one.
+    rejected_files: dict[str, str] = field(default_factory=dict)
     archive_file: str | None = None
 
     @property
@@ -142,6 +145,7 @@ class PosterGroupMemberOutput:
             "scorer_name": self.scorer_name,
             "personalization_mode": self.personalization_mode,
             "candidate_files": self.candidate_files,
+            "rejected_files": self.rejected_files,
             "archive_file": self.archive_file,
             "error": self.error,
             "warnings": self.warnings[:20],
@@ -855,6 +859,54 @@ async def run_poster_group(
     return PosterGroupOutput(library=library, chunk_index=chunk_index, members=outputs)
 
 
+def _materialize_member_evidence(
+    member: PosterGroupMemberOutput,
+    out_dir: Path,
+    *,
+    root: Path,
+    diagnostic_paths: dict[Any, Any],
+) -> list[str]:
+    """Copy out the rejected candidates the review UI shows in its stage tabs.
+
+    Best-effort by contract: an unusable entry is dropped rather than raised,
+    because a missing rejection thumbnail must never fail a member whose actual
+    result — the ranked survivors — materialized correctly.
+    """
+    payload = member.payload
+    if payload is None:
+        return []
+    block = payload.get("review_evidence")
+    entries = block.get("candidates") if isinstance(block, dict) else None
+    if not isinstance(block, dict) or not isinstance(entries, list):
+        return []
+    keys: list[str] = []
+    retained: list[dict[str, Any]] = []
+    for entry in entries[:_MAX_REVIEW_FILES]:
+        if not isinstance(entry, dict):
+            continue
+        reference = entry.get("reference")
+        image_path = diagnostic_paths.get(reference) if isinstance(reference, str) else None
+        if not isinstance(reference, str) or not isinstance(image_path, str) or not image_path:
+            continue
+        source = Path(image_path).resolve()
+        if not source.is_file() or not source.is_relative_to(root):
+            continue
+        key = f"s{member.member_index:03d}-rejected-{len(retained):03d}.jpg"
+        try:
+            shutil.copyfile(source, out_dir / key)
+        except OSError:
+            continue
+        entry["position"] = len(retained)
+        entry["artifact_key"] = key
+        member.rejected_files[reference] = key
+        keys.append(key)
+        retained.append(entry)
+    block["candidates"] = retained
+    block["archived_count"] = len(retained)
+    block["truncated_count"] = max(0, len(entries) - len(retained))
+    return keys
+
+
 def materialize_group_output(output: PosterGroupOutput, out_dir: Path) -> list[str]:
     """Write flat, host-registrable files; archive failures stay member-local."""
     produced: list[str] = []
@@ -902,16 +954,25 @@ def materialize_group_output(output: PosterGroupOutput, out_dir: Path) -> list[s
             review["archived_count"] = len(retained)
             review["truncated_count"] = max(0, len(survivors) - len(retained))
 
+            try:
+                evidence_keys = _materialize_member_evidence(
+                    member, out_dir, root=root, diagnostic_paths=diagnostic_paths
+                )
+            except Exception:  # noqa: BLE001 - evidence never fails a member
+                evidence_keys = []
+                member.rejected_files = {}
+
             archive = f"run-{member.member_index:03d}.json"
             write_run_json(out_dir / archive, member.payload)
             member.archive_file = archive
-            produced.extend([archive, *candidate_keys])
+            produced.extend([archive, *candidate_keys, *evidence_keys])
         except Exception as exc:  # member archive/copy failure
             member.status = "failed"
             member.error = str(exc)[:2000]
             member.recommendation = None
             member.archive_file = None
             member.candidate_files = {}
+            member.rejected_files = {}
 
     # This is required fallback evidence. Failure escapes systemically and the
     # host creates no projections.

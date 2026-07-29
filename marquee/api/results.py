@@ -307,6 +307,29 @@ def find_review_survivor(archive: dict, reference: str) -> dict | None:
     return None
 
 
+def find_review_evidence(archive: dict, reference: str) -> dict | None:
+    """Find an archived *rejected* candidate's image identity.
+
+    Strictly separate from :func:`find_review_survivor`: these candidates failed
+    an objective gate, so they are never review-eligible. They are archived only
+    so the review UI can render what each stage threw away.
+    """
+    block = archive.get("review_evidence")
+    if not isinstance(block, dict):
+        return None
+    candidates = block.get("candidates")
+    if not isinstance(candidates, list):
+        return None
+    for candidate in candidates:
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("reference") == reference
+            and candidate.get("objective_eligible") is not True
+        ):
+            return candidate
+    return None
+
+
 def feature_vector_from_archive(candidate: dict):
     """Reconstruct a FeatureVector from an archived candidate, for rescore.
 

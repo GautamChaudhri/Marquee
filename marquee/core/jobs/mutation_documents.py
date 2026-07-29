@@ -232,8 +232,20 @@ class MutationEvidenceV1(StrictDocument):
 
 
 class PosterCandidateSelectionV1(StrictDocument):
-    source: Literal["pipeline_run", "subject_artwork"]
-    storage_key: str
+    """Which bytes a poster mutation is allowed to publish.
+
+    ``pipeline_run`` and ``subject_artwork`` name bytes that already exist under
+    our control, so both pre-agree a checksum the handler re-proves before and
+    after publishing. ``provider_original`` names bytes that do not exist yet:
+    the candidate was only ever archived at w500, and the full-resolution image
+    has to be re-fetched from the provider at deploy time. Its checksum is
+    therefore recorded on arrival rather than agreed in advance — the same trust
+    the pipeline already places in the provider when it downloads originals for
+    the top-ranked candidates.
+    """
+
+    source: Literal["pipeline_run", "subject_artwork", "provider_original"]
+    storage_key: str | None = None
     artifact_id: int | None = Field(default=None, ge=1)
     run_id: str | None = Field(default=None, min_length=1, max_length=80)
     candidate_reference: str | None = Field(
@@ -241,10 +253,13 @@ class PosterCandidateSelectionV1(StrictDocument):
     )
     source_kind: Literal["movie", "series", "season"] | None = None
     source_id: int | None = Field(default=None, ge=1)
-    expected_checksum: Checksum
+    expected_checksum: Checksum | None = None
     selection_facts: dict[str, JsonValue] = Field(default_factory=dict)
 
-    _confine_storage_key = field_validator("storage_key")(_storage_key)
+    @field_validator("storage_key")
+    @classmethod
+    def confine_storage_key(cls, value: str | None) -> str | None:
+        return None if value is None else _storage_key(value)
 
     @field_validator("selection_facts")
     @classmethod
@@ -253,7 +268,7 @@ class PosterCandidateSelectionV1(StrictDocument):
 
     @model_validator(mode="after")
     def require_exact_source_identity(self) -> PosterCandidateSelectionV1:
-        if self.source == "pipeline_run":
+        if self.source in ("pipeline_run", "provider_original"):
             if not self.run_id or not self.candidate_reference:
                 raise ValueError("pipeline selections require run and candidate identities")
             if self.source_kind is not None or self.source_id is not None:
@@ -262,6 +277,14 @@ class PosterCandidateSelectionV1(StrictDocument):
             raise ValueError("subject artwork selections require a subject identity")
         elif self.run_id is not None or self.candidate_reference is not None:
             raise ValueError("subject artwork selections cannot carry pipeline fields")
+        if self.source == "provider_original":
+            # Nothing is staged yet, so pre-agreed local identity is meaningless.
+            if self.storage_key is not None or self.artifact_id is not None:
+                raise ValueError("provider selections cannot carry stored artifact identity")
+            if self.expected_checksum is not None:
+                raise ValueError("provider selections cannot pre-agree a checksum")
+        elif self.storage_key is None or self.expected_checksum is None:
+            raise ValueError("stored selections require a storage key and checksum")
         return self
 
 

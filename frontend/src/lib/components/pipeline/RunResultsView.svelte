@@ -34,11 +34,18 @@
 	let {
 		data,
 		backHref = '/pipeline/movies',
-		backLabel = 'Movie posters'
+		backLabel = 'Movie posters',
+		onreviewed
 	}: {
 		data: RunResultsViewData;
 		backHref?: string;
 		backLabel?: string;
+		/** Fired once a pick is recorded, so a host with its own queue (the TV
+		 *  series rail) can drop this run and advance. Not fired for reject-all. */
+		onreviewed?: (info: {
+			runId: string;
+			action: 'approve' | 'override';
+		}) => void | Promise<void>;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally
@@ -429,9 +436,10 @@
 		if (!inspected || !results) return;
 		busy = true;
 		try {
+			const action = inspectIsAuto ? 'approve' : 'override';
 			const res = await submitFeedback(fetch, {
 				run_id: results.run_id,
-				action: inspectIsAuto ? 'approve' : 'override',
+				action,
 				selected_filename: inspected.orig_filename,
 				deploy
 			});
@@ -440,6 +448,7 @@
 			toast(`Poster selected${where}`, 'good');
 			cancelConfirm();
 			await reload();
+			await onreviewed?.({ runId: results.run_id, action });
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Selection failed', 'bad');
 		} finally {

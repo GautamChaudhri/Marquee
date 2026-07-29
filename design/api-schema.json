@@ -9948,7 +9948,7 @@
     },
     "/api/pipeline/batch": {
       "post": {
-        "description": "Create a ticketless poster-analysis parent with one immutable child per movie.",
+        "description": "Create a ticketless poster-analysis parent for the selected movies.",
         "operationId": "run_pipeline_batch_api_pipeline_batch_post",
         "requestBody": {
           "content": {
@@ -10556,7 +10556,7 @@
     },
     "/api/pipeline/tv/batch": {
       "post": {
-        "description": "Create a ticketless TV poster parent with one immutable child per asset.",
+        "description": "Create a ticketless TV poster parent over immutable asset work.",
         "operationId": "run_tv_pipeline_batch_api_pipeline_tv_batch_post",
         "requestBody": {
           "content": {
@@ -10747,6 +10747,49 @@
         ]
       }
     },
+    "/api/pipeline/tv/review-queue/reset": {
+      "post": {
+        "description": "Start every show awaiting review over — the counterpart to approve-auto.\n\nScoped to the shows on the review queue, so a show that was already decided\nkeeps the poster its decision deployed.",
+        "operationId": "reset_tv_review_queue_posters_api_pipeline_tv_review_queue_reset_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Tv Review Queue Posters",
+        "tags": [
+          "pipeline-tv"
+        ]
+      }
+    },
     "/api/pipeline/tv/review/reset": {
       "post": {
         "description": "TV mirror of the movie review reset — marks reviewed + clears poster state.",
@@ -10831,6 +10874,58 @@
           }
         },
         "summary": "Use Show Poster For Season",
+        "tags": [
+          "pipeline-tv"
+        ]
+      }
+    },
+    "/api/pipeline/tv/series/{series_id}/reset": {
+      "post": {
+        "description": "Start one show over, returning it to the run queue.",
+        "operationId": "reset_series_posters_api_pipeline_tv_series__series_id__reset_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "series_id",
+            "required": true,
+            "schema": {
+              "title": "Series Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Series Posters",
         "tags": [
           "pipeline-tv"
         ]

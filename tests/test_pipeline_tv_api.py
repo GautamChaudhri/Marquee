@@ -17,7 +17,7 @@ from marquee.config import settings
 from marquee.core.jobs.handlers_poster_mutations import execute_poster_reset
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import Job, JobBatch, Movie, PipelineRun, Season, Series
+from marquee.models import Job, JobArtifact, JobBatch, Movie, PipelineRun, Season, Series
 from tests.support.canonical_poster import seed_canonical_pipeline_run
 from tests.test_poster_mutations import _context as _mutation_context
 
@@ -737,6 +737,212 @@ async def test_poster_reset_returns_a_fully_covered_subject_to_the_run_queue(
     assert items[0]["assets_to_run"] == [
         {"media_type": "season", "season_id": season.id, "number": 1}
     ]
+
+
+@pytest.mark.asyncio
+async def test_series_reset_seals_a_child_per_subject_and_expires_run_evidence(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resetting one show must reset that show only, evidence included."""
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Start Over",
+        tmdb_id=903,
+        sonarr_id=34,
+        show_poster=True,
+        seasons=[
+            {"number": 1, "episode_file_count": 4, "poster": True},
+            {"number": 2, "episode_file_count": 3, "poster": True},
+        ],
+    )
+    other, _ = await _seed_series(
+        db, tmp_path, title="Untouched", tmdb_id=904, sonarr_id=35, show_poster=True
+    )
+    run = await _seed_run(db, tmp_path, run_id="startover1", series=series, season=seasons[0])
+    other_run = await _seed_run(db, tmp_path, run_id="untouched1", series=other)
+
+    response = await client.post(
+        f"/api/pipeline/tv/series/{series.id}/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:series-1"},
+    )
+
+    assert response.status_code == 202, response.text
+    children = (
+        (
+            await db.execute(
+                select(Job).where(Job.parent_id == response.json()["job_id"], Job.type == "poster_reset")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {(job.subject_kind, job.subject_reference) for job in children} == {
+        ("series", str(series.id)),
+        *{("season", str(season.id)) for season in seasons},
+    }
+
+    # This series' evidence is due for collection; the other show's is not.
+    artifacts = (await db.execute(select(JobArtifact))).scalars().all()
+    by_run = {
+        artifact.artifact_metadata.get("run_id"): artifact
+        for artifact in artifacts
+        if isinstance(artifact.artifact_metadata, dict)
+    }
+    assert by_run[run.run_id].expires_at is not None
+    assert by_run[run.run_id].expires_at <= datetime.now(UTC)
+    untouched = by_run[other_run.run_id].expires_at
+    assert untouched is None or untouched > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_review_queue_reset_covers_every_show_awaiting_a_decision(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue-wide reset is the mirror of approve-all: it takes the queue, and
+    only the queue — a show whose decision already landed keeps its poster."""
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
+    waiting, waiting_seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Awaiting",
+        tmdb_id=905,
+        sonarr_id=36,
+        show_poster=True,
+        seasons=[{"number": 1, "episode_file_count": 4, "poster": True}],
+    )
+    decided, _ = await _seed_series(
+        db, tmp_path, title="Decided", tmdb_id=906, sonarr_id=37, show_poster=True
+    )
+    await _seed_run(db, tmp_path, run_id="awaiting01", series=waiting)
+    await _seed_run(db, tmp_path, run_id="decided001", series=decided, reviewed=True)
+
+    response = await client.post(
+        "/api/pipeline/tv/review-queue/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:queue-1"},
+    )
+
+    assert response.status_code == 202, response.text
+    children = (
+        (
+            await db.execute(
+                select(Job).where(
+                    Job.parent_id == response.json()["job_id"], Job.type == "poster_reset"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {(job.subject_kind, job.subject_reference) for job in children} == {
+        ("series", str(waiting.id)),
+        ("season", str(waiting_seasons[0].id)),
+    }
+
+
+@pytest.mark.asyncio
+async def test_reset_returns_a_show_that_never_deployed_a_poster_to_the_run_queue(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Most shows awaiting review have no deployed poster — nothing is deployed
+    until someone approves. ``poster_reset`` only retires reviews on the path
+    where it deletes a file, so the reset endpoint has to close those runs
+    itself; otherwise the show has no poster to delete, keeps its open review,
+    and the run queue withholds it forever.
+    """
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Never Deployed",
+        tmdb_id=907,
+        sonarr_id=38,
+        show_poster=False,
+        seasons=[{"number": 1, "episode_file_count": 5, "poster": False}],
+    )
+    await _seed_run(db, tmp_path, run_id="neverdep01", series=series)
+    await _seed_run(db, tmp_path, run_id="neverdep02", series=series, season=seasons[0])
+
+    in_review = await client.get("/api/pipeline/tv/review-queue")
+    assert [item["series"]["id"] for item in in_review.json()["items"]] == [series.id]
+    withheld = await client.get("/api/pipeline/tv/run-queue")
+    assert withheld.json()["items"] == []
+
+    response = await client.post(
+        "/api/pipeline/tv/review-queue/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:never-deployed"},
+    )
+    assert response.status_code == 202, response.text
+
+    cleared = await client.get("/api/pipeline/tv/review-queue")
+    assert cleared.json()["items"] == []
+    requeued = await client.get("/api/pipeline/tv/run-queue")
+    items = requeued.json()["items"]
+    assert [item["series"]["id"] for item in items] == [series.id]
+    assert items[0]["show_poster_missing"] is True
+    assert items[0]["assets_to_run"] == [
+        {"media_type": "series"},
+        {"media_type": "season", "season_id": seasons[0].id, "number": 1},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reset_never_overwrites_an_existing_review_decision(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closing undecided runs must not stamp over a real feedback event id."""
+    monkeypatch.setattr(settings, "MEDIA_ROOTS", [str(tmp_path)])
+    series, _ = await _seed_series(
+        db, tmp_path, title="Already Decided", tmdb_id=908, sonarr_id=39, show_poster=True
+    )
+    decided = await _seed_run(db, tmp_path, run_id="decided002", series=series, reviewed=True)
+
+    response = await client.post(
+        f"/api/pipeline/tv/series/{series.id}/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:decided"},
+    )
+    assert response.status_code == 202, response.text
+
+    await db.refresh(decided)
+    assert decided.feedback_event_id == "done"
+
+
+@pytest.mark.asyncio
+async def test_review_queue_reset_reports_an_empty_queue(
+    client: AsyncClient, installed_pgqueuer: Queries
+) -> None:
+    response = await client.post(
+        "/api/pipeline/tv/review-queue/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:queue-empty"},
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_series_reset_rejects_an_unknown_series(
+    client: AsyncClient, installed_pgqueuer: Queries
+) -> None:
+    response = await client.post(
+        "/api/pipeline/tv/series/999999/reset", headers={"Idempotency-Key": "poster_deploy_reset:missing"}
+    )
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

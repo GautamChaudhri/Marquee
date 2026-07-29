@@ -34,11 +34,34 @@ def poster_child_idempotency_key(root_key: str, subject_key: str) -> str:
 
 
 def pipeline_candidate_selection(
-    run: PipelineRun, candidate: dict, *, selection_facts: dict | None = None
+    run: PipelineRun,
+    candidate: dict,
+    *,
+    selection_facts: dict | None = None,
+    allow_provider_original: bool = False,
 ) -> PosterCandidateSelectionV1:
+    """Name the bytes to deploy for a candidate the user picked out of a run.
+
+    A run only re-fetches its top-ranked candidates at full resolution — every
+    other candidate, ranked or rejected, is archived at w500. Publishing that
+    would put a ~500px poster in the media folder, so review callers pass
+    ``allow_provider_original`` and anything without an original-size download is
+    deployed by re-fetching the provider original instead.
+
+    Onboarding must *not* pass it: it binds a taste exemplar to the stored
+    artifact and later proves the deployed bytes match that artifact's checksum,
+    which re-fetched bytes would not satisfy.
+    """
     reference = candidate.get("orig_filename")
     if not isinstance(reference, str) or not reference:
         raise PosterSelectionError("candidate identity is missing")
+    if allow_provider_original and candidate.get("original_download") is not True:
+        return PosterCandidateSelectionV1(
+            source="provider_original",
+            run_id=run.run_id,
+            candidate_reference=reference,
+            selection_facts=selection_facts or {},
+        )
     artifact_id = candidate.get("artifact_id")
     artifact_key = candidate.get("artifact_storage_key")
     artifact_checksum = candidate.get("artifact_checksum")

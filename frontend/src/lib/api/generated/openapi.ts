@@ -829,7 +829,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Run Pipeline Batch
-		 * @description Create a ticketless poster-analysis parent with one immutable child per movie.
+		 * @description Create a ticketless poster-analysis parent for the selected movies.
 		 */
 		post: operations['run_pipeline_batch_api_pipeline_batch_post'];
 		delete?: never;
@@ -1131,7 +1131,7 @@ export interface paths {
 		put?: never;
 		/**
 		 * Run Tv Pipeline Batch
-		 * @description Create a ticketless TV poster parent with one immutable child per asset.
+		 * @description Create a ticketless TV poster parent over immutable asset work.
 		 */
 		post: operations['run_tv_pipeline_batch_api_pipeline_tv_batch_post'];
 		delete?: never;
@@ -1197,6 +1197,29 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/pipeline/tv/review-queue/reset': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Reset Tv Review Queue Posters
+		 * @description Start every show awaiting review over — the counterpart to approve-auto.
+		 *
+		 *     Scoped to the shows on the review queue, so a show that was already decided
+		 *     keeps the poster its decision deployed.
+		 */
+		post: operations['reset_tv_review_queue_posters_api_pipeline_tv_review_queue_reset_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/pipeline/tv/review/reset': {
 		parameters: {
 			query?: never;
@@ -1253,6 +1276,26 @@ export interface paths {
 		put?: never;
 		/** Use Show Poster For Season */
 		post: operations['use_show_poster_for_season_api_pipeline_tv_seasons__season_id__use_show_poster_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/pipeline/tv/series/{series_id}/reset': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Reset Series Posters
+		 * @description Start one show over, returning it to the run queue.
+		 */
+		post: operations['reset_series_posters_api_pipeline_tv_series__series_id__reset_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -6365,6 +6408,37 @@ export interface operations {
 			};
 		};
 	};
+	reset_tv_review_queue_posters_api_pipeline_tv_review_queue_reset_post: {
+		parameters: {
+			query?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			202: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['JobSubmissionResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
 	reset_tv_review_queue_api_pipeline_tv_review_reset_post: {
 		parameters: {
 			query?: never;
@@ -6425,6 +6499,39 @@ export interface operations {
 				};
 				content: {
 					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	reset_series_posters_api_pipeline_tv_series__series_id__reset_post: {
+		parameters: {
+			query?: never;
+			header: {
+				'Idempotency-Key': string;
+			};
+			path: {
+				series_id: number;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			202: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['JobSubmissionResponse'];
 				};
 			};
 			/** @description Validation Error */

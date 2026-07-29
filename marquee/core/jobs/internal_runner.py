@@ -35,6 +35,10 @@ from marquee.core.jobs.runner_protocol import (
     read_manifest_from_stdin,
 )
 
+# Upper bound on rejected-candidate images carried out of a run for the review
+# UI. Mirrors the survivor bound just below it in _run_poster_single.
+_MAX_REVIEW_EVIDENCE_FILES = 120
+
 # Exit codes distinct from any real handler signal exit.
 _EXIT_BAD_INVOCATION = 64
 _EXIT_NO_CONTROL = 65
@@ -231,6 +235,47 @@ def _ocr_gate_context(params: dict[str, Any], subject: Any) -> Any:
     )
 
 
+def _materialize_review_evidence(
+    payload: dict[str, Any], diagnostic_paths: dict[Any, Any]
+) -> dict[str, str]:
+    """Copy out rejected candidates so the review UI's stage tabs can show them.
+
+    Best-effort by contract: an unusable entry is dropped, never raised — a
+    missing rejection thumbnail must not fail a run whose survivors are intact.
+    """
+    import shutil  # noqa: PLC0415
+
+    block = payload.get("review_evidence")
+    entries = block.get("candidates") if isinstance(block, dict) else None
+    if not isinstance(block, dict) or not isinstance(entries, list):
+        return {}
+    rejected_files: dict[str, str] = {}
+    retained: list[dict[str, Any]] = []
+    for entry in entries[:_MAX_REVIEW_EVIDENCE_FILES]:
+        if not isinstance(entry, dict):
+            continue
+        reference = entry.get("reference")
+        image_path = diagnostic_paths.get(reference) if isinstance(reference, str) else None
+        if not isinstance(reference, str) or not isinstance(image_path, str):
+            continue
+        source_path = Path(image_path).resolve()
+        if not source_path.is_file() or not source_path.is_relative_to(Path.cwd().resolve()):
+            continue
+        key = f"rejected-{len(retained):03d}.jpg"
+        try:
+            shutil.copyfile(source_path, key)
+        except OSError:
+            continue
+        entry["position"] = len(retained)
+        entry["artifact_key"] = key
+        rejected_files[reference] = key
+        retained.append(entry)
+    block["candidates"] = retained
+    block["archived_count"] = len(retained)
+    block["truncated_count"] = max(0, len(entries) - len(retained))
+    return rejected_files
+
+
 def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
     """Run the real single-subject poster pipeline confined to the workspace.
 
@@ -369,9 +414,15 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
         review["archived_count"] = len(retained)
         review["truncated_count"] = max(0, len(survivors) - len(retained))
 
+    try:
+        rejected_files = _materialize_review_evidence(output.payload, diagnostic_paths)
+    except Exception:  # noqa: BLE001 - evidence never fails a run
+        rejected_files = {}
+
     write_run_json(Path("run.json"), output.payload)
     files = [_announce_file("run.json", control)]
     files.extend(_announce_file(key, control) for key in candidate_files.values())
+    files.extend(_announce_file(key, control) for key in rejected_files.values())
 
     return {
         "outcome": "succeeded",
@@ -387,6 +438,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
             "personalization_mode": output.personalization_mode,
             "message": output.message,
             "candidate_files": candidate_files,
+            "rejected_files": rejected_files,
         },
         "files": files,
     }

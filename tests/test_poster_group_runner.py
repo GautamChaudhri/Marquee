@@ -502,6 +502,101 @@ def test_missing_member_survivor_artifact_uses_group_fallback_without_stopping_s
     assert report["failed_subject_keys"] == ["movie:1"]
 
 
+def test_rejected_candidates_are_materialized_alongside_survivors(tmp_path) -> None:
+    member_dir = tmp_path / "s000"
+    member_dir.mkdir()
+    kept = member_dir / "kept.jpg"
+    kept.write_bytes(b"kept")
+    tossed = member_dir / "tossed.jpg"
+    tossed.write_bytes(b"tossed")
+    member = PosterGroupMemberOutput(
+        subject_key="series:1",
+        run_id="run-1",
+        status="completed",
+        counts={"ranked": 1},
+        source_count=2,
+        candidate_count=2,
+        recommendation={"orig_filename": "kept.jpg", "rank": 1},
+        scorer_name="weighted",
+        personalization_mode="personalized",
+        payload={
+            "diagnostic_ledger": {
+                "candidates": [
+                    {"orig_filename": "kept.jpg", "image_path": str(kept)},
+                    {"orig_filename": "tossed.jpg", "image_path": str(tossed)},
+                ]
+            },
+            "review": {"survivors": [{"reference": "kept.jpg"}]},
+            "review_evidence": {
+                "candidates": [{"reference": "tossed.jpg", "objective_eligible": False}]
+            },
+        },
+        member_index=0,
+        title="Show",
+    )
+    group = PosterGroupOutput(library="tv", chunk_index=0, members=[member])
+
+    produced = materialize_group_output(group, tmp_path)
+
+    assert produced == [
+        "group-result.json",
+        "run-000.json",
+        "s000-candidate-000.jpg",
+        "s000-rejected-000.jpg",
+    ]
+    assert member.rejected_files == {"tossed.jpg": "s000-rejected-000.jpg"}
+    assert (tmp_path / "s000-rejected-000.jpg").read_bytes() == b"tossed"
+    report = json.loads((tmp_path / "group-result.json").read_text())
+    assert report["members"][0]["rejected_files"] == {"tossed.jpg": "s000-rejected-000.jpg"}
+
+
+def test_missing_rejected_image_is_skipped_without_failing_the_member(tmp_path) -> None:
+    """A rejection thumbnail is evidence, not output — losing one is not a failure."""
+    member_dir = tmp_path / "s000"
+    member_dir.mkdir()
+    kept = member_dir / "kept.jpg"
+    kept.write_bytes(b"kept")
+    member = PosterGroupMemberOutput(
+        subject_key="series:1",
+        run_id="run-1",
+        status="completed",
+        counts={"ranked": 1},
+        source_count=2,
+        candidate_count=2,
+        recommendation={"orig_filename": "kept.jpg", "rank": 1},
+        scorer_name="weighted",
+        personalization_mode="personalized",
+        payload={
+            "diagnostic_ledger": {
+                "candidates": [
+                    {"orig_filename": "kept.jpg", "image_path": str(kept)},
+                    {
+                        "orig_filename": "tossed.jpg",
+                        "image_path": str(member_dir / "gone.jpg"),
+                    },
+                ]
+            },
+            "review": {"survivors": [{"reference": "kept.jpg"}]},
+            "review_evidence": {
+                "candidates": [{"reference": "tossed.jpg", "objective_eligible": False}]
+            },
+        },
+        member_index=0,
+        title="Show",
+    )
+    group = PosterGroupOutput(library="tv", chunk_index=0, members=[member])
+
+    produced = materialize_group_output(group, tmp_path)
+
+    assert member.status == "completed"
+    assert member.archive_file == "run-000.json"
+    assert member.rejected_files == {}
+    assert "s000-rejected-000.jpg" not in produced
+    archive = json.loads((tmp_path / "run-000.json").read_text())
+    assert archive["review_evidence"]["candidates"] == []
+    assert archive["review_evidence"]["truncated_count"] == 1
+
+
 @pytest.mark.asyncio
 async def test_runner_progress_subject_becomes_current_scope_label() -> None:
     observations = []

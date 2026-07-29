@@ -244,10 +244,16 @@ async def _register_selected(
 
 
 async def _register_candidate_files(
-    context: ExecutionContext, workspace_dir, summary: dict[str, Any]
+    context: ExecutionContext,
+    workspace_dir,
+    summary: dict[str, Any],
+    *,
+    run_id: str,
+    files_key: str = "candidate_files",
+    role: str = "review_candidate",
 ) -> dict[str, Any]:
     """Register every bounded review candidate announced by the contained runner."""
-    raw = summary.get("candidate_files")
+    raw = summary.get(files_key)
     if not isinstance(raw, dict):
         return {}
     artifacts: dict[str, Any] = {}
@@ -269,8 +275,14 @@ async def _register_candidate_files(
                 retention_class="extended",
                 metadata={
                     "family": "poster_pipeline",
-                    "role": "review_candidate",
+                    "role": role,
                     "candidate_reference": reference,
+                    # Scopes per-run artifact expiry; the group handler has
+                    # always carried it, the single-subject one now matches.
+                    "run_id": run_id,
+                    # Only the top stack representatives are re-fetched at full
+                    # resolution; everything else — and every reject — is w500.
+                    "provider_size": "w500" if role == "rejected_candidate" else "mixed",
                 },
             )
         except ArtifactError:
@@ -279,7 +291,41 @@ async def _register_candidate_files(
     return artifacts
 
 
-def _attach_candidate_artifacts(workspace_dir, artifacts: dict[str, Any]) -> None:
+def _attach_evidence_artifacts(document: dict[str, Any], artifacts: dict[str, Any]) -> None:
+    """Freeze artifact identity into the run archive's rejected-candidate block.
+
+    Separate from the survivor block on purpose: these entries stay
+    ``objective_eligible: False`` and never confer review eligibility — they
+    exist so the review UI can render what each gate threw away.
+    """
+    block = document.get("review_evidence")
+    entries = block.get("candidates") if isinstance(block, dict) else None
+    if not isinstance(block, dict) or not isinstance(entries, list):
+        return
+    retained: list[dict[str, Any]] = []
+    for entry in entries[:_MAX_COUNT]:
+        if not isinstance(entry, dict):
+            continue
+        reference = entry.get("reference")
+        artifact = artifacts.get(reference) if isinstance(reference, str) else None
+        if artifact is None:
+            continue
+        entry["position"] = len(retained)
+        entry["objective_eligible"] = False
+        entry["artifact_id"] = artifact.id
+        entry["artifact_checksum"] = artifact.checksum
+        entry["artifact_storage_key"] = artifact.storage_key
+        retained.append(entry)
+    block["candidates"] = retained
+    block["archived_count"] = len(retained)
+    block["truncated_count"] = int(block.get("truncated_count") or 0) + (
+        len(entries) - len(retained)
+    )
+
+
+def _attach_candidate_artifacts(
+    workspace_dir, artifacts: dict[str, Any], evidence: dict[str, Any] | None = None
+) -> None:
     """Freeze canonical artifact identity into the immutable run archive."""
     path = workspace_dir / "run.json"
     if not path.is_file() or path.stat().st_size > 1024 * 1024:
@@ -288,9 +334,11 @@ def _attach_candidate_artifacts(workspace_dir, artifacts: dict[str, Any]) -> Non
         document = json.loads(path.read_text())
     except (OSError, ValueError):
         return
-    review = document.get("review") if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        return
+    review = document.get("review")
     survivors = review.get("survivors") if isinstance(review, dict) else None
-    if not isinstance(survivors, list):
+    if not isinstance(review, dict) or not isinstance(survivors, list):
         return
     retained: list[dict[str, Any]] = []
     for survivor in survivors[:_MAX_COUNT]:
@@ -320,6 +368,9 @@ def _attach_candidate_artifacts(workspace_dir, artifacts: dict[str, Any]) -> Non
     review["checksum"] = hashlib.sha256(
         json.dumps(checksum_input, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
+    # Deliberately outside the survivor checksum — evidence is not part of the
+    # eligibility contract it certifies.
+    _attach_evidence_artifacts(document, evidence or {})
     path.write_text(json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True))
 
 
@@ -595,7 +646,17 @@ async def execute_poster_pipeline(
         context.workspace.quarantine(code="stale_fence", summary="poster projection fenced")
         raise RuntimeError("poster pipeline attempt lost its fence before projection")
 
-    candidate_artifacts = await _register_candidate_files(context, workspace_dir, summary)
+    candidate_artifacts = await _register_candidate_files(
+        context, workspace_dir, summary, run_id=run_id
+    )
+    rejected_artifacts = await _register_candidate_files(
+        context,
+        workspace_dir,
+        summary,
+        run_id=run_id,
+        files_key="rejected_files",
+        role="rejected_candidate",
+    )
     selected_artifact = (
         candidate_artifacts.get(recommendation.get("orig_filename"))
         if recommendation is not None
@@ -603,7 +664,7 @@ async def execute_poster_pipeline(
     )
     if selected_artifact is None and recommendation is not None:
         selected_artifact = await _register_selected(context, workspace_dir, recommendation)
-    _attach_candidate_artifacts(workspace_dir, candidate_artifacts)
+    _attach_candidate_artifacts(workspace_dir, candidate_artifacts, rejected_artifacts)
     archive_artifact = await _register_archive(context, workspace_dir)
     await _write_pipeline_run(
         context,

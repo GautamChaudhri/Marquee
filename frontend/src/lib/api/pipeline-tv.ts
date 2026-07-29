@@ -67,6 +67,31 @@ export function resetTvReview(fetchFn: Fetch): Promise<{ reset: number }> {
 	return apiSend(fetchFn, 'POST', '/pipeline/tv/review/reset', {});
 }
 
+/** Start a show over: delete its deployed posters, drop its runs, requeue it. */
+export function resetSeriesPosters(
+	fetchFn: Fetch,
+	seriesId: number
+): Promise<JobSubmissionResponse> {
+	return apiSend(
+		fetchFn,
+		'POST',
+		`/pipeline/tv/series/${seriesId}/reset`,
+		{},
+		{ 'Idempotency-Key': `poster_deploy_reset:${randomUuid()}` }
+	);
+}
+
+/** The same, for every show currently awaiting review. */
+export function resetTvReviewQueuePosters(fetchFn: Fetch): Promise<JobSubmissionResponse> {
+	return apiSend(
+		fetchFn,
+		'POST',
+		'/pipeline/tv/review-queue/reset',
+		{},
+		{ 'Idempotency-Key': `poster_deploy_reset:${randomUuid()}` }
+	);
+}
+
 export function useShowPoster(fetchFn: Fetch, seasonId: number): Promise<JobSubmissionResponse> {
 	return apiSend(
 		fetchFn,

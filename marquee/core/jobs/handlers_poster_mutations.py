@@ -11,12 +11,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 
 from marquee.config import settings
+from marquee.core.download_guard import ensure_image_response
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, RootSpec
-from marquee.core.jobs.artifact_service import verify_physical_artifact
+from marquee.core.jobs.artifact_service import (
+    ArtifactError,
+    register_physical_artifact,
+    verify_physical_artifact,
+)
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.mutation_documents import (
     MutationAtomicityV1,
@@ -245,6 +251,61 @@ def _decode_image(boundary: FilesystemBoundary, source: ClassifiedPath) -> tuple
         os.close(fd)
 
 
+async def _fetch_provider_original(
+    context: ExecutionContext,
+    boundary: FilesystemBoundary,
+    selection: PosterCandidateSelectionV1,
+) -> ClassifiedPath:
+    """Stage the provider's full-resolution image for a candidate we only kept at w500.
+
+    Only the top-ranked candidates are re-fetched at full resolution during a
+    run; everything else is archived at w500, which is fine to review and far
+    too small to deploy. Rather than publish a soft poster, re-fetch the
+    original here and register it, so the published bytes still enter the
+    normal checksum-verified path.
+    """
+    url = tmdb_original_url(selection.candidate_reference or "")
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(url, follow_redirects=True)
+            response.raise_for_status()
+            ensure_image_response(response)
+            content = response.content
+    except Exception as exc:
+        raise PosterMutationError("provider original could not be retrieved") from exc
+    if not content:
+        raise PosterMutationError("provider original is empty")
+
+    workspace = (
+        context.workspace.directory.root.resolved()
+        / context.workspace.directory.key.value
+        / "deploy-candidate.jpg"
+    )
+    await asyncio.to_thread(workspace.write_bytes, content)
+    staged = boundary.classify(workspace, roots=("data",), require_file=True)
+    try:
+        await register_physical_artifact(
+            job_id=context.delivery.canonical_job_id,
+            attempt_id=context.attempt.attempt_id,
+            fence_token=context.attempt.fence_token,
+            source=context.workspace.boundary.classify(workspace, require_exists=True),
+            kind="evidence_image",
+            name="deploy-candidate.jpg",
+            content_type="image/jpeg",
+            retention_class="extended",
+            metadata={
+                "family": "poster_pipeline",
+                "role": "deployed_candidate",
+                "candidate_reference": selection.candidate_reference,
+                "run_id": selection.run_id,
+                "provider_size": "original",
+            },
+        )
+    except ArtifactError as exc:
+        raise PosterMutationError("provider original could not be recorded") from exc
+    return staged
+
+
 async def _resolve_deploy_candidate(
     context: ExecutionContext,
     subject: PosterSubject,
@@ -252,7 +313,7 @@ async def _resolve_deploy_candidate(
     selection: PosterCandidateSelectionV1,
 ) -> ClassifiedPath:
     async with context.session_factory() as session:
-        if selection.source == "pipeline_run":
+        if selection.source in ("pipeline_run", "provider_original"):
             run = await session.get(PipelineRun, selection.run_id)
             if run is None:
                 raise PosterMutationError("candidate pipeline run is unavailable")
@@ -263,6 +324,8 @@ async def _resolve_deploy_candidate(
             }[subject.media_type]
             if expected_id != subject.id:
                 raise PosterMutationError("candidate selection belongs to another subject")
+            if selection.source == "provider_original":
+                return await _fetch_provider_original(context, boundary, selection)
             if selection.artifact_id is not None:
                 artifact = await session.get(JobArtifact, selection.artifact_id)
                 metadata = (
@@ -698,7 +761,7 @@ async def _execute_copy(
     source_reference = None
     if (
         isinstance(request, PosterDeployRequestV1)
-        and request.candidate.source == "pipeline_run"
+        and request.candidate.source in ("pipeline_run", "provider_original")
         and request.candidate.candidate_reference
     ):
         source_reference = tmdb_original_url(request.candidate.candidate_reference)

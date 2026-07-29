@@ -3,11 +3,15 @@
 	import RunResultsView from '$lib/components/pipeline/RunResultsView.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
-	import { approveTvAuto, useShowPoster } from '$lib/api/pipeline-tv';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { approveTvAuto, resetSeriesPosters, useShowPoster } from '$lib/api/pipeline-tv';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
+
+	let resetOpen = $state(false);
+	let resetBusy = $state(false);
 
 	function seasonLabel(number: number | null | undefined): string {
 		if (number == null) return 'Show';
@@ -58,6 +62,21 @@
 		return items;
 	});
 
+	/** A decided run leaves the review queue, so the rail entry disappears on the
+	 *  next load. Advance to the run after it — or back to the queue when this
+	 *  series has nothing left to decide. */
+	async function advanceAfterReview() {
+		const seriesId = data.series?.id;
+		const items = rail;
+		const index = items.findIndex((item) => item.runId === data.selectedRunId);
+		const next = index >= 0 ? items[index + 1] : undefined;
+		if (!next || seriesId == null) {
+			await goto('/pipeline/tv?tab=review', { invalidateAll: true });
+			return;
+		}
+		await goto(`/pipeline/tv/series/${seriesId}?run=${next.runId}`, { invalidateAll: true });
+	}
+
 	async function approveAll() {
 		if (!data.series) return;
 		try {
@@ -66,6 +85,21 @@
 			goto('/pipeline/tv?tab=review');
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Approval failed', 'bad');
+		}
+	}
+
+	async function confirmReset() {
+		if (!data.series) return;
+		resetBusy = true;
+		try {
+			await resetSeriesPosters(fetch, data.series.id);
+			toast('Reset queued — the show returns to the run queue', 'good');
+			resetOpen = false;
+			await goto('/pipeline/tv?tab=run', { invalidateAll: true });
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Reset failed', 'bad');
+		} finally {
+			resetBusy = false;
 		}
 	}
 
@@ -91,8 +125,22 @@
 			<h1>{data.series.title}</h1>
 			<p>Review show and season poster runs.</p>
 		</div>
-		<button class="btn-gold" onclick={approveAll}>Approve all remaining auto-picks</button>
+		<div class="header-actions">
+			<button class="btn-sec" onclick={() => (resetOpen = true)}>Reset &amp; re-run</button>
+			<button class="btn-gold" onclick={approveAll}>Approve all remaining auto-picks</button>
+		</div>
 	</div>
+
+	<ConfirmDialog
+		open={resetOpen}
+		title="Reset {data.series.title}?"
+		message="Deletes the deployed show and season posters (backups are kept), discards these runs and their stored candidates, and returns the show to the run queue so it can be analysed again."
+		confirmLabel="Reset & re-run"
+		tone="bad"
+		busy={resetBusy}
+		onConfirm={confirmReset}
+		onCancel={() => (resetOpen = false)}
+	/>
 
 	<div class="layout">
 		<aside class="rail">
@@ -153,6 +201,7 @@
 						data={data.runData}
 						backHref="/pipeline/tv?tab=review"
 						backLabel="TV posters"
+						onreviewed={advanceAfterReview}
 					/>
 				{/key}
 			{:else}
@@ -177,6 +226,12 @@
 	p {
 		margin: 6px 0 0;
 		color: var(--muted);
+	}
+	.header-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 	.layout {
 		display: grid;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -134,7 +135,16 @@ async def create_poster_parent(
     trigger: TriggerKind,
     initiator: Initiator,
     priority: int = 35,
+    subjects: Sequence[tuple[str, int]] | None = None,
+    scope_name: str | None = None,
 ) -> FixedBatchResult:
+    """Seal a parent with one isolated child per poster subject.
+
+    ``subjects`` names the subjects explicitly instead of discovering them, for
+    callers that already know their scope — resetting one series, say, rather
+    than the whole library. Discovery's unchanged/unsupported tallies do not
+    apply to an explicit scope, so they report zero.
+    """
     operation: PosterParentOperation
     child_type: str
     if parent_job_type == "poster_deploy_reset":
@@ -143,7 +153,11 @@ async def create_poster_parent(
         operation, child_type = "backup", "poster_backup_subject"
     else:
         operation, child_type = "heal", "poster_restore"
-    discovery = await discover_poster_parent_subjects(session, operation=operation)
+    discovery = (
+        PosterParentDiscovery(subjects=tuple(subjects))
+        if subjects is not None
+        else await discover_poster_parent_subjects(session, operation=operation)
+    )
     children = []
     for kind, subject_id in discovery.subjects:
         request: dict[str, object] = {"target_kind": kind, "target_id": subject_id}
@@ -164,7 +178,7 @@ async def create_poster_parent(
                 priority=priority,
             )
         )
-    scope_name = {
+    scope_name = scope_name or {
         "reset": "Reset deployed posters",
         "backup": "Back up deployed posters",
         "heal": "Heal missing posters",

@@ -680,9 +680,18 @@ async def apply_feedback_request(
                         "feedback_action": "approved_selection",
                         "profile_version": run.scorer_name,
                     },
+                    allow_provider_original=True,
                 )
             except PosterSelectionError as exc:
-                raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
+                # Say which poster and why: "Selection failed" with no reason is
+                # indistinguishable from a server fault to whoever clicked it.
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{pick.get('orig_filename') or 'This candidate'} cannot be deployed: "
+                        f"{exc}. Approve it without deploying, or re-run the pipeline."
+                    ),
+                ) from exc
 
         # Override = pairwise: negative for the auto-pick the user passed over.
         if (
@@ -785,9 +794,16 @@ async def apply_feedback_request(
                         "feedback_action": "ranked_selection",
                         "profile_version": run.scorer_name,
                     },
+                    allow_provider_original=True,
                 )
             except PosterSelectionError as exc:
-                raise HTTPException(status_code=422, detail="poster_selection_invalid") from exc
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"{pick.get('orig_filename') or 'This candidate'} cannot be deployed: "
+                        f"{exc}. Rank without deploying, or re-run the pipeline."
+                    ),
+                ) from exc
 
         # Embed each candidate with its execution-frozen normalized features and
         # baseline (pipeline) rank, for the trainer's inversion math.

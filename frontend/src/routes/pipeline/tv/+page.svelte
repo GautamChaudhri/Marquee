@@ -4,6 +4,7 @@
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
+	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
@@ -14,6 +15,7 @@
 		getTvReviewQueue,
 		getTvRunQueue,
 		getTvSummary,
+		resetTvReviewQueuePosters,
 		runSeries,
 		runTvBatch
 	} from '$lib/api/pipeline-tv';
@@ -52,6 +54,8 @@
 
 	let initiatedJobIds = $state<string[]>([]);
 	let batchRunning = $state(false);
+	let resetOpen = $state(false);
+	let resetBusy = $state(false);
 	const pendingSeriesIds = new SvelteSet<number>();
 	const pendingSeriesJobs = new SvelteMap<string, number>();
 
@@ -169,11 +173,53 @@
 			toast(e instanceof Error ? e.message : 'Bulk approval failed', 'bad');
 		}
 	}
+
+	async function confirmResetAll() {
+		resetBusy = true;
+		try {
+			const shows = reviewQueue.total_series;
+			const job = await resetTvReviewQueuePosters(fetch);
+			// Undecided runs are closed synchronously, so shows that never deployed
+			// a poster are already back in Run. Shows that *did* deploy one need
+			// their child to delete the file first — track the parent so the queues
+			// refresh again when it settles.
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			toast(`Reset queued for ${shows} shows`, 'good');
+			resetOpen = false;
+			await refresh();
+			setTab('run');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Reset failed', 'bad');
+		} finally {
+			resetBusy = false;
+		}
+	}
 </script>
 
 <SectionHeader
 	title="TV posters"
 	subtitle={`${summary.shows_fully_covered}/${summary.shows_total} shows fully covered`}
+>
+	{#snippet action()}
+		<button
+			class="btn-sec"
+			disabled={reviewQueue.total_series === 0}
+			onclick={() => (resetOpen = true)}
+		>
+			Reset all in review
+		</button>
+	{/snippet}
+</SectionHeader>
+
+<ConfirmDialog
+	open={resetOpen}
+	title="Reset {reviewQueue.total_series} shows?"
+	message="Deletes the deployed show and season posters for every show awaiting review (backups are kept), discards their runs and stored candidates, and returns them all to the Run tab to be analysed again."
+	confirmLabel="Reset {reviewQueue.total_series} shows"
+	tone="bad"
+	busy={resetBusy}
+	onConfirm={confirmResetAll}
+	onCancel={() => (resetOpen = false)}
 />
 
 <TabBar {tabs} active={tab} onSelect={setTab} />

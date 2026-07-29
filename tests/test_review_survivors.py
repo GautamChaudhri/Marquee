@@ -237,6 +237,148 @@ def test_scored_runs_still_archive_survivors_under_a_ranked_order_label() -> Non
     assert [survivor["position"] for survivor in review["survivors"]] == [0, 1, 2]
 
 
+def test_review_evidence_collects_rejects_without_touching_survivors(tmp_path: Path) -> None:
+    """Rejected candidates are archived for display, never for eligibility."""
+    accepted_path = tmp_path / "accepted.jpg"
+    accepted_path.write_bytes(b"accepted")
+    rejected_path = tmp_path / "rejected.jpg"
+    rejected_path.write_bytes(b"rejected")
+
+    accepted = CandidateScore(
+        image_path=accepted_path,
+        orig_filename="accepted.jpg",
+        features=_features(),
+        gate_decision="passed",
+        rank=1,
+        original_download=True,
+    )
+    rejected = CandidateScore(
+        image_path=rejected_path,
+        orig_filename="rejected.jpg",
+        features=_features(),
+        gate_decision="gated",
+        rejection_reason="ocr_residual_text",
+    )
+    # Gated on TMDB metadata before any download — no bytes ever existed.
+    never_downloaded = CandidateScore(
+        image_path=tmp_path / "missing.jpg",
+        orig_filename="missing.jpg",
+        gate_decision="gated",
+        rejection_reason="resolution_floor",
+    )
+
+    payload = build_run_payload(
+        movie=SimpleNamespace(id=1, title="Fixture", tmdb_id=2),
+        started_at="2026-07-29T00:00:00+00:00",
+        status="completed",
+        timings={},
+        records={
+            "accepted.jpg": accepted,
+            "rejected.jpg": rejected,
+            "missing.jpg": never_downloaded,
+        },
+        total_duration=0.0,
+        run_id="c" * 32,
+        review_survivors=[accepted],
+        review_order_algorithm=SCORED_REVIEW_ORDER,
+    )
+
+    assert [item["reference"] for item in payload["review"]["survivors"]] == ["accepted.jpg"]
+    evidence = payload["review_evidence"]["candidates"]
+    assert [item["reference"] for item in evidence] == ["rejected.jpg"]
+    assert evidence[0]["objective_eligible"] is False
+    assert evidence[0]["original_download"] is False
+
+
+def test_review_evidence_is_bounded(tmp_path: Path) -> None:
+    from marquee.pipeline.runner import MAX_REVIEW_EVIDENCE, build_review_evidence
+
+    records = {}
+    for index in range(MAX_REVIEW_EVIDENCE + 25):
+        name = f"reject-{index:03}.jpg"
+        path = tmp_path / name
+        path.write_bytes(b"x")
+        records[name] = CandidateScore(
+            image_path=path,
+            orig_filename=name,
+            gate_decision="gated",
+            rejection_reason="ocr_residual_text",
+        )
+
+    evidence = build_review_evidence(records)
+
+    assert len(evidence) == MAX_REVIEW_EVIDENCE
+    assert [item["position"] for item in evidence] == list(range(MAX_REVIEW_EVIDENCE))
+
+
+def test_evidence_attachment_leaves_the_survivor_checksum_alone(tmp_path: Path) -> None:
+    """Evidence must not be able to change what the survivor checksum certifies."""
+    from marquee.core.jobs.handlers_posters import execute_poster_pipeline
+    from marquee.core.jobs.poster_pipeline import _attach_candidate_artifacts
+
+    assert callable(execute_poster_pipeline)
+    document = {
+        "review": {
+            "version": 1,
+            "order_algorithm": SCORED_REVIEW_ORDER,
+            "survivors": [
+                {
+                    "candidate_id": "a" * 64,
+                    "reference": "kept.jpg",
+                    "position": 0,
+                    "objective_eligible": True,
+                }
+            ],
+            "eligible_count": 1,
+            "archived_count": 0,
+            "truncated_count": 0,
+        },
+        "review_evidence": {
+            "version": 1,
+            "candidates": [
+                {"reference": "tossed.jpg", "position": 0, "objective_eligible": False}
+            ],
+            "archived_count": 0,
+            "truncated_count": 0,
+        },
+    }
+    (tmp_path / "run.json").write_text(json.dumps(document), encoding="utf-8")
+
+    def _artifact(index: int, reference: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=index,
+            checksum=hashlib.sha256(reference.encode()).hexdigest(),
+            storage_key=f"test/{reference}",
+        )
+
+    _attach_candidate_artifacts(
+        tmp_path,
+        {"kept.jpg": _artifact(1, "kept.jpg")},
+        {"tossed.jpg": _artifact(2, "tossed.jpg")},
+    )
+
+    persisted = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
+    review = persisted["review"]
+    evidence = persisted["review_evidence"]["candidates"]
+    assert evidence[0]["artifact_id"] == 2
+    assert evidence[0]["objective_eligible"] is False
+    assert [item["reference"] for item in review["survivors"]] == ["kept.jpg"]
+    assert (
+        review["checksum"]
+        == hashlib.sha256(
+            json.dumps(
+                {
+                    "version": review["version"],
+                    "order_algorithm": review["order_algorithm"],
+                    "survivors": review["survivors"],
+                },
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+    )
+
+
 def test_review_order_defaults_to_neutral() -> None:
     """The default must stay the onboarding-safe ordering."""
     payload = build_run_payload(

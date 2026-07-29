@@ -261,6 +261,7 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
             "source_count": 3,
             "candidate_count": 3,
             "candidate_files": {"poster_a.jpg": "candidate-000.jpg"},
+            "rejected_files": {"poster_b.jpg": "rejected-000.jpg"},
         },
         files=(RunnerFile("run.json", "0" * 64, 2),),
         ready=True,
@@ -280,7 +281,16 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
                             {
                                 "orig_filename": "poster_a.jpg",
                                 "image_path": str(workspace_dir / "candidate-000.jpg"),
-                            }
+                                # Rank 1, so a real run re-fetched it at full
+                                # resolution — deploys use the stored artifact.
+                                "original_download": True,
+                            },
+                            {
+                                "orig_filename": "poster_b.jpg",
+                                "image_path": str(workspace_dir / "rejected-000.jpg"),
+                                "rejection_reason": "text_heavy",
+                                "stage_reached": "ocr",
+                            },
                         ],
                     },
                     "review": {
@@ -298,12 +308,28 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
                         "archived_count": 0,
                         "truncated_count": 0,
                     },
+                    "review_evidence": {
+                        "version": 1,
+                        "candidates": [
+                            {
+                                "reference": "poster_b.jpg",
+                                "position": 0,
+                                "objective_eligible": False,
+                                "original_download": False,
+                            }
+                        ],
+                        "archived_count": 0,
+                        "truncated_count": 0,
+                    },
                 }
             ),
             encoding="utf-8",
         )
         Image.new("RGB", (8, 12), color=(20, 40, 60)).save(
             workspace_dir / "candidate-000.jpg", format="JPEG"
+        )
+        Image.new("RGB", (8, 12), color=(90, 20, 20)).save(
+            workspace_dir / "rejected-000.jpg", format="JPEG"
         )
         return outcome
 
@@ -380,16 +406,29 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
     assert movie.poster_path is not None
     assert Path(movie.poster_path).is_file()
     (workspace_dir / "candidate-000.jpg").unlink(missing_ok=True)
+    (workspace_dir / "rejected-000.jpg").unlink(missing_ok=True)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         refreshed = await client.get(f"/api/library/movies/{movie.id}")
         candidate_response = await client.get(
             "/api/pipeline/runs/fixturerun0001/posters/poster_a.jpg"
+        )
+        # A gate-rejected candidate is still displayable in the review UI's
+        # per-stage tabs — that is what its evidence artifact is for.
+        rejected_response = await client.get(
+            "/api/pipeline/runs/fixturerun0001/posters/poster_b.jpg"
+        )
+        unknown_response = await client.get(
+            "/api/pipeline/runs/fixturerun0001/posters/not-a-candidate.jpg"
         )
     assert refreshed.status_code == 200
     assert refreshed.json()["poster_status"] == "approved"
     assert refreshed.json()["poster_url"] == f"/api/library/movies/{movie.id}/poster"
     assert candidate_response.status_code == 200
     assert candidate_response.content.startswith(b"\xff\xd8")
+    assert rejected_response.status_code == 200
+    assert rejected_response.content.startswith(b"\xff\xd8")
+    assert rejected_response.content != candidate_response.content
+    assert unknown_response.status_code == 404
 
 
 def _write_valid_taste_profile(path) -> None:
