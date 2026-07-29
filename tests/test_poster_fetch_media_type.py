@@ -15,7 +15,11 @@ import pytest
 from marquee.core.jobs import delivery  # noqa: F401
 from marquee.core.jobs.documents import PosterPipelineRequestV1
 from marquee.core.jobs.internal_runner import _ocr_gate_context
-from marquee.core.jobs.poster_pipeline import _subject_params, _text_gate_params
+from marquee.core.jobs.poster_pipeline import (
+    _resolved_subject_params,
+    _subject_params,
+    _text_gate_params,
+)
 from marquee.models import Movie
 from marquee.pipeline.orchestrator import PosterSubjectInput
 from marquee.pipeline.runner import fetch_candidates
@@ -114,10 +118,18 @@ def test_subject_params_carry_the_media_type_and_season_number():
 
     season = _subject_params(
         PosterPipelineRequestV1(season_id=9, tmdb_id=196322, title="A Show · Season 2"),
-        {"kind": "season", "season_id": 9, "season_number": 2},
+        {
+            "kind": "season",
+            "season_id": 9,
+            "series_id": 4,
+            "season_number": 2,
+            "series_title": "A Show",
+        },
     )
     assert season["media_type"] == "season"
+    assert season["series_id"] == 4
     assert season["season_number"] == 2
+    assert season["ocr_title"] == "A Show"
     # The series' TMDB id addresses the season endpoint; season_id is ours.
     assert season["tmdb_id"] == 196322
 
@@ -133,8 +145,47 @@ def test_season_run_without_a_snapshot_number_fails_at_submission():
     with pytest.raises(ValueError, match="season number"):
         _subject_params(
             PosterPipelineRequestV1(season_id=9, tmdb_id=196322, title="A Show · Season 2"),
-            {"kind": "season", "season_id": 9},
+            {
+                "kind": "season",
+                "season_id": 9,
+                "series_id": 4,
+                "series_title": "A Show",
+            },
         )
+
+
+@pytest.mark.asyncio
+async def test_legacy_season_snapshot_recovers_parent_identity(db):
+    from marquee.models import Season, Series
+
+    series = Series(
+        title="A Show",
+        year=2014,
+        series_path="/t/s",
+        tmdb_id=196322,
+    )
+    db.add(series)
+    await db.flush()
+    season = Season(series_id=series.id, season_number=2)
+    db.add(season)
+    await db.commit()
+
+    params = await _resolved_subject_params(
+        db,
+        PosterPipelineRequestV1(
+            season_id=season.id,
+            tmdb_id=196322,
+            title="A Show · Season 2",
+        ),
+        {"kind": "season", "season_id": season.id},
+    )
+
+    assert params["series_id"] == series.id
+    assert params["season_id"] == season.id
+    assert params["season_number"] == 2
+    assert params["tmdb_id"] == 196322
+    assert params["title"] == "A Show · Season 2"
+    assert params["ocr_title"] == "A Show"
 
 
 # ── OCR text gate scope ──────────────────────────────────────────────────

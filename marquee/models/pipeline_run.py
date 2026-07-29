@@ -9,6 +9,7 @@ per-title and gets overwritten; this row + the archived JSON do not).
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -27,13 +28,33 @@ from sqlalchemy.orm import Mapped, mapped_column
 from marquee.database import Base
 
 
+def _default_subject_key(context: Any) -> str:
+    """Preserve canonical identity for legacy ORM call sites that omit the new field."""
+
+    values = context.get_current_parameters()
+    snapshot = values.get("subject_snapshot")
+    if isinstance(snapshot, dict):
+        display_id = snapshot.get("display_id")
+        if isinstance(display_id, str) and 1 <= len(display_id) <= 200:
+            return display_id
+    media_type = values.get("media_type")
+    identifier = (
+        values.get(f"{media_type}_id")
+        if media_type in {"movie", "series", "season"}
+        else None
+    )
+    if isinstance(identifier, int) and identifier > 0:
+        return f"{media_type}:{identifier}"
+    return f"run:{values.get('run_id') or 'unresolved'}"
+
+
 class PipelineRun(Base):
     """Provenance + status for a single poster-pipeline run."""
 
     __tablename__ = "pipeline_runs"
 
     __table_args__ = (
-        UniqueConstraint("job_id", name="uq_pipeline_runs_job_id"),
+        UniqueConstraint("job_id", "subject_key", name="uq_pipeline_runs_job_subject"),
         CheckConstraint(
             "(media_type = 'movie' AND movie_id IS NOT NULL "
             "AND series_id IS NULL AND season_id IS NULL) OR "
@@ -75,6 +96,9 @@ class PipelineRun(Base):
     subject_snapshot: Mapped[dict] = mapped_column(
         JSON, nullable=False, default=dict, server_default="{}"
     )
+    subject_key: Mapped[str] = mapped_column(
+        String(200), nullable=False, default=_default_subject_key
+    )
 
     # running | completed | flagged_manual | failed
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
@@ -98,8 +122,7 @@ class PipelineRun(Base):
     # Total run wall-clock (seconds) — the headline number for throughput stats.
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    # When this run was produced by a cross-movie batch, the batch's job id —
-    # lets the UI group every movie that moved through one batch together.
+    # Parent batch identity, shared by single-subject and grouped projections.
     batch_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
 
     # Canonical job linkage (JMC6H H10). Every row is the product projection of

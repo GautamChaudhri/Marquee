@@ -29,6 +29,8 @@ from marquee.core.jobs.documents import (
     LibrarySyncRequestV1,
     MlPublicationResultV1,
     PosterBatchRequestV1,
+    PosterPipelineGroupRequestV1,
+    PosterPipelineGroupResultV1,
     PosterPipelineRequestV1,
     PosterPipelineResultV1,
     PosterRescanRequestV1,
@@ -159,6 +161,13 @@ _SPECS = (
         "episode",
     ),
     _spec(
+        "poster_pipeline_group",
+        FeatureArea.AI_POSTERS,
+        ExecutionClass.GPU,
+        _R,
+        "poster_subject_group",
+    ),
+    _spec(
         "poster_deploy",
         FeatureArea.AI_POSTERS,
         ExecutionClass.MEDIA_WRITE,
@@ -201,7 +210,7 @@ _SPECS = (
         _R,
         "aggregate_batch",
         progress=ProgressStrategy.DETERMINATE,
-        children=("poster_pipeline",),
+        children=("poster_pipeline", "poster_pipeline_group"),
     ),
     _spec(
         "poster_pipeline_tv_batch",
@@ -210,7 +219,7 @@ _SPECS = (
         _R,
         "aggregate_batch",
         progress=ProgressStrategy.DETERMINATE,
-        children=("poster_pipeline",),
+        children=("poster_pipeline", "poster_pipeline_group"),
     ),
     _spec(
         "ranking_residual_train",
@@ -290,6 +299,7 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
         "system_noop",
         "library_sync",
         "poster_pipeline",
+        "poster_pipeline_group",
         "poster_deploy",
         "poster_backup_subject",
         "backup_create",
@@ -312,6 +322,7 @@ ENABLED_JOB_TYPES: frozenset[str] = frozenset(
 _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
     "library_sync": LibrarySyncRequestV1,
     "poster_pipeline": PosterPipelineRequestV1,
+    "poster_pipeline_group": PosterPipelineGroupRequestV1,
     "poster_pipeline_batch": PosterBatchRequestV1,
     "poster_pipeline_tv_batch": PosterBatchRequestV1,
     "taste_rebuild": TasteRebuildRequestV1,
@@ -335,6 +346,7 @@ _REQUEST_MODELS: dict[str, type[StrictDocument]] = {
 
 _RESULT_MODELS: dict[str, type[StrictDocument]] = {
     "poster_pipeline": PosterPipelineResultV1,
+    "poster_pipeline_group": PosterPipelineGroupResultV1,
     "poster_rescan": PosterRescanResultV1,
     "taste_rebuild": MlPublicationResultV1,
     "taste_map": MlPublicationResultV1,
@@ -474,6 +486,7 @@ _POSTER_MUTATION_PROGRESS = ProgressPolicy(
 _PROGRESS_POLICIES: dict[str, ProgressPolicy] = {
     "library_sync": _LIBRARY_SYNC_PROGRESS,
     "poster_pipeline": _POSTER_PIPELINE_PROGRESS,
+    "poster_pipeline_group": _POSTER_PIPELINE_PROGRESS,
     "poster_rescan": _POSTER_RESCAN_PROGRESS,
     "poster_deploy": _POSTER_MUTATION_PROGRESS,
     "poster_restore": _POSTER_MUTATION_PROGRESS,
@@ -494,7 +507,16 @@ _PIPELINE_CONFIGURATION_KEYS = frozenset(
     and entry.sensitivity == "public"
 )
 _CONFIGURATION_KEYS_BY_TYPE = dict.fromkeys(
-    {"poster_pipeline", "taste_rebuild", "taste_map", "taste_enrich", "ranking_residual_train"},
+    {
+        "poster_pipeline",
+        "poster_pipeline_group",
+        "poster_pipeline_batch",
+        "poster_pipeline_tv_batch",
+        "taste_rebuild",
+        "taste_map",
+        "taste_enrich",
+        "ranking_residual_train",
+    },
     _PIPELINE_CONFIGURATION_KEYS,
 )
 
@@ -583,7 +605,8 @@ def _retry_mode(spec: _DefinitionSpec) -> RetryMode:
     if spec.job_type == "system_noop":
         return RetryMode.GENERIC
     if (
-        spec.job_type in {"poster_pipeline", "poster_deploy", "taste_rebuild"}
+        spec.job_type
+        in {"poster_pipeline", "poster_pipeline_group", "poster_deploy", "taste_rebuild"}
         or spec.job_type in PARENT_ONLY_TYPES
     ):
         return RetryMode.DOMAIN_COORDINATED
@@ -629,7 +652,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
             result_model,
             aliases=(
                 {"review_required": JobOutcome.PARTIALLY_SUCCEEDED}
-                if result_model is PosterPipelineResultV1
+                if result_model in (PosterPipelineResultV1, PosterPipelineGroupResultV1)
                 else None
             ),
         ),

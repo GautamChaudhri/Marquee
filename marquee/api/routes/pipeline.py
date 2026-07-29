@@ -29,6 +29,7 @@ from marquee.api.results import (
 )
 from marquee.api.routes.jobs import job_summary
 from marquee.config import settings
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.artifact_service import ArtifactError, verify_physical_artifact
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
@@ -399,7 +400,7 @@ async def rescore_run(
 
 
 # ---------------------------------------------------------------------------
-# Batch runs (cross-movie, stage-batched)
+# Batch runs (single-subject leaves or rollout-gated stage-major groups)
 # ---------------------------------------------------------------------------
 
 
@@ -414,7 +415,7 @@ async def run_pipeline_batch(
     body: BatchRunRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JobSubmissionResponse:
-    """Create a ticketless poster-analysis parent with one immutable child per movie."""
+    """Create a ticketless poster-analysis parent for the selected movies."""
     scope = body.scope
     if scope == "selected":
         if not body.movie_ids:
@@ -442,23 +443,53 @@ async def run_pipeline_batch(
         )
     nonce = uuid4().hex
     initiator = Initiator(kind="system", identifier="pipeline-api")
-    children = [
-        SubmissionIntent(
-            job_type="poster_pipeline",
-            request={
-                "movie_id": movie.id,
-                "tmdb_id": movie.tmdb_id,
-                "title": movie.title,
-                "source_descriptors": [{"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}],
-            },
-            subject=SubjectLocator(kind="movie", reference=str(movie.id)),
-            trigger=TriggerKind.BATCH,
-            initiator=initiator,
-            idempotency_key=f"poster_pipeline:batch-{nonce}-movie-{movie.id}",
-            priority=80,
-        )
+    member_requests = [
+        {
+            "movie_id": movie.id,
+            "tmdb_id": movie.tmdb_id,
+            "title": movie.title,
+            "source_descriptors": [
+                {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
+            ],
+        }
         for movie in movies
     ]
+    effective = configuration_provider.effective("pipeline")
+    group_enabled = bool(effective.get("POSTER_GROUP_ENABLED", False))
+    chunk_size = min(16, max(1, int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8))))
+    if group_enabled:
+        children = [
+            SubmissionIntent(
+                job_type="poster_pipeline_group",
+                request={
+                    "library": "movies",
+                    "chunk_index": chunk_index,
+                    "members": member_requests[offset : offset + chunk_size],
+                },
+                subject=SubjectLocator(
+                    kind="poster_subject_group",
+                    reference=f"movies-{nonce[:20]}-{chunk_index}",
+                ),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline_group:batch-{nonce}-chunk-{chunk_index}",
+                priority=80,
+            )
+            for chunk_index, offset in enumerate(range(0, len(member_requests), chunk_size))
+        ]
+    else:
+        children = [
+            SubmissionIntent(
+                job_type="poster_pipeline",
+                request=member_request,
+                subject=SubjectLocator(kind="movie", reference=str(movie.id)),
+                trigger=TriggerKind.BATCH,
+                initiator=initiator,
+                idempotency_key=f"poster_pipeline:batch-{nonce}-movie-{movie.id}",
+                priority=80,
+            )
+            for movie, member_request in zip(movies, member_requests, strict=True)
+        ]
     if db.in_transaction():
         await db.commit()
     try:

@@ -8,6 +8,7 @@ lock."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from pgqueuer import Queries
 from sqlalchemy.engine import URL
 
 import marquee.db_migration as migration
+from alembic import command
 from marquee.config import settings
 from marquee.db_migration import (
     ALEMBIC_HEAD,
@@ -111,6 +113,96 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
             assert f"create_table('{table}'" not in source
 
 
+@pytest.mark.asyncio
+async def test_subject_key_migration_backfills_and_refuses_grouped_downgrade(
+    owned_database: _OwnedDatabase,
+) -> None:
+    root = Path(__file__).resolve().parent.parent
+    config = Config(str(root / "alembic.ini"))
+    await asyncio.to_thread(command.upgrade, config, "0018_season_series")
+
+    job_id = uuid.uuid4().hex
+    connection = await owned_database.connect()
+    try:
+        await connection.execute(
+            """
+            INSERT INTO jobs (
+                id, type, payload_version, request, priority, root_id, subject_snapshot
+            ) VALUES ($1, 'poster_pipeline', 1, '{}'::json, 50, $1, '{}'::json)
+            """,
+            job_id,
+        )
+        attempt_id = await connection.fetchval(
+            """
+            INSERT INTO job_attempts (job_id, number, fence_token)
+            VALUES ($1, 1, 1) RETURNING id
+            """,
+            job_id,
+        )
+        artifact_id = await connection.fetchval(
+            """
+            INSERT INTO job_artifacts (
+                job_id, attempt_id, kind, name, storage_key
+            ) VALUES ($1, $2, 'command_report', 'legacy.json', 'legacy/run.json')
+            RETURNING id
+            """,
+            job_id,
+            attempt_id,
+        )
+        await connection.execute(
+            """
+            INSERT INTO pipeline_runs (
+                run_id, media_type, subject_snapshot, status,
+                job_id, attempt_id, fence_token, archive_artifact_id
+            ) VALUES (
+                'legacy-run', 'movie', '{"display_id":"series:42"}'::json,
+                'completed', $1, $2, 1, $3
+            )
+            """,
+            job_id,
+            attempt_id,
+            artifact_id,
+        )
+    finally:
+        await connection.close()
+
+    await asyncio.to_thread(command.upgrade, config, ALEMBIC_HEAD)
+    connection = await owned_database.connect()
+    try:
+        assert (
+            await connection.fetchval(
+                "SELECT subject_key FROM pipeline_runs WHERE run_id = 'legacy-run'"
+            )
+            == "series:42"
+        )
+        await connection.execute(
+            """
+            INSERT INTO pipeline_runs (
+                run_id, media_type, subject_snapshot, subject_key, status,
+                job_id, attempt_id, fence_token, archive_artifact_id
+            ) VALUES (
+                'grouped-run', 'movie', '{}'::json, 'season:9', 'failed',
+                $1, $2, 1, $3
+            )
+            """,
+            job_id,
+            attempt_id,
+            artifact_id,
+        )
+    finally:
+        await connection.close()
+
+    with pytest.raises(RuntimeError, match="cannot downgrade"):
+        await asyncio.to_thread(command.downgrade, config, "0018_season_series")
+
+    connection = await owned_database.connect()
+    try:
+        assert await connection.fetchval("SELECT version_num FROM alembic_version") == ALEMBIC_HEAD
+        assert await connection.fetchval("SELECT count(*) FROM pipeline_runs") == 2
+    finally:
+        await connection.close()
+
+
 def test_pgqueuer_cli_keeps_password_out_of_process_arguments(monkeypatch) -> None:
     monkeypatch.setattr(
         settings,
@@ -165,6 +257,37 @@ async def test_reset_is_repeatable_and_database_only(
             "alembic_version"
         }
         assert not (EXCLUDED_DEPLOYMENT_TABLES & tables)
+        subject_key = await connection.fetchrow(
+            """
+            SELECT is_nullable, character_maximum_length
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'pipeline_runs'
+              AND column_name = 'subject_key'
+            """
+        )
+        assert subject_key is not None
+        assert tuple(subject_key.values()) == ("NO", 200)
+        constraint = await connection.fetchval(
+            """
+            SELECT pg_get_constraintdef(oid)
+            FROM pg_constraint
+            WHERE conrelid = 'pipeline_runs'::regclass
+              AND conname = 'uq_pipeline_runs_job_subject'
+            """
+        )
+        assert constraint == "UNIQUE (job_id, subject_key)"
+        assert (
+            await connection.fetchval(
+                """
+                SELECT count(*)
+                FROM pg_constraint
+                WHERE conrelid = 'pipeline_runs'::regclass
+                  AND conname = 'uq_pipeline_runs_job_id'
+                """
+            )
+            == 0
+        )
         markers = await connection.fetch(
             "SELECT component, expected_version, durability FROM schema_contracts"
         )

@@ -68,6 +68,7 @@ def test_job_catalogue_is_exactly_the_poster_scope() -> None:
     assert {definition.job_type for definition in JOB_DEFINITION_REGISTRY} == {
         # analysis
         "poster_pipeline",
+        "poster_pipeline_group",
         "poster_pipeline_batch",
         "poster_pipeline_tv_batch",
         "poster_rescan",

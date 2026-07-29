@@ -18,6 +18,7 @@ from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.definitions import JobDefinitionRegistry
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import pgqueuer_gateway
+from marquee.core.jobs.subjects import PosterSubjectGroupSnapshot
 from marquee.core.jobs.submission import (
     ActiveOverlapConflictError,
     IdempotencyConflictError,
@@ -29,7 +30,7 @@ from marquee.core.jobs.submission import (
     submit_jobs,
 )
 from marquee.database import _get_engine, _get_session_factory
-from marquee.models import Job, JobDispatch, JobEvent
+from marquee.models import Job, JobDispatch, JobEvent, Movie
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -55,6 +56,43 @@ async def _submit_noop(session, key: str, echo: object = "ready"):
         initiator=None,
         idempotency_key=key,
     )
+
+
+@pytest.mark.asyncio
+async def test_poster_group_submission_resolves_each_member_from_live_state(db) -> None:
+    transaction = await db.begin()
+    movie = Movie(
+        title="Arrival",
+        year=2016,
+        folder_path="/private/movies/Arrival",
+        movie_file_path="/private/movies/Arrival/Arrival.mkv",
+    )
+    db.add(movie)
+    await db.flush()
+
+    result = await submit_job(
+        db,
+        job_type="poster_pipeline_group",
+        request={
+            "library": "movies",
+            "chunk_index": 3,
+            "members": [{"movie_id": movie.id, "title": "Stale caller title"}],
+        },
+        subject=SubjectLocator(kind="poster_subject_group", reference="batch-test-003"),
+        trigger=TriggerKind.MANUAL,
+        initiator=None,
+        idempotency_key="poster_pipeline_group:batch-test-003",
+    )
+
+    job = await db.get(Job, result.job_id)
+    assert job is not None
+    snapshot = PosterSubjectGroupSnapshot.model_validate(job.subject_snapshot)
+    assert snapshot.library == "movies"
+    assert snapshot.chunk_index == 3
+    assert snapshot.members[0].subject_key == f"movie:{movie.id}"
+    assert snapshot.members[0].subject.display_name == "Arrival"
+    assert "/private/" not in str(job.subject_snapshot)
+    await transaction.rollback()
 
 
 @pytest.mark.asyncio

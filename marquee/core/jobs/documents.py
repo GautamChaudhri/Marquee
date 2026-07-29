@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
@@ -91,6 +91,59 @@ class PosterPipelineRequestV1(StrictDocument):
         return self
 
 
+PosterPipelineSubjectKey = Annotated[
+    str,
+    Field(
+        min_length=7,
+        max_length=200,
+        pattern=r"^(movie|series|season):[1-9][0-9]*$",
+    ),
+]
+
+
+def poster_pipeline_subject_identity(
+    request: PosterPipelineRequestV1,
+) -> tuple[Literal["movie", "series", "season", "episode"], int]:
+    """Return the canonical kind/id identity sealed by a single request."""
+
+    for kind, identifier in (
+        ("movie", request.movie_id),
+        ("series", request.series_id),
+        ("season", request.season_id),
+        ("episode", request.episode_id),
+    ):
+        if identifier is not None:
+            return kind, identifier
+    raise ValueError("poster analysis requires exactly one subject")
+
+
+def poster_pipeline_subject_key(request: PosterPipelineRequestV1) -> str:
+    kind, identifier = poster_pipeline_subject_identity(request)
+    return f"{kind}:{identifier}"
+
+
+class PosterPipelineGroupRequestV1(StrictDocument):
+    """One bounded, same-library chunk processed stage-major by a GPU leaf."""
+
+    library: Literal["movies", "tv"]
+    chunk_index: int = Field(ge=0)
+    members: tuple[PosterPipelineRequestV1, ...] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def require_one_library_and_unique_subjects(self) -> PosterPipelineGroupRequestV1:
+        identities = tuple(poster_pipeline_subject_identity(member) for member in self.members)
+        if any(kind == "episode" for kind, _ in identities):
+            raise ValueError("poster groups support movie, series, and season subjects only")
+        expected_library = "movies" if identities[0][0] == "movie" else "tv"
+        if self.library != expected_library or any(
+            (kind == "movie") != (expected_library == "movies") for kind, _ in identities
+        ):
+            raise ValueError("poster group members must belong to the declared library")
+        if len(set(identities)) != len(identities):
+            raise ValueError("poster group members must have unique subjects")
+        return self
+
+
 class PosterBatchRequestV1(StrictDocument):
     """Sealed server-selected scope for a canonical poster-analysis batch."""
 
@@ -125,6 +178,56 @@ class PosterPipelineResultV1(StrictDocument):
     review_reason: str | None = Field(default=None, max_length=300)
     warnings: tuple[str, ...] = Field(default=(), max_length=20)
     artifact_ids: tuple[int, ...] = Field(default=(), max_length=12)
+
+
+class PosterPipelineGroupResultV1(StrictDocument):
+    """Bounded aggregate; full per-member evidence lives in ``group-result.json``."""
+
+    outcome: Literal["succeeded", "no_change", "review_required"] = "succeeded"
+    library: Literal["movies", "tv"]
+    chunk_index: int = Field(ge=0)
+    member_count: int = Field(ge=1, le=16)
+    succeeded_count: int = Field(default=0, ge=0, le=16)
+    no_change_count: int = Field(default=0, ge=0, le=16)
+    review_required_count: int = Field(default=0, ge=0, le=16)
+    failed_count: int = Field(default=0, ge=0, le=16)
+    projected_count: int = Field(ge=1, le=16)
+    run_ids: tuple[Annotated[str, Field(min_length=1, max_length=64)], ...] = Field(
+        min_length=1, max_length=16
+    )
+    failed_subject_keys: tuple[PosterPipelineSubjectKey, ...] = Field(
+        default=(), max_length=16
+    )
+    message: str | None = Field(default=None, max_length=1000)
+    warnings: tuple[Annotated[str, Field(min_length=1, max_length=300)], ...] = Field(
+        default=(), max_length=20
+    )
+    artifact_ids: tuple[Annotated[int, Field(ge=1)], ...] = Field(default=(), max_length=64)
+
+    @model_validator(mode="after")
+    def require_complete_projection_and_consistent_outcome(self) -> PosterPipelineGroupResultV1:
+        terminal_count = (
+            self.succeeded_count
+            + self.no_change_count
+            + self.review_required_count
+            + self.failed_count
+        )
+        if terminal_count != self.member_count:
+            raise ValueError("poster group member outcome counts must sum to member_count")
+        if self.projected_count != self.member_count or len(self.run_ids) != self.member_count:
+            raise ValueError("poster group results require one projection and run id per member")
+        if len(self.failed_subject_keys) != self.failed_count:
+            raise ValueError("failed_subject_keys must identify every failed member")
+        expected_outcome = (
+            "review_required"
+            if self.failed_count or self.review_required_count
+            else "no_change"
+            if self.no_change_count == self.member_count
+            else "succeeded"
+        )
+        if self.outcome != expected_outcome:
+            raise ValueError("poster group outcome does not match its member outcomes")
+        return self
 
 
 class TasteRebuildRequestV1(StrictDocument):

@@ -203,6 +203,18 @@ class ProgressWriter:
                     previous = JobProgress.model_validate(job.progress)
                 except ValueError as exc:
                     raise ProgressWriteError("stored progress document is invalid") from exc
+            if previous is not None and (
+                previous.attempt_id != attempt_id or previous.fence_token != fence_token
+            ):
+                # The ownership check above already proved this writer *is* the current
+                # attempt and fence, so a differing stored document can only belong to a
+                # superseded attempt. A retried job starts a new progress lineage instead
+                # of being measured against a dead one: comparing them raises
+                # WrongProgressFenceError, and because that rejection also prevents the
+                # stale document from ever being replaced, the job would wedge — one
+                # rejected observation per cadence beat for the rest of its life, with the
+                # UI frozen on the dead attempt's last snapshot.
+                previous = None
             sequence = job.progress_sequence + 1
             stage_label = dict(policy.stages)[observation.stage_key]
             overall = observation.overall.materialize()

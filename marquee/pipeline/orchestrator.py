@@ -13,7 +13,11 @@ turns its produced files and summary into artifacts and a ``PipelineRun``.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,6 +29,7 @@ from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
+from marquee.pipeline.ocr_filter import OcrPool, OcrPoolTeardownError, PosterTextFilter
 from marquee.pipeline.runner import (
     NEUTRAL_REVIEW_ORDER,
     SCORED_REVIEW_ORDER,
@@ -39,7 +44,116 @@ from marquee.pipeline.runner import (
 from marquee.pipeline.scorer import ResidualRuntimeContext, select_scorer
 from marquee.pipeline.types import CandidateScore
 
+logger = logging.getLogger(__name__)
+
 _FIXTURE_SUBDIR = "candidates"
+
+
+@asynccontextmanager
+async def _preloaded_ocr_pool(
+    *, enabled: bool
+) -> AsyncIterator[Callable[[], Awaitable[OcrPool | None]]]:
+    """Warm one OCR pool while the caller performs network work.
+
+    The yielded resolver is cancellation-safe: it retains and shields the
+    ``to_thread`` task until startup settles, because abandoning that thread
+    could leave spawned workers without an owner. Ordinary preload failures are
+    logged and resolve to ``None``, preserving the existing inline OCR path.
+    """
+    task: asyncio.Task[OcrPool] | None = (
+        asyncio.create_task(asyncio.to_thread(PosterTextFilter.start_ocr_pool))
+        if enabled
+        else None
+    )
+    pool: OcrPool | None = None
+    resolved = task is None
+
+    async def resolve() -> OcrPool | None:
+        nonlocal pool, resolved
+        if resolved:
+            return pool
+        assert task is not None
+
+        cancellation: asyncio.CancelledError | None = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                # Keep waiting for the non-cancellable worker thread, then
+                # propagate cancellation with the resulting pool still owned.
+                if cancellation is None:
+                    cancellation = exc
+            except Exception:
+                # Retrieve and classify the startup failure below.
+                break
+
+        resolved = True
+        try:
+            pool = task.result()
+        except asyncio.CancelledError:
+            raise
+        except OcrPoolTeardownError:
+            # An inline fallback is unsafe when startup could not prove that
+            # every partially-created worker and queue was released.
+            raise
+        except Exception as exc:  # noqa: BLE001 - preload is best-effort
+            logger.warning(
+                "OCR | pool preload failed (%s) — stage will start its own",
+                exc,
+            )
+            pool = None
+
+        if cancellation is not None:
+            raise cancellation
+        return pool
+
+    async def cleanup() -> None:
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            await resolve()
+        except asyncio.CancelledError as exc:
+            # resolve() has already settled the startup task and retained its
+            # result, so teardown can complete before cancellation escapes.
+            cancellation = exc
+
+        cleanup_error: BaseException | None = None
+        if pool is not None:
+            try:
+                PosterTextFilter.stop_ocr_pool(pool)
+            except BaseException as exc:
+                cleanup_error = exc
+
+        if cancellation is not None:
+            if cleanup_error is not None:
+                logger.error(
+                    "OCR pool teardown failed while preserving cancellation",
+                    exc_info=(
+                        type(cleanup_error),
+                        cleanup_error,
+                        cleanup_error.__traceback__,
+                    ),
+                )
+            raise cancellation
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    try:
+        yield resolve
+    except BaseException:
+        try:
+            await cleanup()
+        except BaseException as cleanup_error:
+            logger.error(
+                "OCR pool teardown failed while preserving pipeline failure",
+                exc_info=(
+                    type(cleanup_error),
+                    cleanup_error,
+                    cleanup_error.__traceback__,
+                ),
+            )
+        raise
+    else:
+        await cleanup()
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +168,8 @@ class PosterSubjectInput:
     season_id: int | None = None
     # TMDB addresses season art by season number, not by our row id.
     season_number: int | None = None
+    # Seasons retain their display suffix but OCR matches the bare series title.
+    ocr_title: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,147 +266,158 @@ async def run_poster_pipeline(
         else None
     )
 
-    if source.mode == "fixture":
-        candidate_map, records, resolution_by_name, all_files = _fixture_fetch(out_dir)
-        fetch_counts = {
-            "posters_found": len(candidate_map),
-            "downloaded": 0,
-            "skipped": len(all_files),
-            "errors": 0,
-            "metadata_gated": 0,
-        }
-    else:
-        if not settings.TMDB_READ_ACCESS_TOKEN:
-            raise RuntimeError(
-                "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline "
-                "cannot fetch candidates"
-            )
-        async with TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN) as tmdb:
-            fetch = await fetch_and_download(
-                tmdb=tmdb,
+    tmdb_token = settings.TMDB_READ_ACCESS_TOKEN
+    if source.mode != "fixture" and not tmdb_token:
+        raise RuntimeError(
+            "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline "
+            "cannot fetch candidates"
+        )
+
+    # Only worth preloading when there is slow work to hide it behind: the
+    # fixture source reads local files, so warming a pool there would just add
+    # a spin-up to runs that may never reach the OCR stage.
+    async with _preloaded_ocr_pool(enabled=source.mode != "fixture") as ocr_pool_ready:
+        if source.mode == "fixture":
+            candidate_map, records, resolution_by_name, all_files = _fixture_fetch(out_dir)
+            fetch_counts = {
+                "posters_found": len(candidate_map),
+                "downloaded": 0,
+                "skipped": len(all_files),
+                "errors": 0,
+                "metadata_gated": 0,
+            }
+        else:
+            assert tmdb_token is not None
+            async with TMDBClient(read_access_token=tmdb_token) as tmdb:
+                fetch = await fetch_and_download(
+                    tmdb=tmdb,
+                    movie=movie,
+                    originals_dir=out_dir,
+                    timings=timings,
+                    progress=progress,
+                    media_type=subject.media_type,
+                    season_number=subject.season_number,
+                )
+            candidate_map = fetch.candidate_map
+            records = fetch.records
+            resolution_by_name = fetch.resolution_by_name
+            all_files = fetch.all_files
+            primary_name = fetch.primary_name
+            fetch_counts = fetch.counts
+
+        source_count = len(candidate_map)
+        if not all_files:
+            payload = build_run_payload(
                 movie=movie,
-                originals_dir=out_dir,
+                started_at=started_at,
+                status="flagged_manual",
+                timings=timings,
+                records=records,
+                total_duration=0.0,
+                run_id=run_id,
+                media_type=subject.media_type,
+            )
+            payload.update(
+                personalization_mode=personalization_mode,
+                recommendation=None,
+                scorer=None,
+                message=message,
+            )
+            return PosterPipelineOutput(
+                run_id=run_id,
+                status="flagged_manual",
+                counts={**fetch_counts, "ranked": 0},
+                payload=payload,
+                source_count=source_count,
+                candidate_count=source_count,
+                personalization_mode=personalization_mode,
+                message=message,
+            )
+
+        sync_started = datetime.now(UTC)
+        sync = run_sync_stages(
+            movie_title=subject.title,
+            ocr_title=subject.ocr_title,
+            out_dir=out_dir,
+            records=records,
+            candidate_map=candidate_map,
+            all_files=all_files,
+            resolution_by_name=resolution_by_name,
+            timings=timings,
+            feature_extractor=feature_extractor,
+            primary_name=primary_name,
+            progress=progress,
+            should_cancel=should_cancel,
+            ocr_gate=ocr_gate,
+            ocr_pool=await ocr_pool_ready(),
+            residual_path=residual_path,
+            residual_context=residual_context,
+            personalization_mode=personalization_mode,
+        )
+
+        if sync.ranked and personalization_mode == "personalized":
+            await place_outputs(
+                sync.ranked,
+                candidate_map=candidate_map,
+                out_dir=out_dir,
                 timings=timings,
                 progress=progress,
-                media_type=subject.media_type,
-                season_number=subject.season_number,
             )
-        candidate_map = fetch.candidate_map
-        records = fetch.records
-        resolution_by_name = fetch.resolution_by_name
-        all_files = fetch.all_files
-        primary_name = fetch.primary_name
-        fetch_counts = fetch.counts
 
-    source_count = len(candidate_map)
-    if not all_files:
+        total_duration = (datetime.now(UTC) - sync_started).total_seconds()
         payload = build_run_payload(
             movie=movie,
             started_at=started_at,
-            status="flagged_manual",
+            status=sync.status,
             timings=timings,
             records=records,
-            total_duration=0.0,
+            total_duration=total_duration,
             run_id=run_id,
             media_type=subject.media_type,
+            # Always archived: this list is what every reviewable candidate image is
+            # registered from, so emptying it in personalized mode left the review UI
+            # with scores but no pictures. The order label carries the distinction.
+            review_survivors=sync.ranked,
+            review_order_algorithm=(
+                NEUTRAL_REVIEW_ORDER
+                if personalization_mode == "collecting"
+                else SCORED_REVIEW_ORDER
+            ),
         )
-        payload.update(
-            personalization_mode=personalization_mode,
-            recommendation=None,
-            scorer=None,
-            message=message,
+        counts = {**fetch_counts, **sync.counts}
+        recommendation = (
+            _recommendation(sync.ranked) if personalization_mode == "personalized" else None
         )
+        payload["personalization_mode"] = personalization_mode
+        payload["recommendation"] = recommendation
+        payload["scorer"] = None if personalization_mode == "collecting" else "weighted"
+        payload["message"] = message
+        ranked_summary = [
+            {
+                "rank": record.rank,
+                "orig_filename": record.orig_filename,
+                "final_score": record.final_score,
+                "stack_label": record.stack_label,
+            }
+            for record in sync.ranked
+        ]
         return PosterPipelineOutput(
             run_id=run_id,
-            status="flagged_manual",
-            counts={**fetch_counts, "ranked": 0},
+            status=sync.status,
+            counts=counts,
             payload=payload,
+            recommendation=recommendation,
+            ranked=ranked_summary,
             source_count=source_count,
             candidate_count=source_count,
+            scorer_name=(
+                select_scorer(artifact_path=residual_path, context=residual_context).name
+                if sync.ranked and personalization_mode == "personalized"
+                else None
+            ),
             personalization_mode=personalization_mode,
             message=message,
         )
-
-    sync_started = datetime.now(UTC)
-    sync = run_sync_stages(
-        movie_title=subject.title,
-        out_dir=out_dir,
-        records=records,
-        candidate_map=candidate_map,
-        all_files=all_files,
-        resolution_by_name=resolution_by_name,
-        timings=timings,
-        feature_extractor=feature_extractor,
-        primary_name=primary_name,
-        progress=progress,
-        should_cancel=should_cancel,
-        ocr_gate=ocr_gate,
-        residual_path=residual_path,
-        residual_context=residual_context,
-        personalization_mode=personalization_mode,
-    )
-
-    if sync.ranked and personalization_mode == "personalized":
-        await place_outputs(
-            sync.ranked,
-            candidate_map=candidate_map,
-            out_dir=out_dir,
-            timings=timings,
-            progress=progress,
-        )
-
-    total_duration = (datetime.now(UTC) - sync_started).total_seconds()
-    payload = build_run_payload(
-        movie=movie,
-        started_at=started_at,
-        status=sync.status,
-        timings=timings,
-        records=records,
-        total_duration=total_duration,
-        run_id=run_id,
-        media_type=subject.media_type,
-        # Always archived: this list is what every reviewable candidate image is
-        # registered from, so emptying it in personalized mode left the review UI
-        # with scores but no pictures. The order label carries the distinction.
-        review_survivors=sync.ranked,
-        review_order_algorithm=(
-            NEUTRAL_REVIEW_ORDER if personalization_mode == "collecting" else SCORED_REVIEW_ORDER
-        ),
-    )
-    counts = {**fetch_counts, **sync.counts}
-    recommendation = (
-        _recommendation(sync.ranked) if personalization_mode == "personalized" else None
-    )
-    payload["personalization_mode"] = personalization_mode
-    payload["recommendation"] = recommendation
-    payload["scorer"] = None if personalization_mode == "collecting" else "weighted"
-    payload["message"] = message
-    ranked_summary = [
-        {
-            "rank": record.rank,
-            "orig_filename": record.orig_filename,
-            "final_score": record.final_score,
-            "stack_label": record.stack_label,
-        }
-        for record in sync.ranked
-    ]
-    return PosterPipelineOutput(
-        run_id=run_id,
-        status=sync.status,
-        counts=counts,
-        payload=payload,
-        recommendation=recommendation,
-        ranked=ranked_summary,
-        source_count=source_count,
-        candidate_count=source_count,
-        scorer_name=(
-            select_scorer(artifact_path=residual_path, context=residual_context).name
-            if sync.ranked and personalization_mode == "personalized"
-            else None
-        ),
-        personalization_mode=personalization_mode,
-        message=message,
-    )
 
 
 def _recommendation(ranked: list[CandidateScore]) -> dict[str, object] | None:

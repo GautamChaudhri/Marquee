@@ -1,18 +1,16 @@
 """Pipeline execution core — the stages, decoupled from any HTTP route.
 
-This module owns the actual poster-selection work that used to live inline in
-``api/routes/test_pipeline.py``. It is import-light (no FastAPI) so it can be
-driven by the production ``RunManager`` (with live progress + a process-
-lifetime feature extractor) and by the legacy test endpoint alike.
+This module owns the actual poster-selection work. It is import-light (no
+FastAPI or database session) so contained runners and focused tests can drive
+the same stage implementation.
 
 Two changes vs the original inline version:
 
   - Every stage boundary fires an optional ``progress`` callback (start/end,
-    plus per-poster ticks inside the long OCR stage), so the API can stream
-    live progress over SSE.
+    plus per-poster ticks inside the long OCR stage), so adapters can publish
+    live progress.
   - The expensive ``FeatureExtractor`` is injected, not constructed per run —
-    the ``RunManager`` keeps one for the process lifetime, which fixes the
-    per-run ONNX-session VRAM growth (see design 09 §14).
+    callers control its lifetime and can reuse loaded model sessions.
 
 Stage order (cheapest signal first — see design 04 §2):
 
@@ -52,7 +50,7 @@ from marquee.models import Movie
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
 from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
 from marquee.pipeline.gate import PosterGate
-from marquee.pipeline.ocr_filter import PosterTextFilter
+from marquee.pipeline.ocr_filter import OcrPool, PosterTextFilter
 from marquee.pipeline.output import OutputResult, place_gated, place_ranked
 from marquee.pipeline.scorer import (
     ResidualCompatibilityError,
@@ -99,17 +97,16 @@ _GENERATED_DIR_NAMES = {
 
 
 # ---------------------------------------------------------------------------
-# Progress events (consumed by RunManager → SSE)
+# Progress events (consumed by runner adapters)
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class ProgressEvent:
-    """A single live progress beat for the SSE stream.
+    """A single progress beat emitted at a pipeline stage boundary.
 
-    The ``movie_*`` and ``batch_*`` fields are populated only by the cross-movie
-    batch runner so a UI can show "stage X, movie 3/12 (Dune)". They stay None
-    for single-movie runs, keeping the event backward compatible.
+    Optional movie identity fields let adapters attach a human-readable subject
+    without coupling the stage engine to a particular transport.
     """
 
     stage: str
@@ -118,12 +115,8 @@ class ProgressEvent:
     total: int | None = None
     survivors: int | None = None
     elapsed_s: float | None = None
-    # Batch context (None for single-movie runs).
     movie_id: int | None = None
     title: str | None = None
-    movie_index: int | None = None  # 1-based position within the batch
-    movie_total: int | None = None
-    movies_done: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -135,9 +128,6 @@ class ProgressEvent:
             "elapsed_s": self.elapsed_s,
             "movie_id": self.movie_id,
             "title": self.title,
-            "movie_index": self.movie_index,
-            "movie_total": self.movie_total,
-            "movies_done": self.movies_done,
         }
 
 
@@ -691,7 +681,13 @@ def _neutral_candidate_order(
     return ordered
 
 
-def _stack_signal_value(record: CandidateScore, image_path: Path, dino_vector):
+def _stack_signal_value(
+    record: CandidateScore,
+    image_path: Path,
+    dino_vector,
+    *,
+    embedding_loader: Callable[[str], np.ndarray | None] | None = None,
+):
     """The per-poster similarity value the stacker groups on (STACK_SIGNAL).
 
     dino → the DINOv2 vector retained from detail features (CLIP cache as a
@@ -700,6 +696,7 @@ def _stack_signal_value(record: CandidateScore, image_path: Path, dino_vector):
     stacker leaves that poster as its own singleton.
     """
     signal = pipeline_settings.STACK_SIGNAL
+    load_embedding = embedding_loader or load_cached_embedding
     if signal == "phash":
         import imagehash  # noqa: PLC0415
         from PIL import Image  # noqa: PLC0415
@@ -711,17 +708,18 @@ def _stack_signal_value(record: CandidateScore, image_path: Path, dino_vector):
             logger.warning("STACK | pHash failed for %s — singleton", image_path.name)
             return None
     if signal == "clip":
-        return load_cached_embedding(record.orig_filename)
+        return load_embedding(record.orig_filename)
     # dino (default): use the retained vector, fall back to the CLIP cache
     # when DINO produced nothing for this poster (model off / per-item error).
     if dino_vector is not None:
         return dino_vector
-    return load_cached_embedding(record.orig_filename)
+    return load_embedding(record.orig_filename)
 
 
 def run_sync_stages(
     *,
     movie_title: str,
+    ocr_title: str | None = None,
     out_dir: Path,
     records: dict[str, CandidateScore],
     candidate_map: dict[str, PosterCandidate],
@@ -733,6 +731,7 @@ def run_sync_stages(
     progress: ProgressCallback | None = None,
     should_cancel: ShouldCancel | None = None,
     ocr_gate: OcrGateContext | None = None,
+    ocr_pool: OcrPool | None = None,
     residual_path: Path | None = None,
     residual_context: ResidualRuntimeContext | None = None,
     personalization_mode: str = "personalized",
@@ -809,8 +808,8 @@ def run_sync_stages(
         progress=progress,
     )
 
-    # Stage 4a: style features (batched CLIP). Preflight is the extractor's
-    # responsibility (done once by the RunManager); systemic failures raise.
+    # Stage 4a: style features (batched CLIP). Preflight is the extractor
+    # owner's responsibility; systemic failures raise.
     stage_started = _stage_start(
         "style-features", total=len(resolution_survivors), progress=progress
     )
@@ -883,12 +882,12 @@ def run_sync_stages(
     # direct/test path without one falls back to the global default profile.
     gate_ctx = ocr_gate or OcrGateContext.default()
     ocr_results = PosterTextFilter(
-        movie_title,
+        ocr_title or movie_title,
         director=gate_ctx.director,
         studios=gate_ctx.studios,
         tagline=gate_ctx.tagline,
         profile=gate_ctx.profile,
-    ).filter_batch(style_survivors, progress=_ocr_tick)
+    ).filter_batch(style_survivors, progress=_ocr_tick, pool=ocr_pool)
     ocr_survivors: list[OCRCandidateResult] = []
     for result in ocr_results:
         check_cancelled()
@@ -1023,7 +1022,10 @@ def run_sync_stages(
         if decision.passed:
             if pipeline_settings.STACK_ENABLED and personalization_mode == "personalized":
                 record.embedding = _stack_signal_value(
-                    record, ocr_result.image_path, dino_vectors.get(index)
+                    record,
+                    ocr_result.image_path,
+                    dino_vectors.get(index),
+                    embedding_loader=feature_extractor.load_run_embedding,
                 )
             passed.append(record)
             logger.info("GATE PASS | file=%s", record.orig_filename)

@@ -29,6 +29,8 @@ from marquee.core.jobs.subjects import (
     ModelProfileTrainingSnapshot,
     MovieSnapshot,
     PosterCandidateSetSnapshot,
+    PosterSubjectGroupMemberSnapshot,
+    PosterSubjectGroupSnapshot,
     SeasonSnapshot,
     SeriesSnapshot,
     SystemWorkSnapshot,
@@ -63,6 +65,23 @@ def _subjects():
         "poster_candidate_set": PosterCandidateSetSnapshot(
             **common, media_kind="movie", subject_id=1, title="Movie"
         ),
+        "poster_subject_group": PosterSubjectGroupSnapshot(
+            display_id="poster-group:movies:test-000",
+            display_name="Movie poster group 1",
+            library="movies",
+            chunk_index=0,
+            members=(
+                PosterSubjectGroupMemberSnapshot(
+                    subject_key="movie:1",
+                    subject=MovieSnapshot(
+                        display_id="movie:1",
+                        display_name="Movie",
+                        movie_id=1,
+                        title="Movie",
+                    ),
+                ),
+            ),
+        ),
         "model_profile_training": ModelProfileTrainingSnapshot(
             **common, subject_type="training", name="training"
         ),
@@ -73,7 +92,7 @@ def _subjects():
 
 
 def test_manifest_has_exactly_one_definition_for_every_inventory_source() -> None:
-    assert len(JOB_DEFINITION_REGISTRY) == 23
+    assert len(JOB_DEFINITION_REGISTRY) == 24
     assert JOB_DEFINITION_REGISTRY.types == BUILTIN_JOB_TYPES
     for inventory in (
         REGISTERED_HANDLER_TYPES,
@@ -92,6 +111,7 @@ def test_only_noop_is_enabled_and_webhook_stays_reserved_disabled() -> None:
         "system_noop",
         "library_sync",
         "poster_pipeline",
+        "poster_pipeline_group",
         "poster_deploy",
         "poster_restore",
         "poster_reset",
@@ -123,6 +143,11 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
     }
     valid_requests = {
         "poster_pipeline": {"movie_id": 1, "title": "Example"},
+        "poster_pipeline_group": {
+            "library": "movies",
+            "chunk_index": 0,
+            "members": [{"movie_id": 1, "title": "Example"}],
+        },
         "poster_pipeline_batch": {"scope": "selected", "selection_count": 1},
         "poster_pipeline_tv_batch": {"scope": "series", "selection_count": 1},
         "taste_rebuild": {"expected_generation": 0},
@@ -166,6 +191,15 @@ def test_all_documents_are_strict_current_v1_and_policy_is_not_client_input() ->
         "system_metrics_purge": {"retention_days": 30},
     }
     valid_results = {
+        "poster_pipeline_group": {
+            "outcome": "succeeded",
+            "library": "movies",
+            "chunk_index": 0,
+            "member_count": 1,
+            "succeeded_count": 1,
+            "projected_count": 1,
+            "run_ids": ["run-1"],
+        },
         "taste_rebuild": {
             "family": "taste_profile",
             "version": "v1-test",
@@ -300,6 +334,7 @@ def test_progress_policies_are_complete_and_native_adapters_are_truthful() -> No
     }
     assert native == {
         "poster_pipeline": "poster_analysis_adapter",
+        "poster_pipeline_group": "poster_analysis_adapter",
         "poster_rescan": "bounded_filesystem_observation",
         "taste_rebuild": "immutable_ml_publication",
         "taste_map": "immutable_ml_publication",

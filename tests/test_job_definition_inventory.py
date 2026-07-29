@@ -73,7 +73,7 @@ def test_source_inventory_matches_freeze() -> None:
     assert route_types == set(ROUTE_CONSTRUCTED_TYPES)
     assert len(MEDIA_OPERATION_TYPES) == 0
     assert len(PARENT_ONLY_TYPES) == 5
-    assert len(BUILTIN_JOB_TYPES) == 23
+    assert len(BUILTIN_JOB_TYPES) == 24
 
 
 def test_stable_taxonomy_values() -> None:

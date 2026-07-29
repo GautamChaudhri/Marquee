@@ -95,6 +95,7 @@ class RunnerOperation(StrEnum):
 
     NOOP = "noop"
     POSTER_SINGLE = "poster_single"
+    POSTER_GROUP = "poster_group"
     TASTE_PROFILE = "taste_profile"
     TASTE_MAP = "taste_map"
     ENRICHMENT = "enrichment"

@@ -10,7 +10,7 @@ import queue
 import re
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,8 +32,8 @@ class OcrPool:
     """Handle to a running pool of PaddleOCR worker processes.
 
     Created by ``PosterTextFilter.start_ocr_pool()`` — workers are already
-    loaded and ready to accept tasks.  Feed them with ``run_ocr_tasks()``
-    and shut down with ``stop_ocr_pool()``.
+    loaded and ready to accept tasks.  Feed them once with ``run_ocr_tasks()``
+    (which consumes the workers) and release the queues with ``stop_ocr_pool()``.
     """
 
     workers: list[Any]
@@ -43,6 +43,17 @@ class OcrPool:
     @property
     def worker_count(self) -> int:
         return len(self.workers)
+
+
+class OcrPoolTeardownError(RuntimeError):
+    """OCR workers or queues could not be certified as fully released."""
+
+
+type _OcrTask = (
+    tuple[Path, set[str], set[str]]
+    | tuple[Path, str, set[str], set[str]]
+    | tuple[Path, str, set[str], set[str], dict[str, object] | None]
+)
 
 
 logger = logging.getLogger(__name__)
@@ -1605,8 +1616,8 @@ def apply_no_text_fallback(
 
     Textless posters must never compete against titled ones (project target:
     title-only text). The default is to keep no_text/no_title rejected; when
-    ``OCR_ACCEPT_NO_TEXT`` is manually enabled, apply this over **one movie's**
-    result subset — never across a cross-movie batch.
+    ``OCR_ACCEPT_NO_TEXT`` is manually enabled, apply this over one subject's
+    result subset, never over a multi-subject collection.
     """
     if not pipeline_settings.OCR_ACCEPT_NO_TEXT:
         return results
@@ -1656,7 +1667,7 @@ class PosterTextFilter:
         # spawned worker processes. None → _decide uses pipeline_settings.
         self.profile_payload: dict | None = profile.gate_payload() if profile else None
 
-    def task_extras(self) -> dict | None:
+    def task_extras(self) -> dict[str, object] | None:
         """Per-task text-gate context for run_ocr_tasks item tuples."""
         extras: dict[str, object] = {}
         if self.profile_payload is not None:
@@ -1665,24 +1676,35 @@ class PosterTextFilter:
             extras["studio_tokens"] = self.studio_tokens
         if self.tagline:
             extras["tagline"] = self.tagline
-        if not extras:
-            return None
-        return extras
+        return extras or None
 
     def filter_batch(
         self,
         paths: list[Path],
         *,
         progress: Callable[[int, int], None] | None = None,
+        pool: OcrPool | None = None,
     ) -> list[OCRCandidateResult]:
-        """Single-movie batch: every poster matched against this movie's title."""
+        """Single-movie batch: every poster matched against this movie's title.
+
+        ``pool`` is an already-warm pool started earlier (see ``start_ocr_pool``)
+        so its PaddleOCR load overlapped the download phase instead of stalling
+        this stage. Ownership stays with the caller — running the tasks consumes
+        the pool's workers, but releasing the queues is the starter's job. With
+        no pool this falls back to starting and stopping a private one.
+        """
         if not paths:
             return []
         extras = self.task_extras()
         items = [
             (path, self.title, self.title_tokens, self.director_tokens, extras) for path in paths
         ]
-        results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
+        if pool is not None:
+            results = self.run_ocr_tasks(pool, items, progress=progress)
+        else:
+            results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
+        # Safe here because a filter_batch call is by definition one subject:
+        # the rescue must never reach across to another subject's posters.
         results = apply_no_text_fallback(results)
         logger.info(
             "OCR complete: %d accepted, %d rejected",
@@ -1691,16 +1713,20 @@ class PosterTextFilter:
         )
         return results
 
-    # ── Pool lifecycle (exposed for batch-runner preloading) ──────────────
+    # ── Pool lifecycle (for preloading ahead of the OCR stage) ────────────
 
     @staticmethod
     def start_ocr_pool(num_workers: int | None = None) -> OcrPool:
         """Spawn OCR workers and block until every one has loaded PaddleOCR.
 
-        Call this early (e.g. during the fetch/download phase) so the
-        expensive model load overlaps with network I/O.  The returned
-        ``OcrPool`` can be passed to ``run_ocr_tasks`` and then
-        ``stop_ocr_pool``.
+        Call this early — the orchestrator starts it before the download phase
+        so the model load overlaps network I/O instead of stalling the OCR
+        stage. The returned ``OcrPool`` is **single-use**: pass it to
+        ``run_ocr_tasks`` once, then release it with ``stop_ocr_pool``.
+
+        Startup is atomic. If process creation, worker registration, or model
+        readiness fails, every process and queue created so far is cleaned up
+        before the original exception is re-raised.
         """
         wanted = num_workers or effective_ocr_workers()
         worker_count = max(1, wanted)
@@ -1708,39 +1734,51 @@ class PosterTextFilter:
         context = multiprocessing.get_context("spawn")
         task_queue = context.Queue()
         result_queue = context.Queue()
-        workers = [
-            context.Process(
-                target=_worker_main,
-                args=(task_queue, result_queue, set(), set(), omp_threads),
-                name=f"poster-ocr-{idx + 1}",
-            )
-            for idx in range(worker_count)
-        ]
-        for worker in workers:
-            worker.start()
-            _register_worker(worker)
-        PosterTextFilter._wait_for_workers_ready(result_queue, workers)
+        pool = OcrPool(workers=[], task_queue=task_queue, result_queue=result_queue)
+        try:
+            for index in range(worker_count):
+                worker = context.Process(
+                    target=_worker_main,
+                    args=(task_queue, result_queue, set(), set(), omp_threads),
+                    name=f"poster-ocr-{index + 1}",
+                )
+                pool.workers.append(worker)
+            for worker in pool.workers:
+                worker.start()
+                _register_worker(worker)
+            PosterTextFilter._wait_for_workers_ready(result_queue, pool.workers)
+        except BaseException as startup_error:
+            try:
+                PosterTextFilter.stop_ocr_pool(pool)
+            except BaseException as cleanup_error:
+                raise OcrPoolTeardownError(
+                    "OCR pool startup failed and cleanup could not be certified "
+                    f"({type(startup_error).__name__}: {startup_error}; "
+                    f"{type(cleanup_error).__name__}: {cleanup_error})"
+                ) from cleanup_error
+            raise
         logger.info("OCR pool started: %d worker(s)", worker_count)
-        return OcrPool(workers=workers, task_queue=task_queue, result_queue=result_queue)
+        return pool
 
     @staticmethod
     def run_ocr_tasks(
         pool: OcrPool,
-        items: list[tuple[Path, set[str], set[str]] | tuple[Path, str, set[str], set[str]]],
+        items: Sequence[_OcrTask],
         *,
         progress: Callable[[int, int], None] | None = None,
     ) -> list[OCRCandidateResult]:
         """Feed *items* to a ready pool and collect per-item results in order.
 
         The pool must have been created by ``start_ocr_pool`` and its workers
-        must still be alive.  After this returns, the pool can be reused for
-        another batch or shut down with ``stop_ocr_pool``.
+        must still be alive. This **consumes** the pool: a shutdown sentinel is
+        queued per worker and the workers are joined before returning, so it can
+        be called once. Release the queues afterwards with ``stop_ocr_pool``.
         """
         if not items:
             return []
 
         for index, item in enumerate(items):
-            extras: dict | None = None
+            extras: dict[str, object] | None = None
             if len(item) == 5:
                 path, title_text, title_tokens, director_tokens, extras = item
             elif len(item) == 4:
@@ -1769,7 +1807,7 @@ class PosterTextFilter:
                 raise RuntimeError(f"OCR worker {key} failed to initialize: {payload}")
 
         PosterTextFilter._join_workers(pool.workers)
-        results = [r for r in ordered_results if r is not None]
+        results = [result for result in ordered_results if result is not None]
         logger.info("OCR tasks ran %d image(s) over %d worker(s)", len(results), pool.worker_count)
         return results
 
@@ -1777,38 +1815,61 @@ class PosterTextFilter:
     def stop_ocr_pool(pool: OcrPool) -> None:
         """Shut down worker processes and release queues.
 
-        Safe to call from any thread — workers are terminated if they
-        haven't exited cleanly. After this the pool is dead.
+        Safe to call from any thread and safe to call more than once. All cleanup
+        steps are attempted even if an earlier one fails; a teardown failure is
+        raised after the remaining resources have been handled.
         """
-        PosterTextFilter._stop_workers(pool.workers)
-        PosterTextFilter._close_queue(pool.task_queue)
-        PosterTextFilter._close_queue(pool.result_queue)
+        failures: list[tuple[str, BaseException]] = []
+        cleanup_steps = (
+            ("workers", lambda: PosterTextFilter._stop_workers(pool.workers)),
+            ("task queue", lambda: PosterTextFilter._close_queue(pool.task_queue)),
+            ("result queue", lambda: PosterTextFilter._close_queue(pool.result_queue)),
+        )
+        for label, cleanup in cleanup_steps:
+            try:
+                cleanup()
+            except BaseException as exc:
+                failures.append((label, exc))
+        if failures:
+            details = "; ".join(
+                f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures
+            )
+            raise OcrPoolTeardownError(
+                f"OCR pool teardown failed ({details})"
+            ) from failures[0][1]
         logger.info("OCR pool stopped: %d worker(s)", pool.worker_count)
 
     @staticmethod
     def run_ocr_batch(
-        items: list[tuple[Path, set[str], set[str]] | tuple[Path, str, set[str], set[str]]],
+        items: Sequence[_OcrTask],
         *,
         num_workers: int | None = None,
         progress: Callable[[int, int], None] | None = None,
     ) -> list[OCRCandidateResult]:
-        """Run OCR over many OCR task items in ONE worker pool.
+        """Run OCR over many OCR task items in one private worker pool.
 
-        Each worker loads PaddleOCR once and then processes a heterogeneous
-        queue, so a cross-movie batch pays the model-load cost a single time
-        instead of once per movie. The per-movie no-text fallback is NOT applied
-        here — callers run ``apply_no_text_fallback`` over each movie's own
-        subset (a movie with zero titled survivors must rescue only its own
-        textless posters, never another movie's).
+        Starts and tears down the pool on the spot. Prefer handing
+        ``filter_batch`` a pool started earlier when there is useful work to
+        overlap with model loading.
+
+        Items may carry different titles. The no-text fallback is deliberately
+        not applied here; callers apply it to each subject's own result subset.
         """
         if not items:
             return []
 
         pool = PosterTextFilter.start_ocr_pool(num_workers)
         try:
-            return PosterTextFilter.run_ocr_tasks(pool, items, progress=progress)
-        finally:
+            results = PosterTextFilter.run_ocr_tasks(pool, items, progress=progress)
+        except BaseException:
+            try:
+                PosterTextFilter.stop_ocr_pool(pool)
+            except BaseException:
+                logger.exception("OCR pool teardown failed while preserving OCR failure")
+            raise
+        else:
             PosterTextFilter.stop_ocr_pool(pool)
+            return results
 
     @staticmethod
     def _apply_no_text_fallback(
@@ -1875,24 +1936,83 @@ class PosterTextFilter:
 
     @staticmethod
     def _stop_workers(workers: list[Any]) -> None:
-        cleanup_failures = []
+        failures: list[str] = []
+
         for worker in workers:
-            if worker.is_alive():
-                logger.warning(
-                    "Terminating live OCR worker during cleanup: name=%s pid=%s",
-                    worker.name,
-                    worker.pid,
+            try:
+                if worker.is_alive():
+                    logger.warning(
+                        "Terminating live OCR worker during cleanup: name=%s pid=%s",
+                        worker.name,
+                        worker.pid,
+                    )
+                    worker.terminate()
+            except BaseException as exc:
+                failures.append(
+                    f"{worker.name} terminate: {type(exc).__name__}: {exc}"
                 )
-                worker.terminate()
+
+        deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
         for worker in workers:
-            if worker.pid is not None:
-                worker.join()
-                if _pid_alive(worker.pid):
-                    cleanup_failures.append(f"{worker.name}=pid:{worker.pid}")
-                else:
-                    _unregister_worker(worker)
-        if cleanup_failures:
-            raise RuntimeError("OCR worker cleanup failed: " + ", ".join(cleanup_failures))
+            if worker.pid is None:
+                continue
+            try:
+                worker.join(max(0.0, deadline - time.monotonic()))
+            except BaseException as exc:
+                failures.append(f"{worker.name} join: {type(exc).__name__}: {exc}")
+
+        hung: list[Any] = []
+        for worker in workers:
+            if worker.pid is None:
+                continue
+            try:
+                if worker.is_alive():
+                    hung.append(worker)
+            except BaseException as exc:
+                failures.append(
+                    f"{worker.name} liveness check: {type(exc).__name__}: {exc}"
+                )
+                hung.append(worker)
+
+        if hung:
+            logger.warning(
+                "Killing OCR workers that survived terminate: %s",
+                ", ".join(worker.name for worker in hung),
+            )
+            for worker in hung:
+                try:
+                    killer = getattr(worker, "kill", worker.terminate)
+                    killer()
+                except BaseException as exc:
+                    failures.append(
+                        f"{worker.name} kill: {type(exc).__name__}: {exc}"
+                    )
+            deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
+            for worker in hung:
+                try:
+                    worker.join(max(0.0, deadline - time.monotonic()))
+                except BaseException as exc:
+                    failures.append(
+                        f"{worker.name} post-kill join: {type(exc).__name__}: {exc}"
+                    )
+
+        for worker in workers:
+            if worker.pid is None:
+                continue
+            try:
+                survived = worker.is_alive() or _pid_alive(worker.pid)
+            except BaseException as exc:
+                failures.append(
+                    f"{worker.name} final liveness check: {type(exc).__name__}: {exc}"
+                )
+                survived = True
+            if survived:
+                failures.append(f"{worker.name} survived cleanup (pid:{worker.pid})")
+                continue
+            _unregister_worker(worker)
+
+        if failures:
+            raise RuntimeError("OCR worker cleanup failed: " + "; ".join(failures))
 
     @staticmethod
     def _close_queue(worker_queue: Any) -> None:

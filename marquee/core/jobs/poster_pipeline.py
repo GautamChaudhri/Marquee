@@ -19,14 +19,14 @@ import json
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from marquee.core.jobs.artifact_service import ArtifactError, register_physical_artifact
-from marquee.core.jobs.delivery import ExecutionContext
 from marquee.core.jobs.documents import (
     PosterCandidateSummaryV1,
     PosterPipelineRequestV1,
     PosterPipelineResultV1,
+    poster_pipeline_subject_key,
 )
 from marquee.core.jobs.execution_progress import ExecutionProgress
 from marquee.core.jobs.ml_publication import (
@@ -42,6 +42,9 @@ from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.residual import baseline_signature
 from marquee.models import Job, JobAttempt, Movie, PipelineRun, Season, Series
 
+if TYPE_CHECKING:
+    from marquee.core.jobs.delivery import ExecutionContext
+
 # Runner pipeline stage -> the definition's declared poster progress vocabulary.
 _STAGE_MAP = {
     "fetch": "downloading",
@@ -52,6 +55,7 @@ _STAGE_MAP = {
     "ocr": "validating",
     "phash": "deduplicating",
     "detail-features": "extracting",
+    "neutral-order": "scoring",
     "rank": "scoring",
     "output": "rendering",
 }
@@ -72,23 +76,62 @@ def _subject_params(
 ) -> dict[str, Any]:
     """Freeze the subject the runner fetches for.
 
-    The season number comes from the sealed subject snapshot rather than the
-    request: TMDB addresses season art by season number, and the request only
-    carries our ``season_id``.
+    Season identity comes from the sealed live snapshot. The display title keeps
+    its season suffix, while OCR receives the bare series title so title tokens
+    match the artwork.
     """
     media_type = _media_type(request)
+    series_id = request.series_id
     season_number = subject.get("season_number") if subject else None
+    if media_type == "season":
+        series_id = subject.get("series_id") if subject else None
+        if not isinstance(series_id, int):
+            raise ValueError("a season poster run requires a series id in its subject snapshot")
     if media_type == "season" and not isinstance(season_number, int):
         raise ValueError("a season poster run requires a season number in its subject snapshot")
+    ocr_title = subject.get("series_title") if subject and media_type == "season" else None
+    if media_type == "season" and not isinstance(ocr_title, str):
+        raise ValueError("a season poster run requires a series title in its subject snapshot")
     return {
         "title": request.title,
         "media_type": media_type,
         "movie_id": request.movie_id,
         "tmdb_id": request.tmdb_id,
-        "series_id": request.series_id,
+        "series_id": series_id,
         "season_id": request.season_id,
         "season_number": season_number if media_type == "season" else None,
+        "ocr_title": ocr_title,
     }
+
+
+async def _resolved_subject_params(
+    session,
+    request: PosterPipelineRequestV1,
+    subject: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Fill legacy season snapshots from live rows before sealing runner input."""
+    if _media_type(request) != "season":
+        return _subject_params(request, subject)
+
+    resolved = dict(subject or {})
+    if (
+        not isinstance(resolved.get("series_id"), int)
+        or not isinstance(resolved.get("season_number"), int)
+        or not isinstance(resolved.get("series_title"), str)
+    ):
+        season = await session.get(Season, request.season_id)
+        if season is None:
+            raise ValueError("a season poster run requires a live season")
+        series = await session.get(Series, season.series_id)
+        if series is None:
+            raise ValueError("a season poster run requires a live parent series")
+        if not isinstance(resolved.get("series_id"), int):
+            resolved["series_id"] = series.id
+        if not isinstance(resolved.get("season_number"), int):
+            resolved["season_number"] = season.season_number
+        if not isinstance(resolved.get("series_title"), str):
+            resolved["series_title"] = series.title
+    return _subject_params(request, resolved)
 
 
 async def _text_gate_params(
@@ -138,6 +181,12 @@ def _workspace_dir(context: ExecutionContext):
 
 def _runner_runtime_options(context: ExecutionContext) -> RunnerRuntimeOptions:
     return poster_runner_runtime_options(context.configuration)
+
+
+def _pipeline_baseline_signature(context: ExecutionContext) -> str:
+    """Derive ranking identity from the job's sealed execution configuration."""
+    effective = pipeline_settings.model_copy(update=dict(context.configuration or {}))
+    return baseline_signature(effective.scorer_weights)
 
 
 async def _owns_fence(context: ExecutionContext) -> bool:
@@ -365,6 +414,7 @@ async def _write_pipeline_run(
                 season_id=request.season_id,
                 media_type=_media_type(request),
                 subject_snapshot=dict(context.subject) if context.subject else {},
+                subject_key=poster_pipeline_subject_key(request),
                 status=status,
                 scorer_name=(summary.get("scorer_name") or None),
                 counts_json=json.dumps(counts, sort_keys=True),
@@ -404,18 +454,19 @@ async def execute_poster_pipeline(
         raise asyncio.CancelledError
 
     run_id = uuid.uuid4().hex
+    baseline = _pipeline_baseline_signature(context)
+    async with context.session_factory() as session:
+        subject_params = await _resolved_subject_params(session, request, context.subject)
+        text_gate = await _text_gate_params(session, request, _media_type(request))
     manifest = {
         "params": {
-            "subject": _subject_params(request, context.subject),
+            "subject": subject_params,
             "source": {"mode": "tmdb"},
             "run_id": run_id,
-            "baseline_signature": baseline_signature(pipeline_settings.scorer_weights),
+            "baseline_signature": baseline,
+            "text_gate": text_gate,
         }
     }
-    async with context.session_factory() as session:
-        manifest["params"]["text_gate"] = await _text_gate_params(
-            session, request, _media_type(request)
-        )
     workspace_dir = _workspace_dir(context)
     library = "movies" if _media_type(request) == "movie" else "tv"
     profile_resolution_error: str | None = None
@@ -467,7 +518,7 @@ async def execute_poster_pipeline(
                     library=library,
                     profile_checksum=active_profile.checksum,
                     profile_generation=active_profile.generation,
-                    baseline=baseline_signature(pipeline_settings.scorer_weights),
+                    baseline=baseline,
                 )
         except MlPublicationError as exc:
             residual_resolution_error = str(exc)

@@ -946,6 +946,25 @@ async def reprioritize_batch_descendants(
     return changed
 
 
+def _retryable_batch_child(child: Job) -> bool:
+    """Select failed work without retrying review-only grouped members."""
+    if child.outcome not in {
+        "failed",
+        "partially_succeeded",
+        "cancelled",
+        "dead_letter",
+        "unsafe",
+    }:
+        return False
+    if child.type != "poster_pipeline_group" or child.outcome != "partially_succeeded":
+        return True
+    return (
+        isinstance(child.result, dict)
+        and isinstance(child.result.get("failed_count"), int)
+        and child.result["failed_count"] > 0
+    )
+
+
 async def retry_batch(
     session: AsyncSession, *, original: Job, expected_fence_token: int
 ) -> SubmissionResult:
@@ -976,27 +995,52 @@ async def retry_batch(
         selected = tuple(
             child
             for child in all_children
-            if child.outcome
-            in {"failed", "partially_succeeded", "cancelled", "dead_letter", "unsafe"}
+            if _retryable_batch_child(child)
         )
     initiator = _initiator_from_document(original.initiator)
-    intents = tuple(
-        SubmissionIntent(
-            job_type=child.type,
-            request=child.request,
-            subject=SubjectLocator(
-                kind=child.subject_kind,
-                reference=child.subject_reference or child.id,
-            ),
-            trigger=TriggerKind.BATCH,
-            initiator=initiator,
-            idempotency_key=(
-                f"{child.type}:retry-{original.id[:12]}-{child.id[:12]}-{expected_fence_token}"
-            ),
-            priority=child.priority,
+    expanded: list[tuple[SubmissionIntent, Job]] = []
+    for child in selected:
+        if child.type == "poster_pipeline_group":
+            from marquee.core.jobs.poster_group_retry import (  # noqa: PLC0415
+                group_member_intents,
+                retryable_group_members,
+            )
+
+            members = await retryable_group_members(session, group_job=child)
+            child_intents = group_member_intents(
+                members,
+                source_job=child,
+                initiator=initiator,
+                key_prefix=(
+                    f"retry-{original.id[:10]}-{child.id[:10]}-{expected_fence_token}"
+                ),
+            )
+            expanded.extend((intent, child) for intent in child_intents)
+            continue
+        expanded.append(
+            (
+                SubmissionIntent(
+                    job_type=child.type,
+                    request=child.request,
+                    subject=SubjectLocator(
+                        kind=child.subject_kind,
+                        reference=child.subject_reference or child.id,
+                    ),
+                    trigger=TriggerKind.BATCH,
+                    initiator=initiator,
+                    idempotency_key=(
+                        f"{child.type}:retry-{original.id[:12]}-"
+                        f"{child.id[:12]}-{expected_fence_token}"
+                    ),
+                    priority=child.priority,
+                ),
+                child,
+            )
         )
-        for child in selected
-    )
+    intents = tuple(intent for intent, _source in expanded)
+    lineage_sources = tuple(source for _intent, source in expanded)
+    if not intents:
+        raise SubmissionValidationError("batch has no retryable children")
     scope = BatchScope(
         reference=original.subject_reference or original.id,
         display_name=original.subject_snapshot.get("display_name", "Retried batch"),
@@ -1004,11 +1048,14 @@ async def retry_batch(
     )
     retry_key = f"{original.type}:retry-{original.id}-{expected_fence_token}"
     trigger = TriggerKind(original.trigger_kind)
+    parent_request = original.request
+    if original.type in {"poster_pipeline_batch", "poster_pipeline_tv_batch"}:
+        parent_request = {**original.request, "selection_count": len(intents)}
     if projection.mode == "fixed":
         created = await create_fixed_batch(
             session,
             parent_job_type=original.type,
-            parent_request=original.request,
+            parent_request=parent_request,
             scope=scope,
             trigger=trigger,
             initiator=initiator,
@@ -1022,7 +1069,7 @@ async def retry_batch(
         opened = await open_dynamic_batch(
             session,
             parent_job_type=original.type,
-            parent_request=original.request,
+            parent_request=parent_request,
             scope=scope,
             trigger=trigger,
             initiator=initiator,
@@ -1048,7 +1095,7 @@ async def retry_batch(
     if replacement is None:
         raise SubmissionInvariantError("batch retry successor disappeared")
     replacement.retry_of_job_id = original.id
-    for source, child_result in zip(selected, child_results, strict=True):
+    for source, child_result in zip(lineage_sources, child_results, strict=True):
         successor = await session.get(Job, child_result.job_id)
         if successor is None:
             raise SubmissionInvariantError("batch retry child successor disappeared")
@@ -1059,7 +1106,7 @@ async def retry_batch(
         event_key="job.retried",
         state=replacement.outcome or replacement.phase,
         message="Batch retry successor created",
-        detail={"original_job_id": original.id, "selected_children": len(selected)},
+        detail={"original_job_id": original.id, "selected_children": len(intents)},
     )
     await session.flush()
     return result

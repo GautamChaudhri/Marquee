@@ -1,8 +1,8 @@
 """TV pipeline routes — run triggers, review queue, series history (design 04 §10).
 
-Mirrors ``marquee/api/routes/pipeline.py``'s movie endpoints. TV producers
-seal ticketless ``poster_pipeline_tv_batch`` control parents whose show and
-season assets execute as canonical, non-deploying ``poster_pipeline`` children.
+Mirrors ``marquee/api/routes/pipeline.py``'s movie endpoints. TV producers seal
+ticketless ``poster_pipeline_tv_batch`` control parents whose show and season
+assets execute as canonical, non-deploying single or grouped analysis leaves.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from marquee.api.routes.pipeline import (
     aggregate_run_metrics,
 )
 from marquee.config import settings
+from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.poster_submission import (
@@ -148,20 +149,14 @@ def _asset_subject(asset: dict) -> tuple[str, int]:
 
 
 async def _active_tv_asset_jobs(db: AsyncSession) -> dict[tuple[str, int], Job]:
-    """Return canonical TV children still covered by active work.
-
-    A child remains active coverage after it terminalizes while its fixed parent is
-    still running another child. This is the critical interval where a completed show
-    poster must not permit a duplicate season/show batch.
-    """
+    """Return TV subjects covered by active single or grouped canonical work."""
     parent = aliased(Job)
     rows = (
         await db.execute(
             select(Job)
             .outerjoin(parent, parent.id == Job.parent_id)
             .where(
-                Job.type == "poster_pipeline",
-                Job.subject_kind.in_(("series", "season")),
+                Job.type.in_(("poster_pipeline", "poster_pipeline_group")),
                 or_(
                     Job.phase.in_(_ACTIVE_JOB_PHASES),
                     and_(
@@ -175,13 +170,40 @@ async def _active_tv_asset_jobs(db: AsyncSession) -> dict[tuple[str, int], Job]:
     ).scalars()
     active: dict[tuple[str, int], Job] = {}
     for job in rows:
-        if job.subject_reference is None:
+        if job.type == "poster_pipeline":
+            if job.subject_kind not in ("series", "season") or job.subject_reference is None:
+                continue
+            try:
+                subject_id = int(job.subject_reference)
+            except ValueError:
+                continue
+            active.setdefault((job.subject_kind, subject_id), job)
             continue
-        try:
-            subject_id = int(job.subject_reference)
-        except ValueError:
+
+        snapshot = job.subject_snapshot if isinstance(job.subject_snapshot, dict) else {}
+        members = snapshot.get("members")
+        if not isinstance(members, list):
             continue
-        active.setdefault((job.subject_kind, subject_id), job)
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            subject_key = member.get("subject_key")
+            if isinstance(subject_key, str):
+                kind, separator, raw_id = subject_key.partition(":")
+                if separator and kind in ("series", "season"):
+                    try:
+                        subject_id = int(raw_id)
+                    except ValueError:
+                        continue
+                    active.setdefault((kind, subject_id), job)
+                    continue
+            subject = member.get("subject")
+            if not isinstance(subject, dict):
+                continue
+            kind = subject.get("kind")
+            raw_id = subject.get(f"{kind}_id") if kind in ("series", "season") else None
+            if isinstance(raw_id, int):
+                active.setdefault((kind, raw_id), job)
     return active
 
 
@@ -423,6 +445,87 @@ def _expand_assets(
     return assets
 
 
+def _poster_member_request(
+    asset: dict,
+    *,
+    series_by_id: dict[int, Series],
+    season_by_id: dict[int, Season],
+) -> tuple[dict[str, object], str, int]:
+    """Freeze one TV member request and its canonical subject identity."""
+    series = series_by_id[asset["series_id"]]
+    if asset["media_type"] == "series":
+        subject_kind = "series"
+        subject_id = series.id
+        title = series.title
+        request_subject: dict[str, int] = {"series_id": series.id}
+        reference = f"tv:{series.tmdb_id}"
+    else:
+        season = season_by_id[asset["season_id"]]
+        subject_kind = "season"
+        subject_id = season.id
+        title = f"{series.title} · Season {season.season_number}"
+        request_subject = {"season_id": season.id}
+        reference = f"tv:{series.tmdb_id}:season:{season.season_number}"
+    return (
+        {
+            **request_subject,
+            "tmdb_id": series.tmdb_id,
+            "title": title,
+            "source_descriptors": [{"provider": "tmdb", "reference": reference}],
+        },
+        subject_kind,
+        subject_id,
+    )
+
+
+def _tv_group_chunks(
+    assets: list[dict],
+    *,
+    season_by_id: dict[int, Season],
+    target_size: int,
+) -> list[list[dict]]:
+    """Greedily pack whole-show groups, splitting only above the hard limit."""
+    by_series: dict[int, list[dict]] = {}
+    for asset in assets:
+        by_series.setdefault(asset["series_id"], []).append(asset)
+
+    target_size = min(16, max(1, target_size))
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    for group in by_series.values():
+        ordered = sorted(
+            group,
+            key=lambda asset: (
+                0 if asset["media_type"] == "series" else 1,
+                (
+                    season_by_id[asset["season_id"]].season_number
+                    if asset["media_type"] == "season"
+                    else -1
+                ),
+                asset.get("season_id", -1),
+            ),
+        )
+        if len(ordered) > 16:
+            if current:
+                chunks.append(current)
+                current = []
+            chunks.extend(ordered[offset : offset + 16] for offset in range(0, len(ordered), 16))
+            continue
+        if len(ordered) > target_size:
+            if current:
+                chunks.append(current)
+                current = []
+            chunks.append(ordered)
+            continue
+        if current and len(current) + len(ordered) > target_size:
+            chunks.append(current)
+            current = []
+        current.extend(ordered)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _poster_child_intents(
     *,
     assets: list[dict],
@@ -431,33 +534,60 @@ def _poster_child_intents(
     nonce: str,
     initiator: Initiator,
     priority: int,
+    group_enabled: bool = False,
+    chunk_size: int = 8,
 ) -> list[SubmissionIntent]:
     """Freeze TV asset identity and labels before creating canonical children."""
-    children: list[SubmissionIntent] = []
+    if group_enabled:
+        children: list[SubmissionIntent] = []
+        for chunk_index, chunk in enumerate(
+            _tv_group_chunks(
+                assets,
+                season_by_id=season_by_id,
+                target_size=chunk_size,
+            )
+        ):
+            members = [
+                _poster_member_request(
+                    asset,
+                    series_by_id=series_by_id,
+                    season_by_id=season_by_id,
+                )[0]
+                for asset in chunk
+            ]
+            children.append(
+                SubmissionIntent(
+                    job_type="poster_pipeline_group",
+                    request={
+                        "library": "tv",
+                        "chunk_index": chunk_index,
+                        "members": members,
+                    },
+                    subject=SubjectLocator(
+                        kind="poster_subject_group",
+                        reference=f"tv-{nonce[:20]}-{chunk_index}",
+                    ),
+                    trigger=TriggerKind.BATCH,
+                    initiator=initiator,
+                    idempotency_key=(
+                        f"poster_pipeline_group:batch-{nonce}-chunk-{chunk_index}"
+                    ),
+                    priority=priority,
+                )
+            )
+        return children
+
+    children = []
     for asset in assets:
-        series = series_by_id[asset["series_id"]]
-        if asset["media_type"] == "series":
-            subject_kind = "series"
-            subject_id = series.id
-            title = series.title
-            request_subject = {"series_id": series.id}
-            reference = f"tv:{series.tmdb_id}"
-        else:
-            season = season_by_id[asset["season_id"]]
-            subject_kind = "season"
-            subject_id = season.id
-            title = f"{series.title} · Season {season.season_number}"
-            request_subject = {"season_id": season.id}
-            reference = f"tv:{series.tmdb_id}:season:{season.season_number}"
+        request, subject_kind, subject_id = _poster_member_request(
+            asset,
+            series_by_id=series_by_id,
+            season_by_id=season_by_id,
+        )
         children.append(
             SubmissionIntent(
                 job_type="poster_pipeline",
-                request={
-                    **request_subject,
-                    "tmdb_id": series.tmdb_id,
-                    "title": title,
-                    "source_descriptors": [{"provider": "tmdb", "reference": reference}],
-                },
+                request=request,
                 subject=SubjectLocator(kind=subject_kind, reference=str(subject_id)),
                 trigger=TriggerKind.BATCH,
                 initiator=initiator,
@@ -473,7 +603,7 @@ async def run_tv_pipeline_batch(
     body: TVBatchRunRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JobSubmissionResponse:
-    """Create a ticketless TV poster parent with one immutable child per asset."""
+    """Create a ticketless TV poster parent over immutable asset work."""
     scope = body.scope
     if scope not in ("missing", "all", "selected"):
         raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
@@ -539,6 +669,7 @@ async def run_tv_pipeline_batch(
 
             nonce = uuid4().hex
             initiator = Initiator(kind="system", identifier="pipeline-tv-api")
+            effective = configuration_provider.effective("pipeline")
             children = _poster_child_intents(
                 assets=assets,
                 series_by_id={series.id: series for series in series_rows},
@@ -546,6 +677,8 @@ async def run_tv_pipeline_batch(
                 nonce=nonce,
                 initiator=initiator,
                 priority=80,
+                group_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
+                chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
             )
             result = await create_fixed_batch(
                 db,
@@ -662,6 +795,7 @@ async def run_series_pipeline(
                 )
                 nonce = uuid4().hex
                 initiator = Initiator(kind="system", identifier="pipeline-tv-api")
+                effective = configuration_provider.effective("pipeline")
                 children = _poster_child_intents(
                     assets=assets,
                     series_by_id={series.id: series},
@@ -669,6 +803,8 @@ async def run_series_pipeline(
                     nonce=nonce,
                     initiator=initiator,
                     priority=85,
+                    group_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
+                    chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
                 )
                 result = await create_fixed_batch(
                     db,

@@ -318,6 +318,7 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
         assert run is not None, (
             "poster_pipeline must write a PipelineRun linked to the canonical job"
         )
+        assert run.subject_key == f"movie:{movie.id}"
         archive = await load_pipeline_archive(session, run)
         selected = await session.get(JobArtifact, run.selected_artifact_id)
         acknowledgement = await session.scalar(

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.configuration_cache import configuration_provider
-from marquee.core.jobs.contracts import JobAction
+from marquee.core.jobs.contracts import JobAction, TriggerKind
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
@@ -262,6 +262,78 @@ async def change_priority(
     return JobControlResult(JobAction.CHANGE_PRIORITY, job, definition.execution_class.value)
 
 
+async def _retry_poster_group(
+    session: AsyncSession,
+    *,
+    original: Job,
+    expected_fence_token: int,
+) -> Job:
+    """Expand a grouped poster retry into a new fixed parent of single leaves."""
+    from marquee.core.jobs.batches import (  # noqa: PLC0415
+        BatchScope,
+        _initiator_from_document,
+        create_fixed_batch,
+    )
+    from marquee.core.jobs.documents import (  # noqa: PLC0415
+        PosterPipelineGroupRequestV1,
+    )
+    from marquee.core.jobs.poster_group_retry import (  # noqa: PLC0415
+        group_member_intents,
+        retryable_group_members,
+    )
+
+    request = PosterPipelineGroupRequestV1.model_validate(original.request)
+    members = await retryable_group_members(session, group_job=original)
+    initiator = _initiator_from_document(original.initiator)
+    intents = group_member_intents(
+        members,
+        source_job=original,
+        initiator=initiator,
+        key_prefix=f"retry-{original.id[:16]}-{expected_fence_token}",
+    )
+    parent_type = (
+        "poster_pipeline_batch"
+        if request.library == "movies"
+        else "poster_pipeline_tv_batch"
+    )
+    created = await create_fixed_batch(
+        session,
+        parent_job_type=parent_type,
+        parent_request={"scope": "selected", "selection_count": len(intents)},
+        scope=BatchScope(
+            reference=f"retry-{original.id[:32]}-{expected_fence_token}",
+            display_name="Retried poster analysis",
+            summary=f"{len(intents)} failed grouped poster member(s)",
+        ),
+        trigger=TriggerKind.BATCH,
+        initiator=initiator,
+        idempotency_key=(
+            f"{parent_type}:retry-group-{original.id}-{expected_fence_token}"
+        ),
+        children=intents,
+        priority=original.priority,
+    )
+    replacement = await session.get(Job, created.parent.job_id)
+    if replacement is None:
+        raise RuntimeError("poster group retry parent disappeared")
+    replacement.retry_of_job_id = original.id
+    for child_result in created.children:
+        successor = await session.get(Job, child_result.job_id)
+        if successor is None:
+            raise RuntimeError("poster group retry child disappeared")
+        successor.retry_of_job_id = original.id
+    await job_event_writer.append(
+        session,
+        job_id=replacement.id,
+        event_key="job.retried",
+        state=replacement.outcome or replacement.phase,
+        message="Grouped poster retry expanded into single-subject successors",
+        detail={"original_job_id": original.id, "selected_members": len(intents)},
+    )
+    await session.flush()
+    return replacement
+
+
 async def retry(
     session: AsyncSession, *, job_id: str, expected_fence_token: int
 ) -> JobControlResult:
@@ -289,7 +361,26 @@ async def retry(
             except TastePreferenceError as exc:
                 raise _conflict(original, "action_not_allowed", str(exc), action="retry") from exc
         batch = await session.get(JobBatch, original.id)
-        if batch is not None:
+        if original.type == "poster_pipeline_group":
+            try:
+                replacement = await _retry_poster_group(
+                    session,
+                    original=original,
+                    expected_fence_token=expected_fence_token,
+                )
+            except (TypeError, ValueError, RuntimeError) as exc:
+                raise _conflict(
+                    original, "action_not_allowed", str(exc), action="retry"
+                ) from exc
+            original.fence_token += 1
+            batch_result = JobControlResult(
+                JobAction.RETRY,
+                replacement,
+                definition.execution_class.value,
+                original_job_id=original.id,
+                replacement_job_id=replacement.id,
+            )
+        elif batch is not None:
             from marquee.core.jobs.batches import retry_batch
 
             try:

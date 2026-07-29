@@ -134,6 +134,8 @@ KNOB_GROUPS: list[dict[str, Any]] = [
         "knobs": [
             "TMDB_POSTER_SIZE",
             "PIPELINE_BATCH_MAX_MOVIES",
+            "POSTER_GROUP_ENABLED",
+            "POSTER_GROUP_CHUNK_SIZE",
         ],
     },
     {
@@ -272,6 +274,8 @@ KNOB_META: dict[str, dict[str, Any]] = {
         "options": ["w92", "w154", "w185", "w342", "w500", "w780", "original"],
     },
     "PIPELINE_BATCH_MAX_MOVIES": {"kind": "int", "min": 1, "max": 5000, "step": 10},
+    "POSTER_GROUP_ENABLED": {"kind": "bool"},
+    "POSTER_GROUP_CHUNK_SIZE": {"kind": "int", "min": 1, "max": 16, "step": 1},
     # ── Advanced ─────────────────────────────────────────────────────
     "NORM_KNN_MIN": {"kind": "float", "min": 0, "max": 1, "step": 0.01},
     "NORM_KNN_MAX": {"kind": "float", "min": 0, "max": 1, "step": 0.01},

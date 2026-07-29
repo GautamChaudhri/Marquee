@@ -14,10 +14,7 @@ _MAX_ARCHIVE_BYTES = 1024 * 1024
 
 
 async def load_pipeline_archive(session: AsyncSession, run: PipelineRun) -> dict | None:
-    """Load and verify the archive artifact linked by the canonical run projection.
-
-    Every product run fails closed unless its registered archive evidence is valid.
-    """
+    """Load and verify the archive artifact linked by the canonical run projection."""
     if run.archive_artifact_id is None:
         return None
     artifact = await session.get(JobArtifact, run.archive_artifact_id)
@@ -38,4 +35,14 @@ async def load_pipeline_archive(session: AsyncSession, run: PipelineRun) -> dict
         document = json.loads(await asyncio.to_thread(path.read_text))
     except (OSError, ValueError):
         return None
-    return document if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        return None
+    if artifact.artifact_metadata.get("group_fallback") is not True:
+        return document
+    members = document.get("members")
+    if not isinstance(members, list):
+        return None
+    for member in members:
+        if isinstance(member, dict) and member.get("subject_key") == run.subject_key:
+            return member
+    return None

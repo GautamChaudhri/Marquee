@@ -35,6 +35,7 @@ from marquee.ml.colorfulness import title_colorfulness
 from marquee.ml.dino import DinoImageEncoder, dino_active, preprocess_dino
 from marquee.ml.embedding import CLIPImageEncoder
 from marquee.ml.face import FaceDetector
+from marquee.ml.hardware import effective_clip_batch_size
 from marquee.ml.namespaces import TasteNamespace
 from marquee.ml.normalize import normalize_features, quality_artifact_raw
 from marquee.ml.person import PersonDetector
@@ -108,11 +109,16 @@ class FeatureExtractor:
         person_detector: PersonDetector | None = None,
         zeroshot_axes: ZeroShotAxes | None = None,
         personalization_mode: str = "personalized",
+        embedding_cache_enabled: bool = True,
     ):
         if personalization_mode not in {"collecting", "personalized"}:
             raise ValueError(f"Unsupported personalization mode: {personalization_mode}")
         self.config = config
         self.personalization_mode = personalization_mode
+        self.embedding_cache_enabled = embedding_cache_enabled
+        # Contained runners disable the disk cache but still need CLIP vectors
+        # for STACK_SIGNAL=clip (and DINO fallback) later in the same run.
+        self._memory_embeddings: dict[str, np.ndarray] = {}
         self.encoder = encoder or CLIPImageEncoder()
         self.aesthetic = aesthetic or AestheticPredictor()
         self.face_detector = face_detector or FaceDetector()
@@ -414,9 +420,9 @@ class FeatureExtractor:
     ) -> list[FeatureVector | Exception]:
         """Fill in the detail scalars for OCR/pHash survivors.
 
-        DINOv2 runs as one batched pass over all survivors; the per-poster
-        CV work follows. Per-item failures come back as exceptions in their
-        slot, everything else continues (design 04 §13).
+        DINOv2 sees the union of survivors but preprocessing and encoding are
+        streamed in bounded slices. Per-item failures come back as exceptions
+        in their original slot; session-level inference failures still raise.
 
         When ``dino_vectors_out`` is provided, the raw L2-normalized DINOv2
         embedding for each item is stored into it keyed by the item's index
@@ -425,18 +431,24 @@ class FeatureExtractor:
         dino_scores: dict[int, float] = {}
         if self._dino_on and items:
             assert self.taste_store is not None
-            dino_indices: list[int] = []
-            dino_pixels: list[np.ndarray] = []
-            for index, (_features, ocr_result) in enumerate(items):
-                try:
-                    with Image.open(ocr_result.image_path) as image:
-                        dino_pixels.append(preprocess_dino(image.convert("RGB")))
-                    dino_indices.append(index)
-                except Exception:  # noqa: BLE001 — handled per-item below
-                    continue  # the CV pass will surface the read error
-            if dino_indices:
-                encoded = self.dino_encoder.encode_batch(dino_pixels)
-                for index, vector in zip(dino_indices, encoded, strict=True):
+            batch_size = max(1, effective_clip_batch_size())
+            for start in range(0, len(items), batch_size):
+                chunk_indices: list[int] = []
+                chunk_pixels: list[np.ndarray] = []
+                for offset, (_features, ocr_result) in enumerate(
+                    items[start : start + batch_size]
+                ):
+                    index = start + offset
+                    try:
+                        with Image.open(ocr_result.image_path) as image:
+                            chunk_pixels.append(preprocess_dino(image.convert("RGB")))
+                        chunk_indices.append(index)
+                    except Exception:  # noqa: BLE001 — handled per-item below
+                        continue  # the CV pass will surface the read error
+                if not chunk_indices:
+                    continue
+                encoded = self.dino_encoder.encode_batch(chunk_pixels)
+                for index, vector in zip(chunk_indices, encoded, strict=True):
                     dino_scores[index] = self.taste_store.dino_style_score(
                         vector, k=self.config.K_NEIGHBORS
                     )
@@ -573,7 +585,13 @@ class FeatureExtractor:
     # Embedding cache
     # ------------------------------------------------------------------
 
+    def load_run_embedding(self, orig_filename: str) -> np.ndarray | None:
+        """Return the CLIP vector retained by this extractor for the current run."""
+        return self._load_cached_embedding(orig_filename)
+
     def _load_cached_embedding(self, orig_filename: str) -> np.ndarray | None:
+        if not self.embedding_cache_enabled:
+            return self._memory_embeddings.get(orig_filename)
         cache_path = self._cache_path(orig_filename)
         if not cache_path.exists():
             return None
@@ -588,6 +606,9 @@ class FeatureExtractor:
         return None
 
     def _save_cached_embedding(self, orig_filename: str, embedding: np.ndarray) -> None:
+        if not self.embedding_cache_enabled:
+            self._memory_embeddings[orig_filename] = embedding
+            return
         cache_path = self._cache_path(orig_filename)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(

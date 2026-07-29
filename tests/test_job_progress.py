@@ -212,3 +212,103 @@ async def test_safe_write_still_reports_an_unexpected_failure_in_full(db, caplog
     assert len(records) == 1
     assert records[0].levelname == "ERROR"
     assert records[0].exc_info is not None
+
+
+async def test_a_retried_attempt_takes_over_progress_instead_of_wedging(db) -> None:
+    """A second attempt must start a new progress lineage, not be compared to the dead one.
+
+    The stored document belongs to the superseded attempt. Validating against it
+    raises the wrong-fence invariant, and because that rejection also stops the
+    stale document from ever being replaced, every later observation is rejected
+    too — the job logs a rejection per cadence beat for the rest of its life while
+    the UI stays frozen on the dead attempt's last snapshot.
+    """
+    job_id, first_attempt_id = await _running_batch(db, "retake")
+    writer = ProgressWriter()
+    await writer.write(
+        job_id=job_id,
+        attempt_id=first_attempt_id,
+        fence_token=1,
+        observation=_observation(3),
+    )
+
+    # The job is interrupted and re-dispatched: new attempt, new fence.
+    second = JobAttempt(
+        job_id=job_id,
+        number=2,
+        fence_token=2,
+        phase="running",
+        started_at=datetime.now(UTC),
+    )
+    db.add(second)
+    await db.flush()
+    await db.execute(
+        update(Job)
+        .where(Job.id == job_id)
+        .values(current_attempt_id=second.id, fence_token=2)
+    )
+    await db.commit()
+
+    # The fresh attempt restarts from the beginning, which would "regress" against
+    # the dead attempt's snapshot as well as carry a different identity.
+    progress = await writer.write(
+        job_id=job_id,
+        attempt_id=second.id,
+        fence_token=2,
+        observation=_observation(1),
+    )
+
+    assert progress.attempt_id == second.id
+    assert progress.attempt_number == 2
+    assert progress.fence_token == 2
+    assert progress.overall.percent == 25
+    # The durable sequence stays monotonic so event cursors never rewind.
+    assert progress.sequence == 2
+
+    # And it keeps flowing rather than wedging on the first rejection.
+    later = await writer.write(
+        job_id=job_id,
+        attempt_id=second.id,
+        fence_token=2,
+        observation=_observation(2, ordinal=2),
+    )
+    assert later.overall.percent == 50
+    db.expire_all()
+    row = await db.get(Job, job_id)
+    assert row.progress["fence_token"] == 2
+
+
+async def test_a_superseded_attempt_still_cannot_write_progress(db) -> None:
+    """The fence still refuses the orphan — only the current attempt may take over."""
+    job_id, first_attempt_id = await _running_batch(db, "orphan")
+    writer = ProgressWriter()
+    await writer.write(
+        job_id=job_id,
+        attempt_id=first_attempt_id,
+        fence_token=1,
+        observation=_observation(3),
+    )
+
+    second = JobAttempt(
+        job_id=job_id,
+        number=2,
+        fence_token=2,
+        phase="running",
+        started_at=datetime.now(UTC),
+    )
+    db.add(second)
+    await db.flush()
+    await db.execute(
+        update(Job)
+        .where(Job.id == job_id)
+        .values(current_attempt_id=second.id, fence_token=2)
+    )
+    await db.commit()
+
+    with pytest.raises(ProgressWriteError, match="ownership is stale"):
+        await writer.write(
+            job_id=job_id,
+            attempt_id=first_attempt_id,
+            fence_token=1,
+            observation=_observation(4, ordinal=2),
+        )

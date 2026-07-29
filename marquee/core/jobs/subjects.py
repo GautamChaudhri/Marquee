@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, TypeAdapter
+from pydantic import ConfigDict, Field, TypeAdapter, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.core.jobs.documents import StrictDocument
+from marquee.core.jobs.documents import PosterPipelineSubjectKey, StrictDocument
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
@@ -71,6 +71,54 @@ class SeasonSnapshot(SubjectSnapshotBase):
     season_number: int
     year: int | None = None
     artwork_key: str | None = None
+
+
+PosterSubjectSnapshot = Annotated[
+    MovieSnapshot | SeriesSnapshot | SeasonSnapshot,
+    Field(discriminator="kind"),
+]
+
+
+def poster_snapshot_subject_key(subject: PosterSubjectSnapshot) -> str:
+    """Return the canonical durable identity for a poster-capable snapshot."""
+
+    if isinstance(subject, MovieSnapshot):
+        return f"movie:{subject.movie_id}"
+    if isinstance(subject, SeriesSnapshot):
+        return f"series:{subject.series_id}"
+    return f"season:{subject.season_id}"
+
+
+class PosterSubjectGroupMemberSnapshot(StrictDocument):
+    """One explicitly keyed live subject inside a bounded poster group."""
+
+    subject_key: PosterPipelineSubjectKey
+    subject: PosterSubjectSnapshot
+
+    @model_validator(mode="after")
+    def require_canonical_key(self) -> PosterSubjectGroupMemberSnapshot:
+        if self.subject_key != poster_snapshot_subject_key(self.subject):
+            raise ValueError("poster group member subject_key does not match its snapshot")
+        return self
+
+
+class PosterSubjectGroupSnapshot(SubjectSnapshotBase):
+    kind: Literal["poster_subject_group"] = "poster_subject_group"
+    library: Literal["movies", "tv"]
+    chunk_index: int = Field(ge=0)
+    members: tuple[PosterSubjectGroupMemberSnapshot, ...] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def require_one_library_and_unique_members(self) -> PosterSubjectGroupSnapshot:
+        keys = tuple(member.subject_key for member in self.members)
+        if len(set(keys)) != len(keys):
+            raise ValueError("poster group snapshot members must be unique")
+        if any(
+            (member.subject.kind == "movie") != (self.library == "movies")
+            for member in self.members
+        ):
+            raise ValueError("poster group snapshot members must belong to its library")
+        return self
 
 
 class EpisodeSnapshot(SubjectSnapshotBase):
@@ -151,6 +199,7 @@ SubjectSnapshot = Annotated[
     MovieSnapshot
     | SeriesSnapshot
     | SeasonSnapshot
+    | PosterSubjectGroupSnapshot
     | EpisodeSnapshot
     | MediaFileSnapshot
     | PosterCandidateSetSnapshot

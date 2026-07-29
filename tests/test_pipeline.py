@@ -1379,3 +1379,437 @@ def test_gate_detail_fan_junk_combo():
     assert not gate.evaluate_detail(junk).passed
     assert gate.evaluate_detail(junk).reason == "fan_junk_combo"
     assert gate.evaluate_detail(good).passed
+
+
+
+class _LifecycleQueue:
+    def __init__(self, messages=None):
+        self.messages = list(messages or [])
+        self.puts = []
+        self.close_calls = 0
+        self.join_thread_calls = 0
+
+    def put(self, item):
+        self.puts.append(item)
+
+    def get(self, *, timeout=None):
+        del timeout
+        return self.messages.pop(0)
+
+    def close(self):
+        self.close_calls += 1
+
+    def join_thread(self):
+        self.join_thread_calls += 1
+
+
+class _StartingWorker(_FakeWorker):
+    def __init__(
+        self,
+        name: str,
+        pid: int | None,
+        *,
+        start_error: BaseException | None = None,
+    ):
+        super().__init__(name, pid, alive=False, exitcode=None)
+        self.start_error = start_error
+        self.started = False
+
+    def start(self):
+        if self.start_error is not None:
+            raise self.start_error
+        self.started = True
+        self._alive = True
+
+
+class _StartContext:
+    def __init__(self, workers):
+        self.workers = list(workers)
+        self.queues = []
+
+    def Queue(self):  # noqa: N802 - mirrors multiprocessing context API
+        worker_queue = _LifecycleQueue()
+        self.queues.append(worker_queue)
+        return worker_queue
+
+    def Process(self, *, target, args, name):  # noqa: N802 - multiprocessing API
+        del target, args
+        worker = self.workers.pop(0)
+        assert worker.name == name
+        return worker
+
+
+def test_filter_batch_warm_pool_matches_inline(monkeypatch, tmp_path):
+    expected = [_ocr_result("poster.jpg", accepted=True, reason=None)]
+    calls = []
+
+    def run_inline(items, *, num_workers=None, progress=None):
+        calls.append(("inline", list(items), num_workers, progress))
+        return expected
+
+    def run_warm(pool, items, *, progress=None):
+        calls.append(("warm", pool, list(items), progress))
+        return expected
+
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "run_ocr_batch",
+        staticmethod(run_inline),
+    )
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "run_ocr_tasks",
+        staticmethod(run_warm),
+    )
+
+    text_filter = ocr_filter.PosterTextFilter("Example")
+    image = tmp_path / "poster.jpg"
+    pool = ocr_filter.OcrPool([], _LifecycleQueue(), _LifecycleQueue())
+
+    inline = text_filter.filter_batch([image])
+    warm = text_filter.filter_batch([image], pool=pool)
+
+    assert warm == inline == expected
+    assert [call[0] for call in calls] == ["inline", "warm"]
+
+
+
+def test_inline_ocr_teardown_preserves_processing_failure(monkeypatch):
+    pool = ocr_filter.OcrPool([], _LifecycleQueue(), _LifecycleQueue())
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(lambda _workers=None: pool),
+    )
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "run_ocr_tasks",
+        staticmethod(
+            lambda _pool, _items, progress=None: (_ for _ in ()).throw(
+                ValueError("ocr failed")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "stop_ocr_pool",
+        staticmethod(
+            lambda _pool: (_ for _ in ()).throw(RuntimeError("teardown failed"))
+        ),
+    )
+
+    with pytest.raises(ValueError, match="ocr failed"):
+        ocr_filter.PosterTextFilter.run_ocr_batch(
+            [(Path("poster.jpg"), {"poster"}, set())]
+        )
+
+
+def test_ocr_pool_startup_cleanup_is_atomic_on_base_exception(monkeypatch):
+    first = _StartingWorker("poster-ocr-1", 987651)
+    second = _StartingWorker(
+        "poster-ocr-2",
+        None,
+        start_error=KeyboardInterrupt("start interrupted"),
+    )
+    context = _StartContext([first, second])
+    monkeypatch.setattr(ocr_filter.multiprocessing, "get_context", lambda _mode: context)
+    monkeypatch.setattr(ocr_filter, "effective_ocr_omp_threads", lambda _workers: 1)
+
+    with pytest.raises(KeyboardInterrupt, match="start interrupted"):
+        ocr_filter.PosterTextFilter.start_ocr_pool(2)
+
+    assert first.started
+    assert first.terminated
+    assert 987651 not in ocr_filter._active_worker_pids
+    assert len(context.queues) == 2
+    assert all(worker_queue.close_calls == 1 for worker_queue in context.queues)
+    assert all(worker_queue.join_thread_calls == 1 for worker_queue in context.queues)
+
+
+def test_ocr_pool_startup_cleanup_failure_is_not_downgraded(monkeypatch):
+    worker = _StartingWorker(
+        "poster-ocr-1",
+        None,
+        start_error=RuntimeError("worker start failed"),
+    )
+    context = _StartContext([worker])
+    monkeypatch.setattr(ocr_filter.multiprocessing, "get_context", lambda _mode: context)
+    monkeypatch.setattr(ocr_filter, "effective_ocr_omp_threads", lambda _workers: 1)
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "stop_ocr_pool",
+        staticmethod(
+            lambda _pool: (_ for _ in ()).throw(
+                ocr_filter.OcrPoolTeardownError("worker survived cleanup")
+            )
+        ),
+    )
+
+    with pytest.raises(ocr_filter.OcrPoolTeardownError, match="could not be certified"):
+        ocr_filter.PosterTextFilter.start_ocr_pool(1)
+
+
+def test_ocr_pool_readiness_failure_cleans_every_started_worker(monkeypatch):
+    workers = [
+        _StartingWorker("poster-ocr-1", 987652),
+        _StartingWorker("poster-ocr-2", 987653),
+    ]
+    context = _StartContext(workers)
+    monkeypatch.setattr(ocr_filter.multiprocessing, "get_context", lambda _mode: context)
+    monkeypatch.setattr(ocr_filter, "effective_ocr_omp_threads", lambda _workers: 1)
+    monkeypatch.setattr(
+        ocr_filter.PosterTextFilter,
+        "_wait_for_workers_ready",
+        staticmethod(lambda _queue, _workers: (_ for _ in ()).throw(RuntimeError("not ready"))),
+    )
+
+    with pytest.raises(RuntimeError, match="not ready"):
+        ocr_filter.PosterTextFilter.start_ocr_pool(2)
+
+    assert all(worker.started and worker.terminated for worker in workers)
+    assert not ({987652, 987653} & ocr_filter._active_worker_pids.keys())
+    assert all(worker_queue.close_calls == 1 for worker_queue in context.queues)
+
+
+def test_completed_ocr_pool_can_be_torn_down_twice():
+    result = _ocr_result("poster.jpg", accepted=True, reason=None)
+    worker = _FakeWorker("poster-ocr-1", 987654, alive=False, exitcode=0)
+    task_queue = _LifecycleQueue()
+    result_queue = _LifecycleQueue(
+        [(ocr_filter._WORKER_RESULT, 0, result)]
+    )
+    pool = ocr_filter.OcrPool([worker], task_queue, result_queue)
+    ocr_filter._register_worker(worker)
+
+    actual = ocr_filter.PosterTextFilter.run_ocr_tasks(
+        pool,
+        [(Path("poster.jpg"), {"poster"}, set())],
+    )
+    ocr_filter.PosterTextFilter.stop_ocr_pool(pool)
+    ocr_filter.PosterTextFilter.stop_ocr_pool(pool)
+
+    assert actual == [result]
+    assert 987654 not in ocr_filter._active_worker_pids
+    assert task_queue.close_calls == 2
+    assert result_queue.close_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_preload_failure_supplies_none_to_inline_ocr_path(monkeypatch, tmp_path):
+    from marquee.pipeline import orchestrator
+    from marquee.pipeline.runner import FetchOutcome, SyncOutcome
+
+    start_calls = []
+
+    def fail_preload():
+        start_calls.append(True)
+        raise RuntimeError("warmup failed")
+
+    class FakeTMDBClient:
+        def __init__(self, *, read_access_token):
+            assert read_access_token == "token"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            del exc_type, exc, traceback
+
+    image = tmp_path / "poster.jpg"
+    candidate = PosterCandidate(
+        file_path="/poster.jpg",
+        width=500,
+        height=750,
+        aspect_ratio=2 / 3,
+        language=None,
+        vote_average=0.0,
+        vote_count=0,
+    )
+    record = CandidateScore(image_path=image, orig_filename=image.name)
+    fetch = FetchOutcome(
+        candidate_map={image.name: candidate},
+        records={image.name: record},
+        resolution_by_name={image.name: (500, 750)},
+        all_files=[image],
+        primary_name=None,
+        counts={
+            "posters_found": 1,
+            "downloaded": 1,
+            "skipped": 0,
+            "errors": 0,
+            "metadata_gated": 0,
+        },
+    )
+    seen_pools = []
+
+    async def fake_fetch(**_kwargs):
+        return fetch
+
+    def fake_sync(**kwargs):
+        seen_pools.append(kwargs["ocr_pool"])
+        return SyncOutcome()
+
+    monkeypatch.setattr(orchestrator.settings, "TMDB_READ_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(fail_preload),
+    )
+    monkeypatch.setattr(orchestrator, "TMDBClient", FakeTMDBClient)
+    monkeypatch.setattr(orchestrator, "fetch_and_download", fake_fetch)
+    monkeypatch.setattr(orchestrator, "run_sync_stages", fake_sync)
+
+    output = await orchestrator.run_poster_pipeline(
+        subject=orchestrator.PosterSubjectInput(
+            title="Example",
+            movie_id=1,
+            tmdb_id=2,
+        ),
+        source=orchestrator.PosterSourceInput(mode="tmdb"),
+        out_dir=tmp_path,
+        feature_extractor=object(),
+    )
+
+    assert output.status == "completed"
+    assert start_calls == [True]
+    assert seen_pools == [None]
+
+
+@pytest.mark.asyncio
+async def test_preload_does_not_fallback_after_uncertified_cleanup(monkeypatch):
+    from marquee.pipeline import orchestrator
+
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(
+            lambda: (_ for _ in ()).throw(
+                ocr_filter.OcrPoolTeardownError("worker survived cleanup")
+            )
+        ),
+    )
+
+    with pytest.raises(ocr_filter.OcrPoolTeardownError, match="worker survived cleanup"):
+        async with orchestrator._preloaded_ocr_pool(enabled=True) as ready:
+            await ready()
+
+
+@pytest.mark.asyncio
+async def test_missing_tmdb_token_fails_before_preload(monkeypatch, tmp_path):
+    from marquee.pipeline import orchestrator
+
+    starts = []
+    monkeypatch.setattr(orchestrator.settings, "TMDB_READ_ACCESS_TOKEN", None)
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(lambda: starts.append(True)),
+    )
+
+    with pytest.raises(RuntimeError, match="TMDB_READ_ACCESS_TOKEN"):
+        await orchestrator.run_poster_pipeline(
+            subject=orchestrator.PosterSubjectInput(title="Example", movie_id=1),
+            source=orchestrator.PosterSourceInput(mode="tmdb"),
+            out_dir=tmp_path,
+            feature_extractor=object(),
+        )
+
+    assert starts == []
+
+
+@pytest.mark.asyncio
+async def test_fixture_run_does_not_preload_ocr(monkeypatch, tmp_path):
+    from marquee.pipeline import orchestrator
+
+    starts = []
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(lambda: starts.append(True)),
+    )
+
+    output = await orchestrator.run_poster_pipeline(
+        subject=orchestrator.PosterSubjectInput(title="Example", movie_id=1),
+        source=orchestrator.PosterSourceInput(mode="fixture"),
+        out_dir=tmp_path,
+        feature_extractor=object(),
+    )
+
+    assert output.status == "flagged_manual"
+    assert starts == []
+
+
+@pytest.mark.asyncio
+async def test_preload_cancellation_waits_for_pool_teardown(monkeypatch):
+    import asyncio
+    import threading
+
+    from marquee.pipeline import orchestrator
+
+    started = threading.Event()
+    release = threading.Event()
+    worker = _FakeWorker("poster-ocr-cancel", 987655, alive=True, exitcode=None)
+    task_queue = _LifecycleQueue()
+    result_queue = _LifecycleQueue()
+    pool = ocr_filter.OcrPool([worker], task_queue, result_queue)
+
+    def delayed_start():
+        ocr_filter._register_worker(worker)
+        started.set()
+        if not release.wait(timeout=2):
+            raise RuntimeError("test failed to release preload")
+        return pool
+
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(delayed_start),
+    )
+
+    async def fetch_window():
+        async with orchestrator._preloaded_ocr_pool(enabled=True):
+            while not started.is_set():
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(fetch_window())
+    while not started.is_set():
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert 987655 not in ocr_filter._active_worker_pids
+    assert worker.terminated
+    assert task_queue.close_calls == 1
+    assert result_queue.close_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_preload_teardown_failure_surfaces_only_without_prior_failure(monkeypatch):
+    from marquee.pipeline import orchestrator
+
+    pool = ocr_filter.OcrPool([], _LifecycleQueue(), _LifecycleQueue())
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "start_ocr_pool",
+        staticmethod(lambda: pool),
+    )
+    monkeypatch.setattr(
+        orchestrator.PosterTextFilter,
+        "stop_ocr_pool",
+        staticmethod(lambda _pool: (_ for _ in ()).throw(RuntimeError("teardown failed"))),
+    )
+
+    with pytest.raises(RuntimeError, match="teardown failed"):
+        async with orchestrator._preloaded_ocr_pool(enabled=True) as ready:
+            assert await ready() is pool
+
+    with pytest.raises(ValueError, match="pipeline failed"):
+        async with orchestrator._preloaded_ocr_pool(enabled=True) as ready:
+            assert await ready() is pool
+            raise ValueError("pipeline failed")

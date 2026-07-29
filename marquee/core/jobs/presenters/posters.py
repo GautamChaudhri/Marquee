@@ -14,6 +14,8 @@ from marquee.core.jobs.presentation import (
     BadgeValue,
     BeforeAfterRow,
     BeforeAfterSection,
+    ChangeItem,
+    ChangeListSection,
     Fact,
     FactsSection,
     MetricCard,
@@ -25,9 +27,11 @@ from marquee.core.jobs.presentation import (
     TextValue,
 )
 from marquee.core.jobs.presenters.base import JobPresenter, PresenterContext
+from marquee.core.jobs.subjects import PosterSubjectGroupSnapshot
 
 POSTER_JOB_TYPES = (
     "poster_pipeline",
+    "poster_pipeline_group",
     "poster_pipeline_batch",
     "poster_pipeline_tv_batch",
     "poster_deploy",
@@ -43,6 +47,7 @@ POSTER_JOB_TYPES = (
 
 _HEADLINES = {
     "poster_pipeline": "Select the best poster",
+    "poster_pipeline_group": "Select posters for a processing group",
     "poster_pipeline_batch": "Select posters across the movie library",
     "poster_pipeline_tv_batch": "Select posters across the TV library",
     "poster_deploy": "Deploy selected poster artwork",
@@ -58,6 +63,9 @@ _HEADLINES = {
 
 _EXPLANATIONS = {
     "poster_pipeline": "Fetches candidates, filters junk, and ranks the survivors with the taste profile.",
+    "poster_pipeline_group": (
+        "Processes a bounded group stage by stage while preserving one result per subject."
+    ),
     "poster_pipeline_batch": "Runs the poster pipeline for each selected movie.",
     "poster_pipeline_tv_batch": "Runs the poster pipeline for each selected show and season.",
     "poster_deploy": "Validates, backs up, and atomically publishes selected artwork.",
@@ -70,6 +78,44 @@ _EXPLANATIONS = {
     "poster_backup_all": "Copies every deployed poster into the backup area.",
     "poster_maintenance": "Removes stale cache entries and orphaned archives.",
 }
+
+
+def _group_members_section(ctx: PresenterContext) -> ChangeListSection | None:
+    """List the subjects a grouped run covered, with each one's own outcome.
+
+    A group that fails before projection writes no ``PipelineRun`` rows at all,
+    so without this the operator sees "8 subjects · Failed" and has no way to
+    learn *which* eight. The sealed snapshot already carries every member.
+    """
+    subject = ctx.subject
+    if not isinstance(subject, PosterSubjectGroupSnapshot):
+        return None
+    failed = frozenset(getattr(ctx.result, "failed_subject_keys", ()) or ())
+    # Without a result document nothing is attributable to a member: a systemic
+    # failure took the whole chunk down before any subject was analyzed.
+    attributable = ctx.result is not None
+    items = tuple(
+        ChangeItem(
+            target_key=member.subject_key,
+            # Snapshot display names allow 500 characters; a change item allows 300.
+            target_label=member.subject.display_name[:300],
+            requested="Poster analysis",
+            outcome=(
+                "failed"
+                if member.subject_key in failed
+                else "succeeded"
+                if attributable
+                else "not_applied"
+            ),
+            reason=(
+                None
+                if attributable
+                else "The grouped run ended before this subject produced a result."
+            ),
+        )
+        for member in subject.members
+    )
+    return ChangeListSection(title="Subjects in this group", items=items) if items else None
 
 
 def _score_interpretation(score: float) -> str:
@@ -126,6 +172,10 @@ class PosterPresenter(JobPresenter):
             )
         if facts:
             sections.append(FactsSection(title="Selection", facts=tuple(facts)))
+
+        members = _group_members_section(ctx)
+        if members is not None:
+            sections.append(members)
 
         cards: list[MetricCard] = []
         score = ctx.summary_value("score", float | int)

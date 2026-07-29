@@ -13,6 +13,7 @@ JOB_LABELS: dict[str, str] = {
     "poster_maintenance": "Poster Maintenance",
     "poster_heal": "Poster Healing",
     "poster_pipeline": "Poster Pipeline",
+    "poster_pipeline_group": "Poster Pipeline Group",
     "poster_pipeline_batch": "Poster Pipeline (Batch)",
     "poster_pipeline_tv_batch": "TV Poster Pipeline (Batch)",
     "poster_rescan": "Poster Rescan",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import signal
 import sys
@@ -23,6 +24,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from marquee.core.jobs.runner_protocol import (
     CONTROL_FD_ENV,
@@ -183,7 +185,13 @@ def _poster_feature_runtime(personalization_mode: str) -> tuple[Any, Path | None
     from marquee.pipeline.features import FeatureExtractor  # noqa: PLC0415
 
     if personalization_mode == "collecting":
-        return FeatureExtractor(personalization_mode="collecting"), None
+        return (
+            FeatureExtractor(
+                personalization_mode="collecting",
+                embedding_cache_enabled=False,
+            ),
+            None,
+        )
     from marquee.ml.taste_store import NumpyTasteStore  # noqa: PLC0415
 
     profile_path = Path("profile.npz")
@@ -194,6 +202,7 @@ def _poster_feature_runtime(personalization_mode: str) -> tuple[Any, Path | None
         FeatureExtractor(
             taste_store=NumpyTasteStore(profile_path),
             personalization_mode="personalized",
+            embedding_cache_enabled=False,
         ),
         residual_path if residual_path.is_file() else None,
     )
@@ -256,6 +265,7 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
         series_id=subject_params.get("series_id"),
         season_id=subject_params.get("season_id"),
         season_number=subject_params.get("season_number"),
+        ocr_title=subject_params.get("ocr_title"),
     )
     source = PosterSourceInput(mode=source_params.get("mode", "tmdb"))
     run_id = params.get("run_id") if isinstance(params.get("run_id"), str) else None
@@ -380,6 +390,257 @@ def _run_poster_single(manifest: dict[str, Any], control: ControlWriter) -> dict
         },
         "files": files,
     }
+
+
+def _read_poster_group_document(params: dict[str, Any]) -> dict[str, Any]:
+    """Read and authenticate the one large group input referenced by the manifest."""
+    group_file = params.get("group_file")
+    if group_file != "group.json":
+        raise ProtocolError("poster_group manifest must reference group.json")
+    checksum = params.get("group_checksum", params.get("checksum"))
+    if (
+        not isinstance(checksum, str)
+        or len(checksum) != 64
+        or any(character not in "0123456789abcdef" for character in checksum)
+    ):
+        raise ProtocolError("poster_group manifest has an invalid group checksum")
+    path = Path(_safe_output_name(group_file))
+    if not path.is_file() or path.stat().st_size > 1024 * 1024:
+        raise ProtocolError("poster_group group.json is missing or exceeds its fixed bound")
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != checksum:
+        raise ProtocolError("poster_group group.json failed checksum validation")
+    try:
+        document = json.loads(content)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ProtocolError("poster_group group.json is not valid JSON") from exc
+    if not isinstance(document, dict):
+        raise ProtocolError("poster_group group.json must be an object")
+    return document
+
+
+def _poster_group_subject(raw: dict[str, Any]) -> tuple[str, Any, dict[str, Any], str]:
+    """Validate one host-resolved group member without accepting physical paths."""
+    from marquee.pipeline.orchestrator import PosterSubjectInput  # noqa: PLC0415
+
+    request = raw.get("request") if isinstance(raw.get("request"), dict) else raw
+    snapshot = raw.get("subject")
+    if not isinstance(snapshot, dict):
+        snapshot = raw.get("snapshot") if isinstance(raw.get("snapshot"), dict) else {}
+    subject_key = raw.get("subject_key")
+    if not isinstance(subject_key, str) or not subject_key or len(subject_key) > 200:
+        raise ProtocolError("poster_group member has an invalid subject key")
+    title = request.get("title")
+    if not isinstance(title, str) or not title or len(title) > 300:
+        raise ProtocolError("poster_group member has an invalid title")
+
+    movie_id = request.get("movie_id")
+    series_id = request.get("series_id")
+    season_id = request.get("season_id")
+    episode_id = request.get("episode_id")
+    if episode_id is not None:
+        raise ProtocolError("poster_group does not support episode posters")
+    identities = [value for value in (movie_id, series_id, season_id) if isinstance(value, int)]
+    if len(identities) != 1:
+        raise ProtocolError("poster_group member must name exactly one supported subject")
+    if isinstance(movie_id, int):
+        media_type = "movie"
+    elif isinstance(season_id, int):
+        media_type = "season"
+    else:
+        media_type = "series"
+
+    resolved_series_id = series_id
+    season_number = None
+    ocr_title = None
+    if media_type == "season":
+        resolved_series_id = snapshot.get("series_id")
+        season_number = snapshot.get("season_number")
+        ocr_title = snapshot.get("ocr_title") or snapshot.get("series_title")
+        if not isinstance(resolved_series_id, int) or not isinstance(season_number, int):
+            raise ProtocolError("poster_group season member is missing live snapshot identity")
+        if not isinstance(ocr_title, str) or not ocr_title:
+            raise ProtocolError("poster_group season member is missing its live series title")
+
+    tmdb_id = request.get("tmdb_id")
+    if not isinstance(tmdb_id, int):
+        tmdb_id = snapshot.get("tmdb_id")
+    subject = PosterSubjectInput(
+        title=title,
+        media_type=media_type,
+        movie_id=movie_id if media_type == "movie" else None,
+        tmdb_id=tmdb_id if isinstance(tmdb_id, int) else None,
+        series_id=resolved_series_id if isinstance(resolved_series_id, int) else None,
+        season_id=season_id if isinstance(season_id, int) else None,
+        season_number=season_number,
+        ocr_title=ocr_title,
+    )
+    run_id = raw.get("run_id")
+    if not isinstance(run_id, str) or not run_id or len(run_id) > 128:
+        run_id = uuid4().hex
+    gate = raw.get("text_gate") if isinstance(raw.get("text_gate"), dict) else {}
+    return subject_key, subject, gate, run_id
+
+
+def _bounded_poster_group_members(members: list[Any]) -> list[dict[str, Any]]:
+    """Return only bounded identity/status data for the result control frame.
+
+    The host loads the checksummed ``group-result.json`` for authoritative
+    member detail.  Keeping warnings, errors, titles, timings, or candidate
+    maps here would let escaped Unicode or candidate volume breach the 64 KiB
+    runner protocol frame despite character-count truncation.
+    """
+    return [
+        {
+            "member_index": member.member_index,
+            "subject_key": member.subject_key,
+            "run_id": member.run_id,
+            "status": member.status,
+            "outcome": member.outcome,
+            "archive_file": member.archive_file,
+        }
+        for member in members
+    ]
+
+
+def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
+    """Run one authenticated 1-16 member poster group inside the attempt workspace."""
+    import asyncio  # noqa: PLC0415
+
+    from marquee.pipeline.poster_group_runner import (  # noqa: PLC0415
+        PosterGroupMemberInput,
+        materialize_group_output,
+        run_poster_group,
+    )
+    from marquee.pipeline.scorer import ResidualRuntimeContext  # noqa: PLC0415
+
+    params = manifest.get("params")
+    params = params if isinstance(params, dict) else {}
+    document = _read_poster_group_document(params)
+    library = document.get("library")
+    chunk_index = document.get("chunk_index")
+    raw_members = document.get("members")
+    if library not in {"movies", "tv"} or not isinstance(chunk_index, int) or chunk_index < 0:
+        raise ProtocolError("poster_group group.json has invalid group identity")
+    if not isinstance(raw_members, list) or not 1 <= len(raw_members) <= 16:
+        raise ProtocolError("poster_group group.json must contain 1-16 members")
+
+    members = []
+    subject_keys: set[str] = set()
+    for raw in raw_members:
+        if not isinstance(raw, dict):
+            raise ProtocolError("poster_group member must be an object")
+        subject_key, subject, gate_params, run_id = _poster_group_subject(raw)
+        if subject_key in subject_keys:
+            raise ProtocolError("poster_group member subject keys must be unique")
+        subject_keys.add(subject_key)
+        if (subject.media_type == "movie") != (library == "movies"):
+            raise ProtocolError("poster_group member does not match the declared library")
+        members.append(
+            PosterGroupMemberInput(
+                subject_key=subject_key,
+                subject=subject,
+                ocr_gate=_ocr_gate_context({"text_gate": gate_params}, subject),
+                run_id=run_id,
+            )
+        )
+
+    personalization_mode = params.get("personalization_mode", "collecting")
+    if personalization_mode not in {"collecting", "personalized"}:
+        raise ProtocolError("poster_group manifest has an invalid personalization mode")
+    profile = params.get("taste_profile") if isinstance(params.get("taste_profile"), dict) else {}
+    residual = (
+        params.get("ranking_residual")
+        if isinstance(params.get("ranking_residual"), dict)
+        else {}
+    )
+    runtime_context = None
+    if personalization_mode == "personalized" and residual:
+        checksum = profile.get("checksum")
+        generation = profile.get("generation")
+        residual_checksum = residual.get("checksum")
+        baseline = params.get("baseline_signature")
+        if (
+            isinstance(checksum, str)
+            and isinstance(generation, int)
+            and isinstance(residual_checksum, str)
+            and isinstance(baseline, str)
+        ):
+            runtime_context = ResidualRuntimeContext(
+                library=library,
+                baseline_signature=baseline,
+                profile_checksum=checksum,
+                profile_generation=generation,
+                artifact_id=(
+                    residual.get("artifact_id")
+                    if isinstance(residual.get("artifact_id"), int)
+                    else None
+                ),
+                artifact_checksum=residual_checksum,
+            )
+
+    cursor = 0
+
+    def emit_progress(event: Any) -> None:
+        nonlocal cursor
+        cursor += 1
+        frame: dict[str, Any] = {
+            "v": PROTOCOL_VERSION,
+            "type": "progress",
+            "stage": event.stage,
+            "state": event.state,
+            "cursor": cursor,
+        }
+        for field in ("scope", "subject", "done", "total", "survivors"):
+            value = getattr(event, field, None)
+            if value is not None:
+                frame[field] = value
+        with contextlib.suppress(Exception):
+            control.emit(frame)
+
+    extractor, residual_path = _poster_feature_runtime(personalization_mode)
+    extractor.preflight()
+    output = asyncio.run(
+        run_poster_group(
+            library=library,
+            chunk_index=chunk_index,
+            members=members,
+            out_dir=Path.cwd(),
+            feature_extractor=extractor,
+            residual_path=residual_path,
+            residual_context=runtime_context,
+            personalization_mode=personalization_mode,
+            progress=emit_progress,
+        )
+    )
+    produced = materialize_group_output(output, Path.cwd())
+    # The group report is announced first because it is required fallback
+    # evidence; result files remain empty and the host trusts only file frames.
+    for key in produced:
+        _announce_file(key, control)
+
+    counts = {
+        "succeeded_count": sum(member.outcome == "succeeded" for member in output.members),
+        "no_change_count": sum(member.outcome == "no_change" for member in output.members),
+        "review_required_count": sum(
+            member.outcome == "review_required" for member in output.members
+        ),
+        "failed_count": sum(member.outcome == "failed" for member in output.members),
+    }
+    summary = {
+        "library": library,
+        "chunk_index": chunk_index,
+        "outcome": output.outcome,
+        "member_count": len(output.members),
+        **counts,
+        "run_ids": [member.run_id for member in output.members],
+        "failed_subject_keys": [
+            member.subject_key for member in output.members if member.outcome == "failed"
+        ],
+        "members": _bounded_poster_group_members(output.members),
+        "group_result_file": "group-result.json",
+    }
+    return {"outcome": "succeeded", "summary": summary, "files": []}
 
 
 # Source modes where the handler has already staged every training image under
@@ -635,6 +896,7 @@ def _ignore_until_kill() -> None:
 _OPERATIONS: dict[RunnerOperation, OperationHandler] = {
     RunnerOperation.NOOP: _run_noop,
     RunnerOperation.POSTER_SINGLE: _run_poster_single,
+    RunnerOperation.POSTER_GROUP: _run_poster_group,
     RunnerOperation.TASTE_PROFILE: _run_taste_profile,
     RunnerOperation.TASTE_MAP: _run_taste_map,
     RunnerOperation.ENRICHMENT: _run_enrichment,

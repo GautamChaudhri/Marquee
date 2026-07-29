@@ -63,13 +63,13 @@ SYSTEM_SNAPSHOT = {
 
 
 def test_every_builtin_definition_has_a_dedicated_presenter():
-    assert len(JOB_DEFINITION_REGISTRY) == 23
+    assert len(JOB_DEFINITION_REGISTRY) == 24
     for definition in JOB_DEFINITION_REGISTRY:
         presenter = resolve_presenter(definition)
         assert not presenter.generic, definition.job_type
         assert presenter.key == definition.presenter_key
         assert presenter is not GENERIC_PRESENTER
-    assert len(JOB_PRESENTER_REGISTRY) == 23
+    assert len(JOB_PRESENTER_REGISTRY) == 24
 
 
 def test_every_definition_renders_a_minimal_presentation():
@@ -130,6 +130,21 @@ def test_every_definition_renders_a_minimal_presentation():
             "media_kind": "movie",
             "subject_id": 11,
             "title": "Blade Runner",
+        },
+        "poster_subject_group": {
+            "version": 1,
+            "kind": "poster_subject_group",
+            "display_id": "poster-group:movies:test-000",
+            "display_name": "Movie poster group 1",
+            "snapshot_at": "2026-07-13T09:59:00+00:00",
+            "library": "movies",
+            "chunk_index": 0,
+            "members": [
+                {
+                    "subject_key": "movie:11",
+                    "subject": MOVIE_SNAPSHOT,
+                }
+            ],
         },
         "aggregate_batch": BATCH_SNAPSHOT,
         "maintenance_scope": MAINTENANCE_SNAPSHOT,
@@ -288,3 +303,135 @@ def test_system_noop_presents_cleanly():
     presentation = present_job(job, definition_for("system_noop"))
     assert presentation.action.headline == "Run a system health check"
     assert presentation.warnings == ()
+
+
+TV_GROUP_SNAPSHOT = {
+    "version": 1,
+    "kind": "poster_subject_group",
+    "display_id": "poster-group:tv:tv-abc-2",
+    "display_name": "TV poster group 3 (3 subjects)",
+    "snapshot_at": "2026-07-13T09:59:00+00:00",
+    "library": "tv",
+    "chunk_index": 2,
+    "members": [
+        {
+            "subject_key": "series:71",
+            "subject": {
+                "version": 1,
+                "kind": "series",
+                "display_id": "series:71",
+                "display_name": "Avatar: The Last Airbender",
+                "snapshot_at": "2026-07-13T09:59:00+00:00",
+                "series_id": 71,
+                "series_title": "Avatar: The Last Airbender",
+            },
+        },
+        {
+            "subject_key": "season:382",
+            "subject": {
+                "version": 1,
+                "kind": "season",
+                "display_id": "season:382",
+                "display_name": "Avatar: The Last Airbender · Season 1",
+                "snapshot_at": "2026-07-13T09:59:00+00:00",
+                "season_id": 382,
+                "series_id": 71,
+                "series_title": "Avatar: The Last Airbender",
+                "season_number": 1,
+            },
+        },
+        {
+            "subject_key": "season:383",
+            "subject": {
+                "version": 1,
+                "kind": "season",
+                "display_id": "season:383",
+                "display_name": "Avatar: The Last Airbender · Season 2",
+                "snapshot_at": "2026-07-13T09:59:00+00:00",
+                "season_id": 383,
+                "series_id": 71,
+                "series_title": "Avatar: The Last Airbender",
+                "season_number": 2,
+            },
+        },
+    ],
+}
+
+
+def _group_job(**overrides):
+    values = {
+        "type": "poster_pipeline_group",
+        "subject_kind": "poster_subject_group",
+        "subject_reference": "tv-abc-2",
+        "subject_snapshot": TV_GROUP_SNAPSHOT,
+        "request": {
+            "library": "tv",
+            "chunk_index": 2,
+            "members": [
+                {"series_id": 71, "title": "Avatar: The Last Airbender"},
+                {"season_id": 382, "title": "Avatar: The Last Airbender · Season 1"},
+                {"season_id": 383, "title": "Avatar: The Last Airbender · Season 2"},
+            ],
+        },
+    }
+    values.update(overrides)
+    return make_job(**values)
+
+
+def _member_rows(job):
+    presentation = present_job(job, definition_for("poster_pipeline_group"))
+    sections = [s for s in presentation.sections if s.kind == "change_list"]
+    assert len(sections) == 1, "the group presenter must list its subjects exactly once"
+    return {item.target_key: item for item in sections[0].items}
+
+
+def test_systemic_group_failure_still_names_every_subject():
+    """A chunk that dies before projection writes no PipelineRun rows.
+
+    Without the snapshot-backed listing the operator sees "3 subjects · Failed"
+    and cannot learn which titles need re-running.
+    """
+    rows = _member_rows(
+        _group_job(
+            outcome="failed",
+            result=None,
+            error={
+                "code": "runtime_error",
+                "summary": "poster group runner did not succeed",
+                "remediation": None,
+                "diagnostics": {},
+            },
+        )
+    )
+
+    assert set(rows) == {"series:71", "season:382", "season:383"}
+    assert rows["season:382"].target_label == "Avatar: The Last Airbender · Season 1"
+    # Nothing is attributable to an individual subject yet, so none is blamed.
+    assert {row.outcome for row in rows.values()} == {"not_applied"}
+    assert all(row.reason for row in rows.values())
+
+
+def test_partial_group_marks_only_the_members_that_failed():
+    rows = _member_rows(
+        _group_job(
+            outcome="partially_succeeded",
+            result={
+                "outcome": "review_required",
+                "library": "tv",
+                "chunk_index": 2,
+                "member_count": 3,
+                "succeeded_count": 2,
+                "no_change_count": 0,
+                "review_required_count": 0,
+                "failed_count": 1,
+                "projected_count": 3,
+                "run_ids": ["a" * 32, "b" * 32, "c" * 32],
+                "failed_subject_keys": ["season:383"],
+                "message": "Grouped poster analysis completed with members requiring review.",
+            },
+        )
+    )
+
+    assert rows["season:383"].outcome == "failed"
+    assert rows["series:71"].outcome == "succeeded"
+    assert rows["season:382"].outcome == "succeeded"

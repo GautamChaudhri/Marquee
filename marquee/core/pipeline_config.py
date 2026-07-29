@@ -106,9 +106,13 @@ class PipelineSettings(BaseSettings):
     FEEDBACK_HARD_NEGATIVE_RANK_MAX: int = 10
 
     # ── Batch poster pipeline ─────────────────────────────────────────
-    # Upper bound on movies admitted to a single cross-movie batch run, so an
-    # accidental "run the whole library" can't queue an unbounded job.
+    # Upper bound on movies admitted to one batch submission, so an accidental
+    # "run the whole library" cannot queue unbounded work.
     PIPELINE_BATCH_MAX_MOVIES: int = 500
+    # Roll stage-major poster groups out independently of the single-subject path.
+    POSTER_GROUP_ENABLED: bool = False
+    # Group transport, subject snapshots, and result summaries are hard-capped at 16.
+    POSTER_GROUP_CHUNK_SIZE: int = 8
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4
     NORM_KNN_MAX: float = 0.9
@@ -360,6 +364,8 @@ class PipelineSettings(BaseSettings):
 
         if self.K_NEIGHBORS < 1:
             raise ValueError("K_NEIGHBORS must be at least 1")
+        if not 1 <= self.POSTER_GROUP_CHUNK_SIZE <= 16:
+            raise ValueError("POSTER_GROUP_CHUNK_SIZE must be between 1 and 16")
         if self.KNN_WEIGHTING not in ("mean", "softmax"):
             raise ValueError("KNN_WEIGHTING must be 'mean' or 'softmax'")
         if self.KNN_SOFTMAX_TEMP <= 0:

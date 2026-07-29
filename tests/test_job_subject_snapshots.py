@@ -10,7 +10,10 @@ from marquee.core.jobs.subjects import (
     AggregateBatchSnapshot,
     MaintenanceScopeSnapshot,
     ModelProfileTrainingSnapshot,
+    MovieSnapshot,
     PosterCandidateSetSnapshot,
+    PosterSubjectGroupMemberSnapshot,
+    PosterSubjectGroupSnapshot,
     SubjectNotFoundError,
     SystemWorkSnapshot,
     build_episode_snapshot,
@@ -164,4 +167,35 @@ def test_discriminator_and_extra_fields_are_strict() -> None:
                 "work": "x",
                 "secret": "not allowed",
             }
+        )
+
+
+def test_poster_group_snapshot_keys_and_library_are_self_consistent() -> None:
+    movie = MovieSnapshot(
+        display_id="movie:7",
+        display_name="Arrival",
+        movie_id=7,
+        title="Arrival",
+    )
+    group = PosterSubjectGroupSnapshot(
+        display_id="poster-group:movies:test-000",
+        display_name="Movie poster group 1",
+        library="movies",
+        chunk_index=0,
+        members=(PosterSubjectGroupMemberSnapshot(subject_key="movie:7", subject=movie),),
+    )
+
+    restored = SUBJECT_SNAPSHOT_ADAPTER.validate_python(group.model_dump(mode="json"))
+    assert restored.kind == "poster_subject_group"
+    assert restored.members[0].subject_key == "movie:7"
+
+    with pytest.raises(ValidationError, match="subject_key"):
+        PosterSubjectGroupMemberSnapshot(subject_key="movie:8", subject=movie)
+    with pytest.raises(ValidationError, match="library"):
+        PosterSubjectGroupSnapshot(
+            display_id="poster-group:tv:test-000",
+            display_name="TV poster group 1",
+            library="tv",
+            chunk_index=0,
+            members=(PosterSubjectGroupMemberSnapshot(subject_key="movie:7", subject=movie),),
         )

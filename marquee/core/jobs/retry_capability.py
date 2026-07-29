@@ -24,7 +24,15 @@ def resolve_retry_capability(job: Job, definition: JobDefinition) -> RetryCapabi
         return RetryCapability(False, mode, "definition_retry_unsupported")
     if job.phase != "terminal":
         return RetryCapability(False, mode, "retry_requires_terminal_job")
-    if job.outcome not in {"failed", "cancelled"}:
+    partial_group = (
+        job.type == "poster_pipeline_group"
+        and job.outcome == "partially_succeeded"
+        and isinstance(job.result, dict)
+        and isinstance(job.result.get("failed_count"), int)
+        and job.result["failed_count"] > 0
+    )
+    partial_parent = definition.parent_policy is not None and job.outcome == "partially_succeeded"
+    if job.outcome not in {"failed", "cancelled"} and not partial_group and not partial_parent:
         return RetryCapability(False, mode, "terminal_outcome_is_not_retryable")
     if not definition.enabled and definition.parent_policy is None:
         return RetryCapability(False, mode, "definition_is_not_enabled")

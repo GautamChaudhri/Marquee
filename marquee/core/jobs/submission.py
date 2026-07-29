@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.core.configuration_cache import ExecutionConfigurationSnapshot, configuration_provider
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.definitions import ActiveOverlapMode, JobDefinition, JobDefinitionError
+from marquee.core.jobs.documents import (
+    PosterPipelineGroupRequestV1,
+    poster_pipeline_subject_identity,
+    poster_pipeline_subject_key,
+)
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
@@ -32,6 +37,8 @@ from marquee.core.jobs.subjects import (
     MaintenanceScopeSnapshot,
     ModelProfileTrainingSnapshot,
     PosterCandidateSetSnapshot,
+    PosterSubjectGroupMemberSnapshot,
+    PosterSubjectGroupSnapshot,
     SubjectNotFoundError,
     SubjectSnapshot,
     SystemWorkSnapshot,
@@ -332,8 +339,50 @@ async def _resolve_active_overlap(
     return None
 
 
-async def _resolve_subject(session: AsyncSession, locator: SubjectLocator) -> SubjectSnapshot:
+async def _resolve_poster_subject_group(
+    session: AsyncSession,
+    locator: SubjectLocator,
+    request: Mapping[str, Any] | None,
+) -> PosterSubjectGroupSnapshot:
+    if request is None:
+        raise SubmissionValidationError("poster group resolution requires its normalized request")
+    group = PosterPipelineGroupRequestV1.model_validate(request)
+    members: list[PosterSubjectGroupMemberSnapshot] = []
+    for member in group.members:
+        kind, identifier = poster_pipeline_subject_identity(member)
+        if kind == "movie":
+            subject = await build_movie_snapshot(session, identifier)
+        elif kind == "series":
+            subject = await build_series_snapshot(session, identifier)
+        elif kind == "season":
+            subject = await build_season_snapshot(session, identifier)
+        else:  # The group document rejects episodes before live resolution.
+            raise ValueError("poster groups do not support episode subjects")
+        members.append(
+            PosterSubjectGroupMemberSnapshot(
+                subject_key=poster_pipeline_subject_key(member),
+                subject=subject,
+            )
+        )
+    label = "Movie" if group.library == "movies" else "TV"
+    return PosterSubjectGroupSnapshot(
+        display_id=f"poster-group:{group.library}:{locator.reference}",
+        display_name=f"{label} poster group {group.chunk_index + 1} ({len(members)} subjects)",
+        library=group.library,
+        chunk_index=group.chunk_index,
+        members=tuple(members),
+    )
+
+
+async def _resolve_subject(
+    session: AsyncSession,
+    locator: SubjectLocator,
+    *,
+    request: Mapping[str, Any] | None = None,
+) -> SubjectSnapshot:
     try:
+        if locator.kind == "poster_subject_group":
+            return await _resolve_poster_subject_group(session, locator, request)
         if locator.kind == "system_work":
             if locator.reference != "system_noop":
                 raise SubjectNotFoundError("system work is not registered")
@@ -428,7 +477,7 @@ async def _resolve_subject(session: AsyncSession, locator: SubjectLocator) -> Su
             return await build_episode_snapshot(session, identifier)
         if locator.kind == "media_file":
             return await build_media_file_snapshot(session, identifier)
-    except (KeyError, TypeError, ValueError, SubjectNotFoundError) as exc:
+    except (KeyError, TypeError, ValueError, ValidationError, SubjectNotFoundError) as exc:
         raise SubmissionValidationError("job subject could not be resolved") from exc
     raise SubmissionValidationError("job subject kind is not available for submission")
 
@@ -503,7 +552,11 @@ async def _create_rows(
     now: datetime,
 ) -> tuple[Job, EnqueueIntent]:
     try:
-        subject = await _resolve_subject(session, prepared.intent.subject)
+        subject = await _resolve_subject(
+            session,
+            prepared.intent.subject,
+            request=prepared.request,
+        )
         subject_builder = prepared.definition.subject_builder
         if subject_builder is None:
             raise SubmissionInvariantError("enabled definition has no subject builder")

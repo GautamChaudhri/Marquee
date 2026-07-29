@@ -198,10 +198,15 @@ class RunnerProgressBridge:
                 completed=parsed.done,
                 total=parsed.total,
                 unit=parsed.unit,
+                label=parsed.subject,
                 scope_key=scope_key,
             )
         else:
-            current = ScopeObservation.indeterminate(unit=parsed.unit, scope_key=scope_key)
+            current = ScopeObservation.indeterminate(
+                unit=parsed.unit,
+                label=parsed.subject,
+                scope_key=scope_key,
+            )
 
         # Stage boundaries are durable; intra-stage samples coalesce on cadence.
         durable = parsed.state in {"start", "end"}

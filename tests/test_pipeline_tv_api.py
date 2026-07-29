@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.routes import feedback as feedback_route
+from marquee.api.routes import pipeline_tv as pipeline_tv_route
 from marquee.config import settings
 from marquee.core.jobs.handlers_poster_mutations import execute_poster_reset
 from marquee.database import _get_engine
@@ -307,6 +308,107 @@ async def test_concurrent_series_runs_create_one_show_and_season_batch(
     run_queue = await client.get("/api/pipeline/tv/run-queue")
     assert run_queue.status_code == 200
     assert run_queue.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_grouped_concurrent_series_runs_reuse_the_same_active_parent(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    effective_configuration = pipeline_tv_route.configuration_provider.effective
+    monkeypatch.setattr(
+        pipeline_tv_route.configuration_provider,
+        "effective",
+        lambda owner: {
+            **effective_configuration(owner),
+            **(
+                {"POSTER_GROUP_ENABLED": True, "POSTER_GROUP_CHUNK_SIZE": 8}
+                if owner == "pipeline"
+                else {}
+            ),
+        },
+    )
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Grouped One Click",
+        tmdb_id=601,
+        sonarr_id=22,
+        show_poster=False,
+        seasons=[{"number": 1, "episode_file_count": 8, "poster": False}],
+    )
+
+    first, second = await asyncio.gather(
+        client.post(f"/api/pipeline/tv/series/{series.id}/run", json={}),
+        client.post(f"/api/pipeline/tv/series/{series.id}/run", json={}),
+    )
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    responses = [first.json(), second.json()]
+    assert {item["disposition"] for item in responses} == {"created", "reused"}
+    assert len({item["job_id"] for item in responses}) == 1
+
+    child = await db.scalar(select(Job).where(Job.parent_id == responses[0]["job_id"]))
+    assert child is not None
+    assert child.type == "poster_pipeline_group"
+    assert child.subject_kind == "poster_subject_group"
+    assert {
+        member["subject_key"] for member in child.subject_snapshot["members"]
+    } == {f"series:{series.id}", f"season:{seasons[0].id}"}
+
+
+@pytest.mark.asyncio
+async def test_grouped_active_tv_assets_from_different_parents_return_409(
+    db: AsyncSession,
+    client: AsyncClient,
+    tmp_path: Path,
+    installed_pgqueuer: Queries,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    effective_configuration = pipeline_tv_route.configuration_provider.effective
+    monkeypatch.setattr(
+        pipeline_tv_route.configuration_provider,
+        "effective",
+        lambda owner: {
+            **effective_configuration(owner),
+            **(
+                {"POSTER_GROUP_ENABLED": True, "POSTER_GROUP_CHUNK_SIZE": 8}
+                if owner == "pipeline"
+                else {}
+            ),
+        },
+    )
+    first_series, _ = await _seed_series(
+        db,
+        tmp_path,
+        title="Grouped Active A",
+        tmdb_id=611,
+        sonarr_id=31,
+        seasons=[{"number": 1, "episode_file_count": 8}],
+    )
+    second_series, _ = await _seed_series(
+        db,
+        tmp_path,
+        title="Grouped Active B",
+        tmdb_id=612,
+        sonarr_id=32,
+        seasons=[{"number": 1, "episode_file_count": 8}],
+    )
+    for series in (first_series, second_series):
+        response = await client.post(f"/api/pipeline/tv/series/{series.id}/run", json={})
+        assert response.status_code == 202, response.text
+
+    duplicate = await client.post(
+        "/api/pipeline/tv/batch",
+        json={"scope": "selected", "series_ids": [first_series.id, second_series.id]},
+    )
+
+    assert duplicate.status_code == 409
+    assert "already active" in duplicate.json()["detail"]
 
 
 @pytest.mark.asyncio
