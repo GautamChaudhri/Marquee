@@ -281,6 +281,25 @@ export interface PipelineSummary {
 }
 
 // ── Pipeline run results (GET /pipeline/runs/{id}) ──────────────────────────
+export interface OcrEvidenceRegion {
+	text: string;
+	confidence: number | null;
+	category: string | null;
+	is_title: boolean;
+	is_title_fragment: boolean;
+	is_significant: boolean;
+}
+
+/** Compact, regular-run OCR evidence. The full OCR trace remains DEBUG-only. */
+export interface OcrEvidence {
+	available: boolean;
+	has_text: boolean;
+	detected_text: string | null;
+	title_matched: boolean;
+	regions: OcrEvidenceRegion[];
+	error: string | null;
+}
+
 /** One candidate, shaped by `api/results.py::_candidate_view`. Ranked survivors
  *  carry `rank`/`final_score`/`contributions`; rejects carry a reason. */
 export interface CandidateView {
@@ -295,7 +314,9 @@ export interface CandidateView {
 	gate_reason: string | null;
 	stage_reached: string | null;
 	rejection_reason: string | null;
+	rejection_label: string | null;
 	rejection_explanation: string | null;
+	ocr_evidence: OcrEvidence | null;
 	dedup_kept: string | null;
 	/** Stack layer: which design group this poster belongs to and its place
 	 * within it. Null when stacking is off or the run predates the layer. */

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { gradientFor } from '$lib/display';
 	import type { CandidateView } from '$lib/api/types';
+	import { rejectionTag } from '$lib/pipeline/ocr-display';
 
 	let {
 		candidate,
@@ -44,9 +45,8 @@
 	);
 	let imgFailed = $state(false);
 
-	const reason = $derived(
-		candidate.rejection_explanation ?? candidate.rejection_reason ?? candidate.gate_reason ?? ''
-	);
+	const reason = $derived(rejectionTag(candidate));
+	const reasonDetail = $derived(candidate.rejection_explanation ?? reason);
 </script>
 
 <button
@@ -58,7 +58,7 @@
 	class:inspected
 	disabled={!selectable}
 	onclick={() => onSelect?.(candidate)}
-	title={kind === 'rejected' ? reason : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
+	title={kind === 'rejected' ? reasonDetail : stacked ? `Stack ${tag}` : `Rank ${candidate.rank}`}
 	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}; --group-accent:{accent}"
 >
 	<div class="art">
@@ -84,7 +84,7 @@
 		{#if kind === 'ranked'}
 			<span class="cap-main">{stacked ? tag : `Rank ${candidate.rank}`}</span>
 		{:else}
-			<span class="cap-main bad-text" title={reason}>{reason || 'Rejected'}</span>
+			<span class="cap-main bad-text" title={reasonDetail}>{reason}</span>
 		{/if}
 		{#if onCollapse}
 			<span

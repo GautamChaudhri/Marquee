@@ -22,6 +22,7 @@ from PIL import Image
 from marquee.api.explanations import (
     explain_rejection,
     explain_top_contributions,
+    rejection_label,
     suggest_for_summary,
 )
 from marquee.api.results import build_results_payload, categorize_rejection
@@ -119,6 +120,15 @@ def test_explain_rejection_known_and_unknown():
     assert explain_rejection("some_new_reason") == "Some new reason."
 
 
+def test_ocr_rejection_labels_are_short_and_media_neutral():
+    assert rejection_label("text_heavy") == "Text heavy"
+    assert rejection_label("ocr_no_text") == "No text found"
+    assert rejection_label("no_title") == "Title not matched"
+    assert rejection_label("format_blocklist") == "Format badge"
+    assert rejection_label("ocr_error: worker unavailable") == "OCR error"
+    assert "movie" not in explain_rejection("no_title").lower()
+
+
 def test_explain_top_contributions_orders_and_labels():
     contributions = {"knn_sim": 0.4, "face_area": 0.1, "official_family": 0.3, "aesthetic": 0.0}
     labels = explain_top_contributions(contributions, top_n=2)
@@ -207,6 +217,175 @@ def test_build_results_payload_shape():
     assert "OCR_MAX_RESIDUAL_BOXES" in payload["suggestion"]
     # No stack metadata in the fixture → flat fallback (no stacks, auto = rank 1).
     assert payload["stacks"] == []
+
+
+def test_build_results_payload_exposes_compact_ocr_evidence_and_error_details():
+    archive = _fake_archive()
+    by_name = {candidate["orig_filename"]: candidate for candidate in archive["candidates"]}
+    by_name["c.jpg"].update(
+        rejection_reason="text_heavy",
+        ocr_detected_text="DIE HARD ONLY IN THEATERS",
+        ocr_title_bbox=[[10, 20], [110, 20], [110, 60], [10, 60]],
+        ocr_display_regions=[
+            {
+                "text": "DIE HARD",
+                "confidence": 0.98,
+                "category": "title",
+                "is_title": True,
+                "is_title_fragment": False,
+                "is_significant": False,
+            },
+            {
+                "text": "ONLY IN THEATERS",
+                "confidence": 0.84,
+                "category": "tagline",
+                "is_title": False,
+                "is_title_fragment": False,
+                "is_significant": True,
+            },
+        ],
+    )
+    archive["candidates"].append(
+        {
+            "orig_filename": "ocr-error.jpg",
+            "image_path": "/x/errored/ocr_error__ocr-error.jpg",
+            "rank": None,
+            "stage_reached": "ocr",
+            "rejection_reason": "ocr_error: PaddleOCR could not initialize",
+            "ocr_detected_text": "",
+            "ocr_residual_boxes": [],
+        }
+    )
+    archive["candidates"].append(
+        {
+            "orig_filename": "ocr-worker.jpg",
+            "image_path": "/x/errored/ocr_error__ocr-worker.jpg",
+            "rank": None,
+            "stage_reached": "ocr",
+            "rejection_reason": "ocr_error",
+            "ocr_detected_text": "",
+            "ocr_residual_boxes": [],
+        }
+    )
+
+    payload = build_results_payload(
+        archive, run_id="run1", status="completed", reviewed=False, scorer="weighted"
+    )
+    text_heavy = next(
+        candidate
+        for candidate in payload["rejected"]["ocr"]
+        if candidate["orig_filename"] == "c.jpg"
+    )
+    assert text_heavy["rejection_label"] == "Text heavy"
+    assert text_heavy["ocr_evidence"] == {
+        "available": True,
+        "has_text": True,
+        "detected_text": "DIE HARD ONLY IN THEATERS",
+        "title_matched": True,
+        "regions": by_name["c.jpg"]["ocr_display_regions"],
+        "error": None,
+    }
+
+    ocr_error = next(
+        candidate
+        for candidate in payload["rejected"]["ocr"]
+        if candidate["orig_filename"] == "ocr-error.jpg"
+    )
+    assert ocr_error["rejection_label"] == "OCR error"
+    assert ocr_error["ocr_evidence"]["has_text"] is False
+    assert ocr_error["ocr_evidence"]["error"] == "PaddleOCR could not initialize"
+
+    ocr_worker = next(
+        candidate
+        for candidate in payload["rejected"]["ocr"]
+        if candidate["orig_filename"] == "ocr-worker.jpg"
+    )
+    assert ocr_worker["ocr_evidence"]["error"] == "OCR worker was unavailable."
+
+
+def test_build_results_payload_uses_legacy_ocr_residuals_when_compact_regions_are_missing():
+    archive = _fake_archive()
+    legacy = archive["candidates"][2]
+    legacy.update(
+        rejection_reason="no_title",
+        ocr_detected_text="TAGLINE ONLY",
+        ocr_title_bbox=None,
+        ocr_residual_boxes=[{"text": "TAGLINE ONLY", "confidence": 0.74}],
+    )
+
+    payload = build_results_payload(
+        archive, run_id="run1", status="completed", reviewed=False, scorer="weighted"
+    )
+    evidence = payload["rejected"]["ocr"][0]["ocr_evidence"]
+    assert evidence["has_text"] is True
+    assert evidence["title_matched"] is False
+    assert evidence["regions"] == [
+        {
+            "text": "TAGLINE ONLY",
+            "confidence": 0.74,
+            "category": None,
+            "is_title": False,
+            "is_title_fragment": False,
+            "is_significant": False,
+        }
+    ]
+
+
+def test_rejected_ocr_candidates_archive_compact_display_regions():
+    from marquee.pipeline.runner import _attach_ocr_diagnostics
+    from marquee.pipeline.types import CandidateScore, OCRCandidateResult
+
+    record = CandidateScore(image_path=Path("candidate.jpg"), orig_filename="candidate.jpg")
+    result = OCRCandidateResult(
+        image_path=Path("candidate.jpg"),
+        accepted=False,
+        detected_text="EXAMPLE TITLE ONLY IN THEATERS",
+        reason="text_heavy",
+        title_bbox=None,
+        diagnostics={
+            "detected_boxes": [
+                {
+                    "text": "EXAMPLE TITLE",
+                    "confidence": 0.97,
+                    "category": "title",
+                    "is_title": True,
+                    "is_title_fragment": False,
+                    "is_significant": False,
+                    "bbox": [[0, 0]],
+                },
+                {
+                    "text": "ONLY IN THEATERS",
+                    "confidence": 0.81,
+                    "category": "tagline",
+                    "is_title": False,
+                    "is_title_fragment": False,
+                    "is_significant": True,
+                    "bbox": [[0, 0]],
+                },
+            ]
+        },
+    )
+
+    _attach_ocr_diagnostics(record, result)
+
+    assert record.ocr_display_regions == [
+        {
+            "text": "EXAMPLE TITLE",
+            "confidence": 0.97,
+            "category": "title",
+            "is_title": True,
+            "is_title_fragment": False,
+            "is_significant": False,
+        },
+        {
+            "text": "ONLY IN THEATERS",
+            "confidence": 0.81,
+            "category": "tagline",
+            "is_title": False,
+            "is_title_fragment": False,
+            "is_significant": True,
+        },
+    ]
 
 
 def test_build_results_payload_with_stacks():

@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass
 from marquee.api.explanations import (
     explain_rejection,
     explain_top_contributions,
+    rejection_label,
     suggest_for_summary,
 )
 from marquee.pipeline.types import find_auto_pick_candidate
@@ -129,6 +130,96 @@ def stage_for_candidate(candidate: dict) -> str:
     return "style"
 
 
+_OCR_REASON_BASES = frozenset(
+    {
+        "text_heavy",
+        "no_text",
+        "no_title",
+        "format_blocklist",
+        "has_title",
+    }
+)
+
+
+def _is_ocr_candidate(candidate: dict) -> bool:
+    reason = _rejection_base(candidate.get("rejection_reason")) or ""
+    return (
+        candidate.get("stage_reached") == "ocr"
+        or reason in _OCR_REASON_BASES
+        or reason.startswith("ocr")
+    )
+
+
+def _ocr_error_detail(reason: str | None) -> str | None:
+    if _rejection_base(reason) != "ocr_error":
+        return None
+    _base, separator, detail = (reason or "").partition(":")
+    if separator and detail.strip():
+        return detail.strip()
+    return "OCR worker was unavailable."
+
+
+def _ocr_region_views(candidate: dict) -> list[dict]:
+    """Normalize compact current-run regions and older residual-box archives."""
+    raw_regions = candidate.get("ocr_display_regions")
+    if not isinstance(raw_regions, list):
+        raw_regions = candidate.get("ocr_residual_boxes")
+    if not isinstance(raw_regions, list):
+        return []
+
+    regions: list[dict] = []
+    for region in raw_regions:
+        if not isinstance(region, dict):
+            continue
+        text = region.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        confidence = region.get("confidence")
+        regions.append(
+            {
+                "text": text,
+                "confidence": float(confidence)
+                if isinstance(confidence, int | float) and not isinstance(confidence, bool)
+                else None,
+                "category": region.get("category")
+                if isinstance(region.get("category"), str)
+                else None,
+                "is_title": bool(region.get("is_title")),
+                "is_title_fragment": bool(region.get("is_title_fragment")),
+                "is_significant": bool(region.get("is_significant")),
+            }
+        )
+    return regions
+
+
+def _ocr_evidence(candidate: dict) -> dict | None:
+    """Return bounded OCR inspection data without exposing the DEBUG trace."""
+    if not _is_ocr_candidate(candidate):
+        return None
+
+    detected_text = candidate.get("ocr_detected_text")
+    detected_text = detected_text if isinstance(detected_text, str) else None
+    regions = _ocr_region_views(candidate)
+    available = any(
+        candidate.get(key) is not None
+        for key in (
+            "ocr_detected_text",
+            "ocr_title_bbox",
+            "ocr_residual_boxes",
+            "ocr_display_regions",
+        )
+    )
+    return {
+        "available": available,
+        "has_text": bool(detected_text) or bool(regions),
+        "detected_text": detected_text,
+        "title_matched": bool(candidate.get("ocr_title_bbox"))
+        or any(region["is_title"] for region in regions),
+        "regions": regions,
+        "error": _ocr_error_detail(candidate.get("rejection_reason")),
+    }
+
+
 def _candidate_view(run_id: str, candidate: dict) -> dict:
     return {
         "orig_filename": candidate["orig_filename"],
@@ -142,7 +233,9 @@ def _candidate_view(run_id: str, candidate: dict) -> dict:
         "gate_reason": candidate.get("gate_reason"),
         "stage_reached": candidate.get("stage_reached"),
         "rejection_reason": candidate.get("rejection_reason"),
+        "rejection_label": rejection_label(candidate.get("rejection_reason")),
         "rejection_explanation": explain_rejection(candidate.get("rejection_reason")),
+        "ocr_evidence": _ocr_evidence(candidate),
         "dedup_kept": candidate.get("dedup_kept"),
         "stack_id": candidate.get("stack_id"),
         "stack_rank": candidate.get("stack_rank"),

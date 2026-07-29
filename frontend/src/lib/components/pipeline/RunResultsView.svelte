@@ -13,6 +13,12 @@
 	import { getRunResults, markOcrFalseAcceptance, markOcrFalseRejection } from '$lib/api/pipeline';
 	import { ApiError } from '$lib/api/client';
 	import { submitFeedback, undoFeedback } from '$lib/api/feedback';
+	import {
+		ocrConfidenceLabel,
+		ocrInspectorPanel,
+		ocrRegionLabel,
+		rejectionTag
+	} from '$lib/pipeline/ocr-display';
 	import { rejectAllCopy } from '$lib/pipeline/review-copy';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
@@ -393,6 +399,16 @@
 	const inspectIsAuto = $derived(
 		!!inspected && !!autoPick && inspected.orig_filename === autoPick.orig_filename
 	);
+	const inspectedRejectionTag = $derived(
+		inspected &&
+			(inspected.rejection_label ||
+				inspected.rejection_explanation ||
+				inspected.rejection_reason ||
+				inspected.gate_reason)
+			? rejectionTag(inspected)
+			: null
+	);
+	const inspectedOcrPanel = $derived(inspected ? ocrInspectorPanel(inspected) : null);
 	const inspectDebugLabelKind = $derived.by<'false_rejection' | 'false_acceptance' | null>(() => {
 		if (!inspected || !debugMode) return null;
 		if (inspected.rank != null) return 'false_acceptance';
@@ -729,12 +745,63 @@
 								(of {inspected.stack_size}){/if}</span
 						>
 					{/if}
-					{#if inspected.rank == null && (inspected.rejection_explanation || inspected.stage_reached)}
-						<span class="meta-chip low"
-							>{inspected.rejection_explanation ?? `Stopped at ${inspected.stage_reached}`}</span
-						>
+					{#if inspected.rank == null && (inspectedRejectionTag || inspected.stage_reached)}
+						<span class="meta-chip low" title={inspected.rejection_explanation ?? undefined}>
+							{inspectedRejectionTag ?? `Stopped at ${inspected.stage_reached}`}
+						</span>
 					{/if}
 				</div>
+
+				{#if inspectedOcrPanel?.kind === 'text'}
+					{@const evidence = inspectedOcrPanel.evidence}
+					<section class="ocr-evidence" aria-label="OCR captured text">
+						<div class="ocr-evidence-head">
+							<div>
+								<span class="ocr-evidence-title">OCR captured</span>
+								<span class="ocr-evidence-summary"
+									>{evidence.regions.length} detected region{evidence.regions.length === 1
+										? ''
+										: 's'}</span
+								>
+							</div>
+							<span class="ocr-evidence-state"
+								>{evidence.title_matched ? 'Title matched' : 'Title not matched'}</span
+							>
+						</div>
+						<div class="ocr-transcript">
+							<span class="ocr-evidence-label">OCR read</span>
+							<p class="mono">{evidence.detected_text}</p>
+						</div>
+						{#if evidence.regions.length > 0}
+							<div class="ocr-regions">
+								<span class="ocr-evidence-label">Detected regions</span>
+								<ul>
+									{#each evidence.regions as region, index (`${region.text}:${index}`)}
+										{@const confidence = ocrConfidenceLabel(region.confidence)}
+										<li>
+											<span class="ocr-region-kind">{ocrRegionLabel(region)}</span>
+											<code>{region.text}</code>
+											{#if confidence}<span class="ocr-confidence mono">{confidence}</span>{/if}
+											{#if region.is_significant}
+												<span class="ocr-significant">Counts toward rejection</span>
+											{/if}
+										</li>
+									{/each}
+								</ul>
+							</div>
+						{/if}
+					</section>
+				{:else if inspectedOcrPanel?.kind === 'error'}
+					<section class="ocr-evidence error" aria-label="OCR error">
+						<span class="ocr-evidence-title">OCR error</span>
+						<p class="ocr-error-message mono">{inspectedOcrPanel.message}</p>
+					</section>
+				{:else if inspectedOcrPanel?.kind === 'unavailable'}
+					<section class="ocr-evidence unavailable" aria-label="OCR details unavailable">
+						<span class="ocr-evidence-title">OCR details unavailable</span>
+						<p>{inspectedOcrPanel.message}</p>
+					</section>
+				{/if}
 
 				{#if inspected.explanations?.length}
 					<ul class="explain">
@@ -1252,6 +1319,137 @@
 	.meta-chip.low {
 		color: var(--low);
 		border-color: color-mix(in srgb, var(--low) 40%, transparent);
+	}
+	.ocr-evidence {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		max-width: 640px;
+		padding: 11px 12px;
+		border: 1px solid color-mix(in srgb, var(--info) 35%, var(--line2));
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--info) 5%, var(--panel));
+	}
+	.ocr-evidence.error {
+		border-color: color-mix(in srgb, var(--bad) 45%, var(--line2));
+		background: color-mix(in srgb, var(--bad) 7%, var(--panel));
+	}
+	.ocr-evidence.unavailable {
+		border-color: color-mix(in srgb, var(--warn) 35%, var(--line2));
+		background: color-mix(in srgb, var(--warn) 6%, var(--panel));
+	}
+	.ocr-evidence-head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 10px;
+	}
+	.ocr-evidence-head > div {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		min-width: 0;
+	}
+	.ocr-evidence-title {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--text);
+	}
+	.ocr-evidence-summary,
+	.ocr-evidence-label,
+	.ocr-evidence.unavailable p {
+		font-size: 11px;
+		color: var(--faint);
+	}
+	.ocr-evidence-state {
+		flex-shrink: 0;
+		font-size: 10px;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--info);
+	}
+	.ocr-transcript {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.ocr-transcript p,
+	.ocr-error-message,
+	.ocr-evidence.unavailable p {
+		margin: 0;
+		font-size: 12px;
+		line-height: 1.5;
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.ocr-transcript p {
+		padding: 7px 8px;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--ink) 28%, var(--panel2));
+		color: var(--text);
+	}
+	.ocr-error-message {
+		color: var(--bad);
+	}
+	.ocr-regions {
+		display: flex;
+		flex-direction: column;
+		gap: 5px;
+	}
+	.ocr-regions ul {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		max-height: 190px;
+		margin: 0;
+		padding: 0;
+		overflow: auto;
+		list-style: none;
+	}
+	.ocr-regions li {
+		display: grid;
+		grid-template-columns: minmax(80px, 110px) minmax(0, 1fr) auto auto;
+		align-items: baseline;
+		gap: 7px;
+		padding: 5px 7px;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--panel2) 82%, transparent);
+		font-size: 11px;
+	}
+	.ocr-region-kind {
+		color: var(--muted);
+		font-weight: 650;
+	}
+	.ocr-regions code {
+		min-width: 0;
+		overflow-wrap: anywhere;
+		color: var(--text);
+		font-family: var(--font-mono);
+		font-size: 10.5px;
+	}
+	.ocr-confidence {
+		color: var(--faint);
+		font-size: 10px;
+	}
+	.ocr-significant {
+		color: var(--warn);
+		font-size: 10px;
+		white-space: nowrap;
+	}
+	@media (max-width: 620px) {
+		.ocr-evidence-head,
+		.ocr-evidence-head > div {
+			align-items: flex-start;
+			flex-direction: column;
+			gap: 3px;
+		}
+		.ocr-regions li {
+			grid-template-columns: minmax(76px, 100px) minmax(0, 1fr) auto;
+		}
+		.ocr-significant {
+			grid-column: 2 / -1;
+		}
 	}
 	.explain {
 		margin: 0;

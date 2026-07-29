@@ -210,6 +210,44 @@ def _ocr_box_to_dict(box: OCRTextBox) -> dict:
     }
 
 
+def _ocr_display_regions(diagnostics: dict | None) -> list[dict] | None:
+    """Keep the user-facing subset of an OCR trace for rejected candidates.
+
+    The complete trace is useful for DEBUG label capture but too large for
+    normal archives.  The inspector only needs literal detected text, its
+    confidence, and the gate's classification of each region.
+    """
+    if not isinstance(diagnostics, dict):
+        return None
+    raw_boxes = diagnostics.get("detected_boxes")
+    if not isinstance(raw_boxes, list):
+        return []
+
+    regions: list[dict] = []
+    for raw_box in raw_boxes:
+        if not isinstance(raw_box, dict):
+            continue
+        text = raw_box.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        confidence = raw_box.get("confidence")
+        regions.append(
+            {
+                "text": text,
+                "confidence": float(confidence)
+                if isinstance(confidence, int | float) and not isinstance(confidence, bool)
+                else None,
+                "category": raw_box.get("category")
+                if isinstance(raw_box.get("category"), str)
+                else None,
+                "is_title": bool(raw_box.get("is_title")),
+                "is_title_fragment": bool(raw_box.get("is_title_fragment")),
+                "is_significant": bool(raw_box.get("is_significant")),
+            }
+        )
+    return regions
+
+
 def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) -> None:
     """Persist what OCR actually read onto the record so the diagnostics live in
     the immutable per-run archive instead of only the volatile pipeline.log.
@@ -224,6 +262,9 @@ def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) 
     record.ocr_detected_text = result.detected_text
     record.ocr_title_bbox = _ocr_bbox_to_list(result.title_bbox)
     record.ocr_residual_boxes = [_ocr_box_to_dict(box) for box in result.residual_boxes]
+    record.ocr_display_regions = (
+        _ocr_display_regions(result.diagnostics) if not result.accepted else None
+    )
     record.ocr_trace = result.diagnostics if settings.DEBUG else None
 
 

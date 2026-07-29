@@ -105,6 +105,10 @@ class CandidateScore:
     # residual box a dict of text/confidence/bbox/area/geometry_valid).
     ocr_title_bbox: list | None = None
     ocr_residual_boxes: list[dict] | None = None
+    # Compact per-region OCR evidence for a rejected candidate.  This is safe
+    # to surface in the regular results inspector and intentionally omits the
+    # large DEBUG-only diagnostic trace.
+    ocr_display_regions: list[dict] | None = None
     # Full structured OCR trace (every detected box across all passes, the
     # title match, per-box classification + significance reasoning, and the
     # accept/reject math). Only persisted on DEBUG runs — the OCR-label tooling
@@ -148,6 +152,7 @@ class CandidateScore:
             "ocr_detected_text": self.ocr_detected_text,
             "ocr_title_bbox": self.ocr_title_bbox,
             "ocr_residual_boxes": self.ocr_residual_boxes,
+            "ocr_display_regions": self.ocr_display_regions,
             "ocr_trace": self.ocr_trace,
             "stack_id": self.stack_id,
             "stack_rank": self.stack_rank,
