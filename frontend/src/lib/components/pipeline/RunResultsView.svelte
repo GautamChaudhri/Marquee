@@ -13,6 +13,7 @@
 	import { getRunResults, markOcrFalseAcceptance, markOcrFalseRejection } from '$lib/api/pipeline';
 	import { ApiError } from '$lib/api/client';
 	import { submitFeedback, undoFeedback } from '$lib/api/feedback';
+	import { rejectAllCopy } from '$lib/pipeline/review-copy';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
 	import type {
@@ -40,11 +41,11 @@
 		data: RunResultsViewData;
 		backHref?: string;
 		backLabel?: string;
-		/** Fired once a pick is recorded, so a host with its own queue (the TV
-		 *  series rail) can drop this run and advance. Not fired for reject-all. */
+		/** Fired once a review decision is recorded, so a host with its own queue
+		 *  (the TV series rail) can drop this run and advance. */
 		onreviewed?: (info: {
 			runId: string;
-			action: 'approve' | 'override';
+			action: 'approve' | 'override' | 'reject_all';
 		}) => void | Promise<void>;
 	} = $props();
 
@@ -54,6 +55,12 @@
 	const results = $derived(run && 'ranked' in run ? (run as RunResults) : null);
 	const running = $derived(run != null && !('ranked' in run));
 	const autoPick = $derived(results?.auto_pick ?? null);
+	const rejectCopy = $derived(
+		rejectAllCopy({
+			mediaType: results?.media_type,
+			seasonNumber: results?.subject?.season_number
+		})
+	);
 	const debugMode = $derived(Boolean(data.debugMode));
 	const tileSelectable = $derived(Boolean(debugMode || !results?.reviewed));
 	const REQUIRED_OCR_SNAPSHOT_KEYS = [
@@ -465,6 +472,7 @@
 			toast('Auto-pick rejected — all candidates dismissed', 'info');
 			rejectOpen = false;
 			await reload();
+			await onreviewed?.({ runId: results.run_id, action: 'reject_all' });
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Reject failed', 'bad');
 		} finally {
@@ -1081,8 +1089,8 @@
 <!-- ── Reject-all confirm ── -->
 <ConfirmDialog
 	open={rejectOpen}
-	title="Reject all candidates"
-	message="Records a negative label for the auto-pick and leaves this movie without a chosen poster. You can re-run later."
+	title={rejectCopy.title}
+	message={rejectCopy.message}
 	confirmLabel="Reject all"
 	tone="bad"
 	{busy}

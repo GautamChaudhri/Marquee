@@ -10,6 +10,13 @@
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import MetricsChart from '$lib/components/MetricsChart.svelte';
 	import {
+		resolveTvPosterTab,
+		reviewPosterPreviews,
+		runPosterPlaceholders,
+		seasonLabel,
+		type TvPosterTab
+	} from '$lib/pipeline/tv-display';
+	import {
 		approveTvAuto,
 		getTvMetrics,
 		getTvReviewQueue,
@@ -24,9 +31,18 @@
 
 	let { data }: { data: PageData } = $props();
 
-	type Tab = 'run' | 'review' | 'metrics';
-	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
+	type Tab = TvPosterTab;
+	// The default applies only when the workspace opens; refreshes and manual tab changes stay put.
+	// svelte-ignore state_referenced_locally
+	let tab = $state<Tab>(
+		resolveTvPosterTab(
+			page.url.searchParams.get('tab'),
+			data.runQueue.total,
+			data.reviewQueue.total_series
+		)
+	);
 	function setTab(id: string) {
+		if (id !== 'run' && id !== 'review' && id !== 'metrics') return;
 		tab = id as Tab;
 		const url = new URL(page.url);
 		const sp = url.searchParams;
@@ -72,15 +88,6 @@
 		}
 	}
 
-	function seasonLabel(number: number): string {
-		return number === 0 ? 'S00' : `S${String(number).padStart(2, '0')}`;
-	}
-
-	type PreviewPoster = {
-		url: string;
-		label: string;
-	};
-
 	function compressAssets(
 		assets: { media_type: 'series' | 'season'; number?: number }[]
 	): string[] {
@@ -100,22 +107,6 @@
 			i = j + 1;
 		}
 		return out;
-	}
-
-	function previewPosters(item: (typeof reviewQueue.items)[number]): PreviewPoster[] {
-		const previews: PreviewPoster[] = [];
-		const showUrl = item.show_run?.auto_pick_poster_url;
-		if (showUrl) {
-			previews.push({ url: showUrl, label: 'Show' });
-		}
-		for (const seasonRun of item.season_runs) {
-			if (!seasonRun.auto_pick_poster_url) continue;
-			previews.push({
-				url: seasonRun.auto_pick_poster_url,
-				label: seasonLabel(seasonRun.season_number)
-			});
-		}
-		return previews;
 	}
 
 	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
@@ -254,6 +245,7 @@
 	</div>
 	<div class="run-list">
 		{#each runQueue.items as item (item.series.id)}
+			{@const placeholders = runPosterPlaceholders(item)}
 			<div class="run-row">
 				<label class="pick">
 					<input
@@ -265,12 +257,18 @@
 								: selected.add(item.series.id)}
 					/>
 				</label>
-				<PosterThumb
-					title={item.series.title}
-					year={item.series.year}
-					posterStatus={item.series.poster_url ? 'deployed' : 'missing'}
-					posterUrl={item.series.poster_url}
-				/>
+				<div class="preview-strip" aria-label={`${item.series.title} missing poster placeholders`}>
+					{#each placeholders as placeholder (placeholder.label)}
+						<div class="preview-tile preview-placeholder" title={placeholder.label}>
+							<PosterThumb
+								title={item.series.title}
+								year={item.series.year}
+								posterStatus="missing"
+							/>
+							<span>{placeholder.label}</span>
+						</div>
+					{/each}
+				</div>
 				<div class="series-meta">
 					<strong>{item.series.title}</strong>
 					<span>{item.series.year ?? '—'}</span>
@@ -296,10 +294,11 @@
 	</div>
 	<div class="review-grid">
 		{#each reviewQueue.items as item (item.series.id)}
+			{@const previews = reviewPosterPreviews(item)}
 			<div class="review-card">
-				{#if previewPosters(item).length}
+				{#if previews.length}
 					<div class="preview-strip" aria-label={`${item.series.title} poster previews`}>
-						{#each previewPosters(item) as preview (preview.url)}
+						{#each previews as preview (preview.label)}
 							<div class="preview-tile" title={preview.label}>
 								<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
 								<span>{preview.label}</span>
@@ -307,12 +306,14 @@
 						{/each}
 					</div>
 				{:else}
-					<PosterThumb
-						title={item.series.title}
-						year={item.series.year}
-						posterStatus={item.display_poster_url ? 'deployed' : 'missing'}
-						posterUrl={item.display_poster_url}
-					/>
+					<div class="preview-fallback">
+						<PosterThumb
+							title={item.series.title}
+							year={item.series.year}
+							posterStatus={item.display_poster_url ? 'deployed' : 'missing'}
+							posterUrl={item.display_poster_url}
+						/>
+					</div>
 				{/if}
 				<div class="series-meta">
 					<strong>{item.series.title}</strong>
@@ -374,31 +375,32 @@
 	}
 	.run-row {
 		display: grid;
-		grid-template-columns: auto 96px minmax(0, 1fr) auto;
+		grid-template-columns: auto minmax(192px, 3fr) minmax(0, 2fr) auto;
 		gap: 14px;
 		align-items: center;
 	}
 	.review-card {
 		display: grid;
-		grid-template-columns: 96px minmax(0, 1fr) auto;
+		grid-template-columns: minmax(192px, 3fr) minmax(0, 2fr) auto;
 		gap: 14px;
+		align-items: center;
 		text-align: left;
 	}
 	.preview-strip {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 10px;
-		overflow-x: auto;
-		padding-bottom: 4px;
-		scrollbar-width: thin;
 	}
 	.preview-tile {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		min-width: 96px;
+		width: 96px;
+		flex: 0 0 96px;
 	}
 	.preview-tile img {
-		width: 96px;
+		width: 100%;
+		aspect-ratio: 2 / 3;
 		height: 144px;
 		object-fit: cover;
 		border-radius: 10px;
@@ -410,6 +412,13 @@
 		color: var(--muted);
 		text-align: center;
 		white-space: nowrap;
+	}
+	.preview-placeholder :global(.poster),
+	.preview-fallback :global(.poster) {
+		width: 100%;
+	}
+	.preview-fallback {
+		width: 96px;
 	}
 	.series-meta {
 		display: flex;
@@ -463,6 +472,7 @@
 		color: var(--text);
 	}
 	@media (max-width: 900px) {
+		.run-row,
 		.review-card {
 			grid-template-columns: minmax(0, 1fr);
 		}
