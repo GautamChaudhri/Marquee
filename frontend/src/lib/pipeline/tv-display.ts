@@ -4,7 +4,8 @@ export type TvPosterTab = 'run' | 'review' | 'metrics';
 
 export type TvPosterPreview = {
 	label: string;
-	url: string;
+	/** null when the run produced no auto pick (every candidate was gated out). */
+	url: string | null;
 };
 
 export type TvPosterPlaceholder = {
@@ -30,17 +31,22 @@ export function resolveTvPosterTab(
 	return runTotal === 0 && reviewTotal > 0 ? 'review' : 'run';
 }
 
+/**
+ * One tile per run awaiting review. Runs that ended `flagged_manual` have no auto
+ * pick, and they still get a labelled tile — dropping them left the card showing
+ * an unlabelled poster that was never a candidate for the run it stood in for.
+ */
 export function reviewPosterPreviews(item: TvReviewGroup): TvPosterPreview[] {
 	const previews: TvPosterPreview[] = [];
-	const showUrl = item.show_run?.auto_pick_poster_url;
-	if (showUrl) previews.push({ url: showUrl, label: 'Show' });
+	if (item.show_run) {
+		previews.push({ url: item.show_run.auto_pick_poster_url ?? null, label: 'Show' });
+	}
 
 	for (const seasonRun of [...item.season_runs].sort(
 		(left, right) => left.season_number - right.season_number
 	)) {
-		if (!seasonRun.auto_pick_poster_url) continue;
 		previews.push({
-			url: seasonRun.auto_pick_poster_url,
+			url: seasonRun.auto_pick_poster_url ?? null,
 			label: seasonLabel(seasonRun.season_number)
 		});
 	}

@@ -312,7 +312,18 @@
 					<div class="preview-strip" aria-label={`${item.series.title} poster previews`}>
 						{#each previews as preview (preview.label)}
 							<div class="preview-tile" title={preview.label}>
-								<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
+								{#if preview.url}
+									<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
+								{:else}
+									<div class="preview-placeholder">
+										<PosterThumb
+											title="No pick"
+											gradientKey={item.series.title}
+											centerTitle
+											posterStatus="missing"
+										/>
+									</div>
+								{/if}
 								<span>{preview.label}</span>
 							</div>
 						{/each}
@@ -450,13 +461,33 @@
 		width: 16px;
 		height: 16px;
 	}
+	/* `auto` + non-shrinking tiles: the strip scrolls only when the posters
+	   outgrow the card, and is left untouched when they all fit. */
 	.preview-strip {
 		display: flex;
 		gap: 10px;
 		overflow-x: auto;
-		padding-bottom: 2px;
+		overscroll-behavior-x: contain;
 		scrollbar-width: thin;
 		scrollbar-color: var(--line2) transparent;
+	}
+	.preview-strip:hover {
+		scrollbar-color: var(--faint) transparent;
+	}
+	.preview-strip::-webkit-scrollbar {
+		height: 8px;
+	}
+	.preview-strip::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	.preview-strip::-webkit-scrollbar-thumb {
+		border-radius: 99px;
+		border: 2px solid transparent;
+		background-clip: content-box;
+		background-color: var(--line2);
+	}
+	.preview-strip:hover::-webkit-scrollbar-thumb {
+		background-color: var(--faint);
 	}
 	.preview-tile {
 		display: flex;

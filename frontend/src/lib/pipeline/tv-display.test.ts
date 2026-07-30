@@ -29,7 +29,7 @@ describe('resolveTvPosterTab', () => {
 });
 
 describe('TV poster tile display data', () => {
-	it('returns the show followed by the best season posters in season order', () => {
+	it('returns the show followed by every season run in season order', () => {
 		const item: TvReviewGroup = {
 			series: { id: 1, title: 'Example', year: 2024, tmdb_id: 123 },
 			show_run: { ...run('show'), auto_pick_poster_url: '/show.jpg' },
@@ -63,8 +63,29 @@ describe('TV poster tile display data', () => {
 		expect(reviewPosterPreviews(item)).toEqual([
 			{ label: 'Show', url: '/show.jpg' },
 			{ label: 'S01', url: '/season-one.jpg' },
-			{ label: 'S02', url: '/season-two.jpg' }
+			{ label: 'S02', url: '/season-two.jpg' },
+			{ label: 'S03', url: null }
 		]);
+	});
+
+	it('keeps a labelled tile for a season whose run picked nothing', () => {
+		const item: TvReviewGroup = {
+			series: { id: 2, title: 'Devs', year: 2020, tmdb_id: 456 },
+			show_run: null,
+			season_runs: [
+				{
+					season_number: 1,
+					season_id: 4,
+					run: { ...run('season-one'), status: 'flagged_manual' },
+					auto_pick_poster_url: null,
+					flagged_no_candidates: true
+				}
+			],
+			seasons_only: true,
+			display_poster_url: '/api/library/series/2/poster'
+		};
+
+		expect(reviewPosterPreviews(item)).toEqual([{ label: 'S01', url: null }]);
 	});
 
 	it('uses the series title only for the show placeholder', () => {
