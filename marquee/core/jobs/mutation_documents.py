@@ -12,6 +12,7 @@ from marquee.core.jobs.documents import SafeJobErrorV1, StrictDocument
 
 _KEY = re.compile(r"^[A-Za-z0-9._:-]+(?:/[A-Za-z0-9._:-]+)*$")
 _CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,79}$")
+_MAX_MAINTENANCE_RESULT_ITEMS = 200_000
 Checksum = Annotated[str, Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]+$")]
 
 
@@ -353,8 +354,12 @@ class PipelineCacheClearRequestV1(StrictDocument):
     include_archives: bool = False
     dry_run: bool = True
     confirmed_plan_checksum: Checksum | None = None
-    max_items: int = Field(default=200_000, ge=1, le=200_000)
-    batch_size: int = Field(default=100, ge=1, le=500)
+    max_items: int = Field(
+        default=_MAX_MAINTENANCE_RESULT_ITEMS,
+        ge=1,
+        le=_MAX_MAINTENANCE_RESULT_ITEMS,
+    )
+    batch_size: int = Field(default=500, ge=1, le=500)
 
 
 class RetentionPurgeRequestV1(StrictDocument):
@@ -396,9 +401,9 @@ class MaintenanceResultV1(StrictDocument):
     message: str = Field(min_length=1, max_length=500)
     dry_run: bool = False
     plan_checksum: Checksum
-    planned_count: int = Field(ge=0, le=10_000)
-    processed_count: int = Field(ge=0, le=10_000)
-    deleted_count: int = Field(ge=0, le=10_000)
+    planned_count: int = Field(ge=0, le=_MAX_MAINTENANCE_RESULT_ITEMS)
+    processed_count: int = Field(ge=0, le=_MAX_MAINTENANCE_RESULT_ITEMS)
+    deleted_count: int = Field(ge=0, le=_MAX_MAINTENANCE_RESULT_ITEMS)
     counts: dict[str, int] = Field(default_factory=dict)
     cancelled: bool = False
     backup: MaintenanceBackupEvidenceV1 | None = None
@@ -407,7 +412,8 @@ class MaintenanceResultV1(StrictDocument):
     @classmethod
     def bound_counts(cls, value: dict[str, int]) -> dict[str, int]:
         if len(value) > 32 or any(
-            not _KEY.fullmatch(key) or count < 0 or count > 10_000 for key, count in value.items()
+            not _KEY.fullmatch(key) or count < 0 or count > _MAX_MAINTENANCE_RESULT_ITEMS
+            for key, count in value.items()
         ):
             raise ValueError("maintenance counts are invalid")
         return value
@@ -418,8 +424,8 @@ class MaintenanceErrorV1(StrictDocument):
     summary: str = Field(min_length=1, max_length=500)
     operation: str = Field(default="maintenance", min_length=1, max_length=80)
     plan_checksum: Checksum | None = None
-    processed_count: int = Field(default=0, ge=0, le=10_000)
-    deleted_count: int = Field(default=0, ge=0, le=10_000)
+    processed_count: int = Field(default=0, ge=0, le=_MAX_MAINTENANCE_RESULT_ITEMS)
+    deleted_count: int = Field(default=0, ge=0, le=_MAX_MAINTENANCE_RESULT_ITEMS)
 
 
 class PosterMutationResultV1(MutationResultV1):

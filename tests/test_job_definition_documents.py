@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from marquee.core.jobs.contracts import (
+    AttentionReason,
     EffectSafety,
     ExecutionClass,
     FeatureArea,
@@ -25,13 +26,15 @@ from marquee.core.jobs.documents import (
     DocumentAdapter,
     DocumentKind,
     EmptyDocumentV1,
+    PosterPipelineGroupResultV1,
     SafeJobErrorV1,
     StrictDocument,
     UnsupportedDocumentVersionError,
     current_adapter,
 )
+from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.policies import default_failure_classifier
-from marquee.core.jobs.terminal_decision import TerminalDecisionPolicy
+from marquee.core.jobs.terminal_decision import JobOutcome, TerminalDecisionPolicy
 
 
 class RequestV1(StrictDocument):
@@ -190,3 +193,51 @@ def test_clients_have_no_fields_for_server_execution_policy() -> None:
         "progress_policy",
         "actions",
     }
+
+
+def test_review_required_carries_a_review_reason_not_a_failure_reason() -> None:
+    """`review_required` borrows `partially_succeeded`; it must not read as failure."""
+    definition = JOB_DEFINITION_REGISTRY.get("poster_pipeline_group")
+    policy = definition.terminal_policy
+    assert policy.review_outcomes == frozenset({"review_required"})
+
+    document = PosterPipelineGroupResultV1(
+        outcome="review_required",
+        library="movies",
+        chunk_index=0,
+        member_count=1,
+        review_required_count=1,
+        projected_count=1,
+        run_ids=("a" * 32,),
+        message="1 poster selection(s) are ready for your review.",
+    )
+    decision = policy.decide(document, job_type="poster_pipeline_group")
+    assert decision.job_outcome is JobOutcome.PARTIALLY_SUCCEEDED
+    assert decision.attention_document()["reason"] == AttentionReason.REVIEW.value
+
+    clean = PosterPipelineGroupResultV1(
+        outcome="succeeded",
+        library="movies",
+        chunk_index=0,
+        member_count=1,
+        succeeded_count=1,
+        projected_count=1,
+        run_ids=("a" * 32,),
+    )
+    assert policy.decide(clean, job_type="poster_pipeline_group").attention_reason is None
+
+    # The contract folds failures and review into one outcome value, so a group
+    # that only failed must not be dressed up as ready for review.
+    failed = PosterPipelineGroupResultV1(
+        outcome="review_required",
+        library="movies",
+        chunk_index=0,
+        member_count=1,
+        failed_count=1,
+        failed_subject_keys=("movie:11",),
+        projected_count=1,
+        run_ids=("a" * 32,),
+    )
+    decision = policy.decide(failed, job_type="poster_pipeline_group")
+    assert decision.attention_reason is None
+    assert decision.attention_document()["reason"] == "failed"

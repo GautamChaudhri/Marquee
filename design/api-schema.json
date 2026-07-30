@@ -767,6 +767,7 @@
           "held",
           "retrying",
           "needs_input",
+          "review",
           "failed",
           "unsafe"
         ],
@@ -5852,7 +5853,7 @@
         "additionalProperties": false,
         "properties": {
           "batch_size": {
-            "default": 100,
+            "default": 500,
             "maximum": 500.0,
             "minimum": 1.0,
             "title": "Batch Size",

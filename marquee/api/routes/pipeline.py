@@ -14,8 +14,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import exists, func, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
@@ -75,6 +76,7 @@ router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 movies_router = APIRouter(prefix="/api/movies", tags=["movies"])
 
 _REVIEW_QUEUE_STATUSES = tuple(REVIEW_QUEUE_STATUSES)
+_ACTIVE_JOB_PHASES = {"planned", "queued", "running", "stopping"}
 _STALE_BATCH_JOB_TO_RUN_STATUS = {
     "failed": "failed",
     "dead_letter": "failed",
@@ -423,6 +425,51 @@ class BatchRunRequest(BaseModel):
     movie_ids: list[int] | None = None
 
 
+async def _active_movie_poster_jobs(db: AsyncSession) -> set[int]:
+    """Return movie ids already covered by active single or grouped canonical work.
+
+    The TV side has carried this guard since its batch endpoint was written
+    (``_active_tv_asset_jobs``); movies never had one, so pressing Run twice
+    queued the same subject twice.
+    """
+    parent = aliased(Job)
+    rows = (
+        await db.execute(
+            select(Job)
+            .outerjoin(parent, parent.id == Job.parent_id)
+            .where(
+                Job.type.in_(("poster_pipeline", "poster_pipeline_group")),
+                or_(
+                    Job.phase.in_(_ACTIVE_JOB_PHASES),
+                    and_(
+                        parent.type == "poster_pipeline_batch",
+                        parent.phase.in_(_ACTIVE_JOB_PHASES),
+                    ),
+                ),
+            )
+        )
+    ).scalars()
+    active: set[int] = set()
+    for job in rows:
+        if job.type == "poster_pipeline":
+            if job.subject_kind == "movie" and job.subject_reference is not None:
+                try:
+                    active.add(int(job.subject_reference))
+                except ValueError:
+                    continue
+            continue
+        request = job.request if isinstance(job.request, dict) else {}
+        if request.get("library") != "movies":
+            continue
+        members = request.get("members")
+        if not isinstance(members, list):
+            continue
+        for member in members:
+            if isinstance(member, dict) and isinstance(member.get("movie_id"), int):
+                active.add(member["movie_id"])
+    return active
+
+
 @router.post("/batch", status_code=202)
 async def run_pipeline_batch(
     body: BatchRunRequest,
@@ -437,17 +484,30 @@ async def run_pipeline_batch(
             Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None), movie_downloaded()
         )
     elif scope == "missing":
+        # The Run tab's own predicate (library.py's ``exclude_in_review`` and the
+        # summary card's ``movies_awaiting_run``): a movie sitting in review still
+        # has a NULL poster_path, so without this the button re-ran the review
+        # queue alongside the movies actually waiting on a run.
         query = select(Movie).where(
-            Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None), movie_downloaded()
+            Movie.poster_path.is_(None),
+            Movie.tmdb_id.is_not(None),
+            movie_downloaded(),
+            ~movie_review_pending(),
         )
     elif scope == "all":
         query = select(Movie).where(Movie.tmdb_id.is_not(None), movie_downloaded())
     else:
         raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
 
-    movies = list((await db.execute(query.order_by(Movie.id))).scalars().all())
-    if not movies:
+    matched = list((await db.execute(query.order_by(Movie.id))).scalars().all())
+    if not matched:
         raise HTTPException(status_code=404, detail=f"no eligible movies for scope={scope!r}")
+    active = await _active_movie_poster_jobs(db)
+    movies = [movie for movie in matched if movie.id not in active]
+    if not movies:
+        raise HTTPException(
+            status_code=409, detail=f"all movies for scope={scope!r} are already active"
+        )
     cap = pipeline_settings.PIPELINE_BATCH_MAX_MOVIES
     if len(movies) > cap:
         raise HTTPException(

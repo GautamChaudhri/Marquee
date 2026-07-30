@@ -45,11 +45,16 @@ class _Transaction:
 
 
 class _MovieSession:
-    def __init__(self, movies: list[object]) -> None:
+    """Serves the scope query first, then the active-poster-job guard query."""
+
+    def __init__(self, movies: list[object], jobs: list[object] | None = None) -> None:
         self.movies = movies
+        self.jobs = jobs or []
+        self.calls = 0
 
     async def execute(self, _statement: object) -> _Rows:
-        return _Rows(self.movies)
+        self.calls += 1
+        return _Rows(self.movies if self.calls == 1 else self.jobs)
 
     def in_transaction(self) -> bool:
         return False

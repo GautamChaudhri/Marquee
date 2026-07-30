@@ -28,6 +28,7 @@ from marquee.core.jobs.poster_group_retry import poster_subject_key
 from marquee.core.jobs.poster_pipeline import (
     _MAX_COUNT,
     _STAGE_MAP,
+    MAX_RUN_ARCHIVE_BYTES,
     _map_outcome,
     _media_type,
     _pipeline_baseline_signature,
@@ -314,8 +315,15 @@ def _attach_candidate_artifacts(
     path = workspace_dir / archive_file
     if not path.is_file():
         raise RuntimeError(f"member archive is missing: {archive_file}")
-    if path.stat().st_size > _MAX_GROUP_RESULT_BYTES:
-        raise RuntimeError(f"member archive exceeds the size limit: {archive_file}")
+    # Deliberately not _MAX_GROUP_RESULT_BYTES: that bounds the small group-result
+    # summary, while this is a per-member run archive whose size tracks the
+    # candidate catalogue. Sharing one number failed every large title.
+    size = path.stat().st_size
+    if size > MAX_RUN_ARCHIVE_BYTES:
+        raise RuntimeError(
+            f"member archive is {size} bytes, over the "
+            f"{MAX_RUN_ARCHIVE_BYTES} byte limit: {archive_file}"
+        )
     try:
         document = json.loads(path.read_text())
     except (OSError, ValueError) as exc:
@@ -722,9 +730,20 @@ async def execute_poster_pipeline_group(
             member_outcome = "review_required"
         member_outcomes.append(member_outcome)
 
-    if failed_keys or "review_required" in member_outcomes:
+    review_count = member_outcomes.count("review_required")
+    if failed_keys or review_count:
+        # The result contract folds both cases into one outcome value, so the
+        # message is the only place the two can be told apart: a group where
+        # every member simply wants your pick must not read like a group where
+        # members broke.
         aggregate_outcome = "review_required"
-        message = "Grouped poster analysis completed with members requiring review."
+        if failed_keys:
+            message = (
+                f"Grouped poster analysis completed with {len(failed_keys)} failed "
+                f"member(s) and {review_count} awaiting review."
+            )
+        else:
+            message = f"{review_count} poster selection(s) are ready for your review."
     elif member_outcomes and all(value == "no_change" for value in member_outcomes):
         aggregate_outcome = "no_change"
         message = "Grouped poster analysis completed without viable recommendations."

@@ -63,6 +63,7 @@ class AttentionReason(StrEnum):
     HELD = "held"
     RETRYING = "retrying"
     NEEDS_INPUT = "needs_input"
+    REVIEW = "review"
     FAILED = "failed"
     UNSAFE = "unsafe"
 

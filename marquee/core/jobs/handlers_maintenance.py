@@ -270,6 +270,17 @@ async def _emit_progress(
     )
 
 
+def _delete_file_batch(plan: tuple[PlannedFile, ...]) -> tuple[int, dict[str, int]]:
+    """Delete one bounded batch without a thread-pool round trip per file."""
+    deleted = 0
+    counts: dict[str, int] = {}
+    for item in plan:
+        if item.boundary.delete_file(item.classified, missing_ok=True):
+            deleted += 1
+            counts[item.category] = counts.get(item.category, 0) + 1
+    return deleted, counts
+
+
 async def _delete_file_plan(
     context: ExecutionContext,
     plan: tuple[PlannedFile, ...],
@@ -286,11 +297,12 @@ async def _delete_file_plan(
         async with context.session_factory() as session:
             if not await context.writer.owns_current_attempt(session):
                 raise MaintenanceOperationError("maintenance attempt ownership is stale")
-        for item in plan[offset : offset + batch_size]:
-            if await asyncio.to_thread(item.boundary.delete_file, item.classified, missing_ok=True):
-                deleted += 1
-                counts[item.category] = counts.get(item.category, 0) + 1
-            processed += 1
+        batch = plan[offset : offset + batch_size]
+        batch_deleted, batch_counts = await asyncio.to_thread(_delete_file_batch, batch)
+        deleted += batch_deleted
+        processed += len(batch)
+        for category, count in batch_counts.items():
+            counts[category] = counts.get(category, 0) + count
         await _emit_progress(
             context,
             operation=operation,

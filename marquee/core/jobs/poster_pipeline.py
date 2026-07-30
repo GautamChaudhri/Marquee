@@ -60,6 +60,13 @@ _STAGE_MAP = {
     "output": "rendering",
 }
 _MAX_COUNT = 100
+# A run archive carries one full CandidateScore per *downloaded* candidate, so it
+# scales with the TMDB catalogue for the title — roughly 8 KB each in practice. A
+# 1 MiB ceiling meant every title with more than ~125 posters failed while small
+# ones passed. 16 MiB is ~2000 candidates: far beyond anything TMDB returns, but
+# still a bound. `ARTIFACT_POLICIES["command_report"]` must not sit below this or
+# the registration step rejects what this check just allowed.
+MAX_RUN_ARCHIVE_BYTES = 16 * 1024 * 1024
 _REJECTION_KEYS = ("metadata_gated", "resolution_gated", "style_gated", "gated")
 
 
@@ -325,21 +332,29 @@ def _attach_evidence_artifacts(document: dict[str, Any], artifacts: dict[str, An
 
 def _attach_candidate_artifacts(
     workspace_dir, artifacts: dict[str, Any], evidence: dict[str, Any] | None = None
-) -> None:
-    """Freeze canonical artifact identity into the immutable run archive."""
+) -> str | None:
+    """Freeze canonical artifact identity into the immutable run archive.
+
+    Returns why it could not, or ``None`` on success. Skipping is not harmless:
+    a survivor with no ``artifact_id`` makes its image 404 in review, so the
+    caller records the reason instead of shipping a review nobody can act on.
+    """
     path = workspace_dir / "run.json"
-    if not path.is_file() or path.stat().st_size > 1024 * 1024:
-        return
+    if not path.is_file():
+        return "run archive is missing"
+    size = path.stat().st_size
+    if size > MAX_RUN_ARCHIVE_BYTES:
+        return f"run archive is {size} bytes, over the {MAX_RUN_ARCHIVE_BYTES} byte limit"
     try:
         document = json.loads(path.read_text())
     except (OSError, ValueError):
-        return
+        return "run archive is invalid"
     if not isinstance(document, dict):
-        return
+        return "run archive is not an object"
     review = document.get("review")
     survivors = review.get("survivors") if isinstance(review, dict) else None
     if not isinstance(review, dict) or not isinstance(survivors, list):
-        return
+        return "run archive has no review candidate list"
     retained: list[dict[str, Any]] = []
     for survivor in survivors[:_MAX_COUNT]:
         if not isinstance(survivor, dict):
@@ -372,6 +387,7 @@ def _attach_candidate_artifacts(
     # eligibility contract it certifies.
     _attach_evidence_artifacts(document, evidence or {})
     path.write_text(json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True))
+    return None
 
 
 def _rejections(counts: dict[str, Any]) -> dict[str, int]:
@@ -664,7 +680,9 @@ async def execute_poster_pipeline(
     )
     if selected_artifact is None and recommendation is not None:
         selected_artifact = await _register_selected(context, workspace_dir, recommendation)
-    _attach_candidate_artifacts(workspace_dir, candidate_artifacts, rejected_artifacts)
+    attach_skipped = _attach_candidate_artifacts(
+        workspace_dir, candidate_artifacts, rejected_artifacts
+    )
     archive_artifact = await _register_archive(context, workspace_dir)
     await _write_pipeline_run(
         context,
@@ -714,6 +732,10 @@ async def execute_poster_pipeline(
         model_version=request.model_version,
         prior_poster_checksum=request.prior_poster_checksum,
         review_reason=review_reason,
-        warnings=outcome.warnings[:20],
+        warnings=(
+            (*outcome.warnings, f"review candidates are unlinked: {attach_skipped}")[:20]
+            if attach_skipped is not None
+            else outcome.warnings[:20]
+        ),
         artifact_ids=artifact_ids,
     ).model_dump(mode="json")

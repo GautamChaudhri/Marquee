@@ -655,6 +655,13 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
                 if result_model in (PosterPipelineResultV1, PosterPipelineGroupResultV1)
                 else None
             ),
+            # `review_required` borrows `partially_succeeded` for want of a
+            # canonical outcome of its own; it must not read as failure.
+            review_outcomes=(
+                frozenset({"review_required"})
+                if result_model in (PosterPipelineResultV1, PosterPipelineGroupResultV1)
+                else frozenset()
+            ),
         ),
         failure_classifier=default_failure_classifier,
         configuration_audit="snapshot" if configuration_keys else "audited_empty",

@@ -2243,7 +2243,8 @@ export interface components {
 		 * AttentionReason
 		 * @enum {string}
 		 */
-		AttentionReason: 'none' | 'waiting' | 'held' | 'retrying' | 'needs_input' | 'failed' | 'unsafe';
+		AttentionReason:
+			'none' | 'waiting' | 'held' | 'retrying' | 'needs_input' | 'review' | 'failed' | 'unsafe';
 		/** BadgeValue */
 		BadgeValue: {
 			/** Text */
@@ -3792,7 +3793,7 @@ export interface components {
 		PipelineCacheClearRequestV1: {
 			/**
 			 * Batch Size
-			 * @default 100
+			 * @default 500
 			 */
 			batch_size: number;
 			/** Confirmed Plan Checksum */

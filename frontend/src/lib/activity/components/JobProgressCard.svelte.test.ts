@@ -152,6 +152,20 @@ describe('attention, freshness, evidence, and concurrent work', () => {
 		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'negative');
 	});
 
+	it('presents a run awaiting a decision as ready, not as a failure', () => {
+		const row = makeRow({
+			attention: {
+				level: 'warning',
+				reason: 'review',
+				message: '3 poster selection(s) are ready for your review.',
+				remediation: null
+			}
+		});
+		render(JobProgressCard, { props: { row } });
+		expect(screen.getByText('Ready for review')).toBeVisible();
+		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'positive');
+	});
+
 	it('renders cancelling from the authoritative stopping phase', () => {
 		const row = makeRow({ status: { ...makeRow().status, phase: 'stopping', label: 'Stopping' } });
 		render(JobProgressCard, { props: { row } });

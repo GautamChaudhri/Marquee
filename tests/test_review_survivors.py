@@ -391,3 +391,65 @@ def test_review_order_defaults_to_neutral() -> None:
         run_id="defaultrun0001",
     )
     assert payload["review"]["order_algorithm"] == NEUTRAL_REVIEW_ORDER
+
+
+def test_oversized_single_run_archive_is_reported_rather_than_silently_skipped(
+    tmp_path: Path,
+) -> None:
+    """Skipping attachment leaves every survivor image 404ing in review.
+
+    It used to `return` silently, so the run looked clean and its posters were
+    simply dead. The caller now records the reason as a run warning.
+    """
+    from marquee.core.jobs.poster_pipeline import (
+        MAX_RUN_ARCHIVE_BYTES,
+        _attach_candidate_artifacts,
+    )
+
+    document = {
+        "review": {"version": 1, "survivors": [], "archived_count": 0, "truncated_count": 0},
+        "diagnostics": ["x" * (MAX_RUN_ARCHIVE_BYTES + 1024)],
+    }
+    (tmp_path / "run.json").write_text(json.dumps(document), encoding="utf-8")
+
+    skipped = _attach_candidate_artifacts(tmp_path, {})
+    assert skipped is not None
+    assert "over the" in skipped
+
+
+def test_large_catalogue_single_run_archive_still_attaches(tmp_path: Path) -> None:
+    """A 2 MB archive is ordinary for a title with a big poster catalogue."""
+    from marquee.core.jobs.poster_pipeline import _attach_candidate_artifacts
+
+    reference = "candidate-000.jpg"
+    document = {
+        "review": {
+            "version": 1,
+            "order_algorithm": NEUTRAL_REVIEW_ORDER,
+            "survivors": [
+                {
+                    "candidate_id": f"{0:064x}",
+                    "reference": reference,
+                    "position": 0,
+                    "objective_eligible": True,
+                }
+            ],
+            "eligible_count": 1,
+            "archived_count": 0,
+            "truncated_count": 0,
+        },
+        "diagnostics": ["x" * (2 * 1024 * 1024)],
+    }
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    assert path.stat().st_size > 1024 * 1024
+
+    artifacts = {
+        reference: SimpleNamespace(
+            id=1, checksum=hashlib.sha256(reference.encode()).hexdigest(), storage_key="test/0.jpg"
+        )
+    }
+    assert _attach_candidate_artifacts(tmp_path, artifacts) is None
+
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["review"]["survivors"][0]["artifact_id"] == 1

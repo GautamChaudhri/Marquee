@@ -8,6 +8,7 @@ from PIL import Image
 
 from marquee.config import settings
 from marquee.core.jobs import handlers_maintenance
+from marquee.core.jobs.mutation_documents import MaintenanceResultV1
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.database import _get_session_factory
 
@@ -107,9 +108,10 @@ def _cache_clear_context(request: dict):
 
 
 @pytest.mark.asyncio
-async def test_pipeline_cache_clear_needs_the_plan_it_showed(cache_paths_to_tmp):
+async def test_pipeline_cache_clear_needs_the_plan_it_showed(cache_paths_to_tmp, monkeypatch):
     """Only a job quoting the sealed plan may delete — a dry run never does."""
     work = _make_image(cache_paths_to_tmp["runs_work_path"] / "run-a" / "cand-1.jpg")
+    staged = _make_image(cache_paths_to_tmp["poster_staging_path"] / "run-a" / "cand-2.jpg")
     embedding = _make_image(cache_paths_to_tmp["embeddings"] / "abc123.jpg")
     archive = _make_image(cache_paths_to_tmp["runs_archive_path"] / "run-a" / "archive.jpg")
 
@@ -117,9 +119,9 @@ async def test_pipeline_cache_clear_needs_the_plan_it_showed(cache_paths_to_tmp)
     plan = await handlers_maintenance.execute_pipeline_cache_clear(context)
 
     assert plan["dry_run"] is True
-    assert plan["planned_count"] == 2
-    assert plan["counts"] == {"runs_work": 1, "embeddings": 1}
-    assert work.exists() and embedding.exists()
+    assert plan["planned_count"] == 3
+    assert plan["counts"] == {"runs_work": 1, "staging": 1, "embeddings": 1}
+    assert work.exists() and staged.exists() and embedding.exists()
 
     context.request = {
         "dry_run": False,
@@ -134,12 +136,23 @@ async def test_pipeline_cache_clear_needs_the_plan_it_showed(cache_paths_to_tmp)
         "dry_run": False,
         "include_archives": False,
         "confirmed_plan_checksum": plan["plan_checksum"],
+        "batch_size": 2,
     }
+    thread_hops = 0
+
+    async def inline_to_thread(function, *args, **kwargs):
+        nonlocal thread_hops
+        thread_hops += 1
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(handlers_maintenance.asyncio, "to_thread", inline_to_thread)
     applied = await handlers_maintenance.execute_pipeline_cache_clear(context)
 
     assert applied["outcome"] == "succeeded"
-    assert applied["deleted_count"] == 2
+    assert applied["deleted_count"] == 3
+    assert thread_hops == 2
     assert not work.exists()
+    assert not staged.exists()
     assert not embedding.exists()
     # The archives checkbox was off, so results history is untouched.
     assert archive.exists()
@@ -164,3 +177,4 @@ async def test_pipeline_cache_clear_plans_a_scope_larger_than_ten_thousand_files
     )
 
     assert plan["planned_count"] == 10_050
+    assert MaintenanceResultV1.model_validate(plan).planned_count == 10_050

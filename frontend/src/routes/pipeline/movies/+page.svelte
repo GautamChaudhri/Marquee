@@ -275,6 +275,8 @@
 	// dialog plans, and confirming applies the plan that was shown.
 	let clearOpen = $state(false);
 	let clearBusy = $state(false);
+	let clearPlanning = false;
+	let clearPlanRevision = 0;
 	let inclEmbeddings = $state(true);
 	let inclArchives = $state(false);
 	let clearPlan = $state<SealedPlan | null>(null);
@@ -282,43 +284,64 @@
 	const clearScope = $derived(clearPlan ? describePlanScope(clearPlan) : null);
 
 	async function planClear() {
-		clearPlan = null;
+		clearPlanning = true;
 		clearBusy = true;
-		const flags = { include_embeddings: inclEmbeddings, include_archives: inclArchives };
 		try {
-			const job = await clearPipelineCache(fetch, { ...flags, dry_run: true });
-			trackJob(job.job_id, async (snapshot) => {
-				clearBusy = false;
-				if (snapshot.status.outcome !== 'succeeded' && snapshot.status.outcome !== 'no_change') {
-					toast('Could not work out what to clear', 'bad');
+			while (clearOpen) {
+				const revision = clearPlanRevision;
+				const flags = {
+					include_embeddings: inclEmbeddings,
+					include_archives: inclArchives
+				};
+				try {
+					const job = await clearPipelineCache(fetch, { ...flags, dry_run: true });
+					const snapshot = await new Promise<JobSnapshotResponse>((resolve) => {
+						trackJob(job.job_id, resolve);
+					});
+					if (revision !== clearPlanRevision) continue;
+					if (snapshot.status.outcome !== 'succeeded' && snapshot.status.outcome !== 'no_change') {
+						toast('Could not work out what to clear', 'bad');
+						return;
+					}
+					const plan = parseSealedPlan(await getRawDocument(fetch, job.job_id, 'result'));
+					if (revision !== clearPlanRevision) continue;
+					if (!plan) {
+						toast('Could not work out what to clear', 'bad');
+						return;
+					}
+					clearPlan = plan;
+					if (plan.plannedCount === 0) {
+						// `_pipeline_activity` holds back the work directories while any
+						// job is non-terminal, so an empty plan usually means "busy".
+						toast('Nothing to clear right now — a job may still be running', 'info');
+					}
+					return;
+				} catch (e) {
+					if (revision !== clearPlanRevision) continue;
+					toast(e instanceof Error ? e.message : 'Could not plan the clear', 'bad');
 					return;
 				}
-				const plan = parseSealedPlan(await getRawDocument(fetch, job.job_id, 'result'));
-				if (!plan) {
-					toast('Could not work out what to clear', 'bad');
-					return;
-				}
-				clearPlan = plan;
-				if (plan.plannedCount === 0) {
-					// `_pipeline_activity` holds back the work directories while any
-					// job is non-terminal, so an empty plan usually means "busy".
-					toast('Nothing to clear right now — a job may still be running', 'info');
-				}
-			});
-		} catch (e) {
+			}
+		} finally {
+			clearPlanning = false;
 			clearBusy = false;
-			toast(e instanceof Error ? e.message : 'Could not plan the clear', 'bad');
 		}
+	}
+
+	function requestClearPlan() {
+		clearPlan = null;
+		clearPlanRevision += 1;
+		if (!clearPlanning) void planClear();
 	}
 
 	function openClear() {
 		clearOpen = true;
-		void planClear();
+		requestClearPlan();
 	}
 
 	/** Either flag changes the file list, so the sealed checksum no longer applies. */
 	function reclear() {
-		if (clearOpen) void planClear();
+		if (clearOpen) requestClearPlan();
 	}
 
 	async function doClear() {

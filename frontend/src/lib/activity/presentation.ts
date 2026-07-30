@@ -21,8 +21,14 @@ const ATTENTION_LABELS: Record<PresentationAttention['reason'], string> = {
 	held: 'Paused',
 	retrying: 'Retrying',
 	needs_input: 'Needs attention',
+	review: 'Ready for review',
 	failed: 'Failed',
 	unsafe: 'Unsafe to continue'
+};
+
+// A run that finished cleanly and is waiting on your pick is not a warning.
+const ATTENTION_TONES: Partial<Record<PresentationAttention['reason'], CardTone>> = {
+	review: 'positive'
 };
 
 const CONNECTION_LABELS: Partial<Record<ConnectionState, string>> = {
@@ -48,7 +54,9 @@ export function activityCallout(
 		return {
 			label: ATTENTION_LABELS[attention.reason],
 			message: attention.message ?? attention.remediation ?? null,
-			tone: attention.level === 'error' ? 'negative' : 'warning'
+			tone:
+				ATTENTION_TONES[attention.reason] ??
+				(attention.level === 'error' ? 'negative' : 'warning')
 		};
 	}
 	if (progress?.wait) {

@@ -406,8 +406,9 @@ class FencedWriter:
         payload: dict[str, Any] = {
             "code": code,
             "summary": reason[:500],
-            "diagnostics": {},
         }
+        if "diagnostics" in error_model.model_fields:
+            payload["diagnostics"] = {}
         if "atomicity" in error_model.model_fields:
             has_intent, has_publication = await self._publication_state()
             payload["atomicity"] = self._atomicity_evidence(

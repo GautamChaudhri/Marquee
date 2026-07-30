@@ -7,7 +7,10 @@ and batch runs, and the confined workspace those runs are allowed to touch."""
 from __future__ import annotations
 
 import ast
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -21,7 +24,7 @@ from marquee.core.jobs.documents import PosterPipelineRequestV1, PosterPipelineR
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import Job, JobBatch, Movie
+from marquee.models import Job, JobArtifact, JobAttempt, JobBatch, Movie, PipelineRun
 
 
 @pytest.fixture
@@ -171,6 +174,128 @@ async def test_movie_batch_is_ticketless_parent_with_frozen_children(client, db)
     assert {child.subject_kind for child in children} == {"movie"}
     assert {child.request["title"] for child in children} == {"Arrival", "Heat"}
     assert all(child.trigger_kind == "batch" for child in children)
+
+
+async def _movie(db, title: str, tmdb_id: int) -> Movie:
+    movie = Movie(
+        title=title,
+        year=2000,
+        folder_path=f"/library/{title}",
+        movie_file_path=f"/library/{title}/{title}.mkv",
+        tmdb_id=tmdb_id,
+    )
+    db.add(movie)
+    await db.commit()
+    await db.refresh(movie)
+    return movie
+
+
+async def _put_in_review(db, movie: Movie) -> None:
+    """Give a movie an undecided completed run — the Review tab's own condition."""
+    job_id = uuid4().hex
+    job = Job(
+        id=job_id,
+        type="poster_pipeline",
+        payload_version=1,
+        request={},
+        phase="terminal",
+        outcome="succeeded",
+        desired_state="run",
+        fence_token=1,
+        root_id=job_id,
+        trigger_kind="manual",
+        feature_area="posters",
+        presentation_family="posters",
+        subject_kind="movie",
+        subject_reference=str(movie.id),
+        subject_snapshot={"version": 1, "kind": "movie"},
+        terminal_at=datetime.now(UTC),
+    )
+    db.add(job)
+    await db.flush()
+    attempt = JobAttempt(
+        job_id=job_id,
+        number=1,
+        fence_token=1,
+        phase="finished",
+        outcome="succeeded",
+        started_at=datetime.now(UTC),
+        finished_at=datetime.now(UTC),
+    )
+    db.add(attempt)
+    await db.flush()
+    payload = b"{}"
+    artifact = JobArtifact(
+        job_id=job_id,
+        attempt_id=attempt.id,
+        kind="command_report",
+        name="pipeline-run.json",
+        status="available",
+        storage_key=f"test-artifacts/{job_id}/pipeline-run.json",
+        content_type="application/json",
+        size_bytes=len(payload),
+        checksum=sha256(payload).hexdigest(),
+        artifact_metadata={"family": "poster_pipeline"},
+    )
+    db.add(artifact)
+    await db.flush()
+    db.add(
+        PipelineRun(
+            run_id=uuid4().hex,
+            movie_id=movie.id,
+            media_type="movie",
+            status="completed",
+            job_id=job_id,
+            attempt_id=attempt.id,
+            fence_token=1,
+            archive_artifact_id=artifact.id,
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_missing_scope_skips_the_review_queue(client, db) -> None:
+    awaiting_run = await _movie(db, "Arrival", 329865)
+    await _put_in_review(db, await _movie(db, "Heat", 949))
+
+    response = await client.post("/api/pipeline/batch", json={"scope": "missing"})
+    assert response.status_code == 202, response.text
+    parent = await db.get(Job, response.json()["job_id"])
+    assert parent.request == {"scope": "missing", "selection_count": 1}
+    children = list(
+        (await db.execute(select(Job).where(Job.parent_id == parent.id))).scalars().all()
+    )
+    assert [child.request["movie_id"] for child in children] == [awaiting_run.id]
+
+
+@pytest.mark.asyncio
+async def test_all_scope_still_covers_the_review_queue(client, db) -> None:
+    """"Re-run whole library" is an explicit re-run, so review is in scope."""
+    await _movie(db, "Arrival", 329865)
+    await _put_in_review(db, await _movie(db, "Heat", 949))
+
+    response = await client.post("/api/pipeline/batch", json={"scope": "all"})
+    assert response.status_code == 202, response.text
+    parent = await db.get(Job, response.json()["job_id"])
+    assert parent.request == {"scope": "all", "selection_count": 2}
+
+
+@pytest.mark.asyncio
+async def test_batch_refuses_to_queue_movies_that_are_already_active(client, db) -> None:
+    movie = await _movie(db, "Arrival", 329865)
+
+    first = await client.post("/api/pipeline/batch", json={"scope": "missing"})
+    assert first.status_code == 202, first.text
+
+    second = await client.post("/api/pipeline/batch", json={"scope": "missing"})
+    assert second.status_code == 409, second.text
+    assert "already active" in second.json()["detail"]
+
+    selected = await client.post(
+        "/api/pipeline/batch", json={"scope": "selected", "movie_ids": [movie.id]}
+    )
+    assert selected.status_code == 409, selected.text
 
 
 def test_batch_parents_have_no_executor_or_legacy_lifecycle_calls() -> None:

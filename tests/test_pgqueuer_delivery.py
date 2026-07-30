@@ -309,6 +309,31 @@ async def test_fenced_writer_rejects_stale_attempt_ownership(db, monkeypatch):
     assert job is not None and (job.phase, job.outcome) == ("running", None)
 
 
+async def test_unsafe_writer_shapes_error_to_maintenance_contract(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def terminal(_writer, **kwargs):
+        captured.update(kwargs)
+        return WriteDisposition.APPLIED
+
+    monkeypatch.setattr(FencedWriter, "_terminal", terminal)
+    writer = FencedWriter(
+        AttemptOwnership(
+            job_id="cache-clear",
+            attempt_id=1,
+            fence_token=1,
+            dispatch_generation=1,
+        ),
+        JOB_DEFINITION_REGISTRY.get("pipeline_cache_clear"),
+    )
+
+    disposition = await writer.unsafe("maintenance recovery could not prove publication")
+
+    assert disposition == WriteDisposition.APPLIED
+    assert captured["error"]["code"] == "unsafe_process_identity"
+    assert "diagnostics" not in captured["error"]
+
+
 async def test_terminal_event_keeps_deep_result_on_the_canonical_snapshot(db, monkeypatch):
     job_id, ticket_id = await _canonical_ticket(db)
     result = {"outcome": "succeeded", "summary": {"effect": {"evidence": {"depth": 4}}}}

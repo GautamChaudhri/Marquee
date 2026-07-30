@@ -30,7 +30,7 @@ from marquee.core.jobs.contracts import EffectSafety
 from marquee.core.jobs.definitions import JobDefinition
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.execution_io import ExecutionIO
-from marquee.core.jobs.execution_progress import ExecutionProgress
+from marquee.core.jobs.execution_progress import ExecutionProgress, ScopeObservation
 from marquee.core.jobs.fenced_writer import (
     AttemptOwnership,
     FencedWriter,
@@ -1205,10 +1205,25 @@ async def deliver_job(
             cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
             term_seconds=settings.JOB_PROCESS_TERM_SECONDS,
         )
-        first_stage = execution.definition.progress_policy.stages[0][0]
-        final_stage = execution.definition.progress_policy.stages[-1][0]
-        if final_stage != first_stage:
-            await execution.progress.stage(final_stage)
+        progress_policy = execution.definition.progress_policy
+        stages = progress_policy.stages
+        if len(stages) > 1:
+            # Advance the ordinal along with the label. Setting only the label
+            # left jobs that legitimately skip a conditional stage reading
+            # "Finalizing · 7 / 9", as if they had stopped short. `observe` is
+            # used rather than `stage` because `stage` mirrors one measurement
+            # into both scopes, which would stamp the current scope (counted in
+            # candidates, not stages) with a stage count.
+            overall = (
+                ScopeObservation.determinate(
+                    completed=float(len(stages)),
+                    total=float(len(stages)),
+                    unit=progress_policy.overall_unit,
+                )
+                if progress_policy.overall_unit is not None
+                else None
+            )
+            await execution.progress.observe(stages[-1][0], overall=overall, durable=True)
         try:
             decision: TerminalDecision = writer.terminal_decision(result)
             disposition = await writer.succeed(result, decision=decision)

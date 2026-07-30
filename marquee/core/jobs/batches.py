@@ -599,10 +599,31 @@ async def append_dynamic_child(
     return result
 
 
-def _aggregate_outcome(counts: dict[str, int], *, parent_cancelled: bool) -> str:
-    positive = counts["succeeded"] + counts["no_change"]
+def _review_only_child(child: Job) -> bool:
+    """A grouped poster child that finished cleanly but wants a human decision.
+
+    ``review_required`` has no canonical ``JobOutcome`` of its own, so the
+    definition aliases it onto ``partially_succeeded``. Nothing failed in that
+    case — ``failed_count`` is the discriminator, and it is the one the retry
+    selector has always used. Projection now shares it so the batch cannot call
+    a run failed that retry would refuse to retry.
+
+    Only a readable ``failed_count == 0`` counts as review-only: unreadable
+    evidence stays attention-worthy and retryable rather than being silently
+    excused.
+    """
+    if child.type != "poster_pipeline_group" or child.outcome != "partially_succeeded":
+        return False
+    result = child.result
+    return isinstance(result, dict) and result.get("failed_count") == 0
+
+
+def _aggregate_outcome(
+    counts: dict[str, int], *, parent_cancelled: bool, review_only: int = 0
+) -> str:
+    positive = counts["succeeded"] + counts["no_change"] + review_only
     failure = counts["failed"] + counts["dead_letter"] + counts["unsafe"]
-    partial = counts["partially_succeeded"]
+    partial = counts["partially_succeeded"] - review_only
     cancelled = counts["cancelled"]
     superseded = counts["superseded"]
     if partial:
@@ -610,7 +631,7 @@ def _aggregate_outcome(counts: dict[str, int], *, parent_cancelled: bool) -> str
     if positive:
         if failure or cancelled or superseded:
             return "partially_succeeded"
-        if counts["succeeded"]:
+        if counts["succeeded"] or review_only:
             return "succeeded"
         return "no_change"
     if failure:
@@ -668,7 +689,12 @@ async def project_batch(
         "dead_letter",
         "unsafe",
     )
+    # Faithful to child.outcome: the job_batches per-outcome totals carry a
+    # `terminal_total = sum(...)` check constraint. Review-only children are
+    # tracked alongside, never subtracted from, these counts.
     counts = {name: sum(child.outcome == name for child in children) for name in outcome_names}
+    review_only_ids = {child.id for child in children if _review_only_child(child)}
+    review_only = len(review_only_ids)
     terminal_total = sum(counts.values())
     if any(child.phase == "terminal" and child.outcome is None for child in children):
         raise SubmissionInvariantError("terminal batch child has no canonical outcome")
@@ -678,7 +704,11 @@ async def project_batch(
         outcome = (
             "no_change"
             if projection.created_total == 0
-            else _aggregate_outcome(counts, parent_cancelled=parent.desired_state == "cancel")
+            else _aggregate_outcome(
+                counts,
+                parent_cancelled=parent.desired_state == "cancel",
+                review_only=review_only,
+            )
         )
         phase = "terminal"
     elif parent.desired_state == "cancel":
@@ -690,19 +720,19 @@ async def project_batch(
     else:
         outcome = None
         phase = "queued"
-    failures = [
-        {"job_id": child.id, "outcome": child.outcome}
+    attention_children = [
+        child
         for child in children
         if child.outcome in {"failed", "partially_succeeded", "dead_letter", "unsafe"}
+        and child.id not in review_only_ids
+    ]
+    failures = [
+        {"job_id": child.id, "outcome": child.outcome} for child in attention_children
     ][:MAX_BATCH_FAILURE_ITEMS]
     failure_summary = (
         {
             "items": failures,
-            "truncated": len(failures)
-            < counts["failed"]
-            + counts["partially_succeeded"]
-            + counts["dead_letter"]
-            + counts["unsafe"],
+            "truncated": len(failures) < len(attention_children),
         }
         if failures
         else None
@@ -956,13 +986,7 @@ def _retryable_batch_child(child: Job) -> bool:
         "unsafe",
     }:
         return False
-    if child.type != "poster_pipeline_group" or child.outcome != "partially_succeeded":
-        return True
-    return (
-        isinstance(child.result, dict)
-        and isinstance(child.result.get("failed_count"), int)
-        and child.result["failed_count"] > 0
-    )
+    return not _review_only_child(child)
 
 
 async def retry_batch(

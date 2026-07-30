@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from marquee.core.jobs import poster_pipeline
+from marquee.core.jobs.artifact_service import ARTIFACT_POLICIES
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.documents import PosterPipelineGroupRequestV1
 from marquee.core.jobs.poster_group_retry import poster_subject_key
@@ -424,6 +426,58 @@ def test_member_archive_requires_its_planned_run_identity(tmp_path: Any) -> None
             run_id="planned-run",
             artifacts={},
         )
+
+
+def _sized_archive(path: Any, *, run_id: str, padding: int) -> None:
+    """A structurally valid archive padded to a chosen size."""
+    path.write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "review": {"survivors": []},
+                "diagnostics": ["x" * padding],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_large_catalogue_archive_is_within_the_member_limit(tmp_path: Any) -> None:
+    """A 1-2 MB archive is ordinary for a title with a big poster catalogue.
+
+    The old 1 MiB ceiling failed every such title while small ones passed.
+    """
+    archive = tmp_path / "run-000.json"
+    _sized_archive(archive, run_id="planned-run", padding=2 * 1024 * 1024)
+    assert archive.stat().st_size > 1024 * 1024
+
+    group_handler._attach_candidate_artifacts(
+        tmp_path, archive_file=archive.name, run_id="planned-run", artifacts={}
+    )
+
+
+def test_member_archive_over_the_limit_names_the_size(tmp_path: Any) -> None:
+    archive = tmp_path / "run-000.json"
+    _sized_archive(
+        archive, run_id="planned-run", padding=poster_pipeline.MAX_RUN_ARCHIVE_BYTES + 1024
+    )
+
+    with pytest.raises(RuntimeError, match=r"bytes, over the \d+ byte limit"):
+        group_handler._attach_candidate_artifacts(
+            tmp_path, archive_file=archive.name, run_id="planned-run", artifacts={}
+        )
+
+
+def test_member_archive_ceiling_never_exceeds_what_registration_accepts() -> None:
+    """The check and the registration policy must move together.
+
+    Raising only the handler check moves the failure into
+    ``register_physical_artifact``; raising only the policy leaves the handler
+    rejecting archives the store would have taken.
+    """
+    assert (
+        ARTIFACT_POLICIES["command_report"].max_bytes >= poster_pipeline.MAX_RUN_ARCHIVE_BYTES
+    )
 
 
 def test_group_result_requires_every_referenced_artifact_to_be_announced() -> None:

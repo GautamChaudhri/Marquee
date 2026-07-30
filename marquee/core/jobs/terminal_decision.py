@@ -59,10 +59,15 @@ class TerminalDecision:
     attention: AttentionSeverity
     summary: str
     remediation: str | None = None
+    # Overrides the outcome-derived reason. Kept as a bare string so this module
+    # stays free of any dependency on the presentation contracts.
+    attention_reason: str | None = None
 
     def attention_document(self) -> dict[str, str | None]:
         reason = "none"
-        if self.job_outcome == JobOutcome.UNSAFE:
+        if self.attention != AttentionSeverity.NONE and self.attention_reason is not None:
+            reason = self.attention_reason
+        elif self.job_outcome == JobOutcome.UNSAFE:
             reason = "unsafe"
         elif self.attention != AttentionSeverity.NONE:
             reason = "failed"
@@ -96,6 +101,10 @@ class TerminalDecisionPolicy:
     """Closed mapping owned by a definition's versioned result contract."""
 
     outcome_mapping: tuple[tuple[str, JobOutcome], ...]
+    # Raw result outcomes that mean "finished cleanly, awaiting a human
+    # decision". They keep their canonical alias (and its attention severity)
+    # but must not be reported as failure.
+    review_outcomes: frozenset[str] = frozenset()
 
     @property
     def result_outcomes(self) -> frozenset[str]:
@@ -119,6 +128,7 @@ class TerminalDecisionPolicy:
         model: type[BaseModel],
         *,
         aliases: Mapping[str, JobOutcome] | None = None,
+        review_outcomes: frozenset[str] = frozenset(),
     ) -> TerminalDecisionPolicy:
         outcomes = cls.result_outcomes_for_model(model)
         aliases = aliases or {}
@@ -133,7 +143,11 @@ class TerminalDecisionPolicy:
             mapping.append((raw, canonical))
         if set(aliases) - outcomes:
             raise InvalidTerminalMappingError("terminal aliases include outcomes outside the model")
-        return cls(outcome_mapping=tuple(mapping))
+        if review_outcomes - outcomes:
+            raise InvalidTerminalMappingError(
+                "terminal review outcomes include outcomes outside the model"
+            )
+        return cls(outcome_mapping=tuple(mapping), review_outcomes=review_outcomes)
 
     def decide(self, document: BaseModel, *, job_type: str) -> TerminalDecision:
         raw_outcome = getattr(document, "outcome", None)
@@ -179,4 +193,13 @@ class TerminalDecisionPolicy:
             workspace=workspace,
             attention=attention,
             summary=summary,
+            # A result contract may fold "some members failed" and "some members
+            # want your pick" into one outcome value; `failed_count` is the only
+            # thing that tells them apart. Same test the batch projector uses, so
+            # a parent and its child cannot label the same run differently.
+            attention_reason=(
+                "review"
+                if value in self.review_outcomes and not getattr(document, "failed_count", 0)
+                else None
+            ),
         )

@@ -11,6 +11,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -413,6 +414,48 @@ def test_locked_parent_outcome_matrix(outcomes, parent_cancelled, expected) -> N
     )
     counts = {name: outcomes.count(name) for name in names}
     assert batch_module._aggregate_outcome(counts, parent_cancelled=parent_cancelled) == expected
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"failed_count": 0}, True),
+        ({"failed_count": 1}, False),
+        ({}, False),
+        (None, False),
+    ],
+)
+def test_review_only_children_are_recognised_by_readable_zero_failures(result, expected) -> None:
+    child = SimpleNamespace(
+        type="poster_pipeline_group", outcome="partially_succeeded", result=result
+    )
+    assert batch_module._review_only_child(child) is expected
+    # Projection and retry selection must never disagree about the same child.
+    assert batch_module._retryable_batch_child(child) is not expected
+
+
+def test_review_only_children_do_not_make_a_parent_partially_succeeded() -> None:
+    names = (
+        "succeeded",
+        "partially_succeeded",
+        "no_change",
+        "failed",
+        "cancelled",
+        "superseded",
+        "dead_letter",
+        "unsafe",
+    )
+    counts = dict.fromkeys(names, 0) | {"partially_succeeded": 2}
+    assert (
+        batch_module._aggregate_outcome(counts, parent_cancelled=False, review_only=2)
+        == "succeeded"
+    )
+    # One genuinely failed member still holds the parent back.
+    counts = dict.fromkeys(names, 0) | {"partially_succeeded": 2}
+    assert (
+        batch_module._aggregate_outcome(counts, parent_cancelled=False, review_only=1)
+        == "partially_succeeded"
+    )
 
 
 async def _open(db, key: str):
