@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.main import app
 from marquee.models import (
     Movie,
+    Series,
 )
 from tests.support.canonical_poster import seed_canonical_pipeline_run
 
@@ -109,6 +110,108 @@ async def test_library_missing_filter_can_exclude_review_queue_movies(
     body = resp.json()
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Still Missing"]
+
+
+@pytest.mark.asyncio
+async def test_library_missing_filter_ignores_tv_runs_in_review(
+    db: AsyncSession,
+    client: AsyncClient,
+):
+    """A show awaiting review must not hide every movie missing a poster.
+
+    ``PipelineRun.movie_id`` is NULL for series/season runs, so the exclusion
+    used to be an ``id NOT IN (… NULL …)`` that was never true for any row —
+    one undecided TV run emptied the movie run queue entirely.
+    """
+    movie = Movie(
+        title="Still Missing",
+        year=2021,
+        folder_path="/m/missing",
+        movie_file_path="missing.mkv",
+        tmdb_id=11,
+    )
+    series = Series(title="Show In Review", series_path="/tv/show", tvdb_id=77, tmdb_id=78)
+    db.add_all([movie, series])
+    await db.flush()
+    run = await seed_canonical_pipeline_run(
+        db,
+        run_id="tv-review-run",
+        series_id=series.id,
+        media_type="series",
+        archive={"run_id": "tv-review-run", "candidates": []},
+    )
+    run.started_at = datetime.now(UTC)
+    await db.commit()
+
+    resp = await client.get("/api/library/movies?poster_status=missing&exclude_in_review=true")
+
+    assert resp.status_code == 200
+    assert [item["title"] for item in resp.json()["items"]] == ["Still Missing"]
+
+
+@pytest.mark.asyncio
+async def test_summary_awaiting_run_matches_the_run_tab_list(
+    db: AsyncSession,
+    client: AsyncClient,
+):
+    """The Missing card and the workspace Run tab must never disagree.
+
+    They read the same predicate now, so the count and the list stay in step
+    whether nothing is in review, a movie is, or only a show is.
+    """
+    awaiting = Movie(
+        title="Awaiting Run",
+        year=2021,
+        folder_path="/m/awaiting",
+        movie_file_path="awaiting.mkv",
+        tmdb_id=21,
+    )
+    in_review = Movie(
+        title="In Review",
+        year=2020,
+        folder_path="/m/in-review",
+        movie_file_path="in-review.mkv",
+        tmdb_id=22,
+    )
+    series = Series(title="Show In Review", series_path="/tv/show", tvdb_id=79, tmdb_id=80)
+    db.add_all([awaiting, in_review, series])
+    await db.flush()
+
+    async def counts() -> tuple[int, list[str]]:
+        summary = await client.get("/api/pipeline/summary")
+        listing = await client.get(
+            "/api/library/movies?poster_status=missing&exclude_in_review=true&sort=title"
+        )
+        assert summary.status_code == 200
+        assert listing.status_code == 200
+        body = listing.json()
+        assert summary.json()["movies_awaiting_run"] == body["total"]
+        return body["total"], [item["title"] for item in body["items"]]
+
+    await db.commit()
+    assert await counts() == (2, ["Awaiting Run", "In Review"])
+
+    movie_run = await seed_canonical_pipeline_run(
+        db,
+        run_id="movie-review-run",
+        movie_id=in_review.id,
+        archive={"run_id": "movie-review-run", "movie_id": in_review.id, "candidates": []},
+        auto_pick_filename="auto.jpg",
+    )
+    movie_run.started_at = datetime.now(UTC)
+    await db.commit()
+    assert await counts() == (1, ["Awaiting Run"])
+
+    tv_run = await seed_canonical_pipeline_run(
+        db,
+        run_id="tv-review-run",
+        series_id=series.id,
+        media_type="series",
+        archive={"run_id": "tv-review-run", "candidates": []},
+    )
+    tv_run.started_at = datetime.now(UTC)
+    await db.commit()
+    assert await counts() == (1, ["Awaiting Run"])
 
 
 @pytest.mark.asyncio

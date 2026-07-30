@@ -559,8 +559,9 @@ def _paddle_cuda_probe(*, allow_import: bool = False) -> tuple[bool, str]:
             return False, "Paddle reports zero usable CUDA devices (driver unavailable or hidden)"
         # A CUDA-enabled wheel is not enough: deployed drivers can be absent or
         # unusable. This isolated worker probe is intentionally tiny.
-        paddle.zeros([1], dtype="float32", place=paddle.CUDAPlace(0))
-        paddle.device.cuda.synchronize()
+        cuda_device = paddle.CUDAPlace(0)
+        paddle.zeros([1], dtype="float32", device=cuda_device)
+        paddle.device.synchronize(cuda_device)
     except Exception as exc:
         return False, f"Paddle CUDA probe failed: {type(exc).__name__}: {exc}"
     return True, f"Paddle CUDA device 0 is usable ({device_count} detected)"

@@ -85,6 +85,54 @@ def package_compatible() -> bool:
         return False
 
 
+_ONNX_RUNTIME_DISTRIBUTIONS = (
+    "onnxruntime",
+    "onnxruntime-gpu",
+    "onnxruntime-openvino",
+)
+
+
+def inference_runtime_report() -> dict[str, Any]:
+    """Report whether one ONNX Runtime distribution can honor the provider request."""
+    installed: dict[str, str] = {}
+    for distribution in _ONNX_RUNTIME_DISTRIBUTIONS:
+        try:
+            installed[distribution] = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+
+    report: dict[str, Any] = {
+        "status": "incompatible",
+        "requested_provider": "unavailable",
+        "installed_distributions": installed,
+        "available_providers": [],
+        "selected_provider": None,
+        "hardware_tier": None,
+    }
+    try:
+        from marquee.ml import hardware
+
+        requested = hardware.resolve_provider_request(
+            hardware.pipeline_settings.EXECUTION_PROVIDER
+        )
+        available = list(hardware.ort.get_available_providers())
+        report["requested_provider"] = requested or "auto"
+        report["available_providers"] = available
+        profile = hardware.detect_hardware()
+    except (AttributeError, ImportError, OSError, RuntimeError, TypeError, ValueError):
+        return report
+
+    selected = profile.providers[0] if profile.providers else None
+    report["selected_provider"] = selected
+    report["hardware_tier"] = profile.tier
+    owns_runtime_module = len(installed) == 1
+    selected_is_available = selected is not None and selected in available
+    requested_is_selected = requested is None or selected == requested
+    if owns_runtime_module and selected_is_available and requested_is_selected:
+        report["status"] = "ok"
+    return report
+
+
 def registry_compatible() -> bool:
     try:
         JOB_DEFINITION_REGISTRY.validate_complete(BUILTIN_JOB_TYPES)
@@ -209,6 +257,7 @@ async def check_readiness() -> dict[str, Any]:
     components: dict[str, dict[str, Any]] = {
         "configuration": {"status": "ok" if configuration_compatible() else "incompatible"},
         "package": {"status": "ok" if package_compatible() else "incompatible"},
+        "inference_runtime": inference_runtime_report(),
         "definition_registry": {"status": "ok" if registry_compatible() else "incompatible"},
         "worker_entrypoints": worker_entrypoint_report(),
         "schedule_catalog": schedule_catalog_report(),

@@ -11,7 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
-from marquee.api.routes.pipeline import _downloaded
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.control import JobControlError, retry
 from marquee.core.jobs.submission import (
@@ -20,6 +19,7 @@ from marquee.core.jobs.submission import (
     SubmissionResult,
     submit_job,
 )
+from marquee.core.movie_queries import movie_downloaded
 from marquee.core.onboarding_review import (
     OnboardingReviewError,
     bind_onboarding_decision,
@@ -302,7 +302,7 @@ def _review_http_error(exc: OnboardingReviewError) -> HTTPException:
 async def _downloaded_movies(db: AsyncSession) -> list[tuple[int, list[str] | None]]:
     rows = (
         await db.execute(
-            select(Movie.id, Movie.genres).where(Movie.tmdb_id.is_not(None), _downloaded())
+            select(Movie.id, Movie.genres).where(Movie.tmdb_id.is_not(None), movie_downloaded())
         )
     ).all()
     return [(row[0], row[1]) for row in rows]

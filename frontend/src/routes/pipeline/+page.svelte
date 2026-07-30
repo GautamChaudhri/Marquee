@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteMap } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import { getRawDocument } from '$lib/activity/client';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -15,6 +16,11 @@
 	} from '$lib/api/pipeline';
 	import { getTvSummary } from '$lib/api/pipeline-tv';
 	import { getSettings, putSettings, runHealScan } from '$lib/api/system';
+	import {
+		describePlanScope,
+		parseSealedPlan,
+		type SealedPlan
+	} from '$lib/pipeline/maintenance-plan';
 	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import { bytesH, type Tone } from '$lib/display';
 	import { toast } from '$lib/toast';
@@ -39,7 +45,7 @@
 	let backupBusy = $state(false);
 	let maintenanceOpen = $state(false);
 	let maintenanceBusy = $state(false);
-	let maintenancePreview = $state<Record<string, unknown> | null>(null);
+	let maintenancePlan = $state<SealedPlan | null>(null);
 
 	const currentMovieFormat = $derived(
 		String(runtimeSettings?.poster_formats?.movie ?? 'poster.jpg')
@@ -280,12 +286,22 @@
 	async function previewMaintenance() {
 		maintenanceOpen = true;
 		maintenanceBusy = true;
-		maintenancePreview = null;
+		maintenancePlan = null;
 		try {
 			const job = await runPosterMaintenance(fetch, { dry_run: true });
-			trackAction(job, 'Maintenance preview', (done) => {
-				if (done.status.outcome === 'succeeded') maintenancePreview = {};
+			// Deliberately not routed through trackAction: a preview is not an
+			// outcome worth toasting, and the sealed plan is what we are after.
+			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			settledHandlers.set(job.job_id, (snapshot) => {
 				maintenanceBusy = false;
+				if (snapshot.status.outcome !== 'succeeded' && snapshot.status.outcome !== 'no_change') {
+					toast('Could not work out what maintenance would remove', 'bad');
+					return;
+				}
+				void (async () => {
+					maintenancePlan = parseSealedPlan(await getRawDocument(fetch, job.job_id, 'result'));
+					if (!maintenancePlan) toast('Could not read the maintenance plan', 'bad');
+				})();
 			});
 		} catch (e) {
 			maintenanceBusy = false;
@@ -294,12 +310,20 @@
 	}
 
 	async function confirmMaintenance() {
+		const plan = maintenancePlan;
+		if (!plan || plan.plannedCount === 0) return;
 		maintenanceBusy = true;
 		try {
-			const job = await runPosterMaintenance(fetch, { dry_run: false });
+			// The checksum from the preview above is what authorizes the delete;
+			// without it the handler refuses to mutate.
+			const job = await runPosterMaintenance(fetch, {
+				dry_run: false,
+				confirmed_plan_checksum: plan.planChecksum
+			});
 			trackAction(job, 'Poster maintenance', () => {
 				maintenanceOpen = false;
 				maintenanceBusy = false;
+				maintenancePlan = null;
 			});
 		} catch (e) {
 			maintenanceBusy = false;
@@ -335,11 +359,13 @@
 		tone={coverageTone(deployedPct)}
 		icon="check"
 	/>
+	<!-- movies_awaiting_run, not movies_missing_poster: the same predicate the
+	     workspace Run tab lists, so this count and that list always agree. -->
 	<PosterStatCard
 		label="Missing"
-		value={summary.movies_missing_poster}
-		sub={summary.movies_missing_poster ? 'awaiting a run' : 'fully covered'}
-		tone={summary.movies_missing_poster ? 'warn' : 'good'}
+		value={summary.movies_awaiting_run}
+		sub={summary.movies_awaiting_run ? 'awaiting a run' : 'fully covered'}
+		tone={summary.movies_awaiting_run ? 'warn' : 'good'}
 		icon="alert"
 	/>
 	<PosterStatCard
@@ -422,7 +448,7 @@
 		<span class="ws-text">
 			<b>Movie workspace</b>
 			<small>
-				{summary.movies_missing_poster} missing · {summary.movies_in_review} in review
+				{summary.movies_awaiting_run} missing · {summary.movies_in_review} in review
 			</small>
 		</span>
 		<Icon name="chevron" size={16} />
@@ -562,21 +588,24 @@
 	cancelLabel="Close"
 	tone="bad"
 	busy={maintenanceBusy}
-	confirmDisabled={!maintenancePreview}
+	confirmDisabled={!maintenancePlan || maintenancePlan.plannedCount === 0}
 	onConfirm={confirmMaintenance}
 	onCancel={() => {
-		if (!maintenanceBusy) maintenanceOpen = false;
+		if (!maintenanceBusy) {
+			maintenanceOpen = false;
+			maintenancePlan = null;
+		}
 	}}
 >
-	{#if maintenancePreview}
-		<div class="preview">
-			<span>Movies: {maintenancePreview.movies_deleted ?? 0}</span>
-			<span>Backups: {maintenancePreview.orphan_backups ?? 0}</span>
-			<span>Cache: {maintenancePreview.orphan_cache ?? 0}</span>
-		</div>
-	{:else}
-		<div class="preview">Preparing preview</div>
-	{/if}
+	<div class="preview" aria-live="polite">
+		{#if maintenancePlan && maintenancePlan.plannedCount > 0}
+			<span>{describePlanScope(maintenancePlan)} would be removed</span>
+		{:else if maintenancePlan}
+			<span>No orphaned poster-cache files found</span>
+		{:else}
+			<span>Preparing preview</span>
+		{/if}
+	</div>
 </ConfirmDialog>
 
 <style>

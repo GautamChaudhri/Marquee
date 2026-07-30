@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
+	import { getRawDocument } from '$lib/activity/client';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
@@ -22,6 +23,11 @@
 		triggerRun
 	} from '$lib/api/pipeline';
 	import { listMovies } from '$lib/api/library';
+	import {
+		describePlanScope,
+		parseSealedPlan,
+		type SealedPlan
+	} from '$lib/pipeline/maintenance-plan';
 	import { ApiError } from '$lib/api/client';
 	import { toast } from '$lib/toast';
 	import { bytesH } from '$lib/display';
@@ -134,7 +140,29 @@
 	let initiatedJobIds = $state<string[]>([]);
 	let batchRunning = $state(false);
 
+	/** Per-job settle handlers, so the cache-clear dry run resolves quietly into
+	 *  state instead of announcing itself as finished poster work. Jobs with no
+	 *  registered handler fall back to the poster-work toast. */
+	const settledHandlers = new SvelteMap<
+		string,
+		(snapshot: JobSnapshotResponse) => void | Promise<void>
+	>();
+
+	function trackJob(
+		jobId: string,
+		onSettled?: (snapshot: JobSnapshotResponse) => void | Promise<void>
+	) {
+		initiatedJobIds = [...new Set([...initiatedJobIds, jobId])];
+		if (onSettled) settledHandlers.set(jobId, onSettled);
+	}
+
 	async function handleJobSettled(snapshot: JobSnapshotResponse) {
+		const handler = settledHandlers.get(snapshot.job_id);
+		if (handler) {
+			settledHandlers.delete(snapshot.job_id);
+			await handler(snapshot);
+			return;
+		}
 		batchRunning = false;
 		toast(
 			`Poster work ${snapshot.status.label.toLowerCase()}`,
@@ -167,7 +195,7 @@
 		batchRunning = true;
 		try {
 			const job = await runBatch(fetch, { scope, movie_ids: movieIds });
-			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			trackJob(job.job_id);
 			const selectedCount = scope === 'selected' ? (movieIds?.length ?? 0) : null;
 			toast(
 				selectedCount === null
@@ -192,7 +220,7 @@
 		if (m.tmdb_id == null || batchRunning) return;
 		try {
 			const ref = await triggerRun(fetch, m.id);
-			initiatedJobIds = [...new Set([...initiatedJobIds, ref.job_id])];
+			trackJob(ref.job_id);
 			await goto(ref.detail_url);
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409) {
@@ -242,21 +270,80 @@
 	}
 
 	// ── Cache clear ─────────────────────────────────────────────────────────────
+	// Two-phase by design: a dry run seals the exact file list into a checksum,
+	// and only a second job quoting that checksum may delete. So opening the
+	// dialog plans, and confirming applies the plan that was shown.
 	let clearOpen = $state(false);
 	let clearBusy = $state(false);
 	let inclEmbeddings = $state(true);
 	let inclArchives = $state(false);
+	let clearPlan = $state<SealedPlan | null>(null);
+
+	const clearScope = $derived(clearPlan ? describePlanScope(clearPlan) : null);
+
+	async function planClear() {
+		clearPlan = null;
+		clearBusy = true;
+		const flags = { include_embeddings: inclEmbeddings, include_archives: inclArchives };
+		try {
+			const job = await clearPipelineCache(fetch, { ...flags, dry_run: true });
+			trackJob(job.job_id, async (snapshot) => {
+				clearBusy = false;
+				if (snapshot.status.outcome !== 'succeeded' && snapshot.status.outcome !== 'no_change') {
+					toast('Could not work out what to clear', 'bad');
+					return;
+				}
+				const plan = parseSealedPlan(await getRawDocument(fetch, job.job_id, 'result'));
+				if (!plan) {
+					toast('Could not work out what to clear', 'bad');
+					return;
+				}
+				clearPlan = plan;
+				if (plan.plannedCount === 0) {
+					// `_pipeline_activity` holds back the work directories while any
+					// job is non-terminal, so an empty plan usually means "busy".
+					toast('Nothing to clear right now — a job may still be running', 'info');
+				}
+			});
+		} catch (e) {
+			clearBusy = false;
+			toast(e instanceof Error ? e.message : 'Could not plan the clear', 'bad');
+		}
+	}
+
+	function openClear() {
+		clearOpen = true;
+		void planClear();
+	}
+
+	/** Either flag changes the file list, so the sealed checksum no longer applies. */
+	function reclear() {
+		if (clearOpen) void planClear();
+	}
 
 	async function doClear() {
+		const plan = clearPlan;
+		if (!plan || plan.plannedCount === 0) return;
 		clearBusy = true;
 		try {
-			await clearPipelineCache(fetch, {
+			const job = await clearPipelineCache(fetch, {
 				include_embeddings: inclEmbeddings,
-				include_archives: inclArchives
+				include_archives: inclArchives,
+				dry_run: false,
+				confirmed_plan_checksum: plan.planChecksum
 			});
-			toast('Cache clear queued', 'good');
+			toast(`Clearing ${plan.plannedCount.toLocaleString()} files`, 'good');
 			clearOpen = false;
-			setTimeout(() => void refreshAll(), 1500);
+			clearPlan = null;
+			trackJob(job.job_id, async (snapshot) => {
+				if (snapshot.status.outcome !== 'succeeded') {
+					// The plan is re-derived at execution time; if the cache moved
+					// underneath it the handler refuses rather than deleting a
+					// different set of files than the one that was confirmed.
+					toast('Clear did not complete — the cache changed, try again', 'bad');
+				}
+				await refreshAll();
+			});
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Clear failed', 'bad');
 		} finally {
@@ -289,7 +376,7 @@
 
 <SectionHeader title="Movie Posters" subtitle="Run, review, and tune poster selection">
 	{#snippet action()}
-		<button class="btn-sec clear-btn" onclick={() => (clearOpen = true)} disabled={!cache}>
+		<button class="btn-sec clear-btn" onclick={openClear} disabled={!cache}>
 			<Icon name="refresh" size={14} />
 			Clear cache{#if cache}
 				({bytesH(cache.clearable_bytes)}){/if}
@@ -319,6 +406,20 @@
 <div class="tabwrap">
 	<TabBar {tabs} active={tab} onSelect={setTab} />
 </div>
+
+<!-- Mounted outside the tab branches (as on the TV and overview pages): the
+     Clear-cache dialog is reachable from every tab, and its settle callbacks are
+     how the sealed plan arrives. -->
+<FeatureActivityPanel
+	scopeKey="feature:pipeline:movies"
+	queries={[
+		{ feature_area: 'ai_posters', subject_kind: 'movie' },
+		{ feature_area: 'maintenance', type: 'pipeline_cache_clear' }
+	]}
+	jobIds={initiatedJobIds}
+	heading="Movie poster activity"
+	onSettled={handleJobSettled}
+/>
 
 <!-- ═══ REVIEW ═══ -->
 {#if tab === 'review'}
@@ -374,14 +475,6 @@
 
 	<!-- ═══ RUN ═══ -->
 {:else if tab === 'run'}
-	<FeatureActivityPanel
-		scopeKey="feature:pipeline:movies"
-		query={{ feature_area: 'ai_posters', subject_kind: 'movie' }}
-		jobIds={initiatedJobIds}
-		heading="Movie poster activity"
-		onSettled={handleJobSettled}
-	/>
-
 	{#if missing.length === 0}
 		<div class="empty">
 			<Icon name="pipeline" size={34} stroke={1} />
@@ -542,11 +635,17 @@
 <ConfirmDialog
 	open={clearOpen}
 	title="Clear poster-pipeline cache"
-	confirmLabel="Clear cache"
+	confirmLabel={clearPlan && clearPlan.plannedCount > 0
+		? `Clear ${clearPlan.plannedCount.toLocaleString()} files`
+		: 'Clear cache'}
 	tone="bad"
 	busy={clearBusy}
+	confirmDisabled={!clearPlan || clearPlan.plannedCount === 0}
 	onConfirm={doClear}
-	onCancel={() => (clearOpen = false)}
+	onCancel={() => {
+		clearOpen = false;
+		clearPlan = null;
+	}}
 >
 	<p class="dlg-note">
 		Removes downloaded poster candidates and working artifacts. Never touches your labels, taste
@@ -568,13 +667,24 @@
 		</div>
 	{/if}
 	<label class="toggle">
-		<input type="checkbox" bind:checked={inclEmbeddings} />
+		<input type="checkbox" bind:checked={inclEmbeddings} onchange={reclear} />
 		Include embedding cache (re-derived next run)
 	</label>
 	<label class="toggle">
-		<input type="checkbox" bind:checked={inclArchives} />
+		<input type="checkbox" bind:checked={inclArchives} onchange={reclear} />
 		Include run archives — <b>deletes results history</b>
 	</label>
+	<p class="dlg-plan" aria-live="polite">
+		{#if clearBusy && !clearPlan}
+			Working out exactly what would be removed…
+		{:else if clearPlan && clearPlan.plannedCount > 0}
+			{clearScope}
+		{:else if clearPlan}
+			Nothing to remove — work files are held back while any job is still running.
+		{:else}
+			Could not work out what to clear.
+		{/if}
+	</p>
 </ConfirmDialog>
 
 <ConfirmDialog
@@ -894,6 +1004,14 @@
 		font-size: 12.5px;
 		color: var(--muted);
 		line-height: 1.5;
+	}
+	.dlg-plan {
+		margin: 0;
+		padding-top: 10px;
+		border-top: 1px solid var(--line);
+		font-size: 12.5px;
+		line-height: 1.5;
+		color: var(--text);
 	}
 	.size-line {
 		display: flex;

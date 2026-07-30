@@ -5888,8 +5888,8 @@
             "type": "boolean"
           },
           "max_items": {
-            "default": 10000,
-            "maximum": 10000.0,
+            "default": 200000,
+            "maximum": 200000.0,
             "minimum": 1.0,
             "title": "Max Items",
             "type": "integer"

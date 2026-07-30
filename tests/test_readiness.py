@@ -46,8 +46,97 @@ async def _install_fake_connection(monkeypatch, *, lock_available=True):
 
     monkeypatch.setattr(readiness, "_raw_pool_connection", connect)
     monkeypatch.setattr(readiness, "verify_runtime_schema", compatible_schema)
+    monkeypatch.setattr(
+        readiness,
+        "inference_runtime_report",
+        lambda: {"status": "ok"},
+    )
     monkeypatch.setattr(job_event_tailer, "health", lambda: {"status": "ok"})
     return sqlalchemy_connection, pg_connection
+
+
+def _runtime_report(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    installed: dict[str, str],
+    requested: str,
+    available: list[str],
+) -> dict[str, object]:
+    from marquee.ml import hardware
+
+    def distribution_version(name: str) -> str:
+        try:
+            return installed[name]
+        except KeyError:
+            raise importlib.metadata.PackageNotFoundError(name) from None
+
+    monkeypatch.setattr(importlib.metadata, "version", distribution_version)
+    monkeypatch.setattr(hardware.ort, "get_available_providers", lambda: available)
+    monkeypatch.setattr(hardware.pipeline_settings, "EXECUTION_PROVIDER", requested)
+    monkeypatch.setattr(hardware, "_preload_cuda_libraries", lambda: True)
+    hardware.detect_hardware.cache_clear()
+    try:
+        return readiness.inference_runtime_report()
+    finally:
+        hardware.detect_hardware.cache_clear()
+
+
+def test_inference_runtime_rejects_conflicting_onnx_distributions(monkeypatch):
+    report = _runtime_report(
+        monkeypatch,
+        installed={"onnxruntime": "1.27.0", "onnxruntime-gpu": "1.26.0"},
+        requested="cuda",
+        available=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    assert report["status"] == "incompatible"
+    assert report["installed_distributions"] == {
+        "onnxruntime": "1.27.0",
+        "onnxruntime-gpu": "1.26.0",
+    }
+    assert report["selected_provider"] == "CUDAExecutionProvider"
+
+
+def test_inference_runtime_rejects_unavailable_explicit_cuda(monkeypatch):
+    report = _runtime_report(
+        monkeypatch,
+        installed={"onnxruntime-gpu": "1.26.0"},
+        requested="cuda",
+        available=["CPUExecutionProvider"],
+    )
+
+    assert report["status"] == "incompatible"
+    assert report["requested_provider"] == "CUDAExecutionProvider"
+    assert report["available_providers"] == ["CPUExecutionProvider"]
+    assert report["selected_provider"] is None
+
+
+def test_inference_runtime_accepts_selected_explicit_cuda(monkeypatch):
+    report = _runtime_report(
+        monkeypatch,
+        installed={"onnxruntime-gpu": "1.26.0"},
+        requested="cuda",
+        available=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+
+    assert report["status"] == "ok"
+    assert report["requested_provider"] == "CUDAExecutionProvider"
+    assert report["selected_provider"] == "CUDAExecutionProvider"
+    assert report["hardware_tier"] == "cuda"
+
+
+def test_inference_runtime_allows_single_cpu_runtime_in_auto_mode(monkeypatch):
+    report = _runtime_report(
+        monkeypatch,
+        installed={"onnxruntime": "1.27.0"},
+        requested="auto",
+        available=["CPUExecutionProvider"],
+    )
+
+    assert report["status"] == "ok"
+    assert report["requested_provider"] == "auto"
+    assert report["selected_provider"] == "CPUExecutionProvider"
+    assert report["hardware_tier"] == "cpu"
 
 
 async def test_healthy_readiness_checks_every_component(db, monkeypatch):
@@ -108,6 +197,11 @@ async def test_readiness_reports_unreachable_database_and_recovers(db, monkeypat
 
     monkeypatch.setattr(readiness, "_raw_pool_connection", connect)
     monkeypatch.setattr(readiness, "verify_runtime_schema", compatible_schema)
+    monkeypatch.setattr(
+        readiness,
+        "inference_runtime_report",
+        lambda: {"status": "ok"},
+    )
     monkeypatch.setattr(job_event_tailer, "health", lambda: {"status": "ok"})
     first = await readiness.check_readiness()
     second = await readiness.check_readiness()

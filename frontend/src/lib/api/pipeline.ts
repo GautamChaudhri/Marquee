@@ -4,7 +4,6 @@ import type { components } from './generated/openapi';
 import type {
 	BatchScope,
 	CacheSizes,
-	JobSummary,
 	MovieRuns,
 	OcrLabelCaptureResult,
 	OcrLabelClearResult,
@@ -55,11 +54,19 @@ export function backupAllPosters(fetchFn: Fetch): Promise<JobSubmissionResponse>
 	);
 }
 
+/** Prune orphaned poster-cache files. Two-phase: a `dry_run` seals a plan whose
+ *  `plan_checksum` must come back as `confirmed_plan_checksum` to mutate. */
 export function runPosterMaintenance(
 	fetchFn: Fetch,
-	body: { dry_run?: boolean; force?: boolean } = {}
-): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/maintenance', body);
+	body: { dry_run?: boolean; confirmed_plan_checksum?: string } = {}
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		'/pipeline/maintenance',
+		body,
+		{ 'Idempotency-Key': `poster_maintenance:${randomUuid()}` }
+	);
 }
 
 /** Latest unreviewed run per movie, for the Review tab. */
@@ -98,12 +105,28 @@ export function getPipelineCache(fetchFn: Fetch): Promise<CacheSizes> {
 	return apiGet<CacheSizes>(fetchFn, '/pipeline/cache');
 }
 
-/** Clear downloaded-poster caches (never head/taste/labels). Enqueues a job. */
+/** Clear downloaded-poster caches (never head/taste/labels). Enqueues a job.
+ *
+ *  Two-phase like `runPosterMaintenance`: submit with `dry_run` to seal a plan,
+ *  then submit again with that plan's `confirmed_plan_checksum` **and the same
+ *  include flags** to actually delete. The checksum covers the file list, which
+ *  the flags select, so a mismatched pair is rejected by the handler. */
 export function clearPipelineCache(
 	fetchFn: Fetch,
-	body: { include_embeddings?: boolean; include_archives?: boolean } = {}
-): Promise<JobSummary> {
-	return apiSend<JobSummary>(fetchFn, 'POST', '/pipeline/cache/clear', body);
+	body: {
+		include_embeddings?: boolean;
+		include_archives?: boolean;
+		dry_run?: boolean;
+		confirmed_plan_checksum?: string;
+	} = {}
+): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		'/pipeline/cache/clear',
+		body,
+		{ 'Idempotency-Key': `pipeline_cache_clear:${randomUuid()}` }
+	);
 }
 
 /** Run history for one movie, newest first. */

@@ -279,3 +279,39 @@ async def test_mutation_parent_routes_require_idempotency_and_return_canonical_l
     job = await db.get(Job, body["job_id"])
     assert job is not None and job.type == job_type
     assert job.pgq_job_id is None and job.dispatch_generation == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "job_type"),
+    (
+        ("/api/pipeline/cache/clear", "pipeline_cache_clear"),
+        ("/api/pipeline/maintenance", "poster_maintenance"),
+    ),
+)
+async def test_planned_maintenance_routes_require_a_job_type_prefixed_key(
+    db, client: AsyncClient, path: str, job_type: str
+) -> None:
+    """The two-phase maintenance routes are submissions like any other.
+
+    Omitting the header, or prefixing the key with the wrong job type, is a 422
+    — which is exactly how the Clear-cache button used to fail.
+    """
+    assert (await client.post(path, json={})).status_code == 422
+    assert (
+        await client.post(path, json={}, headers={"Idempotency-Key": "wrong-prefix:route-test"})
+    ).status_code == 422
+
+    response = await client.post(
+        path, json={}, headers={"Idempotency-Key": f"{job_type}:route-test"}
+    )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["disposition"] == "created"
+    job = await db.get(Job, body["job_id"])
+    assert job is not None and job.type == job_type
+    # Defaults are the safe ones: a plan, not a delete. The persisted document
+    # drops nulls, so an unconfirmed plan is an absent key.
+    assert job.request["dry_run"] is True
+    assert "confirmed_plan_checksum" not in job.request

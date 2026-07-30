@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.job_submission import submission_response
@@ -19,6 +19,7 @@ from marquee.api.library_serializers import (
 )
 from marquee.core.jobs.poster_submission import submit_poster_leaf
 from marquee.core.jobs.submission import IdempotencyConflictError, SubmissionError
+from marquee.core.movie_queries import movie_downloaded, movie_review_pending
 from marquee.core.poster_subjects import PosterSubject
 from marquee.core.sort_title import title_sort_expr
 from marquee.core.tv_queries import season_downloaded, series_visible
@@ -28,7 +29,6 @@ from marquee.models import (
     EpisodeMediaFile,
     MediaFile,
     Movie,
-    PipelineRun,
     Season,
     Series,
 )
@@ -120,29 +120,13 @@ async def list_movies(
 
     conditions = [Movie.is_present.is_(True)]
     if not include_unavailable:
-        has_active_media = exists(
-            select(MediaFile.id).where(
-                MediaFile.movie_id == Movie.id,
-                MediaFile.is_active.is_(True),
-                MediaFile.is_present.is_(True),
-            )
-        )
-        conditions.append(or_(Movie.movie_file_path.is_not(None), has_active_media))
+        conditions.append(movie_downloaded())
     if q:
         conditions.append(Movie.title.ilike(f"%{q}%"))
     if poster_status and (pred := poster_status_filter(poster_status)) is not None:
         conditions.append(pred)
     if exclude_in_review:
-        latest_review = (
-            select(PipelineRun.movie_id.label("movie_id"))
-            .where(
-                PipelineRun.feedback_event_id.is_(None),
-                PipelineRun.status.in_(("completed", "flagged_manual")),
-            )
-            .group_by(PipelineRun.movie_id)
-            .subquery()
-        )
-        conditions.append(Movie.id.not_in(select(latest_review.c.movie_id)))
+        conditions.append(~movie_review_pending())
     if conditions:
         base = base.where(*conditions)
 

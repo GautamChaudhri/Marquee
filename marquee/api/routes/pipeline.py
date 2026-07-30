@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
@@ -50,6 +50,11 @@ from marquee.core.jobs.submission import (
     SubmissionIntent,
     submit_job,
 )
+from marquee.core.movie_queries import (
+    REVIEW_QUEUE_STATUSES,
+    movie_downloaded,
+    movie_review_pending,
+)
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.database import get_db
@@ -69,28 +74,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pipeline", tags=["pipeline"])
 movies_router = APIRouter(prefix="/api/movies", tags=["movies"])
 
-_REVIEW_QUEUE_STATUSES = {"completed", "flagged_manual"}
+_REVIEW_QUEUE_STATUSES = tuple(REVIEW_QUEUE_STATUSES)
 _STALE_BATCH_JOB_TO_RUN_STATUS = {
     "failed": "failed",
     "dead_letter": "failed",
     "cancelled": "cancelled",
     "interrupted": "interrupted",
 }
-
-
-def _downloaded():
-    """Movie has a file on disk. Mirrors the library list's availability filter
-    (``api/routes/library.py``) so the pipeline ignores undownloaded Radarr
-    movies entirely — exactly like the films list does."""
-    return or_(
-        Movie.movie_file_path.is_not(None),
-        exists(
-            select(MediaFile.id).where(
-                MediaFile.movie_id == Movie.id,
-                MediaFile.is_active.is_(True),
-            )
-        ),
-    )
 
 
 def _review_queue_latest():
@@ -104,7 +94,7 @@ def _review_queue_latest():
             PipelineRun.media_type == "movie",
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
-            _downloaded(),
+            movie_downloaded(),
         )
         .group_by(PipelineRun.movie_id)
         .subquery()
@@ -118,7 +108,7 @@ def _latest_run_per_movie():
             func.max(PipelineRun.started_at).label("started_at"),
         )
         .join(Movie, Movie.id == PipelineRun.movie_id)
-        .where(PipelineRun.media_type == "movie", _downloaded())
+        .where(PipelineRun.media_type == "movie", movie_downloaded())
         .group_by(PipelineRun.movie_id)
         .subquery()
     )
@@ -192,7 +182,7 @@ async def run_pipeline(
             status_code=400, detail=f"Movie {movie.title!r} has no TMDB ID — run sync"
         )
     if not await db.scalar(
-        select(exists(select(Movie.id).where(Movie.id == movie_id, _downloaded())))
+        select(exists(select(Movie.id).where(Movie.id == movie_id, movie_downloaded())))
     ):
         raise HTTPException(status_code=400, detail=f"Movie {movie.title!r} has no downloaded file")
 
@@ -444,14 +434,14 @@ async def run_pipeline_batch(
         if not body.movie_ids:
             raise HTTPException(status_code=400, detail="scope=selected requires movie_ids")
         query = select(Movie).where(
-            Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None), _downloaded()
+            Movie.id.in_(body.movie_ids), Movie.tmdb_id.is_not(None), movie_downloaded()
         )
     elif scope == "missing":
         query = select(Movie).where(
-            Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None), _downloaded()
+            Movie.poster_path.is_(None), Movie.tmdb_id.is_not(None), movie_downloaded()
         )
     elif scope == "all":
-        query = select(Movie).where(Movie.tmdb_id.is_not(None), _downloaded())
+        query = select(Movie).where(Movie.tmdb_id.is_not(None), movie_downloaded())
     else:
         raise HTTPException(status_code=400, detail=f"unknown scope {scope!r}")
 
@@ -539,10 +529,17 @@ async def run_pipeline_batch(
 @router.get("/summary")
 async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
     await _repair_stale_batch_pipeline_runs(db)
-    downloaded = _downloaded()
+    downloaded = movie_downloaded()
     total_movies = await db.scalar(select(func.count(Movie.id)).where(downloaded))
     movies_with_poster = await db.scalar(
         select(func.count(Movie.id)).where(downloaded, Movie.poster_path.is_not(None))
+    )
+    # The Run tab's own predicate, so the card and the tab cannot disagree:
+    # missing a poster *and* not already sitting in the review queue.
+    movies_awaiting_run = await db.scalar(
+        select(func.count(Movie.id)).where(
+            downloaded, Movie.poster_path.is_(None), ~movie_review_pending()
+        )
     )
     latest = _review_queue_latest()
     latest_runs = _latest_run_per_movie()
@@ -592,6 +589,7 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         "total_movies": total,
         "movies_with_poster": with_poster,
         "movies_missing_poster": max(total - with_poster, 0),
+        "movies_awaiting_run": movies_awaiting_run or 0,
         "movies_in_review": movies_in_review or 0,
         "movies_in_run": movies_in_run or 0,
         "running_jobs": running_jobs,

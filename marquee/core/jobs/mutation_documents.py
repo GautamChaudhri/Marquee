@@ -345,11 +345,15 @@ class PosterMaintenanceRequestV1(StrictDocument):
 
 
 class PipelineCacheClearRequestV1(StrictDocument):
+    # A poster-candidate workspace is tens of thousands of small files — one run
+    # of one movie downloads dozens — so this scope is an order of magnitude
+    # wider than the other maintenance plans. ``_walk_files`` raises rather than
+    # truncating past the bound, so too low a cap makes the clear unusable.
     include_embeddings: bool = True
     include_archives: bool = False
     dry_run: bool = True
     confirmed_plan_checksum: Checksum | None = None
-    max_items: int = Field(default=10_000, ge=1, le=10_000)
+    max_items: int = Field(default=200_000, ge=1, le=200_000)
     batch_size: int = Field(default=100, ge=1, le=500)
 
 

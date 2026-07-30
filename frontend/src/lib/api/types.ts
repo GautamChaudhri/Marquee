@@ -271,7 +271,10 @@ export interface SummaryRunningJob extends JobSummary {
 export interface PipelineSummary {
 	total_movies: number;
 	movies_with_poster: number;
+	/** Coverage arithmetic: downloaded movies with no poster. */
 	movies_missing_poster: number;
+	/** The workspace Run tab's own count — missing *and* not awaiting a decision. */
+	movies_awaiting_run: number;
 	movies_in_review: number;
 	movies_in_run: number;
 	running_jobs: SummaryRunningJob[];

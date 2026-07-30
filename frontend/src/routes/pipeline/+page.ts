@@ -9,6 +9,7 @@ const EMPTY_SUMMARY: PipelineSummary = {
 	total_movies: 0,
 	movies_with_poster: 0,
 	movies_missing_poster: 0,
+	movies_awaiting_run: 0,
 	movies_in_review: 0,
 	movies_in_run: 0,
 	running_jobs: [],

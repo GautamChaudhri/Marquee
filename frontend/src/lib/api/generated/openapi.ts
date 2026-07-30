@@ -3814,7 +3814,7 @@ export interface components {
 			include_embeddings: boolean;
 			/**
 			 * Max Items
-			 * @default 10000
+			 * @default 200000
 			 */
 			max_items: number;
 		};

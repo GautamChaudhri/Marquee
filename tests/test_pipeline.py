@@ -192,6 +192,7 @@ def test_provider_selection_skips_unavailable_openvino(monkeypatch: pytest.Monke
         "marquee.ml.hardware.ort.get_available_providers",
         lambda: ["CoreMLExecutionProvider", "CPUExecutionProvider"],
     )
+    monkeypatch.setattr(hardware.pipeline_settings, "EXECUTION_PROVIDER", "auto")
     hardware.detect_hardware.cache_clear()
     try:
         providers = choose_execution_providers()
@@ -743,18 +744,29 @@ def test_load_ocr_respects_cpu_device_when_paddle_cuda_exists(
     monkeypatch: pytest.MonkeyPatch,
 ):
     created: dict[str, object] = {}
+    probe: dict[str, object] = {}
+    cuda_device = object()
 
     class FakePaddleOCR:
         def __init__(self, **kwargs):
             created.update(kwargs)
 
+    def zeros(shape, dtype=None, *, device=None):
+        probe["shape"] = shape
+        probe["dtype"] = dtype
+        probe["device"] = device
+
+    def synchronize(device):
+        probe["synchronized"] = device
+
     fake_paddle = types.SimpleNamespace(
         device=types.SimpleNamespace(
             is_compiled_with_cuda=lambda: True,
-            cuda=types.SimpleNamespace(device_count=lambda: 1, synchronize=lambda: None),
+            cuda=types.SimpleNamespace(device_count=lambda: 1),
+            synchronize=synchronize,
         ),
-        CUDAPlace=lambda index: index,
-        zeros=lambda *_args, **_kwargs: None,
+        CUDAPlace=lambda index: cuda_device if index == 0 else None,
+        zeros=zeros,
     )
     fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
     monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
@@ -764,24 +776,41 @@ def test_load_ocr_respects_cpu_device_when_paddle_cuda_exists(
     ocr_filter._load_ocr()
 
     assert created["device"] == "cpu"
+    assert probe == {
+        "shape": [1],
+        "dtype": "float32",
+        "device": cuda_device,
+        "synchronized": cuda_device,
+    }
 
 
 def test_load_ocr_auto_uses_gpu_when_paddle_cuda_exists(
     monkeypatch: pytest.MonkeyPatch,
 ):
     created: dict[str, object] = {}
+    probe: dict[str, object] = {}
+    cuda_device = object()
 
     class FakePaddleOCR:
         def __init__(self, **kwargs):
             created.update(kwargs)
 
+    def zeros(shape, dtype=None, *, device=None):
+        probe["shape"] = shape
+        probe["dtype"] = dtype
+        probe["device"] = device
+
+    def synchronize(device):
+        probe["synchronized"] = device
+
     fake_paddle = types.SimpleNamespace(
         device=types.SimpleNamespace(
             is_compiled_with_cuda=lambda: True,
-            cuda=types.SimpleNamespace(device_count=lambda: 1, synchronize=lambda: None),
+            cuda=types.SimpleNamespace(device_count=lambda: 1),
+            synchronize=synchronize,
         ),
-        CUDAPlace=lambda index: index,
-        zeros=lambda *_args, **_kwargs: None,
+        CUDAPlace=lambda index: cuda_device if index == 0 else None,
+        zeros=zeros,
     )
     fake_paddleocr = types.SimpleNamespace(PaddleOCR=FakePaddleOCR)
     monkeypatch.setitem(sys.modules, "paddle", fake_paddle)
@@ -791,6 +820,12 @@ def test_load_ocr_auto_uses_gpu_when_paddle_cuda_exists(
     ocr_filter._load_ocr()
 
     assert created["device"] == "gpu:0"
+    assert probe == {
+        "shape": [1],
+        "dtype": "float32",
+        "device": cuda_device,
+        "synchronized": cuda_device,
+    }
 
 
 def test_load_ocr_auto_falls_back_to_cpu_when_cuda_wheel_has_zero_devices(
