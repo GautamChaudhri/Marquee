@@ -10,6 +10,7 @@
 		tone = 'gold',
 		busy = false,
 		confirmDisabled = false,
+		maxWidth = '440px',
 		onConfirm,
 		onCancel,
 		children
@@ -22,6 +23,7 @@
 		tone?: 'gold' | 'bad';
 		busy?: boolean;
 		confirmDisabled?: boolean;
+		maxWidth?: string;
 		onConfirm: () => void;
 		onCancel: () => void;
 		children?: Snippet;
@@ -45,6 +47,7 @@
 	>
 		<div
 			class="card mq-rise"
+			style="--max-w:{maxWidth}"
 			role="dialog"
 			tabindex="-1"
 			aria-modal="true"
@@ -85,7 +88,9 @@
 	}
 	.card {
 		width: 100%;
-		max-width: 440px;
+		max-width: var(--max-w, 440px);
+		max-height: calc(100vh - 16vh - 32px);
+		overflow-y: auto;
 		background: var(--panel);
 		border: 1px solid var(--line2);
 		border-radius: var(--radius);

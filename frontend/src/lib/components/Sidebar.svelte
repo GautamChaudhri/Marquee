@@ -4,11 +4,17 @@
 	import ActivityNavBadge from '$lib/activity/components/ActivityNavBadge.svelte';
 	import Icon from './Icon.svelte';
 
+	interface SubLink {
+		label: string;
+		href: string;
+		icon: string;
+	}
 	interface Link {
 		label: string;
 		href: string;
 		icon: string;
 		activityBadge?: boolean;
+		children?: SubLink[];
 	}
 	const GROUPS: { name: string; links: Link[] }[] = [
 		{
@@ -22,7 +28,15 @@
 		{
 			name: 'Posters',
 			links: [
-				{ label: 'Pipeline', href: '/pipeline', icon: 'pipeline' },
+				{
+					label: 'Pipeline',
+					href: '/pipeline',
+					icon: 'pipeline',
+					children: [
+						{ label: 'Movies', href: '/pipeline/movies', icon: 'film' },
+						{ label: 'TV', href: '/pipeline/tv', icon: 'tv' }
+					]
+				},
 				{ label: 'Taste', href: '/taste', icon: 'taste' }
 			]
 		},
@@ -57,11 +71,32 @@
 			<div class="group">
 				{#if !$sidebarCollapsed}<div class="gname">{g.name}</div>{/if}
 				{#each g.links as l (l.href)}
-					<a href={l.href} class="link" class:on={isActive(l.href)} title={l.label}>
+					<a
+						href={l.href}
+						class="link"
+						class:on={isActive(l.href)}
+						class:has-kids={l.children}
+						title={l.label}
+					>
 						<Icon name={l.icon} size={18} />
 						{#if !$sidebarCollapsed}<span>{l.label}</span>{/if}
 						{#if l.activityBadge}<ActivityNavBadge />{/if}
 					</a>
+					{#if l.children}
+						<div class="sublinks">
+							{#each l.children as child (child.href)}
+								<a
+									href={child.href}
+									class="sublink"
+									class:on={isActive(child.href)}
+									title={`${l.label} · ${child.label}`}
+								>
+									<Icon name={child.icon} size={14} />
+									{#if !$sidebarCollapsed}<span>{child.label}</span>{/if}
+								</a>
+							{/each}
+						</div>
+					{/if}
 				{/each}
 			</div>
 		{/each}
@@ -158,6 +193,46 @@
 	.link.on {
 		background: var(--gold-soft);
 		color: var(--gold);
+	}
+	.link.has-kids {
+		border-bottom-left-radius: 3px;
+		border-bottom-right-radius: 3px;
+	}
+	/* Two half-width shortcuts, visually welded to the parent link above them. */
+	.sublinks {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 2px;
+		margin-top: 2px;
+	}
+	.sublink {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		padding: 6px 8px;
+		border-radius: 3px 3px 8px 8px;
+		background: var(--panel);
+		color: var(--muted);
+		font-size: 12px;
+		font-weight: 500;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.sublink:hover {
+		background: var(--panel2);
+		color: var(--text);
+	}
+	.sublink.on {
+		background: color-mix(in srgb, var(--gold) 12%, var(--panel));
+		color: var(--gold);
+	}
+	.collapsed .sublinks {
+		grid-template-columns: 1fr;
+	}
+	.collapsed .sublink {
+		border-radius: 6px;
+		padding: 5px 0;
 	}
 	.collapsed .link,
 	.collapsed .brand {

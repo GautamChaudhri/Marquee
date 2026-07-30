@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { SvelteMap } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import Icon from '$lib/components/Icon.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
-	import StatCard from '$lib/components/StatCard.svelte';
+	import PosterStatCard from '$lib/components/pipeline/PosterStatCard.svelte';
 	import TextProfilePanel from '$lib/components/pipeline/TextProfilePanel.svelte';
 	import {
 		backupAllPosters,
@@ -16,7 +16,7 @@
 	import { getTvSummary } from '$lib/api/pipeline-tv';
 	import { getSettings, putSettings, runHealScan } from '$lib/api/system';
 	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
-	import { bytesH } from '$lib/display';
+	import { bytesH, type Tone } from '$lib/display';
 	import { toast } from '$lib/toast';
 	import type { PipelineSummary, RuntimeSettings, TvPipelineSummary } from '$lib/api/types';
 	import type { PageData } from './$types';
@@ -72,6 +72,35 @@
 	const deployedPct = $derived(
 		summary.total_movies ? Math.round((summary.movies_with_poster / summary.total_movies) * 100) : 0
 	);
+	/** A zeroed stand-in so the television row still renders when the summary call failed. */
+	const EMPTY_TV: TvPipelineSummary = {
+		shows_total: 0,
+		shows_with_show_poster: 0,
+		shows_missing_show_poster: 0,
+		seasons_total: 0,
+		seasons_with_poster: 0,
+		seasons_missing_poster: 0,
+		shows_fully_covered: 0,
+		shows_in_review: 0,
+		seasons_in_review: 0,
+		assets_in_review: 0,
+		assets_in_run: 0,
+		shows_no_tmdb: 0,
+		running_jobs: [],
+		last_heal: null,
+		heal_schedule: null,
+		backups: { count: 0, bytes: 0 }
+	};
+	const tv = $derived(tvSummary ?? EMPTY_TV);
+	const showArtPct = $derived(
+		tv.shows_total ? Math.round((tv.shows_with_show_poster / tv.shows_total) * 100) : 0
+	);
+	const seasonArtPct = $derived(
+		tv.seasons_total ? Math.round((tv.seasons_with_poster / tv.seasons_total) * 100) : 0
+	);
+	const tvMissing = $derived(tv.shows_missing_show_poster + tv.seasons_missing_poster);
+
+	const coverageTone = (pct: number): Tone => (pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
 	const posterDirty = $derived(
 		nextMovieFormat() !== currentMovieFormat ||
 			nextShowFormat() !== currentShowFormat ||
@@ -285,41 +314,130 @@
 
 <SectionHeader title="Poster Pipeline" subtitle="Manage poster selection and restoration" />
 
-<div class="stats">
-	<StatCard label="Movies" value={summary.total_movies} sub="downloaded" tone="info" />
-	<StatCard
+<div class="row-head">
+	<span class="eyebrow"><Icon name="film" size={14} /> Movies</span>
+	<a class="row-link" href="/pipeline/movies">Open workspace <Icon name="chevron" size={13} /></a>
+</div>
+
+<div class="stats" style="--cols:5">
+	<PosterStatCard
+		label="Movies"
+		value={summary.total_movies}
+		sub="downloaded"
+		tone="info"
+		icon="film"
+	/>
+	<PosterStatCard
 		label="Deployed"
 		value={summary.movies_with_poster}
 		sub={`${deployedPct}% coverage`}
 		bar={deployedPct}
-		tone={deployedPct >= 90 ? 'good' : deployedPct >= 70 ? 'warn' : 'bad'}
+		tone={coverageTone(deployedPct)}
+		icon="check"
 	/>
-	<StatCard
+	<PosterStatCard
 		label="Missing"
 		value={summary.movies_missing_poster}
+		sub={summary.movies_missing_poster ? 'awaiting a run' : 'fully covered'}
 		tone={summary.movies_missing_poster ? 'warn' : 'good'}
+		icon="alert"
 	/>
-	<StatCard label="In review" value={summary.movies_in_review} tone="gold" />
-	<StatCard
+	<PosterStatCard
+		label="In review"
+		value={summary.movies_in_review}
+		sub="awaiting a decision"
+		tone="gold"
+		icon="eye"
+	/>
+	<PosterStatCard
 		label="Running"
 		value={summary.running_jobs.length || summary.movies_in_run}
+		sub={summary.running_jobs.length ? 'active jobs' : 'movies in run'}
 		tone="info"
+		icon="refresh"
+	/>
+</div>
+
+<div class="row-head">
+	<span class="eyebrow"><Icon name="tv" size={14} /> Television</span>
+	<a class="row-link" href="/pipeline/tv">Open workspace <Icon name="chevron" size={13} /></a>
+</div>
+
+<div class="stats" style="--cols:6">
+	<PosterStatCard
+		label="Shows"
+		value={tv.shows_total}
+		sub={`${tv.shows_fully_covered} fully covered`}
+		tone="info"
+		icon="tv"
+	/>
+	<PosterStatCard
+		label="Show art"
+		value={tv.shows_with_show_poster}
+		sub={`${showArtPct}% coverage`}
+		bar={showArtPct}
+		tone={coverageTone(showArtPct)}
+		icon="image"
+	/>
+	<PosterStatCard
+		label="Season art"
+		value={tv.seasons_with_poster}
+		sub={`${seasonArtPct}% of ${tv.seasons_total} seasons`}
+		bar={seasonArtPct}
+		tone={coverageTone(seasonArtPct)}
+		icon="layers"
+	/>
+	<PosterStatCard
+		label="Missing"
+		value={tvMissing}
+		breakdown={[
+			{ label: 'show', value: tv.shows_missing_show_poster },
+			{ label: 'season', value: tv.seasons_missing_poster }
+		]}
+		tone={tvMissing ? 'warn' : 'good'}
+		icon="alert"
+	/>
+	<PosterStatCard
+		label="In review"
+		value={tv.assets_in_review}
+		breakdown={[
+			{ label: 'shows', value: tv.shows_in_review },
+			{ label: 'seasons', value: tv.seasons_in_review }
+		]}
+		tone="gold"
+		icon="eye"
+	/>
+	<PosterStatCard
+		label="Running"
+		value={tv.running_jobs.length || tv.assets_in_run}
+		sub={tv.shows_no_tmdb ? `${tv.shows_no_tmdb} no TMDB match` : 'assets in run'}
+		tone={tv.shows_no_tmdb ? 'low' : 'info'}
+		icon="refresh"
 	/>
 </div>
 
 <div class="actions">
-	<button class="action" onclick={() => goto('/pipeline/movies')}>
-		<span>Movie Posters</span>
-		<b>{summary.movies_missing_poster}</b>
-	</button>
-	<button class="action" onclick={() => goto('/pipeline/tv')}>
-		<span>TV Posters</span>
-		<b
-			>{tvSummary
-				? `${tvSummary.shows_missing_show_poster + tvSummary.seasons_missing_poster} missing`
-				: 'Open'}</b
-		>
-	</button>
+	<a class="workspace" href="/pipeline/movies">
+		<span class="ws-icon film"><Icon name="film" size={18} /></span>
+		<span class="ws-text">
+			<b>Movie workspace</b>
+			<small>
+				{summary.movies_missing_poster} missing · {summary.movies_in_review} in review
+			</small>
+		</span>
+		<Icon name="chevron" size={16} />
+	</a>
+	<a class="workspace" href="/pipeline/tv">
+		<span class="ws-icon tv"><Icon name="tv" size={18} /></span>
+		<span class="ws-text">
+			<b>TV workspace</b>
+			<small>
+				{tv.shows_missing_show_poster} show + {tv.seasons_missing_poster} season missing · {tv.assets_in_review}
+				in review
+			</small>
+		</span>
+		<Icon name="chevron" size={16} />
+	</a>
 </div>
 
 <TextProfilePanel initial={data.textProfiles} />
@@ -462,11 +580,38 @@
 </ConfirmDialog>
 
 <style>
+	.row-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		margin: 4px 0 8px;
+	}
+	.eyebrow {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 11px;
+		text-transform: uppercase;
+		letter-spacing: 0.07em;
+		font-weight: 700;
+		color: var(--muted);
+	}
+	.row-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		font-size: 12px;
+		color: var(--faint);
+	}
+	.row-link:hover {
+		color: var(--gold);
+	}
 	.stats {
 		display: grid;
-		grid-template-columns: repeat(5, minmax(0, 1fr));
+		grid-template-columns: repeat(var(--cols, 5), minmax(0, 1fr));
 		gap: 12px;
-		margin-bottom: 16px;
+		margin-bottom: 18px;
 	}
 	.actions {
 		display: grid;
@@ -474,7 +619,7 @@
 		gap: 12px;
 		margin-bottom: 18px;
 	}
-	.action {
+	.workspace {
 		min-height: 72px;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
@@ -483,13 +628,52 @@
 		padding: 14px 16px;
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		gap: 13px;
 		font-size: 14px;
+		transition:
+			border-color 0.15s ease,
+			background 0.15s ease;
 	}
-	.action b {
-		font-family: var(--font-mono);
-		color: var(--gold);
-		font-size: 13px;
+	.workspace:hover {
+		border-color: color-mix(in srgb, var(--gold) 40%, var(--line));
+		background: color-mix(in srgb, var(--gold) 5%, var(--panel));
+	}
+	.ws-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		flex: none;
+		border-radius: 9px;
+		color: var(--c);
+		background: color-mix(in srgb, var(--c) 13%, transparent);
+		border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
+	}
+	.ws-icon.film {
+		--c: var(--gold);
+	}
+	.ws-icon.tv {
+		--c: var(--info);
+	}
+	.ws-text {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		min-width: 0;
+	}
+	.ws-text b {
+		font-size: 14px;
+		font-weight: 650;
+	}
+	.ws-text small {
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.workspace :global(svg:last-child) {
+		color: var(--faint);
+		flex: none;
 	}
 	.settings-grid {
 		display: grid;
@@ -603,6 +787,11 @@
 		gap: 6px;
 		font-size: 13px;
 		color: var(--muted);
+	}
+	@media (max-width: 1200px) {
+		.stats {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
 	}
 	@media (max-width: 980px) {
 		.stats,

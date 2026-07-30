@@ -287,6 +287,10 @@ async def tv_pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
 
     review_candidates = await _tv_review_queue_candidates(db)
     shows_in_review = len({run.series_id for run in review_candidates if run.series_id is not None})
+    awaiting_review = _subjects_awaiting_review(review_candidates)
+    seasons_in_review = sum(1 for kind, _ in awaiting_review if kind == "season")
+    assets_in_run = len(await _active_tv_asset_jobs(db))
+    shows_no_tmdb = sum(1 for s in series_rows if s.tmdb_id is None)
 
     active_jobs = (
         (
@@ -320,6 +324,10 @@ async def tv_pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         "seasons_missing_poster": max(seasons_total - seasons_with_poster, 0),
         "shows_fully_covered": shows_fully_covered,
         "shows_in_review": shows_in_review,
+        "seasons_in_review": seasons_in_review,
+        "assets_in_review": len(awaiting_review),
+        "assets_in_run": assets_in_run,
+        "shows_no_tmdb": shows_no_tmdb,
         "running_jobs": running_jobs,
         "last_heal": await latest_poster_heal_summary(db),
         "heal_schedule": heal_schedule,

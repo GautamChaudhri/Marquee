@@ -208,6 +208,10 @@ async def test_tv_summary_run_queue_and_batch_scopes(
         "seasons_missing_poster": 2,
         "shows_fully_covered": 1,
         "shows_in_review": 0,
+        "seasons_in_review": 0,
+        "assets_in_review": 0,
+        "assets_in_run": 0,
+        "shows_no_tmdb": 1,
     }
 
     run_queue = await client.get("/api/pipeline/tv/run-queue")

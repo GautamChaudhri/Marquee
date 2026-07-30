@@ -488,6 +488,10 @@ export interface TvPipelineSummary {
 	seasons_missing_poster: number;
 	shows_fully_covered: number;
 	shows_in_review: number;
+	seasons_in_review: number;
+	assets_in_review: number;
+	assets_in_run: number;
+	shows_no_tmdb: number;
 	running_jobs: (JobSummary & { asset_count?: number; series_count?: number })[];
 	last_heal: LastHeal | null;
 	heal_schedule: HealScheduleInfo | null;
