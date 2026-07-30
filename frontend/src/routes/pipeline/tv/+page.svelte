@@ -244,22 +244,33 @@
 		{#each runQueue.items as item (item.series.id)}
 			{@const placeholders = runPosterPlaceholders(item)}
 			<div class="run-row" class:picked={selected.has(item.series.id)}>
-				<label class="pick">
-					<input
-						type="checkbox"
-						checked={selected.has(item.series.id)}
-						aria-label={`Select ${item.series.title}`}
-						disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
-						onchange={() =>
-							selected.has(item.series.id)
-								? selected.delete(item.series.id)
-								: selected.add(item.series.id)}
-					/>
-				</label>
-				<div class="series-meta">
-					<strong title={item.series.title}>{item.series.title}</strong>
-					<span class="sub">{item.series.year ?? '—'}</span>
-					{#if item.no_tmdb}<span class="note">No TMDB match — run sync.</span>{/if}
+				<div class="card-head">
+					<label class="pick">
+						<input
+							type="checkbox"
+							checked={selected.has(item.series.id)}
+							aria-label={`Select ${item.series.title}`}
+							disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
+							onchange={() =>
+								selected.has(item.series.id)
+									? selected.delete(item.series.id)
+									: selected.add(item.series.id)}
+						/>
+					</label>
+					<div class="series-meta">
+						<strong title={item.series.title}>{item.series.title}</strong>
+						<span class="sub">{item.series.year ?? '—'}</span>
+						{#if item.no_tmdb}<span class="note">No TMDB match — run sync.</span>{/if}
+					</div>
+					<div class="row-actions">
+						<button
+							class="pill quiet"
+							onclick={() => startOne(item.series.id)}
+							disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
+						>
+							{pendingSeriesIds.has(item.series.id) ? 'Running…' : 'Run'}
+						</button>
+					</div>
 				</div>
 				<div class="preview-strip" aria-label={`${item.series.title} missing poster placeholders`}>
 					{#each placeholders as placeholder (placeholder.label)}
@@ -275,15 +286,6 @@
 						</div>
 					{/each}
 				</div>
-				<div class="row-actions">
-					<button
-						class="pill quiet"
-						onclick={() => startOne(item.series.id)}
-						disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
-					>
-						{pendingSeriesIds.has(item.series.id) ? 'Running…' : 'Run'}
-					</button>
-				</div>
 			</div>
 		{/each}
 	</div>
@@ -292,8 +294,19 @@
 		{#each reviewQueue.items as item (item.series.id)}
 			{@const previews = reviewPosterPreviews(item)}
 			<div class="review-card">
-				<div class="series-meta">
-					<strong title={item.series.title}>{item.series.title}</strong>
+				<div class="card-head">
+					<div class="series-meta">
+						<strong title={item.series.title}>{item.series.title}</strong>
+					</div>
+					<div class="row-actions">
+						<button class="pill ghost" onclick={() => approveAll(item.series.id)}>Approve all</button>
+						<button
+							class="pill quiet"
+							onclick={() => goto(`/pipeline/tv/series/${item.series.id}`)}
+						>
+							Open review <span class="chev" aria-hidden="true">›</span>
+						</button>
+					</div>
 				</div>
 				{#if previews.length}
 					<div class="preview-strip" aria-label={`${item.series.title} poster previews`}>
@@ -314,12 +327,6 @@
 						/>
 					</div>
 				{/if}
-				<div class="row-actions">
-					<button class="pill ghost" onclick={() => approveAll(item.series.id)}>Approve all</button>
-					<button class="pill quiet" onclick={() => goto(`/pipeline/tv/series/${item.series.id}`)}>
-						Open review <span class="chev" aria-hidden="true">›</span>
-					</button>
-				</div>
 			</div>
 		{/each}
 	</div>
@@ -384,8 +391,15 @@
 		gap: 8px;
 		flex-wrap: wrap;
 	}
+	/* Two columns of cards: a card is only as tall as one poster row, so half the
+	   page height was going to empty space beside short titles. */
 	.run-list,
-	.review-grid,
+	.review-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 12px;
+		align-items: start;
+	}
 	.metrics-grid {
 		display: flex;
 		flex-direction: column;
@@ -399,24 +413,23 @@
 		border-radius: var(--radius);
 		padding: 14px 16px;
 	}
-	/* Title leads in a fixed track so every show name lines up on the left; the
-	   strip takes whatever is left and scrolls sideways for long-running shows. */
+	/* Thin head row (title left, actions right), posters underneath it. */
 	.run-row,
 	.review-card {
-		--meta-col: clamp(140px, 14vw, 200px);
-		display: grid;
-		gap: 16px;
-		align-items: center;
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
 		text-align: left;
 		transition:
 			border-color 0.12s,
 			background 0.12s;
 	}
-	.run-row {
-		grid-template-columns: auto var(--meta-col) minmax(0, 1fr) auto;
-	}
-	.review-card {
-		grid-template-columns: var(--meta-col) minmax(0, 1fr) auto;
+	.card-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 14px;
+		min-height: 34px;
 	}
 	.run-row:hover,
 	.review-card:hover,
@@ -426,6 +439,11 @@
 	}
 	.run-row.picked {
 		border-color: color-mix(in srgb, var(--gold) 40%, var(--line2));
+	}
+	.pick {
+		display: flex;
+		align-items: center;
+		flex: 0 0 auto;
 	}
 	.pick input {
 		accent-color: var(--gold);
@@ -471,21 +489,22 @@
 	}
 	.series-meta {
 		display: flex;
-		flex-direction: column;
-		gap: 5px;
+		align-items: baseline;
+		flex-wrap: wrap;
+		gap: 4px 8px;
 		min-width: 0;
+		flex: 1 1 auto;
 	}
-	/* Narrow track: titles wrap rather than reserve a wide empty column, and stop
-	   at three lines so one very long name cannot stretch the row. */
+	/* Two lines max, so a long name never pushes the actions out of the head row. */
 	.series-meta strong {
-		font-size: 14px;
+		font-size: 14.5px;
 		font-weight: 600;
 		line-height: 1.3;
 		overflow-wrap: anywhere;
 		display: -webkit-box;
 		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		overflow: hidden;
 	}
 	.sub {
@@ -511,7 +530,7 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		justify-self: end;
+		flex: 0 0 auto;
 	}
 	.pill {
 		display: inline-flex;
@@ -569,17 +588,17 @@
 			align-items: stretch;
 		}
 	}
-	@media (max-width: 900px) {
-		.run-row,
-		.review-card {
+	@media (max-width: 1180px) {
+		.run-list,
+		.review-grid {
 			grid-template-columns: minmax(0, 1fr);
-			gap: 12px;
 		}
-		.run-row .pick {
-			justify-self: start;
+	}
+	@media (max-width: 620px) {
+		.card-head {
+			flex-wrap: wrap;
 		}
 		.row-actions {
-			justify-self: start;
 			flex-wrap: wrap;
 		}
 	}
