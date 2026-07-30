@@ -11,7 +11,7 @@
 		films: { title: 'Films', sub: 'Movie library' },
 		television: { title: 'Television', sub: 'Series library' },
 		shows: { title: 'Television', sub: 'Series library' },
-		pipeline: { title: 'Poster pipeline', sub: 'Run, review & tune selection' },
+		pipeline: { title: 'Poster Pipeline', sub: 'Run, review & tune selection' },
 		taste: { title: 'Key Art Engine', sub: 'Taste profile & bounded residual' },
 		'projection-room': { title: 'Activity', sub: 'Queue, history & operations' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }

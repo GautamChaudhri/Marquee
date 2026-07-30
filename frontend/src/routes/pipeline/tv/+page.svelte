@@ -6,7 +6,6 @@
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import MetricsChart from '$lib/components/MetricsChart.svelte';
@@ -14,7 +13,6 @@
 		resolveTvPosterTab,
 		reviewPosterPreviews,
 		runPosterPlaceholders,
-		seasonLabel,
 		type TvPosterTab
 	} from '$lib/pipeline/tv-display';
 	import {
@@ -87,27 +85,6 @@
 		} catch {
 			/* keep stale */
 		}
-	}
-
-	function compressAssets(
-		assets: { media_type: 'series' | 'season'; number?: number }[]
-	): string[] {
-		const out: string[] = [];
-		const seasons = assets
-			.filter((asset) => asset.media_type === 'season' && typeof asset.number === 'number')
-			.map((asset) => asset.number as number)
-			.sort((a, b) => a - b);
-		if (assets.some((asset) => asset.media_type === 'series')) out.push('Show');
-		let i = 0;
-		while (i < seasons.length) {
-			let j = i;
-			while (j + 1 < seasons.length && seasons[j + 1] === seasons[j] + 1) j += 1;
-			out.push(
-				i === j ? seasonLabel(seasons[i]) : `${seasonLabel(seasons[i])}–${seasonLabel(seasons[j])}`
-			);
-			i = j + 1;
-		}
-		return out;
 	}
 
 	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
@@ -188,22 +165,56 @@
 	}
 </script>
 
-<SectionHeader
-	title="TV posters"
-	subtitle={`${summary.shows_fully_covered}/${summary.shows_total} shows fully covered`}
->
-	{#snippet action()}
-		<button
-			class="btn-sec"
-			disabled={reviewQueue.total_series === 0}
-			onclick={() => (resetOpen = true)}
-		>
-			Reset all in review
-		</button>
-	{/snippet}
-</SectionHeader>
+<header class="workspace-head">
+	<div class="head-top">
+		<div class="titles">
+			<h1>TV Posters</h1>
+			<p>{summary.shows_fully_covered}/{summary.shows_total} shows fully covered</p>
+		</div>
+		<div class="scope">
+			<PosterLibraryToggle active="television" />
+		</div>
+	</div>
 
-<PosterLibraryToggle active="television" />
+	<!-- One toolbar: what you are looking at on the left, what you can do to it on the right. -->
+	<div class="head-bar">
+		<TabBar {tabs} active={tab} onSelect={setTab} />
+		<div class="head-actions">
+			{#if tab === 'run'}
+				{#if selected.size > 0}
+					<button
+						class="pill ghost"
+						onclick={() => startBatch('selected', [...selected])}
+						disabled={batchRunning}
+					>
+						Run selected ({selected.size})
+					</button>
+				{/if}
+				<button class="pill quiet" onclick={() => startBatch('all')} disabled={batchRunning}>
+					Re-run whole library
+				</button>
+				<button class="pill primary" onclick={() => startBatch('missing')} disabled={batchRunning}>
+					Run all missing
+				</button>
+			{:else if tab === 'review'}
+				<button
+					class="pill danger"
+					disabled={reviewQueue.total_series === 0}
+					onclick={() => (resetOpen = true)}
+				>
+					Reset all in review
+				</button>
+				<button
+					class="pill primary"
+					disabled={reviewQueue.total_series === 0}
+					onclick={() => approveAll()}
+				>
+					Approve all auto-picks
+				</button>
+			{/if}
+		</div>
+	</div>
+</header>
 
 <ConfirmDialog
 	open={resetOpen}
@@ -215,8 +226,6 @@
 	onConfirm={confirmResetAll}
 	onCancel={() => (resetOpen = false)}
 />
-
-<TabBar {tabs} active={tab} onSelect={setTab} />
 
 <FeatureActivityPanel
 	scopeKey="feature:pipeline:tv"
@@ -231,28 +240,15 @@
 />
 
 {#if tab === 'run'}
-	<div class="run-head">
-		<button class="btn-gold" onclick={() => startBatch('missing')} disabled={batchRunning}
-			>Run all missing</button
-		>
-		<button class="btn-sec" onclick={() => startBatch('all')} disabled={batchRunning}
-			>Re-run whole library</button
-		>
-		<button
-			class="btn-sec"
-			onclick={() => startBatch('selected', [...selected])}
-			disabled={selected.size === 0 || batchRunning}
-		>
-			Run selected ({selected.size})
-		</button>
-	</div>
 	<div class="run-list">
 		{#each runQueue.items as item (item.series.id)}
 			{@const placeholders = runPosterPlaceholders(item)}
-			<div class="run-row">
+			<div class="run-row" class:picked={selected.has(item.series.id)}>
 				<label class="pick">
 					<input
 						type="checkbox"
+						checked={selected.has(item.series.id)}
+						aria-label={`Select ${item.series.title}`}
 						disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
 						onchange={() =>
 							selected.has(item.series.id)
@@ -260,6 +256,11 @@
 								: selected.add(item.series.id)}
 					/>
 				</label>
+				<div class="series-meta">
+					<strong title={item.series.title}>{item.series.title}</strong>
+					<span class="sub">{item.series.year ?? '—'}</span>
+					{#if item.no_tmdb}<span class="note">No TMDB match — run sync.</span>{/if}
+				</div>
 				<div class="preview-strip" aria-label={`${item.series.title} missing poster placeholders`}>
 					{#each placeholders as placeholder (placeholder.label)}
 						<div class="preview-tile preview-placeholder" title={placeholder.label}>
@@ -274,33 +275,26 @@
 						</div>
 					{/each}
 				</div>
-				<div class="series-meta">
-					<strong>{item.series.title}</strong>
-					<span>{item.series.year ?? '—'}</span>
-					<div class="chips">
-						{#each compressAssets(item.assets_to_run) as chip (chip)}
-							<span class="chip">{chip}</span>
-						{/each}
-					</div>
-					{#if item.no_tmdb}<span class="note">No TMDB match — run sync.</span>{/if}
+				<div class="row-actions">
+					<button
+						class="pill quiet"
+						onclick={() => startOne(item.series.id)}
+						disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
+					>
+						{pendingSeriesIds.has(item.series.id) ? 'Running…' : 'Run'}
+					</button>
 				</div>
-				<button
-					class="btn-sec"
-					onclick={() => startOne(item.series.id)}
-					disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
-					>Run</button
-				>
 			</div>
 		{/each}
 	</div>
 {:else if tab === 'review'}
-	<div class="run-head">
-		<button class="btn-gold" onclick={() => approveAll()}>Approve all auto-picks</button>
-	</div>
 	<div class="review-grid">
 		{#each reviewQueue.items as item (item.series.id)}
 			{@const previews = reviewPosterPreviews(item)}
 			<div class="review-card">
+				<div class="series-meta">
+					<strong title={item.series.title}>{item.series.title}</strong>
+				</div>
 				{#if previews.length}
 					<div class="preview-strip" aria-label={`${item.series.title} poster previews`}>
 						{#each previews as preview (preview.label)}
@@ -320,23 +314,10 @@
 						/>
 					</div>
 				{/if}
-				<div class="series-meta">
-					<strong>{item.series.title}</strong>
-					<span
-						>{item.seasons_only
-							? 'Seasons only'
-							: item.show_run
-								? `Show + ${item.season_runs.length} seasons`
-								: `${item.season_runs.length} seasons`}</span
-					>
-					{#if item.seasons_only}
-						<span class="flag">Seasons only</span>
-					{/if}
-				</div>
-				<div class="review-actions">
-					<button class="btn-sec" onclick={() => approveAll(item.series.id)}> Approve all </button>
-					<button class="btn-sec" onclick={() => goto(`/pipeline/tv/series/${item.series.id}`)}>
-						Open review
+				<div class="row-actions">
+					<button class="pill ghost" onclick={() => approveAll(item.series.id)}>Approve all</button>
+					<button class="pill quiet" onclick={() => goto(`/pipeline/tv/series/${item.series.id}`)}>
+						Open review <span class="chev" aria-hidden="true">›</span>
 					</button>
 				</div>
 			</div>
@@ -357,11 +338,51 @@
 {/if}
 
 <style>
-	.run-head {
+	/* Header: title + library scope on one line, then a single toolbar that pairs
+	   the tabs with the actions that belong to the tab you are on. */
+	.workspace-head {
 		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		margin-bottom: 18px;
+	}
+	.head-top {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
 		flex-wrap: wrap;
-		gap: 10px;
-		margin: 16px 0;
+	}
+	.titles h1 {
+		margin: 0;
+		font-size: 18px;
+		font-weight: 650;
+		letter-spacing: -0.01em;
+	}
+	.titles p {
+		margin: 3px 0 0;
+		font-size: 13px;
+		color: var(--muted);
+	}
+	.scope :global(.library-switch) {
+		margin-bottom: 0;
+	}
+	.head-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		flex-wrap: wrap;
+		padding: 8px 10px;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: var(--panel);
+	}
+	.head-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 	.run-list,
 	.review-grid,
@@ -376,25 +397,48 @@
 		background: var(--panel);
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
-		padding: 14px;
+		padding: 14px 16px;
 	}
-	.run-row {
-		display: grid;
-		grid-template-columns: auto minmax(192px, 3fr) minmax(0, 2fr) auto;
-		gap: 14px;
-		align-items: center;
-	}
+	/* Title leads in a fixed track so every show name lines up on the left; the
+	   strip takes whatever is left and scrolls sideways for long-running shows. */
+	.run-row,
 	.review-card {
+		--meta-col: clamp(140px, 14vw, 200px);
 		display: grid;
-		grid-template-columns: minmax(192px, 3fr) minmax(0, 2fr) auto;
-		gap: 14px;
+		gap: 16px;
 		align-items: center;
 		text-align: left;
+		transition:
+			border-color 0.12s,
+			background 0.12s;
+	}
+	.run-row {
+		grid-template-columns: auto var(--meta-col) minmax(0, 1fr) auto;
+	}
+	.review-card {
+		grid-template-columns: var(--meta-col) minmax(0, 1fr) auto;
+	}
+	.run-row:hover,
+	.review-card:hover,
+	.run-row.picked {
+		border-color: var(--line2);
+		background: color-mix(in srgb, var(--panel2) 55%, var(--panel));
+	}
+	.run-row.picked {
+		border-color: color-mix(in srgb, var(--gold) 40%, var(--line2));
+	}
+	.pick input {
+		accent-color: var(--gold);
+		width: 16px;
+		height: 16px;
 	}
 	.preview-strip {
 		display: flex;
-		flex-wrap: wrap;
 		gap: 10px;
+		overflow-x: auto;
+		padding-bottom: 2px;
+		scrollbar-width: thin;
+		scrollbar-color: var(--line2) transparent;
 	}
 	.preview-tile {
 		display: flex;
@@ -428,24 +472,25 @@
 	.series-meta {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 5px;
+		min-width: 0;
 	}
-	.chips {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
+	/* Narrow track: titles wrap rather than reserve a wide empty column, and stop
+	   at three lines so one very long name cannot stretch the row. */
+	.series-meta strong {
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.3;
+		overflow-wrap: anywhere;
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		overflow: hidden;
 	}
-	.chip,
-	.flag {
-		padding: 4px 8px;
-		border-radius: 999px;
-		background: var(--panel2);
-		border: 1px solid var(--line2);
-		font-size: 11px;
-	}
-	.flag {
-		color: var(--gold);
-		border-color: color-mix(in srgb, var(--gold) 35%, var(--line2));
+	.sub {
+		font-size: 12.5px;
+		color: var(--muted);
 	}
 	.note {
 		font-size: 12px;
@@ -460,31 +505,82 @@
 		display: flex;
 		justify-content: space-between;
 	}
-	.btn-gold,
-	.btn-sec {
-		padding: 9px 12px;
-		border-radius: 8px;
-		font-size: 13px;
+	/* One button vocabulary for the whole workspace: pills, matching the tabs
+	   and the library switch. Weight carries the hierarchy, not the shape. */
+	.row-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		justify-self: end;
 	}
-	.btn-gold {
-		border: 1px solid var(--gold-deep);
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 8px 14px;
+		border-radius: 999px;
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--muted);
+		font-size: 13px;
+		font-weight: 500;
+		white-space: nowrap;
+		transition:
+			background 0.12s,
+			border-color 0.12s,
+			color 0.12s;
+	}
+	.pill:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+	.pill.primary {
+		border-color: var(--gold-deep);
 		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
 		color: var(--on-gold);
 	}
-	.btn-sec {
-		border: 1px solid var(--line2);
+	.pill.primary:hover:not(:disabled) {
+		filter: brightness(1.06);
+	}
+	.pill.quiet {
+		border-color: var(--line2);
 		background: var(--panel2);
 		color: var(--text);
+	}
+	.pill.quiet:hover:not(:disabled) {
+		border-color: color-mix(in srgb, var(--gold) 45%, var(--line2));
+	}
+	.pill.ghost:hover:not(:disabled) {
+		background: var(--panel2);
+		color: var(--text);
+	}
+	.pill.danger:hover:not(:disabled) {
+		color: var(--bad);
+		border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+	}
+	.chev {
+		color: var(--gold);
+		font-size: 15px;
+		line-height: 1;
+	}
+	@media (max-width: 1000px) {
+		.head-bar {
+			border-radius: var(--radius);
+			align-items: stretch;
+		}
 	}
 	@media (max-width: 900px) {
 		.run-row,
 		.review-card {
 			grid-template-columns: minmax(0, 1fr);
+			gap: 12px;
 		}
-		.review-actions {
-			display: flex;
+		.run-row .pick {
+			justify-self: start;
+		}
+		.row-actions {
+			justify-self: start;
 			flex-wrap: wrap;
-			gap: 10px;
 		}
 	}
 </style>

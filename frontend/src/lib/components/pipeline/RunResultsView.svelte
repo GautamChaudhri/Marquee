@@ -42,7 +42,7 @@
 	let {
 		data,
 		backHref = '/pipeline/movies',
-		backLabel = 'Movie posters',
+		backLabel = 'Movie Posters',
 		onreviewed
 	}: {
 		data: RunResultsViewData;

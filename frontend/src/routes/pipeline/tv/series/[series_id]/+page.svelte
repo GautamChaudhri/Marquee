@@ -195,7 +195,7 @@
 					<RunResultsView
 						data={data.runData}
 						backHref="/pipeline/tv?tab=review"
-						backLabel="TV posters"
+						backLabel="TV Posters"
 						onreviewed={advanceAfterReview}
 					/>
 				{/key}

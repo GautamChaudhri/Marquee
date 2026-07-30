@@ -309,11 +309,11 @@
 
 <div class="actions">
 	<button class="action" onclick={() => goto('/pipeline/movies')}>
-		<span>Movie posters</span>
+		<span>Movie Posters</span>
 		<b>{summary.movies_missing_poster}</b>
 	</button>
 	<button class="action" onclick={() => goto('/pipeline/tv')}>
-		<span>TV posters</span>
+		<span>TV Posters</span>
 		<b
 			>{tvSummary
 				? `${tvSummary.shows_missing_show_poster + tvSummary.seasons_missing_poster} missing`

@@ -287,7 +287,7 @@
 	);
 </script>
 
-<SectionHeader title="Movie posters" subtitle="Run, review, and tune poster selection">
+<SectionHeader title="Movie Posters" subtitle="Run, review, and tune poster selection">
 	{#snippet action()}
 		<button class="btn-sec clear-btn" onclick={() => (clearOpen = true)} disabled={!cache}>
 			<Icon name="refresh" size={14} />
