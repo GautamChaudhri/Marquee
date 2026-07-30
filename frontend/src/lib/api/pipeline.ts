@@ -10,6 +10,7 @@ import type {
 	OcrLabelRunState,
 	PipelineMetrics,
 	PipelineSummary,
+	PosterBatchOptions,
 	ReviewQueueAutoApproveResult,
 	ReviewQueue,
 	RunResultsResponse
@@ -31,7 +32,7 @@ export function getRunResults(fetchFn: Fetch, runId: string): Promise<RunResults
 /** Submit a canonical ticketless parent over server-frozen movie children. */
 export function runBatch(
 	fetchFn: Fetch,
-	body: { scope: BatchScope; movie_ids?: number[] }
+	body: { scope: BatchScope; movie_ids?: number[] } & PosterBatchOptions
 ): Promise<JobSubmissionResponse> {
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/batch', body);
 }

@@ -268,7 +268,7 @@ async def _retry_poster_group(
     original: Job,
     expected_fence_token: int,
 ) -> Job:
-    """Expand a grouped poster retry into a new fixed parent of single leaves."""
+    """Create a coordinated replacement parent for retryable grouped members."""
     from marquee.core.jobs.batches import (  # noqa: PLC0415
         BatchScope,
         _initiator_from_document,
@@ -296,10 +296,19 @@ async def _retry_poster_group(
         if request.library == "movies"
         else "poster_pipeline_tv_batch"
     )
+    preserves_all_at_once = (
+        len(intents) == 1
+        and intents[0].job_type == "poster_pipeline_group"
+        and intents[0].request.get("batch_mode") == "all_at_once"
+    )
     created = await create_fixed_batch(
         session,
         parent_job_type=parent_type,
-        parent_request={"scope": "selected", "selection_count": len(intents)},
+        parent_request={
+            "scope": "selected",
+            "selection_count": len(members),
+            "grouping_mode": "all_at_once" if preserves_all_at_once else "individual",
+        },
         scope=BatchScope(
             reference=f"retry-{original.id[:32]}-{expected_fence_token}",
             display_name="Retried poster analysis",
@@ -327,8 +336,12 @@ async def _retry_poster_group(
         job_id=replacement.id,
         event_key="job.retried",
         state=replacement.outcome or replacement.phase,
-        message="Grouped poster retry expanded into single-subject successors",
-        detail={"original_job_id": original.id, "selected_members": len(intents)},
+        message=(
+            "All-at-once poster retry preserved as one grouped successor"
+            if preserves_all_at_once
+            else "Grouped poster retry expanded into single-subject successors"
+        ),
+        detail={"original_job_id": original.id, "selected_members": len(members)},
     )
     await session.flush()
     return replacement

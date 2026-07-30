@@ -14,6 +14,7 @@
 		jobIds = [],
 		heading = 'Active work',
 		includeHistory = false,
+		onUpdated,
 		onSettled,
 		active = $bindable(false),
 		conflicting = $bindable(false)
@@ -24,6 +25,7 @@
 		jobIds?: string[];
 		heading?: string;
 		includeHistory?: boolean;
+		onUpdated?: (snapshot: JobSnapshotResponse) => void | Promise<void>;
 		onSettled?: (snapshot: JobSnapshotResponse) => void | Promise<void>;
 		active?: boolean;
 		conflicting?: boolean;
@@ -31,6 +33,7 @@
 
 	const store = getJobProgressStore();
 	const notified = new SvelteSet<string>();
+	const updateCursors = new SvelteMap<string, number>();
 	const refreshedHistory = new SvelteSet<string>();
 	const resolvedQueries = $derived(queries?.length ? queries : [query]);
 	const queueScopeKeys = $derived(
@@ -132,6 +135,19 @@
 			untrack(() => {
 				for (const key of historyScopeKeys) store.refreshScope(key);
 			});
+		}
+	});
+
+	$effect(() => {
+		if (!onUpdated) return;
+		for (const record of records) {
+			const { jobId, snapshot } = record;
+			if (!snapshot) continue;
+			const cursor = snapshot.last_event_id ?? 0;
+			const previous = updateCursors.get(jobId);
+			if (previous !== undefined && cursor <= previous) continue;
+			updateCursors.set(jobId, cursor);
+			void onUpdated(snapshot);
 		}
 	});
 

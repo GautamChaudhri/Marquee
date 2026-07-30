@@ -1074,7 +1074,23 @@ async def retry_batch(
     trigger = TriggerKind(original.trigger_kind)
     parent_request = original.request
     if original.type in {"poster_pipeline_batch", "poster_pipeline_tv_batch"}:
-        parent_request = {**original.request, "selection_count": len(intents)}
+        selection_count = sum(
+            len(intent.request.get("members", ()))
+            if intent.job_type == "poster_pipeline_group"
+            else 1
+            for intent in intents
+        )
+        preserves_all_at_once = (
+            len(intents) == 1
+            and intents[0].job_type == "poster_pipeline_group"
+            and intents[0].request.get("batch_mode") == "all_at_once"
+        )
+        parent_request = {
+            **original.request,
+            "selection_count": selection_count,
+            "grouping_mode": "all_at_once" if preserves_all_at_once else "individual",
+            "configured_chunk_size": None,
+        }
     if projection.mode == "fixed":
         created = await create_fixed_batch(
             session,

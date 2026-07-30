@@ -457,7 +457,11 @@ def _read_poster_group_document(params: dict[str, Any]) -> dict[str, Any]:
     ):
         raise ProtocolError("poster_group manifest has an invalid group checksum")
     path = Path(_safe_output_name(group_file))
-    if not path.is_file() or path.stat().st_size > 1024 * 1024:
+    from marquee.core.jobs.poster_group_limits import (  # noqa: PLC0415
+        MAX_POSTER_GROUP_INPUT_BYTES,
+    )
+
+    if not path.is_file() or path.stat().st_size > MAX_POSTER_GROUP_INPUT_BYTES:
         raise ProtocolError("poster_group group.json is missing or exceeds its fixed bound")
     content = path.read_bytes()
     if hashlib.sha256(content).hexdigest() != checksum:
@@ -534,31 +538,13 @@ def _poster_group_subject(raw: dict[str, Any]) -> tuple[str, Any, dict[str, Any]
     return subject_key, subject, gate, run_id
 
 
-def _bounded_poster_group_members(members: list[Any]) -> list[dict[str, Any]]:
-    """Return only bounded identity/status data for the result control frame.
-
-    The host loads the checksummed ``group-result.json`` for authoritative
-    member detail.  Keeping warnings, errors, titles, timings, or candidate
-    maps here would let escaped Unicode or candidate volume breach the 64 KiB
-    runner protocol frame despite character-count truncation.
-    """
-    return [
-        {
-            "member_index": member.member_index,
-            "subject_key": member.subject_key,
-            "run_id": member.run_id,
-            "status": member.status,
-            "outcome": member.outcome,
-            "archive_file": member.archive_file,
-        }
-        for member in members
-    ]
-
-
 def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:
-    """Run one authenticated 1-16 member poster group inside the attempt workspace."""
+    """Run one authenticated bounded poster group inside the attempt workspace."""
     import asyncio  # noqa: PLC0415
 
+    from marquee.core.jobs.poster_group_limits import (  # noqa: PLC0415
+        MAX_POSTER_GROUP_MEMBERS,
+    )
     from marquee.pipeline.poster_group_runner import (  # noqa: PLC0415
         PosterGroupMemberInput,
         materialize_group_output,
@@ -574,8 +560,14 @@ def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[
     raw_members = document.get("members")
     if library not in {"movies", "tv"} or not isinstance(chunk_index, int) or chunk_index < 0:
         raise ProtocolError("poster_group group.json has invalid group identity")
-    if not isinstance(raw_members, list) or not 1 <= len(raw_members) <= 16:
-        raise ProtocolError("poster_group group.json must contain 1-16 members")
+    if (
+        not isinstance(raw_members, list)
+        or not 1 <= len(raw_members) <= MAX_POSTER_GROUP_MEMBERS
+    ):
+        raise ProtocolError(
+            "poster_group group.json must contain 1-"
+            f"{MAX_POSTER_GROUP_MEMBERS} members"
+        )
 
     members = []
     subject_keys: set[str] = set()
@@ -689,7 +681,6 @@ def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[
         "failed_subject_keys": [
             member.subject_key for member in output.members if member.outcome == "failed"
         ],
-        "members": _bounded_poster_group_members(output.members),
         "group_result_file": "group-result.json",
     }
     return {"outcome": "succeeded", "summary": summary, "files": []}

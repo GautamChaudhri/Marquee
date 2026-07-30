@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -111,7 +112,16 @@ class PipelineSettings(BaseSettings):
     PIPELINE_BATCH_MAX_MOVIES: int = 500
     # Roll stage-major poster groups out independently of the single-subject path.
     POSTER_GROUP_ENABLED: bool = False
-    # Group transport, subject snapshots, and result summaries are hard-capped at 16.
+    # "all_at_once" freezes the submitted selection into one stage-major group;
+    # cancelling that group therefore cancels the entire selection.
+    POSTER_GROUP_BATCH_MODE: Literal["chunked", "all_at_once"] = Field(
+        default="chunked",
+        description=(
+            "Choose chunked groups or process the entire submitted movie/TV queue in one "
+            "stage-major run. All-at-once is faster, but cancellation discards the whole run."
+        ),
+    )
+    # Used only by chunked mode. All-at-once uses the frozen selection size.
     POSTER_GROUP_CHUNK_SIZE: int = 8
     # Fixed Phase-0 normalization ranges.
     NORM_KNN_MIN: float = 0.4

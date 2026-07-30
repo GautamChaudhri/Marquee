@@ -5,6 +5,7 @@
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import PosterBatchModeControl from '$lib/components/PosterBatchModeControl.svelte';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
@@ -26,6 +27,7 @@
 		runTvBatch
 	} from '$lib/api/pipeline-tv';
 	import { toast } from '$lib/toast';
+	import type { PosterBatchMode, PosterBatchOptions } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -43,6 +45,7 @@
 	function setTab(id: string) {
 		if (id !== 'run' && id !== 'review' && id !== 'metrics') return;
 		tab = id as Tab;
+		if (tab === 'review') requestQueueRefresh();
 		const url = new URL(page.url);
 		const sp = url.searchParams;
 		sp.set('tab', id);
@@ -71,6 +74,8 @@
 	let batchRunning = $state(false);
 	let resetOpen = $state(false);
 	let resetBusy = $state(false);
+	let batchMode = $state<PosterBatchMode>('chunked');
+	let chunkSize = $state(8);
 	const pendingSeriesIds = new SvelteSet<number>();
 	const pendingSeriesJobs = new SvelteMap<string, number>();
 
@@ -87,11 +92,52 @@
 		}
 	}
 
+	let queueRefreshPromise: Promise<void> | null = null;
+	let queueRefreshQueued = false;
+
+	async function refreshQueues() {
+		try {
+			[runQueue, reviewQueue, summary] = await Promise.all([
+				getTvRunQueue(fetch),
+				getTvReviewQueue(fetch, { page_size: 200 }),
+				getTvSummary(fetch).catch(() => summary)
+			]);
+		} catch {
+			/* keep stale */
+		}
+	}
+
+	function requestQueueRefresh() {
+		if (queueRefreshPromise) {
+			queueRefreshQueued = true;
+			return;
+		}
+		queueRefreshPromise = refreshQueues().finally(() => {
+			queueRefreshPromise = null;
+			if (queueRefreshQueued) {
+				queueRefreshQueued = false;
+				requestQueueRefresh();
+			}
+		});
+	}
+
+	function currentBatchOptions(): PosterBatchOptions {
+		if (batchMode === 'all_at_once') return { batch_mode: batchMode };
+		return {
+			batch_mode: batchMode,
+			chunk_size: Math.min(16, Math.max(1, Math.round(Number(chunkSize) || 8)))
+		};
+	}
+
 	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
 		if (batchRunning) return;
 		batchRunning = true;
 		try {
-			const job = await runTvBatch(fetch, { scope, series_ids: seriesIds });
+			const job = await runTvBatch(fetch, {
+				scope,
+				series_ids: seriesIds,
+				...currentBatchOptions()
+			});
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			await refresh();
 		} catch (e) {
@@ -104,7 +150,10 @@
 		if (batchRunning || pendingSeriesIds.has(seriesId)) return;
 		pendingSeriesIds.add(seriesId);
 		try {
-			const job = await runSeries(fetch, seriesId, { include: 'all_missing' });
+			const job = await runSeries(fetch, seriesId, {
+				include: 'all_missing',
+				...currentBatchOptions()
+			});
 			pendingSeriesJobs.set(job.job_id, seriesId);
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			await refresh();
@@ -128,6 +177,12 @@
 			snapshot.status.outcome === 'succeeded' ? 'good' : 'bad'
 		);
 		await refresh();
+	}
+
+	function handleJobUpdated(snapshot: JobSnapshotResponse) {
+		if (snapshot.type === 'poster_pipeline_tv_batch' && snapshot.phase !== 'terminal') {
+			requestQueueRefresh();
+		}
 	}
 
 	async function approveAll(seriesId?: number) {
@@ -214,6 +269,11 @@
 			{/if}
 		</div>
 	</div>
+	{#if tab === 'run'}
+		<div class="batch-options">
+			<PosterBatchModeControl bind:mode={batchMode} bind:chunkSize disabled={batchRunning} />
+		</div>
+	{/if}
 </header>
 
 <ConfirmDialog
@@ -236,6 +296,7 @@
 	]}
 	jobIds={initiatedJobIds}
 	heading="TV poster activity"
+	onUpdated={handleJobUpdated}
 	onSettled={handleJobSettled}
 />
 
@@ -299,7 +360,9 @@
 						<strong title={item.series.title}>{item.series.title}</strong>
 					</div>
 					<div class="row-actions">
-						<button class="pill ghost" onclick={() => approveAll(item.series.id)}>Approve all</button>
+						<button class="pill ghost" onclick={() => approveAll(item.series.id)}
+							>Approve all</button
+						>
 						<button
 							class="pill quiet"
 							onclick={() => goto(`/pipeline/tv/series/${item.series.id}`)}
@@ -401,6 +464,9 @@
 		align-items: center;
 		gap: 8px;
 		flex-wrap: wrap;
+	}
+	.batch-options {
+		display: flex;
 	}
 	/* Two columns of cards: a card is only as tall as one poster row, so half the
 	   page height was going to empty space beside short titles. */

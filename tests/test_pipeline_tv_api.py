@@ -274,6 +274,43 @@ async def test_series_run_all_missing_creates_canonical_season_child(
 
 
 @pytest.mark.asyncio
+async def test_series_run_request_can_select_all_at_once(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
+):
+    series, seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="One Group Show",
+        tmdb_id=550,
+        sonarr_id=15,
+        show_poster=False,
+        seasons=[{"number": 1, "episode_file_count": 8, "poster": False}],
+    )
+
+    response = await client.post(
+        f"/api/pipeline/tv/series/{series.id}/run",
+        json={"batch_mode": "all_at_once"},
+    )
+
+    assert response.status_code == 202, response.text
+    parent = await db.get(Job, response.json()["job_id"])
+    assert parent.request == {
+        "scope": "series",
+        "selection_count": 2,
+        "grouping_mode": "all_at_once",
+        "configured_chunk_size": 8,
+    }
+    child = await db.scalar(select(Job).where(Job.parent_id == parent.id))
+    assert child is not None
+    assert child.type == "poster_pipeline_group"
+    assert child.request["batch_mode"] == "all_at_once"
+    assert [member.get("season_id") for member in child.request["members"]] == [
+        None,
+        seasons[0].id,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_series_runs_create_one_show_and_season_batch(
     db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
 ):
@@ -416,7 +453,7 @@ async def test_grouped_active_tv_assets_from_different_parents_return_409(
 
 
 @pytest.mark.asyncio
-async def test_review_waits_for_producing_child_and_parent_to_terminalize(
+async def test_review_waits_for_producing_child_but_not_parent_to_terminalize(
     db: AsyncSession, client: AsyncClient, tmp_path: Path, installed_pgqueuer: Queries
 ):
     series, _seasons = await _seed_series(
@@ -438,11 +475,24 @@ async def test_review_waits_for_producing_child_and_parent_to_terminalize(
     assert producing_child is not None
     producing_child.parent_id = parent.id
     producing_child.root_id = parent.id
+    producing_child.phase = "running"
+    producing_child.outcome = None
+    producing_child.terminal_at = None
+    await db.commit()
+
+    while_child_active = await client.get("/api/pipeline/tv/review-queue")
+    assert while_child_active.status_code == 200
+    assert while_child_active.json()["total_series"] == 0
+
+    producing_child.phase = "terminal"
+    producing_child.outcome = "succeeded"
+    producing_child.terminal_at = datetime.now(UTC)
     await db.commit()
 
     while_parent_active = await client.get("/api/pipeline/tv/review-queue")
     assert while_parent_active.status_code == 200
-    assert while_parent_active.json()["total_series"] == 0
+    assert while_parent_active.json()["total_series"] == 1
+    assert while_parent_active.json()["items"][0]["show_run"]["run_id"] == "terminal-show"
 
     parent.phase = "terminal"
     parent.outcome = "succeeded"

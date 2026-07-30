@@ -810,6 +810,34 @@
       },
       "BatchRunRequest": {
         "properties": {
+          "batch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chunked",
+                  "all_at_once"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Mode"
+          },
+          "chunk_size": {
+            "anyOf": [
+              {
+                "maximum": 16.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Size"
+          },
           "movie_ids": {
             "anyOf": [
               {
@@ -6718,6 +6746,34 @@
       },
       "SeriesRunRequest": {
         "properties": {
+          "batch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chunked",
+                  "all_at_once"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Mode"
+          },
+          "chunk_size": {
+            "anyOf": [
+              {
+                "maximum": 16.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Size"
+          },
           "include": {
             "default": "all_missing",
             "title": "Include",
@@ -6939,6 +6995,34 @@
       },
       "TVBatchRunRequest": {
         "properties": {
+          "batch_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "chunked",
+                  "all_at_once"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Mode"
+          },
+          "chunk_size": {
+            "anyOf": [
+              {
+                "maximum": 16.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Size"
+          },
           "scope": {
             "default": "missing",
             "title": "Scope",
@@ -10266,7 +10350,7 @@
     },
     "/api/pipeline/review-queue": {
       "get": {
-        "description": "Latest unreviewed poster-pipeline run per movie for the review page.",
+        "description": "Latest unreviewed terminal leaf result per movie for the review page.",
         "operationId": "review_queue_api_pipeline_review_queue_get",
         "parameters": [
           {
@@ -10640,7 +10724,7 @@
     },
     "/api/pipeline/tv/review-queue": {
       "get": {
-        "description": "Latest unreviewed run per TV subject, grouped by series.",
+        "description": "Latest unreviewed terminal leaf result per TV subject, grouped by series.",
         "operationId": "tv_review_queue_api_pipeline_tv_review_queue_get",
         "parameters": [
           {

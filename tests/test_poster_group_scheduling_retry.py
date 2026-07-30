@@ -13,6 +13,7 @@ import marquee.core.jobs.poster_group_retry as poster_group_retry
 from marquee.api.routes.pipeline_tv import _active_tv_asset_jobs, _tv_group_chunks
 from marquee.core.jobs.documents import PosterPipelineGroupRequestV1
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.poster_group_planning import resolve_poster_group_execution_options
 from marquee.core.jobs.retry_capability import resolve_retry_capability
 from marquee.core.jobs.submission import SubmissionInvariantError
 
@@ -65,6 +66,20 @@ class _MovieSession:
 
 def _movie(movie_id: int) -> SimpleNamespace:
     return SimpleNamespace(id=movie_id, tmdb_id=10_000 + movie_id, title=f"Movie {movie_id}")
+
+
+def test_request_batch_options_override_disabled_configuration_defaults() -> None:
+    options = resolve_poster_group_execution_options(
+        requested_mode="chunked",
+        requested_chunk_size=3,
+        configured_enabled=False,
+        configured_mode="all_at_once",
+        configured_chunk_size=12,
+    )
+
+    assert options.enabled is True
+    assert options.mode == "chunked"
+    assert options.chunk_size == 3
 
 
 @pytest.mark.asyncio
@@ -121,6 +136,63 @@ async def test_movie_rollout_preserves_singles_or_builds_stable_group_chunks(
         for child in children
     ] == [[1, 2], [3, 4], [5]]
     assert [child.subject.kind for child in children] == ["poster_subject_group"] * 3
+
+
+@pytest.mark.asyncio
+async def test_movie_all_at_once_builds_one_group_and_audits_parent_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def capture_batch(_session: object, **kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(parent=SimpleNamespace(job_id="parent"))
+
+    monkeypatch.setattr(
+        movie_pipeline_routes.configuration_provider,
+        "effective",
+        lambda owner: {
+            "POSTER_GROUP_ENABLED": False,
+            "POSTER_GROUP_BATCH_MODE": "chunked",
+            "POSTER_GROUP_CHUNK_SIZE": 2,
+        }
+        if owner == "pipeline"
+        else {},
+    )
+    monkeypatch.setattr(movie_pipeline_routes, "create_fixed_batch", capture_batch)
+    monkeypatch.setattr(movie_pipeline_routes, "submission_response", lambda parent: parent)
+    monkeypatch.setattr(
+        movie_pipeline_routes,
+        "uuid4",
+        lambda: SimpleNamespace(hex="0123456789abcdef0123456789abcdef"),
+    )
+
+    movies = [_movie(movie_id) for movie_id in range(1, 6)]
+    await movie_pipeline_routes.run_pipeline_batch(
+        movie_pipeline_routes.BatchRunRequest(
+            scope="selected",
+            movie_ids=[1, 2, 3, 4, 5],
+            batch_mode="all_at_once",
+        ),
+        _MovieSession(movies),
+    )
+
+    children = list(captured["children"])
+    assert len(children) == 1
+    assert children[0].request["batch_mode"] == "all_at_once"
+    assert [member["movie_id"] for member in children[0].request["members"]] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    assert captured["parent_request"] == {
+        "scope": "selected",
+        "selection_count": 5,
+        "grouping_mode": "all_at_once",
+        "configured_chunk_size": 2,
+    }
 
 
 def _series_asset(series_id: int) -> dict[str, int | str]:
@@ -193,6 +265,38 @@ def test_tv_group_chunks_split_show_plus_seventeen_seasons_as_sixteen_plus_two()
         if asset["media_type"] == "season"
     ]
     assert ordered_numbers == list(range(1, 18))
+
+
+def test_tv_all_at_once_orders_every_show_and_season_in_one_group() -> None:
+    seasons = {
+        11: SimpleNamespace(season_number=1),
+        12: SimpleNamespace(season_number=2),
+        21: SimpleNamespace(season_number=1),
+    }
+    assets = [
+        _season_asset(2, 21),
+        _series_asset(1),
+        _season_asset(1, 12),
+        _series_asset(2),
+        _season_asset(1, 11),
+    ]
+
+    chunks = _tv_group_chunks(
+        assets,
+        season_by_id=seasons,
+        target_size=2,
+        batch_mode="all_at_once",
+    )
+
+    assert chunks == [
+        [
+            _series_asset(2),
+            _season_asset(2, 21),
+            _series_asset(1),
+            _season_asset(1, 11),
+            _season_asset(1, 12),
+        ]
+    ]
 
 
 @pytest.mark.asyncio
@@ -335,6 +439,38 @@ def test_group_member_intents_flatten_to_ordered_single_subject_leaves() -> None
     ]
     assert [intent.priority for intent in intents] == [73, 73]
     assert [intent.request["title"] for intent in intents] == ["Show", "Show · Season 1"]
+
+
+def test_systemic_all_at_once_retry_stays_one_group() -> None:
+    request = PosterPipelineGroupRequestV1.model_validate(
+        {
+            "library": "movies",
+            "chunk_index": 0,
+            "batch_mode": "all_at_once",
+            "members": [
+                {"movie_id": movie_id, "tmdb_id": 100 + movie_id, "title": f"Movie {movie_id}"}
+                for movie_id in (1, 2, 3)
+            ],
+        }
+    )
+    source = SimpleNamespace(
+        id="a" * 32,
+        request=request.model_dump(mode="json"),
+        outcome="failed",
+        priority=73,
+    )
+
+    intents = poster_group_retry.group_member_intents(
+        request.members,
+        source_job=source,
+        initiator=None,
+        key_prefix="retry-all",
+    )
+
+    assert len(intents) == 1
+    assert intents[0].job_type == "poster_pipeline_group"
+    assert intents[0].request["batch_mode"] == "all_at_once"
+    assert len(intents[0].request["members"]) == 3
 
 
 def test_partial_grouped_parent_is_retryable_through_batch_flattening() -> None:
@@ -507,7 +643,12 @@ async def test_fixed_parent_retry_flattens_group_and_preserves_group_lineage(
     )
 
     assert result.job_id == replacement.id
-    assert captured["parent_request"] == {"scope": "selected", "selection_count": 3}
+    assert captured["parent_request"] == {
+        "scope": "selected",
+        "selection_count": 3,
+        "grouping_mode": "individual",
+        "configured_chunk_size": None,
+    }
     children = list(captured["children"])
     assert [child.job_type for child in children] == ["poster_pipeline"] * 3
     assert replacement.retry_of_job_id == original.id

@@ -10,6 +10,8 @@ from typing import Annotated, Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
+from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_MEMBERS
+
 
 class DocumentKind(StrEnum):
     REQUEST = "request"
@@ -123,11 +125,14 @@ def poster_pipeline_subject_key(request: PosterPipelineRequestV1) -> str:
 
 
 class PosterPipelineGroupRequestV1(StrictDocument):
-    """One bounded, same-library chunk processed stage-major by a GPU leaf."""
+    """One bounded, same-library selection processed stage-major by a GPU leaf."""
 
     library: Literal["movies", "tv"]
     chunk_index: int = Field(ge=0)
-    members: tuple[PosterPipelineRequestV1, ...] = Field(min_length=1, max_length=16)
+    batch_mode: Literal["chunked", "all_at_once"] = "chunked"
+    members: tuple[PosterPipelineRequestV1, ...] = Field(
+        min_length=1, max_length=MAX_POSTER_GROUP_MEMBERS
+    )
 
     @model_validator(mode="after")
     def require_one_library_and_unique_subjects(self) -> PosterPipelineGroupRequestV1:
@@ -149,6 +154,8 @@ class PosterBatchRequestV1(StrictDocument):
 
     scope: Literal["selected", "missing", "all", "series"] = "selected"
     selection_count: int = Field(ge=0, le=10_000)
+    grouping_mode: Literal["individual", "chunked", "all_at_once"] | None = None
+    configured_chunk_size: int | None = Field(default=None, ge=1, le=16)
 
 
 class PosterCandidateSummaryV1(StrictDocument):
@@ -186,17 +193,17 @@ class PosterPipelineGroupResultV1(StrictDocument):
     outcome: Literal["succeeded", "no_change", "review_required"] = "succeeded"
     library: Literal["movies", "tv"]
     chunk_index: int = Field(ge=0)
-    member_count: int = Field(ge=1, le=16)
-    succeeded_count: int = Field(default=0, ge=0, le=16)
-    no_change_count: int = Field(default=0, ge=0, le=16)
-    review_required_count: int = Field(default=0, ge=0, le=16)
-    failed_count: int = Field(default=0, ge=0, le=16)
-    projected_count: int = Field(ge=1, le=16)
+    member_count: int = Field(ge=1, le=MAX_POSTER_GROUP_MEMBERS)
+    succeeded_count: int = Field(default=0, ge=0, le=MAX_POSTER_GROUP_MEMBERS)
+    no_change_count: int = Field(default=0, ge=0, le=MAX_POSTER_GROUP_MEMBERS)
+    review_required_count: int = Field(default=0, ge=0, le=MAX_POSTER_GROUP_MEMBERS)
+    failed_count: int = Field(default=0, ge=0, le=MAX_POSTER_GROUP_MEMBERS)
+    projected_count: int = Field(ge=1, le=MAX_POSTER_GROUP_MEMBERS)
     run_ids: tuple[Annotated[str, Field(min_length=1, max_length=64)], ...] = Field(
-        min_length=1, max_length=16
+        min_length=1, max_length=MAX_POSTER_GROUP_MEMBERS
     )
     failed_subject_keys: tuple[PosterPipelineSubjectKey, ...] = Field(
-        default=(), max_length=16
+        default=(), max_length=MAX_POSTER_GROUP_MEMBERS
     )
     message: str | None = Field(default=None, max_length=1000)
     warnings: tuple[Annotated[str, Field(min_length=1, max_length=300)], ...] = Field(

@@ -6,6 +6,7 @@
 	import { getRawDocument } from '$lib/activity/client';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
+	import PosterBatchModeControl from '$lib/components/PosterBatchModeControl.svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
@@ -36,6 +37,8 @@
 		CacheSizes,
 		MovieListItem,
 		PipelineMetrics,
+		PosterBatchMode,
+		PosterBatchOptions,
 		ReviewQueue
 	} from '$lib/api/types';
 	import type { PageData } from './$types';
@@ -47,6 +50,7 @@
 	let tab = $state<Tab>((page.url.searchParams.get('tab') as Tab) ?? 'run');
 	function setTab(id: string) {
 		tab = id as Tab;
+		if (tab === 'review') requestQueueRefresh();
 		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient query builder
 		const sp = new URLSearchParams(page.url.searchParams);
 		sp.set('tab', id);
@@ -72,6 +76,8 @@
 	let queuePage = $state(1);
 	let reviewLoadingMore = $state(false);
 	const selected = new SvelteSet<number>();
+	let batchMode = $state<PosterBatchMode>('chunked');
+	let chunkSize = $state(8);
 
 	const tabs = $derived([
 		{ id: 'run', label: 'Run', count: missingTotal },
@@ -104,6 +110,46 @@
 		} catch {
 			/* keep stale data on a transient failure */
 		}
+	}
+
+	let queueRefreshPromise: Promise<void> | null = null;
+	let queueRefreshQueued = false;
+
+	async function refreshQueues() {
+		try {
+			const [qd, mv] = await Promise.all([
+				getReviewQueue(fetch, { page_size: PAGE_SIZE }),
+				listMovies(fetch, {
+					poster_status: 'missing',
+					sort: 'title',
+					page_size: PAGE_SIZE,
+					exclude_in_review: true
+				}).catch(() => null)
+			]);
+			queue = qd;
+			queuePage = 1;
+			if (mv) {
+				missing = mv.items;
+				missingTotal = mv.total;
+				missingPage = 1;
+			}
+		} catch {
+			/* keep stale data on a transient failure */
+		}
+	}
+
+	function requestQueueRefresh() {
+		if (queueRefreshPromise) {
+			queueRefreshQueued = true;
+			return;
+		}
+		queueRefreshPromise = refreshQueues().finally(() => {
+			queueRefreshPromise = null;
+			if (queueRefreshQueued) {
+				queueRefreshQueued = false;
+				requestQueueRefresh();
+			}
+		});
 	}
 
 	// ── Auto-approve all review queue items ───────────────────────────────────
@@ -171,6 +217,12 @@
 		await refreshAll();
 	}
 
+	function handleJobUpdated(snapshot: JobSnapshotResponse) {
+		if (snapshot.type === 'poster_pipeline_batch' && snapshot.phase !== 'terminal') {
+			requestQueueRefresh();
+		}
+	}
+
 	const eligibleLoaded = $derived(missing.filter((m) => m.tmdb_id != null));
 	const selectedCount = $derived(selected.size);
 	const allSelected = $derived(
@@ -188,13 +240,24 @@
 			for (const m of eligibleLoaded) selected.add(m.id);
 		}
 	}
+	function currentBatchOptions(): PosterBatchOptions {
+		if (batchMode === 'all_at_once') return { batch_mode: batchMode };
+		return {
+			batch_mode: batchMode,
+			chunk_size: Math.min(16, Math.max(1, Math.round(Number(chunkSize) || 8)))
+		};
+	}
 
 	async function startBatch(scope: BatchScope, movieIds?: number[]) {
 		if (batchRunning) return;
 		if (scope === 'selected' && (!movieIds || movieIds.length === 0)) return;
 		batchRunning = true;
 		try {
-			const job = await runBatch(fetch, { scope, movie_ids: movieIds });
+			const job = await runBatch(fetch, {
+				scope,
+				movie_ids: movieIds,
+				...currentBatchOptions()
+			});
 			trackJob(job.job_id);
 			const selectedCount = scope === 'selected' ? (movieIds?.length ?? 0) : null;
 			toast(
@@ -430,6 +493,12 @@
 	<TabBar {tabs} active={tab} onSelect={setTab} />
 </div>
 
+{#if tab === 'run'}
+	<div class="batch-options">
+		<PosterBatchModeControl bind:mode={batchMode} bind:chunkSize disabled={batchRunning} />
+	</div>
+{/if}
+
 <!-- Mounted outside the tab branches (as on the TV and overview pages): the
      Clear-cache dialog is reachable from every tab, and its settle callbacks are
      how the sealed plan arrives. -->
@@ -441,6 +510,7 @@
 	]}
 	jobIds={initiatedJobIds}
 	heading="Movie poster activity"
+	onUpdated={handleJobUpdated}
 	onSettled={handleJobSettled}
 />
 
@@ -728,6 +798,10 @@
 		padding-bottom: 14px;
 		border-bottom: 1px solid var(--line);
 		margin-bottom: 20px;
+	}
+	.batch-options {
+		display: flex;
+		margin: -6px 0 16px;
 	}
 	.clear-btn {
 		display: inline-flex;

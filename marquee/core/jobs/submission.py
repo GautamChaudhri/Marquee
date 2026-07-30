@@ -47,7 +47,11 @@ from marquee.core.jobs.subjects import (
     build_movie_snapshot,
     build_season_snapshot,
     build_series_snapshot,
+    movie_snapshot,
+    season_snapshot,
+    series_snapshot,
 )
+from marquee.models import Movie, Season, Series
 from marquee.models.job import Job, JobDispatch
 
 _IDENTITY = re.compile(r"^[a-z][a-z0-9_.-]*$")
@@ -347,15 +351,48 @@ async def _resolve_poster_subject_group(
     if request is None:
         raise SubmissionValidationError("poster group resolution requires its normalized request")
     group = PosterPipelineGroupRequestV1.model_validate(request)
+    identities = [poster_pipeline_subject_identity(member) for member in group.members]
+    movie_ids = [identifier for kind, identifier in identities if kind == "movie"]
+    direct_series_ids = [identifier for kind, identifier in identities if kind == "series"]
+    season_ids = [identifier for kind, identifier in identities if kind == "season"]
+    movies = (
+        list((await session.scalars(select(Movie).where(Movie.id.in_(movie_ids)))).all())
+        if movie_ids
+        else []
+    )
+    seasons = (
+        list((await session.scalars(select(Season).where(Season.id.in_(season_ids)))).all())
+        if season_ids
+        else []
+    )
+    series_ids = {*direct_series_ids, *(season.series_id for season in seasons)}
+    series_rows = (
+        list((await session.scalars(select(Series).where(Series.id.in_(series_ids)))).all())
+        if series_ids
+        else []
+    )
+    movies_by_id = {movie.id: movie for movie in movies}
+    seasons_by_id = {season.id: season for season in seasons}
+    series_by_id = {series.id: series for series in series_rows}
+
     members: list[PosterSubjectGroupMemberSnapshot] = []
-    for member in group.members:
-        kind, identifier = poster_pipeline_subject_identity(member)
+    for member, (kind, identifier) in zip(group.members, identities, strict=True):
         if kind == "movie":
-            subject = await build_movie_snapshot(session, identifier)
+            movie = movies_by_id.get(identifier)
+            if movie is None:
+                raise SubjectNotFoundError("movie subject was not found")
+            subject = movie_snapshot(movie)
         elif kind == "series":
-            subject = await build_series_snapshot(session, identifier)
+            series = series_by_id.get(identifier)
+            if series is None:
+                raise SubjectNotFoundError("series subject was not found")
+            subject = series_snapshot(series)
         elif kind == "season":
-            subject = await build_season_snapshot(session, identifier)
+            season = seasons_by_id.get(identifier)
+            series = series_by_id.get(season.series_id) if season is not None else None
+            if season is None or series is None:
+                raise SubjectNotFoundError("season subject was not found")
+            subject = season_snapshot(season, series)
         else:  # The group document rejects episodes before live resolution.
             raise ValueError("poster groups do not support episode subjects")
         members.append(
@@ -370,6 +407,7 @@ async def _resolve_poster_subject_group(
         display_name=f"{label} poster group {group.chunk_index + 1} ({len(members)} subjects)",
         library=group.library,
         chunk_index=group.chunk_index,
+        batch_mode=group.batch_mode,
         members=tuple(members),
     )
 

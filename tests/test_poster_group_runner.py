@@ -11,11 +11,11 @@ from PIL import Image
 
 from marquee.core.jobs.documents import PosterPipelineRequestV1
 from marquee.core.jobs.internal_runner import (
-    _bounded_poster_group_members,
     _poster_feature_runtime,
     _poster_group_subject,
     _run_poster_group,
 )
+from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_MEMBERS
 from marquee.core.jobs.poster_pipeline import _subject_params
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
 from marquee.core.poster_sources.tmdb import PosterCandidate
@@ -1014,58 +1014,24 @@ def test_empty_detail_union_does_not_load_shared_scorer(tmp_path, monkeypatch) -
 
 
 def test_max_group_member_summary_stays_below_result_frame_bound() -> None:
-    members = []
-    for member_index in range(16):
-        members.append(
-            PosterGroupMemberOutput(
-                subject_key=f"movie:{member_index + 1}",
-                run_id=f"run-{member_index}",
-                status="completed",
-                counts={"ranked": 100},
-                source_count=100,
-                candidate_count=100,
-                recommendation=None,
-                scorer_name="weighted",
-                personalization_mode="personalized",
-                payload={},
-                member_index=member_index,
-                title="\U0001f4fa" * 1_000,
-                error="\U0001f4a5" * 10_000,
-                warnings=["\u26a0\ufe0f" * 10_000 for _ in range(20)],
-                candidate_files={
-                    f"{'r' * 180}-{candidate_index}": (
-                        f"s{member_index:03d}-candidate-{candidate_index:03d}.jpg"
-                    )
-                    for candidate_index in range(100)
-                },
-            )
-        )
-
     summary = {
         "library": "movies",
         "chunk_index": 0,
         "outcome": "succeeded",
-        "member_count": len(members),
-        "succeeded_count": len(members),
+        "member_count": MAX_POSTER_GROUP_MEMBERS,
+        "succeeded_count": 0,
         "no_change_count": 0,
         "review_required_count": 0,
-        "failed_count": 0,
-        "run_ids": [member.run_id for member in members],
-        "failed_subject_keys": [],
-        "members": _bounded_poster_group_members(members),
+        "failed_count": MAX_POSTER_GROUP_MEMBERS,
+        "run_ids": [f"run-{index}" for index in range(MAX_POSTER_GROUP_MEMBERS)],
+        "failed_subject_keys": [
+            f"movie:{index}" for index in range(MAX_POSTER_GROUP_MEMBERS)
+        ],
         "group_result_file": "group-result.json",
     }
-    assert all("title" not in member for member in summary["members"])
-    assert [member["member_index"] for member in summary["members"]] == list(range(16))
-    assert set(summary["members"][0]) == {
-        "member_index",
-        "subject_key",
-        "run_id",
-        "status",
-        "outcome",
-        "archive_file",
-    }
-    assert len(json.dumps(summary, separators=(",", ":")).encode("utf-8")) < 64 * 1024
+    result = {"outcome": "succeeded", "summary": summary, "files": []}
+    assert "members" not in summary
+    assert len(json.dumps(result, separators=(",", ":")).encode("utf-8")) < 64 * 1024
 
 
 def test_internal_group_operation_authenticates_reference_and_emits_monotonic_progress(

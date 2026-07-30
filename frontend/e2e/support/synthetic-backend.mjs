@@ -10,6 +10,35 @@ const DETAIL_JOB_ID = 'detail00000000000000000000000001';
 const ONBOARDING_JOB_ID = 'onboarding00000000000000000001';
 const ONBOARDING_RUN_ID = 'onboardingreview000000000000001';
 const now = '2026-07-16T12:00:00Z';
+const emptyPipelineMetrics = {
+	window_runs: 0,
+	by_status: {},
+	by_scorer: {},
+	distinct_batches: 0,
+	duration_seconds: { avg: null, p50: null, p90: null, max: null },
+	avg_counts: {},
+	total_counts: {},
+	avg_stage_seconds: {},
+	total_stage_seconds: {}
+};
+const emptyTvSummary = {
+	shows_total: 0,
+	shows_with_show_poster: 0,
+	shows_missing_show_poster: 0,
+	seasons_total: 0,
+	seasons_with_poster: 0,
+	seasons_missing_poster: 0,
+	shows_fully_covered: 0,
+	shows_in_review: 0,
+	seasons_in_review: 0,
+	assets_in_review: 0,
+	assets_in_run: 0,
+	shows_no_tmdb: 0,
+	running_jobs: [],
+	last_heal: null,
+	heal_schedule: null,
+	backups: { count: 0, bytes: 0 }
+};
 
 const presentation = {
 	version: 1,
@@ -281,6 +310,38 @@ const server = createServer((req, res) => {
 		res.end(
 			'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1500"><rect width="100%" height="100%" fill="#263248"/><text x="500" y="750" text-anchor="middle" fill="#f5c96c" font-size="56">Synthetic poster</text></svg>'
 		);
+		return;
+	}
+	if (path === '/api/library/movies') {
+		json(res, 200, { total: 0, page: 1, page_size: 60, items: [] });
+		return;
+	}
+	if (path === '/api/pipeline/review-queue') {
+		json(res, 200, { total: 0, page: 1, page_size: 60, items: [] });
+		return;
+	}
+	if (path === '/api/pipeline/cache') {
+		json(res, 200, {
+			sizes_bytes: { runs_work: 0, staging: 0, embeddings: 0, archives: 0 },
+			clearable_bytes: 0,
+			total_bytes: 0
+		});
+		return;
+	}
+	if (path === '/api/pipeline/metrics' || path === '/api/pipeline/tv/metrics') {
+		json(res, 200, emptyPipelineMetrics);
+		return;
+	}
+	if (path === '/api/pipeline/tv/summary') {
+		json(res, 200, emptyTvSummary);
+		return;
+	}
+	if (path === '/api/pipeline/tv/run-queue') {
+		json(res, 200, { total: 0, items: [] });
+		return;
+	}
+	if (path === '/api/pipeline/tv/review-queue') {
+		json(res, 200, { total_series: 0, page: 1, page_size: 200, items: [] });
 		return;
 	}
 

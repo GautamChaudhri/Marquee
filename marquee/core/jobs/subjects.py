@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.core.jobs.documents import PosterPipelineSubjectKey, StrictDocument
+from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_MEMBERS
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
@@ -106,7 +107,10 @@ class PosterSubjectGroupSnapshot(SubjectSnapshotBase):
     kind: Literal["poster_subject_group"] = "poster_subject_group"
     library: Literal["movies", "tv"]
     chunk_index: int = Field(ge=0)
-    members: tuple[PosterSubjectGroupMemberSnapshot, ...] = Field(min_length=1, max_length=16)
+    batch_mode: Literal["chunked", "all_at_once"] = "chunked"
+    members: tuple[PosterSubjectGroupMemberSnapshot, ...] = Field(
+        min_length=1, max_length=MAX_POSTER_GROUP_MEMBERS
+    )
 
     @model_validator(mode="after")
     def require_one_library_and_unique_members(self) -> PosterSubjectGroupSnapshot:

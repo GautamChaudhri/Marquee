@@ -94,6 +94,7 @@ def _group_members_section(ctx: PresenterContext) -> ChangeListSection | None:
     # Without a result document nothing is attributable to a member: a systemic
     # failure took the whole chunk down before any subject was analyzed.
     attributable = ctx.result is not None
+    visible_members = subject.members[:200]
     items = tuple(
         ChangeItem(
             target_key=member.subject_key,
@@ -113,9 +114,12 @@ def _group_members_section(ctx: PresenterContext) -> ChangeListSection | None:
                 else "The grouped run ended before this subject produced a result."
             ),
         )
-        for member in subject.members
+        for member in visible_members
     )
-    return ChangeListSection(title="Subjects in this group", items=items) if items else None
+    title = "Subjects in this group"
+    if len(subject.members) > len(visible_members):
+        title = f"Subjects in this group (showing {len(visible_members)} of {len(subject.members)})"
+    return ChangeListSection(title=title, items=items) if items else None
 
 
 def _score_interpretation(score: float) -> str:

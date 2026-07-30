@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.main import app
 from marquee.models import (
+    Job,
     Movie,
     Series,
 )
@@ -61,6 +62,20 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
         feedback_event_id="event1",
     )
     reviewed.started_at = now - timedelta(hours=1)
+    producing_job = await db.get(Job, old.job_id)
+    assert producing_job is not None
+    producing_job.phase = "running"
+    producing_job.outcome = None
+    producing_job.terminal_at = None
+    await db.commit()
+
+    active = await client.get("/api/pipeline/review-queue")
+    assert active.status_code == 200
+    assert active.json()["total"] == 0
+
+    producing_job.phase = "terminal"
+    producing_job.outcome = "succeeded"
+    producing_job.terminal_at = now
     await db.commit()
 
     resp = await client.get("/api/pipeline/review-queue")

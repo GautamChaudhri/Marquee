@@ -176,6 +176,48 @@ async def test_movie_batch_is_ticketless_parent_with_frozen_children(client, db)
     assert all(child.trigger_kind == "batch" for child in children)
 
 
+@pytest.mark.asyncio
+async def test_movie_batch_request_can_select_all_at_once(client, db) -> None:
+    movies = [
+        Movie(
+            title=f"Movie {index}",
+            folder_path=f"/library/Movie {index}",
+            movie_file_path=f"/library/Movie {index}/Movie {index}.mkv",
+            tmdb_id=20_000 + index,
+        )
+        for index in range(1, 4)
+    ]
+    db.add_all(movies)
+    await db.commit()
+    for movie in movies:
+        await db.refresh(movie)
+
+    response = await client.post(
+        "/api/pipeline/batch",
+        json={
+            "scope": "selected",
+            "movie_ids": [movie.id for movie in movies],
+            "batch_mode": "all_at_once",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    parent = await db.get(Job, response.json()["job_id"])
+    assert parent.request == {
+        "scope": "selected",
+        "selection_count": 3,
+        "grouping_mode": "all_at_once",
+        "configured_chunk_size": 8,
+    }
+    child = await db.scalar(select(Job).where(Job.parent_id == parent.id))
+    assert child is not None
+    assert child.type == "poster_pipeline_group"
+    assert child.request["batch_mode"] == "all_at_once"
+    assert [member["movie_id"] for member in child.request["members"]] == [
+        movie.id for movie in movies
+    ]
+
+
 async def _movie(db, title: str, tmdb_id: int) -> Movie:
     movie = Movie(
         title=title,

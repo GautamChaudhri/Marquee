@@ -45,6 +45,11 @@
 		return config?.defaults[key];
 	}
 
+	function enumLabel(key: string, option: string): string {
+		if (key !== 'POSTER_GROUP_BATCH_MODE') return option;
+		return option === 'all_at_once' ? 'All queued items' : 'Chunked';
+	}
+
 	function resetKnob(key: string) {
 		const def = knobDefault(key);
 		if (def !== undefined) {
@@ -220,7 +225,7 @@
 												})}
 										>
 											{#each m.options as opt (opt)}
-												<option value={opt}>{opt}</option>
+												<option value={opt}>{enumLabel(key, opt)}</option>
 											{/each}
 										</select>
 									{:else if m.kind === 'weight' || m.kind === 'float' || m.kind === 'int'}
@@ -232,6 +237,8 @@
 												max={m.max ?? 1}
 												step={m.step ?? 0.01}
 												value={Number(val)}
+												disabled={key === 'POSTER_GROUP_CHUNK_SIZE' &&
+													currentValues.POSTER_GROUP_BATCH_MODE === 'all_at_once'}
 												oninput={(e) => {
 													const v =
 														m.kind === 'int'

@@ -21,6 +21,7 @@ from typing import Any
 from uuid import uuid4
 
 from marquee.config import settings
+from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_MEMBERS
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.text_profiles import OcrGateContext
@@ -57,7 +58,7 @@ from marquee.pipeline.types import CandidateScore, OCRCandidateResult
 
 logger = logging.getLogger(__name__)
 
-_MAX_MEMBERS = 16
+_MAX_MEMBERS = MAX_POSTER_GROUP_MEMBERS
 _MAX_REVIEW_FILES = 100
 _COLLECTING_MESSAGE = (
     "Marquee filtered unusable posters, but has not learned your preferences yet."
@@ -147,8 +148,8 @@ class PosterGroupMemberOutput:
             "candidate_files": self.candidate_files,
             "rejected_files": self.rejected_files,
             "archive_file": self.archive_file,
-            "error": self.error,
-            "warnings": self.warnings[:20],
+            "error": str(self.error)[:2_000] if self.error is not None else None,
+            "warnings": [str(warning)[:300] for warning in self.warnings[:20]],
         }
 
 
@@ -791,11 +792,13 @@ async def run_poster_group(
     personalization_mode: str = "personalized",
     progress: GroupProgress | None = None,
 ) -> PosterGroupOutput:
-    """Analyze 1-16 subjects stage-by-stage without opening a database session."""
+    """Analyze one bounded subject selection without opening a database session."""
     if library not in {"movies", "tv"}:
         raise ValueError("poster group library must be movies or tv")
     if not 1 <= len(members) <= _MAX_MEMBERS:
-        raise ValueError("poster groups require between 1 and 16 members")
+        raise ValueError(
+            f"poster groups require between 1 and {MAX_POSTER_GROUP_MEMBERS} members"
+        )
     if personalization_mode not in {"collecting", "personalized"}:
         raise ValueError("invalid poster group personalization mode")
     if len({member.subject_key for member in members}) != len(members):

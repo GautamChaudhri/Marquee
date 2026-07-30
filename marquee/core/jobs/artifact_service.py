@@ -60,9 +60,10 @@ ARTIFACT_POLICIES: dict[str, ArtifactPolicy] = {
     "ranking_residual": ArtifactPolicy(
         ".npz", frozenset({"application/octet-stream"}), 16 * 1024 * 1024
     ),
-    # Poster run archives register under this kind and scale with the candidate
-    # catalogue; keep in step with poster_pipeline.MAX_RUN_ARCHIVE_BYTES.
-    "command_report": ArtifactPolicy(".json", frozenset({"application/json"}), 16 * 1024 * 1024),
+    # Individual poster archives and the authenticated multi-subject group
+    # fallback register under this kind. The larger group policy remains bounded;
+    # individual readers enforce their tighter MAX_RUN_ARCHIVE_BYTES limit.
+    "command_report": ArtifactPolicy(".json", frozenset({"application/json"}), 64 * 1024 * 1024),
     "validation_report": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
     "backup_manifest": ArtifactPolicy(".json", frozenset({"application/json"}), 1024 * 1024),
     "diagnostic_text": ArtifactPolicy(".txt", frozenset({"text/plain"}), 1024 * 1024),

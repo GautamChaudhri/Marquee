@@ -14,6 +14,7 @@ from marquee.core.jobs import poster_pipeline
 from marquee.core.jobs.artifact_service import ARTIFACT_POLICIES
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.documents import PosterPipelineGroupRequestV1
+from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_RESULT_BYTES
 from marquee.core.jobs.poster_group_retry import poster_subject_key
 from marquee.models import Job
 
@@ -363,7 +364,7 @@ async def test_cancellation_creates_zero_projections(
     tmp_path: Any,
     already_cancelled: bool,
 ) -> None:
-    request = _request()
+    request = _request().model_copy(update={"batch_mode": "all_at_once"})
     run_ids, projected_calls = await _configure_host(
         monkeypatch,
         tmp_path,
@@ -478,6 +479,7 @@ def test_member_archive_ceiling_never_exceeds_what_registration_accepts() -> Non
     assert (
         ARTIFACT_POLICIES["command_report"].max_bytes >= poster_pipeline.MAX_RUN_ARCHIVE_BYTES
     )
+    assert ARTIFACT_POLICIES["command_report"].max_bytes >= MAX_POSTER_GROUP_RESULT_BYTES
 
 
 def test_group_result_requires_every_referenced_artifact_to_be_announced() -> None:

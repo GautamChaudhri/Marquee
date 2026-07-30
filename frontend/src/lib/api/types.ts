@@ -692,6 +692,11 @@ export interface TasteStatus {
 }
 
 export type BatchScope = 'missing' | 'all' | 'selected';
+export type PosterBatchMode = 'chunked' | 'all_at_once';
+export type PosterBatchOptions = {
+	batch_mode: PosterBatchMode;
+	chunk_size?: number;
+};
 
 // ── Taste map (GET /taste/map) ─────────────────────────────────────────────
 export interface TasteMapPoint {

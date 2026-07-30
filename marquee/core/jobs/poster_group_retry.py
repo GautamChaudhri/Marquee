@@ -82,7 +82,35 @@ def group_member_intents(
     initiator: Initiator | None,
     key_prefix: str,
 ) -> tuple[SubmissionIntent, ...]:
-    """Create single poster-pipeline intents for selected grouped members."""
+    """Create retry intents while preserving systemic all-at-once semantics."""
+    original_request = getattr(source_job, "request", None)
+    original_outcome = getattr(source_job, "outcome", None)
+    original_id = str(getattr(source_job, "id", "group"))
+    if isinstance(original_request, dict) and original_outcome in {"failed", "cancelled"}:
+        try:
+            group = PosterPipelineGroupRequestV1.model_validate(original_request)
+        except (TypeError, ValueError):
+            group = None
+        if (
+            group is not None
+            and group.batch_mode == "all_at_once"
+            and tuple(members) == group.members
+        ):
+            return (
+                SubmissionIntent(
+                    job_type="poster_pipeline_group",
+                    request=group.model_dump(mode="json", exclude_none=True),
+                    subject=SubjectLocator(
+                        kind="poster_subject_group",
+                        reference=f"{group.library}-retry-{original_id[:32]}",
+                    ),
+                    trigger=TriggerKind.BATCH,
+                    initiator=initiator,
+                    idempotency_key=f"poster_pipeline_group:{key_prefix}-all",
+                    priority=source_job.priority,
+                ),
+            )
+
     return tuple(
         SubmissionIntent(
             job_type="poster_pipeline",

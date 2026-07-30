@@ -16,7 +16,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -34,6 +34,11 @@ from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
+from marquee.core.jobs.poster_group_planning import (
+    PosterGroupBatchMode,
+    build_poster_group_plan,
+    resolve_poster_group_execution_options,
+)
 from marquee.core.jobs.poster_parents import create_poster_parent
 from marquee.core.jobs.poster_submission import (
     PosterSelectionError,
@@ -122,19 +127,16 @@ def _subjects_awaiting_review(runs: list[PipelineRun]) -> set[tuple[str, int]]:
 
 
 async def _tv_review_queue_candidates(db: AsyncSession) -> list[PipelineRun]:
-    parent = aliased(Job)
     return (
         (
             await db.execute(
                 select(PipelineRun)
                 .join(Job, Job.id == PipelineRun.job_id)
-                .outerjoin(parent, parent.id == Job.parent_id)
                 .where(
                     PipelineRun.media_type.in_(("series", "season")),
                     PipelineRun.feedback_event_id.is_(None),
                     PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
                     Job.phase == "terminal",
-                    or_(Job.parent_id.is_(None), parent.phase == "terminal"),
                 )
             )
         )
@@ -429,6 +431,8 @@ class TVBatchRunRequest(BaseModel):
     # "missing" (shows/seasons with no poster yet) | "all" | "selected" (series_ids).
     scope: str = "missing"
     series_ids: list[int] | None = None
+    batch_mode: PosterGroupBatchMode | None = None
+    chunk_size: int | None = Field(default=None, ge=1, le=16)
 
 
 def _expand_assets(
@@ -492,13 +496,18 @@ def _tv_group_chunks(
     *,
     season_by_id: dict[int, Season],
     target_size: int,
+    batch_mode: str = "chunked",
 ) -> list[list[dict]]:
-    """Greedily pack whole-show groups, splitting only above the hard limit."""
+    """Greedily pack whole shows, or return one ordered all-at-once group."""
     by_series: dict[int, list[dict]] = {}
     for asset in assets:
         by_series.setdefault(asset["series_id"], []).append(asset)
 
-    target_size = min(16, max(1, target_size))
+    plan = build_poster_group_plan(
+        selection_count=len(assets), mode=batch_mode, chunk_size=target_size
+    )
+    target_size = plan.target_size
+    hard_group_size = plan.hard_group_size
     chunks: list[list[dict]] = []
     current: list[dict] = []
     for group in by_series.values():
@@ -514,11 +523,14 @@ def _tv_group_chunks(
                 asset.get("season_id", -1),
             ),
         )
-        if len(ordered) > 16:
+        if len(ordered) > hard_group_size:
             if current:
                 chunks.append(current)
                 current = []
-            chunks.extend(ordered[offset : offset + 16] for offset in range(0, len(ordered), 16))
+            chunks.extend(
+                ordered[offset : offset + hard_group_size]
+                for offset in range(0, len(ordered), hard_group_size)
+            )
             continue
         if len(ordered) > target_size:
             if current:
@@ -532,6 +544,8 @@ def _tv_group_chunks(
         current.extend(ordered)
     if current:
         chunks.append(current)
+    if plan.all_at_once and len(chunks) != 1:
+        raise RuntimeError("all-at-once TV planning unexpectedly produced multiple groups")
     return chunks
 
 
@@ -545,6 +559,7 @@ def _poster_child_intents(
     priority: int,
     group_enabled: bool = False,
     chunk_size: int = 8,
+    batch_mode: str = "chunked",
 ) -> list[SubmissionIntent]:
     """Freeze TV asset identity and labels before creating canonical children."""
     if group_enabled:
@@ -554,6 +569,7 @@ def _poster_child_intents(
                 assets,
                 season_by_id=season_by_id,
                 target_size=chunk_size,
+                batch_mode=batch_mode,
             )
         ):
             members = [
@@ -570,6 +586,7 @@ def _poster_child_intents(
                     request={
                         "library": "tv",
                         "chunk_index": chunk_index,
+                        "batch_mode": batch_mode,
                         "members": members,
                     },
                     subject=SubjectLocator(
@@ -679,20 +696,43 @@ async def run_tv_pipeline_batch(
             nonce = uuid4().hex
             initiator = Initiator(kind="system", identifier="pipeline-tv-api")
             effective = configuration_provider.effective("pipeline")
-            children = _poster_child_intents(
-                assets=assets,
-                series_by_id={series.id: series for series in series_rows},
-                season_by_id={season.id: season for season in season_rows},
-                nonce=nonce,
-                initiator=initiator,
-                priority=80,
-                group_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
-                chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
-            )
+            try:
+                group_options = resolve_poster_group_execution_options(
+                    requested_mode=body.batch_mode,
+                    requested_chunk_size=body.chunk_size,
+                    configured_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
+                    configured_mode=str(effective.get("POSTER_GROUP_BATCH_MODE", "chunked")),
+                    configured_chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
+                )
+                group_enabled = group_options.enabled
+                configured_chunk_size = group_options.chunk_size
+                batch_mode = group_options.mode
+                children = _poster_child_intents(
+                    assets=assets,
+                    series_by_id={series.id: series for series in series_rows},
+                    season_by_id={season.id: season for season in season_rows},
+                    nonce=nonce,
+                    initiator=initiator,
+                    priority=80,
+                    group_enabled=group_enabled,
+                    chunk_size=configured_chunk_size,
+                    batch_mode=batch_mode,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            parent_request: dict[str, object] = {
+                "scope": scope,
+                "selection_count": len(assets),
+            }
+            if group_enabled:
+                parent_request.update(
+                    grouping_mode=batch_mode,
+                    configured_chunk_size=configured_chunk_size,
+                )
             result = await create_fixed_batch(
                 db,
                 parent_job_type="poster_pipeline_tv_batch",
-                parent_request={"scope": scope, "selection_count": len(assets)},
+                parent_request=parent_request,
                 scope=BatchScope(
                     reference=nonce,
                     display_name="Poster analysis · television",
@@ -711,6 +751,8 @@ async def run_tv_pipeline_batch(
 class SeriesRunRequest(BaseModel):
     include: str = "all_missing"  # all_missing | show | seasons
     season_ids: list[int] | None = None
+    batch_mode: PosterGroupBatchMode | None = None
+    chunk_size: int | None = Field(default=None, ge=1, le=16)
 
 
 @router.post("/series/{series_id}/run", status_code=202)
@@ -805,20 +847,43 @@ async def run_series_pipeline(
                 nonce = uuid4().hex
                 initiator = Initiator(kind="system", identifier="pipeline-tv-api")
                 effective = configuration_provider.effective("pipeline")
-                children = _poster_child_intents(
-                    assets=assets,
-                    series_by_id={series.id: series},
-                    season_by_id=downloaded_by_id,
-                    nonce=nonce,
-                    initiator=initiator,
-                    priority=85,
-                    group_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
-                    chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
-                )
+                try:
+                    group_options = resolve_poster_group_execution_options(
+                        requested_mode=body.batch_mode,
+                        requested_chunk_size=body.chunk_size,
+                        configured_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
+                        configured_mode=str(effective.get("POSTER_GROUP_BATCH_MODE", "chunked")),
+                        configured_chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
+                    )
+                    group_enabled = group_options.enabled
+                    configured_chunk_size = group_options.chunk_size
+                    batch_mode = group_options.mode
+                    children = _poster_child_intents(
+                        assets=assets,
+                        series_by_id={series.id: series},
+                        season_by_id=downloaded_by_id,
+                        nonce=nonce,
+                        initiator=initiator,
+                        priority=85,
+                        group_enabled=group_enabled,
+                        chunk_size=configured_chunk_size,
+                        batch_mode=batch_mode,
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                parent_request: dict[str, object] = {
+                    "scope": "series",
+                    "selection_count": len(assets),
+                }
+                if group_enabled:
+                    parent_request.update(
+                        grouping_mode=batch_mode,
+                        configured_chunk_size=configured_chunk_size,
+                    )
                 result = await create_fixed_batch(
                     db,
                     parent_job_type="poster_pipeline_tv_batch",
-                    parent_request={"scope": "series", "selection_count": len(assets)},
+                    parent_request=parent_request,
                     scope=BatchScope(
                         reference=nonce,
                         display_name=f"Poster analysis · {series.title}",
@@ -849,7 +914,7 @@ async def tv_review_queue(
     page: int = 1,
     page_size: int = 50,
 ):
-    """Latest unreviewed run per TV subject, grouped by series."""
+    """Latest unreviewed terminal leaf result per TV subject, grouped by series."""
     await _repair_stale_batch_pipeline_runs(db)
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)

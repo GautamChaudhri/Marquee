@@ -61,7 +61,7 @@ function fakeStore(values: JobRecord[]) {
 			return { key, release: vi.fn() };
 		},
 		recordsForScope(key: string) {
-			return scoped.get(key) ?? [];
+			return (scoped.get(key) ?? []).map((value) => records.get(value.jobId) ?? value);
 		},
 		activityForScope(key: string, additionalJobIds: readonly string[] = []) {
 			const ids = new Set([
@@ -119,5 +119,34 @@ describe('FeatureActivityPanel TV batches', () => {
 
 		await waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
 		expect(onSettled).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'parent' }));
+	});
+
+	it('reports newer scope-discovered snapshots before the parent settles', async () => {
+		const parentRow = row('parent', 'Poster analysis', subjects.posterCandidates);
+		parentRow.job_type = 'poster_pipeline_tv_batch';
+		const parentRecord = record(parentRow);
+		const store = fakeStore([parentRecord]);
+		getStore.mockReturnValue(store);
+		const onUpdated = vi.fn<(snapshot: JobSnapshotResponse) => void>();
+
+		render(FeatureActivityPanel, {
+			props: {
+				scopeKey: 'tv-updates',
+				query: { type: 'poster_pipeline_tv_batch' },
+				onUpdated
+			}
+		});
+
+		await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(1));
+		const first = parentRecord.snapshot!;
+		store.records.set('parent', {
+			...parentRecord,
+			snapshot: { ...first, last_event_id: (first.last_event_id ?? 0) + 1 }
+		});
+
+		await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(2));
+		expect(onUpdated).toHaveBeenLastCalledWith(
+			expect.objectContaining({ job_id: 'parent', phase: 'running' })
+		);
 	});
 });

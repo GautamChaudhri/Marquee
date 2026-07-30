@@ -24,6 +24,7 @@ from marquee.core.jobs.ml_publication import (
     resolve_loaded_ranking_residual,
     resolve_loaded_taste_profile,
 )
+from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_RESULT_BYTES
 from marquee.core.jobs.poster_group_retry import poster_subject_key
 from marquee.core.jobs.poster_pipeline import (
     _MAX_COUNT,
@@ -42,9 +43,6 @@ from marquee.models import Job, JobAttempt, PipelineRun
 
 if TYPE_CHECKING:
     from marquee.core.jobs.delivery import ExecutionContext
-
-_MAX_GROUP_RESULT_BYTES = 1024 * 1024
-
 
 def _member_snapshots(context: ExecutionContext) -> dict[str, dict[str, Any]]:
     snapshot = context.subject if isinstance(context.subject, Mapping) else {}
@@ -587,7 +585,7 @@ async def execute_poster_pipeline_group(
         raise asyncio.CancelledError
 
     result_read = await context.io.read(
-        workspace_dir / "group-result.json", maximum_bytes=_MAX_GROUP_RESULT_BYTES
+        workspace_dir / "group-result.json", maximum_bytes=MAX_POSTER_GROUP_RESULT_BYTES
     )
     try:
         result_document = json.loads(result_read.payload)

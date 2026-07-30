@@ -3,6 +3,7 @@ import { apiGet, apiSend, type Fetch } from './client';
 import type { components } from './generated/openapi';
 import type {
 	PipelineMetrics,
+	PosterBatchOptions,
 	SeriesArtworkEventsResponse,
 	SeriesRunsResponse,
 	TvAutoApproveResult,
@@ -23,7 +24,7 @@ export function getTvRunQueue(fetchFn: Fetch): Promise<TvRunQueue> {
 
 export function runTvBatch(
 	fetchFn: Fetch,
-	body: { scope: 'missing' | 'all' | 'selected'; series_ids?: number[] }
+	body: { scope: 'missing' | 'all' | 'selected'; series_ids?: number[] } & PosterBatchOptions
 ): Promise<JobSubmissionResponse> {
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/tv/batch', body);
 }
@@ -31,7 +32,10 @@ export function runTvBatch(
 export function runSeries(
 	fetchFn: Fetch,
 	seriesId: number,
-	body: { include: 'all_missing' | 'show' | 'seasons'; season_ids?: number[] }
+	body: {
+		include: 'all_missing' | 'show' | 'seasons';
+		season_ids?: number[];
+	} & Partial<PosterBatchOptions>
 ): Promise<JobSubmissionResponse> {
 	return apiSend<JobSubmissionResponse>(
 		fetchFn,

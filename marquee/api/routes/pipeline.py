@@ -13,7 +13,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -40,6 +40,12 @@ from marquee.core.jobs.mutation_documents import (
     PosterMaintenanceRequestV1,
 )
 from marquee.core.jobs.pipeline_archives import load_pipeline_archive
+from marquee.core.jobs.poster_group_planning import (
+    PosterGroupBatchMode,
+    build_poster_group_plan,
+    linear_poster_groups,
+    resolve_poster_group_execution_options,
+)
 from marquee.core.jobs.poster_parents import create_poster_parent
 from marquee.core.jobs.poster_submission import poster_child_idempotency_key
 from marquee.core.jobs.poster_summary import latest_poster_heal_summary
@@ -92,11 +98,15 @@ def _review_queue_latest():
             func.max(PipelineRun.started_at).label("started_at"),
         )
         .join(Movie, Movie.id == PipelineRun.movie_id)
+        .outerjoin(Job, Job.id == PipelineRun.job_id)
         .where(
             PipelineRun.media_type == "movie",
             PipelineRun.feedback_event_id.is_(None),
             PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
             movie_downloaded(),
+            # Canonical runs publish when their producing leaf terminalizes. A
+            # ticketless batch parent may continue running later chunks.
+            or_(PipelineRun.job_id.is_(None), Job.phase == "terminal"),
         )
         .group_by(PipelineRun.movie_id)
         .subquery()
@@ -423,6 +433,8 @@ class BatchRunRequest(BaseModel):
     # "missing" (movies with no poster yet) | "all" | "selected" (movie_ids).
     scope: str = "missing"
     movie_ids: list[int] | None = None
+    batch_mode: PosterGroupBatchMode | None = None
+    chunk_size: int | None = Field(default=None, ge=1, le=16)
 
 
 async def _active_movie_poster_jobs(db: AsyncSession) -> set[int]:
@@ -528,16 +540,36 @@ async def run_pipeline_batch(
         for movie in movies
     ]
     effective = configuration_provider.effective("pipeline")
-    group_enabled = bool(effective.get("POSTER_GROUP_ENABLED", False))
-    chunk_size = min(16, max(1, int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8))))
+    try:
+        group_options = resolve_poster_group_execution_options(
+            requested_mode=body.batch_mode,
+            requested_chunk_size=body.chunk_size,
+            configured_enabled=bool(effective.get("POSTER_GROUP_ENABLED", False)),
+            configured_mode=str(effective.get("POSTER_GROUP_BATCH_MODE", "chunked")),
+            configured_chunk_size=int(effective.get("POSTER_GROUP_CHUNK_SIZE", 8)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    group_enabled = group_options.enabled
+    configured_chunk_size = group_options.chunk_size
+    batch_mode = group_options.mode
     if group_enabled:
+        try:
+            group_plan = build_poster_group_plan(
+                selection_count=len(member_requests),
+                mode=batch_mode,
+                chunk_size=configured_chunk_size,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         children = [
             SubmissionIntent(
                 job_type="poster_pipeline_group",
                 request={
                     "library": "movies",
                     "chunk_index": chunk_index,
-                    "members": member_requests[offset : offset + chunk_size],
+                    "batch_mode": group_plan.mode,
+                    "members": members,
                 },
                 subject=SubjectLocator(
                     kind="poster_subject_group",
@@ -548,7 +580,9 @@ async def run_pipeline_batch(
                 idempotency_key=f"poster_pipeline_group:batch-{nonce}-chunk-{chunk_index}",
                 priority=80,
             )
-            for chunk_index, offset in enumerate(range(0, len(member_requests), chunk_size))
+            for chunk_index, members in enumerate(
+                linear_poster_groups(member_requests, group_plan)
+            )
         ]
     else:
         children = [
@@ -563,6 +597,15 @@ async def run_pipeline_batch(
             )
             for movie, member_request in zip(movies, member_requests, strict=True)
         ]
+    parent_request: dict[str, object] = {
+        "scope": scope,
+        "selection_count": len(movies),
+    }
+    if group_enabled:
+        parent_request.update(
+            grouping_mode=group_plan.mode,
+            configured_chunk_size=configured_chunk_size,
+        )
     if db.in_transaction():
         await db.commit()
     try:
@@ -570,7 +613,7 @@ async def run_pipeline_batch(
             result = await create_fixed_batch(
                 db,
                 parent_job_type="poster_pipeline_batch",
-                parent_request={"scope": scope, "selection_count": len(movies)},
+                parent_request=parent_request,
                 scope=BatchScope(
                     reference=nonce,
                     display_name="Poster analysis · movies",
@@ -913,7 +956,7 @@ async def review_queue(
     page: int = 1,
     page_size: int = 50,
 ):
-    """Latest unreviewed poster-pipeline run per movie for the review page."""
+    """Latest unreviewed terminal leaf result per movie for the review page."""
     await _repair_stale_batch_pipeline_runs(db)
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)

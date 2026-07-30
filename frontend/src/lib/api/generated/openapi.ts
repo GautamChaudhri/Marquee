@@ -984,7 +984,7 @@ export interface paths {
 		};
 		/**
 		 * Review Queue
-		 * @description Latest unreviewed poster-pipeline run per movie for the review page.
+		 * @description Latest unreviewed terminal leaf result per movie for the review page.
 		 */
 		get: operations['review_queue_api_pipeline_review_queue_get'];
 		put?: never;
@@ -1166,7 +1166,7 @@ export interface paths {
 		};
 		/**
 		 * Tv Review Queue
-		 * @description Latest unreviewed run per TV subject, grouped by series.
+		 * @description Latest unreviewed terminal leaf result per TV subject, grouped by series.
 		 */
 		get: operations['tv_review_queue_api_pipeline_tv_review_queue_get'];
 		put?: never;
@@ -2263,6 +2263,10 @@ export interface components {
 		};
 		/** BatchRunRequest */
 		BatchRunRequest: {
+			/** Batch Mode */
+			batch_mode?: ('chunked' | 'all_at_once') | null;
+			/** Chunk Size */
+			chunk_size?: number | null;
 			/** Movie Ids */
 			movie_ids?: number[] | null;
 			/**
@@ -4060,6 +4064,10 @@ export interface components {
 		};
 		/** SeriesRunRequest */
 		SeriesRunRequest: {
+			/** Batch Mode */
+			batch_mode?: ('chunked' | 'all_at_once') | null;
+			/** Chunk Size */
+			chunk_size?: number | null;
 			/**
 			 * Include
 			 * @default all_missing
@@ -4126,6 +4134,10 @@ export interface components {
 		};
 		/** TVBatchRunRequest */
 		TVBatchRunRequest: {
+			/** Batch Mode */
+			batch_mode?: ('chunked' | 'all_at_once') | null;
+			/** Chunk Size */
+			chunk_size?: number | null;
 			/**
 			 * Scope
 			 * @default missing
