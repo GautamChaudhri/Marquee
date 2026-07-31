@@ -45,6 +45,7 @@
 	let attentionTimer: ReturnType<typeof setInterval> | null = null;
 	let popstateHandler: (() => void) | null = null;
 	let selectedIds = $state<string[]>([]);
+	let selectMode = $state(false);
 	let bulkPriority = $state(50);
 	let bulkBusy = $state(false);
 
@@ -151,6 +152,13 @@
 			: selectedIds.filter((id) => id !== jobId);
 	}
 
+	// Leaving selection mode discards the selection: a hidden checkbox that is still
+	// checked would arm a bulk command nobody can see.
+	function endSelectMode(): void {
+		selectMode = false;
+		selectedIds = [];
+	}
+
 	async function runBulk(action: LifecycleAction): Promise<void> {
 		if (bulkBusy) return;
 		const eligible = selectedRecords.filter(
@@ -247,7 +255,18 @@
 						: 'Newest terminal outcomes appear first unless a different server sort is selected.'}
 				</p>
 			</div>
-			<ActivityDisplayControls {preferences} onChange={changePreferences} />
+			<div class="toolbar-controls">
+				<button
+					type="button"
+					class="select-toggle"
+					class:active={selectMode}
+					aria-pressed={selectMode}
+					onclick={() => (selectMode ? endSelectMode() : (selectMode = true))}
+				>
+					{selectMode ? 'Done' : 'Select'}
+				</button>
+				<ActivityDisplayControls {preferences} onChange={changePreferences} />
+			</div>
 		</div>
 
 		<ActivityFilters
@@ -281,9 +300,7 @@
 						disabled={bulkBusy || selectedClasses.length !== 1}>Set priority</button
 					>
 				{/if}
-				<button type="button" class="quiet" onclick={() => (selectedIds = [])}
-					>Clear selection</button
-				>
+				<button type="button" class="quiet" onclick={endSelectMode}>Clear selection</button>
 			</div>
 		{/if}
 
@@ -308,6 +325,7 @@
 					columns={preferences.columns}
 					density={preferences.density}
 					connection={store.connection}
+					selectable={selectMode}
 					selected={selectedIds.includes(record.jobId)}
 					onSelected={(value) => select(record.jobId, value)}
 					onCommand={command}
@@ -397,6 +415,33 @@
 		margin: 3px 0 0;
 		color: var(--muted);
 		font-size: 12px;
+	}
+	.toolbar-controls {
+		display: flex;
+		align-items: start;
+		flex: none;
+		gap: 8px;
+	}
+	.select-toggle {
+		min-height: 34px;
+		padding: 7px 12px;
+		border: 1px solid var(--line2);
+		border-radius: 7px;
+		background: var(--panel);
+		color: var(--muted);
+		font-size: 12px;
+	}
+	.select-toggle:hover {
+		border-color: var(--gold);
+	}
+	.select-toggle.active {
+		border-color: var(--gold-deep);
+		background: var(--gold-soft);
+		color: var(--gold);
+	}
+	.select-toggle:focus-visible {
+		outline: 2px solid var(--gold);
+		outline-offset: 2px;
 	}
 	.list {
 		display: grid;

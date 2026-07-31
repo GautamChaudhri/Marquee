@@ -19,6 +19,16 @@
 	let initialLoadStarted = $state(false);
 	let controller: AbortController | null = null;
 
+	// Mirrors the server's terminal set (core/jobs/work_items.py `_TERMINAL`). A row only
+	// earns a colour once its status is final — colouring work in flight makes a running
+	// chunk look like a finished one.
+	const TERMINAL_STATUSES = new Set<WorkItemRow['status']>([
+		'succeeded',
+		'no_change',
+		'review_required',
+		'failed',
+		'cancelled'
+	]);
 	const STATUS_LABELS: Record<WorkItemRow['status'], string> = {
 		pending: 'Pending',
 		running: 'Running',
@@ -65,19 +75,6 @@
 		const subject = item.subject as Record<string, unknown>;
 		const value = subject.display_name ?? subject.title ?? subject.series_title;
 		return typeof value === 'string' && value ? value : item.subject_key;
-	}
-
-	function stageLabel(item: WorkItemRow): string {
-		if (item.stage_number != null && item.stage_name) {
-			return `Stage ${item.stage_number} of ${item.stage_total} · ${item.stage_name}`;
-		}
-		return item.status === 'pending' ? 'Waiting to start' : (item.stage_name ?? 'Preparing');
-	}
-
-	function candidateLabel(item: WorkItemRow): string | null {
-		if (!item.progress) return null;
-		const unit = item.progress.unit ?? 'candidates';
-		return `${item.progress.completed} of ${item.progress.total} ${unit}`;
 	}
 
 	function countEntries(): Array<[string, number, string]> {
@@ -163,6 +160,10 @@
 			<span data-status={key}><strong>{count}</strong> {label}</span>
 		{/each}
 	</div>
+	<p class="legend">
+		<strong>Succeeded</strong> — Marquee picked a poster.
+		<strong>Ready for review</strong> — Marquee needs you to choose.
+	</p>
 	{#if error}
 		<div class="load-error" role="alert">
 			<span>{error}</span><button type="button" onclick={refreshLoaded}>Try again</button>
@@ -170,22 +171,19 @@
 	{/if}
 	<div class="items" aria-busy={loading} aria-live="polite">
 		{#each items as item (item.subject_key)}
-			<div class="item" data-status={item.status}>
-				<div class="item-main">
-					<strong>{subjectName(item)}</strong>
-					<span class="stage">{stageLabel(item)}</span>
-					{#if candidateLabel(item)}<span class="candidate">{candidateLabel(item)}</span>{/if}
-				</div>
-				<span class="item-status">{STATUS_LABELS[item.status]}</span>
-				{#if item.progress}
-					<progress max={item.progress.total} value={item.progress.completed}>
-						{item.progress.completed} of {item.progress.total}
-					</progress>
-				{/if}
-				{#if item.message}
-					<p class:actionable={item.status === 'failed' || item.status === 'review_required'}>
-						{item.message}
-					</p>
+			<!-- Stage, status word and bar all lived here once and were identical to the
+			     card's own, on every row. This is a roster of what is in the chunk; the
+			     colour carries the outcome and the card above carries the progress. -->
+			<div
+				class="item"
+				class:settled={TERMINAL_STATUSES.has(item.status)}
+				class:spans={item.status === 'failed' && Boolean(item.message)}
+				data-status={item.status}
+			>
+				<strong>{subjectName(item)}</strong>
+				<span class="sr-only">{STATUS_LABELS[item.status]}</span>
+				{#if item.status === 'failed' && item.message}
+					<p>{item.message}</p>
 				{/if}
 			</div>
 		{/each}
@@ -241,6 +239,8 @@
 	}
 	.items {
 		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		align-content: start;
 		gap: 7px;
 		max-height: 420px;
 		overflow: auto;
@@ -249,58 +249,61 @@
 	}
 	.item {
 		display: grid;
-		grid-template-columns: minmax(0, 1fr) auto;
-		gap: 6px 12px;
+		min-width: 0;
+		gap: 4px;
 		border: 1px solid var(--line);
 		border-left: 3px solid var(--line2);
 		border-radius: 8px;
 		padding: 9px 10px;
 		background: var(--panel2);
+		font-size: 12px;
 	}
-	.item[data-status='running'] {
-		border-left-color: var(--info);
-	}
-	.item[data-status='succeeded'],
-	.item[data-status='no_change'] {
-		border-left-color: var(--good);
-	}
-	.item[data-status='failed'] {
-		border-left-color: var(--bad);
-	}
-	.item[data-status='review_required'] {
-		border-left-color: var(--warn);
-	}
-	.item-main {
-		display: grid;
-		min-width: 0;
-		gap: 2px;
-	}
-	.item-main strong {
+	.item strong {
 		overflow-wrap: anywhere;
 	}
-	.stage,
-	.candidate,
-	.item-status,
+	/* Colour is reserved for a settled outcome — see TERMINAL_STATUSES. */
+	.item.settled[data-status='succeeded'],
+	.item.settled[data-status='no_change'] {
+		border-left-color: var(--good);
+	}
+	.item.settled[data-status='failed'] {
+		border-left-color: var(--bad);
+	}
+	.item.settled[data-status='review_required'] {
+		border-left-color: var(--warn);
+	}
+	.item.settled[data-status='cancelled'] {
+		border-left-color: var(--muted);
+	}
+	.item.spans {
+		grid-column: 1 / -1;
+	}
 	.item p,
 	.empty {
 		color: var(--muted);
 		font-size: 11px;
 	}
-	.item-status {
-		white-space: nowrap;
-	}
-	.item progress {
-		grid-column: 1 / -1;
-		width: 100%;
-		height: 5px;
-		accent-color: var(--gold);
-	}
 	.item p {
-		grid-column: 1 / -1;
 		margin: 0;
 	}
-	.item p.actionable {
-		color: var(--text);
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+	.legend {
+		margin: 0 0 10px;
+		color: var(--faint2);
+		font-size: 10.5px;
+	}
+	.legend strong {
+		color: var(--muted);
+		font-weight: 700;
 	}
 	.load-error {
 		display: flex;
@@ -313,16 +316,16 @@
 		padding: 8px;
 		font-size: 11px;
 	}
+	/* Both live inside the two-column .items grid and speak for the whole list. */
+	.empty,
 	.load-more {
+		grid-column: 1 / -1;
 		justify-self: center;
 		margin: 4px;
 	}
 	@media (max-width: 560px) {
-		.item {
+		.items {
 			grid-template-columns: 1fr;
-		}
-		.item-status {
-			white-space: normal;
 		}
 	}
 </style>

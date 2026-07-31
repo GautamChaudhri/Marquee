@@ -4,10 +4,19 @@
 	let {
 		measurement,
 		fallbackLabel,
+		label: labelOverride = null,
+		prominent = false,
 		settled = false
-	}: { measurement: ProgressMeasurement; fallbackLabel: string; settled?: boolean } = $props();
+	}: {
+		measurement: ProgressMeasurement;
+		fallbackLabel: string;
+		/** Wins over the server-supplied label — the caller knows something better. */
+		label?: string | null;
+		prominent?: boolean;
+		settled?: boolean;
+	} = $props();
 
-	const label = $derived(measurement.label ?? fallbackLabel);
+	const label = $derived(labelOverride ?? measurement.label ?? fallbackLabel);
 	const count = $derived(
 		measurement.completed != null && measurement.total != null
 			? `${measurement.completed} / ${measurement.total}${measurement.unit ? ` ${measurement.unit}` : ''}`
@@ -16,7 +25,7 @@
 </script>
 
 <div class="measurement" data-mode={measurement.mode}>
-	<div class="measure-label">
+	<div class="measure-label" class:prominent>
 		<span>{label}</span>
 		{#if count}<span class="count">{count}</span>{/if}
 	</div>
@@ -51,6 +60,13 @@
 		gap: 12px;
 		color: var(--muted);
 		font-size: 12px;
+	}
+	/* The stage is the headline fact about a running job, so when the caller hands
+	   one over it outranks the surrounding chrome instead of matching it. */
+	.prominent > span:first-child {
+		color: var(--text);
+		font-size: 14px;
+		font-weight: 600;
 	}
 	.count {
 		flex: none;

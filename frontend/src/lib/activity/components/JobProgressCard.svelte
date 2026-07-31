@@ -1,7 +1,12 @@
 <script lang="ts">
 	import type { ConnectionState, RecordFreshness } from '../store.svelte';
 	import { activityCallout, metricCards } from '../presentation';
-	import type { JobPresentation, JobRow, JobSnapshotResponse } from '../types';
+	import type {
+		JobPresentation,
+		JobRow,
+		JobSnapshotResponse,
+		WorkItemSummary
+	} from '../types';
 	import ActivityCallout from './ActivityCallout.svelte';
 	import ConcurrentSubjects from './ConcurrentSubjects.svelte';
 	import EvidenceMetrics from './EvidenceMetrics.svelte';
@@ -22,6 +27,8 @@
 		recordFreshness = 'live',
 		artworkUrl = null,
 		activityHref = '/projection-room',
+		workItems = null,
+		showActions = true,
 		onCancel
 	}: {
 		row: JobRow;
@@ -33,7 +40,13 @@
 		connection?: ConnectionState;
 		recordFreshness?: RecordFreshness;
 		artworkUrl?: string | null;
-		activityHref?: string;
+		/** null when the card is already rendered on the Activity page. */
+		activityHref?: string | null;
+		/** Per-subject rollup, used to count the attention callout. */
+		workItems?: WorkItemSummary | null;
+		/** False when an ActivityActions bar beside the card already owns this job's
+		 *  commands — otherwise Details, Logs, Artifacts and Cancel appear twice. */
+		showActions?: boolean;
 		onCancel?: CancelHandler;
 	} = $props();
 
@@ -43,24 +56,15 @@
 	const status = $derived(snapshot?.status ?? presentation?.status ?? row.status);
 	const attention = $derived(snapshot?.attention ?? presentation?.attention ?? row.attention);
 	const progress = $derived(snapshot?.progress ?? presentation?.progress ?? row.progress ?? null);
-	const mainStage = $derived.by(() => {
-		const overall = progress?.overall;
-		const name = progress?.headline ?? progress?.stage_label ?? null;
-		if (overall?.unit === 'stages' && overall.completed != null && overall.total != null && name) {
-			const current = Math.max(
-				1,
-				Math.min(Math.round(overall.total), Math.round(overall.completed))
-			);
-			return `Stage ${current} of ${Math.round(overall.total)} · ${name}`;
-		}
-		return name;
-	});
+	// Just the name. "Stage 9 of 9" is what the bar's own "9 / 9 stages" count says,
+	// and printing both put the same sentence on the card twice.
+	const stageName = $derived(progress?.headline ?? progress?.stage_label ?? null);
 	const actions = $derived(
 		snapshot?.allowed_actions ?? presentation?.allowed_actions ?? row.allowed_actions
 	);
 	const fenceToken = $derived(snapshot?.fence_token ?? null);
 	const callout = $derived(
-		activityCallout(status, attention, progress, connection, recordFreshness)
+		activityCallout(status, attention, progress, connection, recordFreshness, workItems)
 	);
 	// A finished job keeps its last measurements on purpose (a failure must show
 	// where it stopped, not jump to 100%), so the card — not the server — decides
@@ -125,13 +129,19 @@
 
 	<div class="action">
 		<strong>{actionHeadline}</strong>
-		{#if mainStage}<span>{mainStage}</span>{/if}
+		{#if stageName && !progress?.overall}
+			<!-- Normally the progress bar carries the stage. A job with no overall measure
+			     has no bar to carry it, so it falls back to a line of its own here. -->
+			<span class="stage">{stageName}</span>
+		{/if}
 	</div>
 
 	{#if progress?.overall}
 		<ProgressMeasure
 			measurement={progress.overall}
+			label={stageName}
 			fallbackLabel={settled ? 'Reached' : 'Overall progress'}
+			prominent
 			{settled}
 		/>
 	{/if}
@@ -154,19 +164,21 @@
 		<ConcurrentSubjects {children} hasMore={childrenHasMore} />
 	{/if}
 
-	<nav class="actions" aria-label={`Actions for ${subject.display_name}`}>
-		<a href={activityHref}>Activity</a>
-		<a href={detailHref}>Details</a>
-		{#if actions.includes('open_logs') && logsHref}<a href={logsHref}>Logs</a>{/if}
-		{#if actions.includes('open_artifacts') && artifactsHref}
-			<a href={artifactsHref}>Artifacts</a>
-		{/if}
-		{#if canCancel}
-			<button type="button" onclick={cancel} disabled={sendingCancel}>
-				{sendingCancel ? 'Sending…' : 'Cancel'}
-			</button>
-		{/if}
-	</nav>
+	{#if showActions}
+		<nav class="actions" aria-label={`Actions for ${subject.display_name}`}>
+			{#if activityHref}<a href={activityHref}>Activity</a>{/if}
+			<a href={detailHref}>Details</a>
+			{#if actions.includes('open_logs') && logsHref}<a href={logsHref}>Logs</a>{/if}
+			{#if actions.includes('open_artifacts') && artifactsHref}
+				<a href={artifactsHref}>Artifacts</a>
+			{/if}
+			{#if canCancel}
+				<button type="button" onclick={cancel} disabled={sendingCancel}>
+					{sendingCancel ? 'Sending…' : 'Cancel'}
+				</button>
+			{/if}
+		</nav>
+	{/if}
 </article>
 
 <style>
@@ -244,7 +256,7 @@
 	.action strong {
 		font-size: 13px;
 	}
-	.action span,
+	.stage,
 	.current-subject {
 		color: var(--muted);
 		font-size: 12px;

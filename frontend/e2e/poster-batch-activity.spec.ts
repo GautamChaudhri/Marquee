@@ -16,6 +16,7 @@ function groupRow(jobId: string, title: string, library: 'movies' | 'tv', chunkI
 			display_id: `poster-group:${library}:${chunkIndex}`,
 			display_name: title,
 			artwork_key: null,
+			monogram: library === 'movies' ? 'FP' : 'TVP',
 			context: [library === 'movies' ? 'Movies' : 'Television'],
 			snapshot_at: now,
 			missing_live_subject: false
@@ -196,7 +197,10 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 	for (const row of rows) {
 		await expect(page.getByRole('heading', { name: row.label, exact: true })).toBeVisible();
 	}
-	await expect(page.getByText('Stage 4 of 9 · Validating')).toHaveCount(4);
+	// The stage now labels the progress bar itself — once per card, not once beside
+	// the headline and again as the bar's "N / N stages" count.
+	await expect(page.getByText('Validating', { exact: true })).toHaveCount(4);
+	await expect(page.getByText(/Stage \d+ of \d+/)).toHaveCount(0);
 	expect(workItemRequests).toBe(0);
 
 	const movieCard = page.locator('article.activity-row').filter({
@@ -204,9 +208,44 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 	});
 	await movieCard.getByText('Poster progress', { exact: true }).click();
 	await expect(movieCard.getByText('Arrival', { exact: true })).toBeVisible();
-	await expect(movieCard.getByText('Stage 4 of 9 · Validating', { exact: true })).toHaveCount(2);
-	await expect(movieCard.getByText('3 of 8 candidates', { exact: true })).toBeVisible();
+	// The roster names posters; it no longer restates the card's stage or its bar.
+	await expect(movieCard.getByText('Validating', { exact: true })).toHaveCount(1);
+	await expect(movieCard.getByText('3 of 8 candidates', { exact: true })).toHaveCount(0);
 	expect(workItemRequests).toBe(1);
+});
+
+test('hides selection until Select is pressed and letters tiles by library', async ({ page }) => {
+	await installStableEventSource(page);
+	const rows = [
+		groupRow('c1000000000000000000000000000001', 'Movie poster chunk 1', 'movies', 0),
+		groupRow('c2000000000000000000000000000002', 'TV poster chunk 2', 'tv', 1)
+	];
+	await page.route('**/api/jobs?*', (route) =>
+		route.fulfill({ json: { view: 'queue', items: rows, next_cursor: null, limit: 50 } })
+	);
+	await page.route(/\/api\/jobs\/[^/]+\/work-items(?:\?.*)?$/, (route) =>
+		route.fulfill({ json: workItemPage(rows[0].job_id) })
+	);
+
+	await page.goto('/projection-room');
+	await expect(page.locator('article.activity-row')).toHaveCount(2);
+
+	// "FP" / "TVP" — the tile used to initial these titles into a bare "M" and "T".
+	await expect(page.locator('.artwork', { hasText: 'FP' })).toHaveCount(1);
+	await expect(page.locator('.artwork', { hasText: 'TVP' })).toHaveCount(1);
+
+	await expect(page.getByRole('checkbox')).toHaveCount(0);
+	await page.getByRole('button', { name: 'Select', exact: true }).click();
+	await expect(page.getByRole('checkbox', { name: 'Select TV poster chunk 2' })).toBeVisible();
+
+	await page.getByRole('checkbox', { name: 'Select TV poster chunk 2' }).check();
+	await expect(page.getByText('1 selected')).toBeVisible();
+
+	// Leaving the mode drops the selection with it — a checked box nobody can see
+	// would keep the bulk bar armed.
+	await page.getByRole('button', { name: 'Done', exact: true }).click();
+	await expect(page.getByRole('checkbox')).toHaveCount(0);
+	await expect(page.getByText('1 selected')).toHaveCount(0);
 });
 
 test('keeps unified poster cards and their progress inside a phone viewport', async ({ page }) => {

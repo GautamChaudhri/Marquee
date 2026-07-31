@@ -337,13 +337,15 @@ def present_context_subject(ctx: PresenterContext) -> PresentationSubject:
         ctx.subject, PosterSubjectGroupSnapshot
     ):
         return presented
+    movies = ctx.subject.library == "movies"
     title = (
-        f"Poster analysis · {'movies' if ctx.subject.library == 'movies' else 'television'}"
+        f"Poster analysis · {'movies' if movies else 'television'}"
         if ctx.subject.batch_mode == "all_at_once"
-        else f"{'Movie' if ctx.subject.library == 'movies' else 'TV'} poster chunk "
-        f"{ctx.subject.chunk_index + 1}"
+        else f"{'Movie' if movies else 'TV'} poster chunk {ctx.subject.chunk_index + 1}"
     )
-    return presented.model_copy(update={"display_name": title})
+    return presented.model_copy(
+        update={"display_name": title, "monogram": "FP" if movies else "TVP"}
+    )
 
 
 def present_status(job: Job) -> PresentationStatus:

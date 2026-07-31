@@ -15,7 +15,6 @@
 		feature: 'Feature',
 		trigger: 'Trigger',
 		progress: 'Progress',
-		attention: 'Attention',
 		impact: 'Impact',
 		time: 'Time'
 	};

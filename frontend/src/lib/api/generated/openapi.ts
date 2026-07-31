@@ -3961,6 +3961,8 @@ export interface components {
 			 * @default false
 			 */
 			missing_live_subject: boolean;
+			/** Monogram */
+			monogram?: string | null;
 			/** Snapshot At */
 			snapshot_at?: string | null;
 		};

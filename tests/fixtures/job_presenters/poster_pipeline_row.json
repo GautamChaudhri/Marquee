@@ -61,6 +61,7 @@
     "display_name": "Blade Runner",
     "kind": "movie",
     "missing_live_subject": false,
+    "monogram": null,
     "snapshot_at": "2026-07-13T09:59:00Z"
   },
   "terminal_at": "2026-07-13T10:20:00Z",

@@ -14,6 +14,7 @@
 		columns,
 		density,
 		connection,
+		selectable = false,
 		selected,
 		onSelected,
 		onCommand
@@ -22,6 +23,8 @@
 		columns: ActivityColumn[];
 		density: ActivityDensity;
 		connection: ConnectionState;
+		/** Checkboxes stay out of the way until the page enters selection mode. */
+		selectable?: boolean;
 		selected: boolean;
 		onSelected: (selected: boolean) => void;
 		onCommand: (
@@ -46,19 +49,25 @@
 
 {#if row}
 	<article class="activity-row" class:compact={density === 'compact'}>
-		<label class="selection">
-			<input
-				type="checkbox"
-				checked={selected}
-				onchange={(event) => onSelected(event.currentTarget.checked)}
-			/>
-			Select {row.subject.display_name}
-		</label>
+		{#if selectable}
+			<!-- The card heading right below already names the subject; repeating it as
+			     visible label text said the same thing twice. -->
+			<label class="selection">
+				<input
+					type="checkbox"
+					aria-label={`Select ${row.subject.display_name}`}
+					checked={selected}
+					onchange={(event) => onSelected(event.currentTarget.checked)}
+				/>
+			</label>
+		{/if}
 		<JobProgressCard
 			{row}
 			snapshot={record.snapshot}
 			{connection}
 			recordFreshness={record.freshness}
+			{workItems}
+			showActions={false}
 		/>
 		<ActivityActions {row} {onCommand} />
 		<div class="secondary" aria-label="Activity details">
@@ -66,9 +75,6 @@
 					><b>Feature</b>{FEATURE_LABELS[row.feature_area] ?? 'Other'}</span
 				>{/if}
 			{#if visible('trigger')}<span><b>Trigger</b>{row.trigger.label}</span>{/if}
-			{#if visible('attention') && row.attention.message}
-				<span data-tone={row.attention.level}><b>Attention</b>{row.attention.message}</span>
-			{/if}
 			{#if visible('impact') && row.impact}
 				<span><b>Impact</b>{row.impact.label ?? `${row.impact.items_processed ?? 0} items`}</span>
 			{/if}
@@ -141,11 +147,5 @@
 		color: var(--muted);
 		font-weight: 700;
 		text-transform: uppercase;
-	}
-	.secondary [data-tone='warning'] {
-		border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
-	}
-	.secondary [data-tone='error'] {
-		border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
 	}
 </style>

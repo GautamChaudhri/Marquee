@@ -97,10 +97,39 @@ describe('PosterProgress', () => {
 			{ cursor: undefined, limit: 50 },
 			expect.any(AbortSignal)
 		);
+		// A roster of what is in the chunk, nothing more. Every row used to repeat the
+		// same stage, status word and bar the parent card already shows.
 		expect(screen.getByText('Movie 1')).toBeVisible();
-		expect(screen.getAllByText('Stage 4 of 9 · Validating')[0]).toBeVisible();
-		expect(screen.getAllByText('2 of 10 candidates')[0]).toBeVisible();
-		expect(screen.getAllByRole('progressbar')[0]).toHaveAttribute('value', '2');
+		expect(screen.queryByText(/Stage \d+ of \d+/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/candidates$/)).not.toBeInTheDocument();
+		expect(screen.queryAllByRole('progressbar')).toHaveLength(0);
+	});
+
+	it('withholds colour from rows that have not settled', async () => {
+		const user = userEvent.setup();
+		listWorkItems.mockResolvedValue(
+			page(
+				[
+					item(0, { status: 'running' }),
+					item(1, { status: 'pending' }),
+					item(2, { status: 'succeeded' }),
+					item(3, { status: 'review_required' })
+				],
+				null
+			)
+		);
+
+		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary() } });
+		await user.click(screen.getByText('Poster progress'));
+		await screen.findByText('Movie 1');
+
+		const rows = [...document.querySelectorAll('.item')];
+		expect(rows.map((row) => row.classList.contains('settled'))).toEqual([
+			false,
+			false,
+			true,
+			true
+		]);
 	});
 
 	it('paginates by stable ordinal and refreshes every loaded row after a sequence advance', async () => {
@@ -117,10 +146,10 @@ describe('PosterProgress', () => {
 				page(
 					[
 						item(0, { status: 'succeeded', stage_name: 'Finalizing', stage_number: 9 }),
-						item(50, { status: 'review_required', message: 'Choose a poster to continue.' })
+						item(50, { status: 'failed', message: 'TMDB returned no usable artwork.' })
 					],
 					null,
-					summary(2, { pending: 0, running: 0, succeeded: 89, review_required: 1, failed: 0 })
+					summary(2, { pending: 0, running: 0, succeeded: 89, review_required: 0, failed: 1 })
 				)
 			);
 
@@ -142,9 +171,9 @@ describe('PosterProgress', () => {
 
 		await view.rerender({ jobId: 'poster-group', summary: summary(2) });
 		await waitFor(() => expect(listWorkItems).toHaveBeenCalledTimes(3));
-		expect(screen.getByText('Stage 9 of 9 · Finalizing')).toBeVisible();
-		expect(screen.getByText('Ready for review')).toBeVisible();
-		expect(screen.getByText('Choose a poster to continue.')).toBeVisible();
+		expect(screen.queryByText(/Stage \d+ of \d+/)).not.toBeInTheDocument();
+		// Boilerplate messages are dropped, but a failure is unreadable without its reason.
+		expect(screen.getByText('TMDB returned no usable artwork.')).toBeVisible();
 	});
 
 	it('surfaces a specific loading failure with an accessible retry', async () => {

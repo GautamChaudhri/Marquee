@@ -6,7 +6,6 @@ export type ActivityColumn =
 	| 'progress'
 	| 'feature'
 	| 'trigger'
-	| 'attention'
 	| 'impact'
 	| 'time';
 
@@ -18,11 +17,12 @@ export interface ActivityPreferences {
 
 export const ACTIVITY_PREFERENCES_KEY = 'marquee:activity:display:v1';
 export const MANDATORY_COLUMNS: ActivityColumn[] = ['subject', 'action', 'status'];
+// 'attention' used to live here. The card's callout is now the single place a job's
+// attention state is stated, so a chip repeating it had nothing left to add.
 export const OPTIONAL_COLUMNS: ActivityColumn[] = [
 	'progress',
 	'feature',
 	'trigger',
-	'attention',
 	'impact',
 	'time'
 ];
@@ -31,7 +31,7 @@ const ALL_COLUMNS = new Set<ActivityColumn>([...MANDATORY_COLUMNS, ...OPTIONAL_C
 export const DEFAULT_ACTIVITY_PREFERENCES: ActivityPreferences = {
 	version: 1,
 	density: 'comfortable',
-	columns: [...MANDATORY_COLUMNS, 'progress', 'attention', 'time']
+	columns: [...MANDATORY_COLUMNS, 'progress', 'time']
 };
 
 export function normalizeActivityPreferences(value: unknown): ActivityPreferences {

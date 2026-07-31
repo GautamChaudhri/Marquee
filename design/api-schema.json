@@ -6311,6 +6311,19 @@
             "title": "Missing Live Subject",
             "type": "boolean"
           },
+          "monogram": {
+            "anyOf": [
+              {
+                "maxLength": 4,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monogram"
+          },
           "snapshot_at": {
             "anyOf": [
               {

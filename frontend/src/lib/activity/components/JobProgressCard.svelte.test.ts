@@ -34,7 +34,7 @@ describe('subject and terminal golden matrix', () => {
 			});
 			render(JobProgressCard, { props: { row } });
 			expect(screen.getByText(fixture[2], { selector: '.status' })).toBeVisible();
-			expect(screen.getByRole('progressbar', { name: 'Overall' })).toHaveAttribute(
+			expect(screen.getByRole('progressbar', { name: 'Comparing candidates' })).toHaveAttribute(
 				'aria-valuenow',
 				'37'
 			);
@@ -52,7 +52,7 @@ describe('subject and terminal golden matrix', () => {
 describe('honest progress goldens', () => {
 	it('uses the server supplied determinate percent without deriving a value', () => {
 		render(JobProgressCard, { props: { row: makeRow() } });
-		const meter = screen.getByRole('progressbar', { name: 'Overall' });
+		const meter = screen.getByRole('progressbar', { name: 'Comparing candidates' });
 		expect(meter).toHaveAttribute('aria-valuenow', '37');
 		expect(meter.firstElementChild).toHaveStyle({ width: '37%' });
 		expect(screen.getByText('3 / 8 steps')).toBeVisible();
@@ -60,14 +60,26 @@ describe('honest progress goldens', () => {
 
 	it('renders indeterminate work without a fabricated value', () => {
 		const row = makeRow();
+		// No stage to promote, so the measurement keeps its own server-supplied label.
 		row.progress = {
 			...row.progress,
+			headline: null,
+			stage_label: null,
 			overall: { scope_id: 'scan', mode: 'indeterminate', label: 'Scanning library' }
 		};
 		render(JobProgressCard, { props: { row } });
 		expect(screen.getByRole('progressbar', { name: 'Scanning library' })).not.toHaveAttribute(
 			'aria-valuenow'
 		);
+	});
+
+	it('labels the bar with the stage instead of repeating it beside the headline', () => {
+		render(JobProgressCard, { props: { row: makeRow() } });
+		// One occurrence: on the bar. It used to also print "Stage 3 of 8 · Comparing
+		// candidates" under the action headline, next to the bar saying "3 / 8 steps".
+		expect(screen.getAllByText('Comparing candidates')).toHaveLength(1);
+		expect(screen.queryByText(/^Stage \d+ of \d+ ·/)).not.toBeInTheDocument();
+		expect(screen.getByText('3 / 8 steps')).toBeVisible();
 	});
 
 	it('renders hybrid overall and resettable current scopes independently', () => {
@@ -163,7 +175,42 @@ describe('attention, freshness, evidence, and concurrent work', () => {
 		});
 		render(JobProgressCard, { props: { row } });
 		expect(screen.getByText('Ready for review')).toBeVisible();
-		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'positive');
+		// Amber, not the muted gray a tone with no matching rule silently produced.
+		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'warning');
+	});
+
+	it('counts a review callout from the work items instead of repeating the label', () => {
+		const row = makeRow({
+			attention: {
+				level: 'warning',
+				reason: 'review',
+				message: '3 poster selection(s) are ready for your review.',
+				remediation: null
+			}
+		});
+		render(JobProgressCard, {
+			props: {
+				row,
+				workItems: {
+					version: 1,
+					total: 8,
+					counts: {
+						pending: 0,
+						running: 0,
+						succeeded: 5,
+						no_change: 0,
+						review_required: 3,
+						failed: 0,
+						cancelled: 0
+					},
+					sequence: 4,
+					updated_at: null,
+					href: '/api/jobs/job-1/work-items'
+				}
+			}
+		});
+		expect(screen.getByText('Ready for review (3)')).toBeVisible();
+		expect(screen.queryByText(/are ready for your review/)).not.toBeInTheDocument();
 	});
 
 	it('renders cancelling from the authoritative stopping phase', () => {
@@ -316,7 +363,7 @@ describe('settled jobs stop advertising work in flight', () => {
 	it('still shows where a failed job actually stopped', () => {
 		render(JobProgressCard, { props: { row: terminalRow() } });
 		// The retained determinate measure is evidence and must survive.
-		expect(screen.getByRole('progressbar', { name: 'Overall' })).toHaveAttribute(
+		expect(screen.getByRole('progressbar', { name: 'Comparing candidates' })).toHaveAttribute(
 			'aria-valuenow',
 			'37'
 		);

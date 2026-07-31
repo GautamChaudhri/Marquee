@@ -310,6 +310,10 @@ class PresentationSubject(StrictDocument):
     context: tuple[str, ...] = Field(default=(), max_length=6)
     snapshot_at: datetime | None = None
     missing_live_subject: bool = False
+    # Artwork-tile lettering for subjects whose display name does not abbreviate
+    # usefully. "TV poster chunk 13" initials to a bare "T"; the tile wants "TVP".
+    # None means the client falls back to the first character of display_name.
+    monogram: str | None = Field(default=None, min_length=1, max_length=4)
 
     @field_validator("context")
     @classmethod

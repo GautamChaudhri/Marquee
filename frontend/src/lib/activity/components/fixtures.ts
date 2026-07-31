@@ -8,10 +8,16 @@ export const subjects: Record<string, PresentationSubject> = {
 	posterCandidates: subject('poster_candidate_set', 'Dune poster candidates', [
 		'Posters',
 		'Candidate set'
-	])
+	]),
+	posterGroup: subject('poster_subject_group', 'TV poster chunk 13', [], 'TVP')
 };
 
-function subject(kind: string, displayName: string, context: string[]): PresentationSubject {
+function subject(
+	kind: string,
+	displayName: string,
+	context: string[],
+	monogram: string | null = null
+): PresentationSubject {
 	return {
 		kind,
 		display_id: `${kind}-1`,
@@ -19,7 +25,8 @@ function subject(kind: string, displayName: string, context: string[]): Presenta
 		artwork_key: null,
 		context,
 		snapshot_at: '2026-07-16T12:00:00Z',
-		missing_live_subject: false
+		missing_live_subject: false,
+		monogram
 	};
 }
 

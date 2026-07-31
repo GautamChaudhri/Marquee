@@ -41,6 +41,9 @@
 </script>
 
 <div class="actions" role="group" aria-label={`Available commands for ${row.subject.display_name}`}>
+	<!-- This bar is the only one a row shows; the card beside it renders no nav of its
+	     own, so Details lives here rather than on a second, near-empty line. -->
+	<a href={row.links.detail}>Details</a>
 	{#if allows('pause')}
 		<button type="button" onclick={() => run('pause')} disabled={busy !== null}>Pause</button>
 	{/if}

@@ -20,6 +20,44 @@
 	function markCancelSent(): void {
 		cancelSent = true;
 	}
+
+	// A settled poster chunk: "TVP" tile, the stage on the bar, and a counted amber
+	// callout in place of the label-plus-restated-message pair it used to show.
+	const reviewRow = makeRow({
+		job_id: 'poster-group-1',
+		job_type: 'poster_pipeline_group',
+		subject: subjects.posterGroup,
+		action_headline: 'Select posters across the TV library',
+		status: {
+			label: 'Ready for review',
+			label_key: 'jobs.status.partially_succeeded',
+			phase: 'terminal',
+			outcome: 'partially_succeeded',
+			tone: 'warning'
+		},
+		attention: {
+			level: 'warning',
+			reason: 'review',
+			message: '1 poster is ready for review.',
+			remediation: null
+		}
+	});
+	const reviewWorkItems = {
+		version: 1 as const,
+		total: 8,
+		counts: {
+			pending: 0,
+			running: 0,
+			succeeded: 7,
+			no_change: 0,
+			review_required: 1,
+			failed: 0,
+			cancelled: 0
+		},
+		sequence: 9,
+		updated_at: '2026-07-16T12:05:00Z',
+		href: '/api/jobs/poster-group-1/work-items'
+	};
 </script>
 
 <svelte:head><title>Activity card fixture</title></svelte:head>
@@ -41,6 +79,10 @@
 	<section aria-label="Compact card fixture">
 		<h2>Compact card</h2>
 		<JobProgressCard row={makeRow({ subject: subjects.series })} />
+	</section>
+	<section aria-label="Poster chunk awaiting review fixture">
+		<h2>Poster chunk awaiting review</h2>
+		<JobProgressCard row={reviewRow} workItems={reviewWorkItems} />
 	</section>
 </div>
 

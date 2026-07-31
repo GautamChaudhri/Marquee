@@ -358,6 +358,32 @@ TV_GROUP_SNAPSHOT = {
 }
 
 
+MOVIE_GROUP_SNAPSHOT = {
+    "version": 1,
+    "kind": "poster_subject_group",
+    "display_id": "poster-group:movies:movies-abc-0",
+    "display_name": "Movie poster group 1 (1 subject)",
+    "snapshot_at": "2026-07-13T09:59:00+00:00",
+    "library": "movies",
+    "chunk_index": 0,
+    "members": [
+        {
+            "subject_key": "movie:12",
+            "subject": {
+                "version": 1,
+                "kind": "movie",
+                "display_id": "movie:12",
+                "display_name": "Arrival",
+                "snapshot_at": "2026-07-13T09:59:00+00:00",
+                "movie_id": 12,
+                "title": "Arrival",
+                "year": 2016,
+            },
+        },
+    ],
+}
+
+
 def _group_job(**overrides):
     values = {
         "type": "poster_pipeline_group",
@@ -401,6 +427,43 @@ def test_systemic_group_failure_uses_lazy_work_item_summary():
     assert presentation.work_items.total == 3
     assert presentation.work_items.counts.failed == 3
     assert not any(section.kind == "change_list" for section in presentation.sections)
+
+
+def test_group_subject_carries_a_library_monogram():
+    """The artwork tile cannot initial "TV poster chunk 3" into anything useful."""
+    tv = _group_presentation(_group_job())
+    assert tv.subject.display_name == "TV poster chunk 3"
+    assert tv.subject.monogram == "TVP"
+
+    movies = _group_presentation(
+        _group_job(
+            subject_reference="movies-abc-0",
+            subject_snapshot=MOVIE_GROUP_SNAPSHOT,
+            request={
+                "library": "movies",
+                "chunk_index": 0,
+                "members": [{"movie_id": 12, "title": "Arrival"}],
+            },
+        )
+    )
+    assert movies.subject.display_name == "Movie poster chunk 1"
+    assert movies.subject.monogram == "FP"
+
+
+def test_ordinary_subjects_have_no_monogram():
+    """Every other subject keeps the client's first-character fallback."""
+    presentation = present_job(
+        make_job(
+            type="system_noop",
+            subject_kind="system_work",
+            subject_reference="noop",
+            subject_snapshot=SYSTEM_SNAPSHOT,
+            request={"echo": {"ping": 1}},
+            result={"outcome": "succeeded", "message": "ok", "summary": {}},
+        ),
+        definition_for("system_noop"),
+    )
+    assert presentation.subject.monogram is None
 
 
 def test_partial_group_uses_exact_failure_summary():
