@@ -58,6 +58,7 @@ SEMANTIC_EVENT_KEYS = frozenset(
         "log.truncated",
         "ml.publication.activated",
         "progress.updated",
+        "work_items.updated",
     }
 )
 EVENT_STATES = frozenset((*JOB_PHASES, *JOB_OUTCOMES, "retrying"))

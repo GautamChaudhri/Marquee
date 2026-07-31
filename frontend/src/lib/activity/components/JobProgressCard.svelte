@@ -43,6 +43,18 @@
 	const status = $derived(snapshot?.status ?? presentation?.status ?? row.status);
 	const attention = $derived(snapshot?.attention ?? presentation?.attention ?? row.attention);
 	const progress = $derived(snapshot?.progress ?? presentation?.progress ?? row.progress ?? null);
+	const mainStage = $derived.by(() => {
+		const overall = progress?.overall;
+		const name = progress?.headline ?? progress?.stage_label ?? null;
+		if (overall?.unit === 'stages' && overall.completed != null && overall.total != null && name) {
+			const current = Math.max(
+				1,
+				Math.min(Math.round(overall.total), Math.round(overall.completed))
+			);
+			return `Stage ${current} of ${Math.round(overall.total)} · ${name}`;
+		}
+		return name;
+	});
 	const actions = $derived(
 		snapshot?.allowed_actions ?? presentation?.allowed_actions ?? row.allowed_actions
 	);
@@ -113,7 +125,7 @@
 
 	<div class="action">
 		<strong>{actionHeadline}</strong>
-		{#if progress?.headline}<span>{progress.headline}</span>{/if}
+		{#if mainStage}<span>{mainStage}</span>{/if}
 	</div>
 
 	{#if progress?.overall}

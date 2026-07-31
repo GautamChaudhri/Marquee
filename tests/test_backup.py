@@ -8,7 +8,9 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import asyncpg
 import pytest
+import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from marquee.api.results import BackupInfo
@@ -23,6 +25,7 @@ from marquee.core.jobs.definitions import DisabledJobDefinitionError
 from marquee.core.jobs.delivery import EXECUTION_HANDLERS
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.pipeline_config import PipelineSettings
+from marquee.db_migration import asyncpg_dsn, database_url, migrate_database
 from marquee.main import app
 
 
@@ -33,6 +36,39 @@ def backup_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path,
     monkeypatch.setattr(settings, "DATA_DIR", str(data_dir))
     monkeypatch.setattr(settings, "BACKUP_DIR", str(backup_dir))
     return data_dir, backup_dir
+
+
+@pytest_asyncio.fixture
+async def migrated_backup_database(
+    backup_paths: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """Give restore certification a self-owned source at the declared schema head."""
+    del backup_paths
+    base_url = database_url()
+    admin_url = base_url.set(database="postgres")
+    source_database = f"backup_source_{uuid.uuid4().hex[:16]}"
+    admin = await asyncpg.connect(asyncpg_dsn(admin_url))
+    try:
+        await admin.execute(f'CREATE DATABASE "{source_database}"')
+    finally:
+        await admin.close()
+    source_url = base_url.set(database=source_database)
+    monkeypatch.setattr(settings, "DB_URL", source_url.render_as_string(hide_password=False))
+    try:
+        await migrate_database()
+        yield source_database
+    finally:
+        admin = await asyncpg.connect(asyncpg_dsn(admin_url))
+        try:
+            await admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = $1 AND pid <> pg_backend_pid() "
+                "AND backend_type = 'client backend'",
+                source_database,
+            )
+            await admin.execute(f'DROP DATABASE IF EXISTS "{source_database}"')
+        finally:
+            await admin.close()
 
 
 @pytest.fixture
@@ -441,8 +477,11 @@ async def test_offline_restore_requires_confirmed_fresh_owned_targets(
 
 @pytest.mark.asyncio
 async def test_offline_restore_certifies_fresh_disposable_targets(
-    backup_paths: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    backup_paths: tuple[Path, Path],
+    migrated_backup_database: str,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    del migrated_backup_database
     data_dir, _backup_dir = backup_paths
     _seed_managed_state(data_dir)
     restore_root = data_dir.parent / "restore-root"

@@ -91,6 +91,7 @@
 			store.acquireScope(queueScopeKeys[index], {
 				...item,
 				view: 'queue',
+				hierarchy: 'activity',
 				limit: item.limit ?? 20
 			})
 		);
@@ -99,6 +100,7 @@
 					store.acquireScope(historyScopeKeys[index], {
 						...item,
 						view: 'history',
+						hierarchy: 'activity',
 						limit: item.limit ?? 20
 					})
 				)

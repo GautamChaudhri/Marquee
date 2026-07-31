@@ -1,0 +1,230 @@
+import { expect, test, type Page } from '@playwright/test';
+
+const now = '2026-07-30T19:00:00Z';
+
+function groupRow(jobId: string, title: string, library: 'movies' | 'tv', chunkIndex: number) {
+	return {
+		version: 1,
+		job_id: jobId,
+		job_type: 'poster_pipeline_group',
+		label: title,
+		label_key: 'jobs.poster_pipeline_group.label',
+		feature_area: 'ai_posters',
+		presentation_family: 'ai_posters',
+		subject: {
+			kind: 'poster_subject_group',
+			display_id: `poster-group:${library}:${chunkIndex}`,
+			display_name: title,
+			artwork_key: null,
+			context: [library === 'movies' ? 'Movies' : 'Television'],
+			snapshot_at: now,
+			missing_live_subject: false
+		},
+		action_headline: 'Select posters for a processing group',
+		status: {
+			label: 'Running',
+			label_key: 'jobs.status.running',
+			phase: 'running',
+			outcome: null,
+			tone: 'active'
+		},
+		attention: { level: 'normal', reason: 'none', message: null, remediation: null },
+		trigger: { kind: 'batch', label: 'Started as a poster batch', initiator: null },
+		progress: {
+			sequence: 7,
+			headline: 'Validating',
+			stage_key: 'validating',
+			stage_label: 'Validating',
+			freshness: 'live',
+			updated_at: now,
+			overall: {
+				scope_id: jobId,
+				mode: 'determinate',
+				label: 'Stages',
+				percent: 44.4,
+				completed: 4,
+				total: 9,
+				unit: 'stages'
+			},
+			current: null,
+			current_subject: null,
+			wait: null
+		},
+		work_items: {
+			version: 1,
+			total: 2,
+			counts: {
+				pending: 1,
+				running: 1,
+				succeeded: 0,
+				no_change: 0,
+				review_required: 0,
+				failed: 0,
+				cancelled: 0
+			},
+			sequence: 7,
+			updated_at: now,
+			href: `/api/jobs/${jobId}/work-items`
+		},
+		priority: 50,
+		fence_token: 3,
+		execution_class: 'gpu',
+		queue_rank: chunkIndex + 1,
+		is_parent: false,
+		allowed_actions: ['cancel', 'open_detail'],
+		links: {
+			detail: `/projection-room/jobs/${jobId}`,
+			presentation: `/api/jobs/${jobId}/presentation`,
+			snapshot: `/api/jobs/${jobId}/snapshot`
+		},
+		parent_id: 'hiddenparent00000000000000000001',
+		root_id: 'hiddenparent00000000000000000001',
+		retry_of_job_id: null,
+		created_at: now,
+		eligible_at: null,
+		started_at: now,
+		terminal_at: null,
+		duration_seconds: null,
+		impact: null,
+		evidence: { artifacts_available: false, logs_available: false }
+	};
+}
+
+function workItemPage(jobId: string) {
+	return {
+		version: 1,
+		job_id: jobId,
+		summary: {
+			version: 1,
+			total: 2,
+			counts: {
+				pending: 1,
+				running: 1,
+				succeeded: 0,
+				no_change: 0,
+				review_required: 0,
+				failed: 0,
+				cancelled: 0
+			},
+			sequence: 7,
+			updated_at: now,
+			href: `/api/jobs/${jobId}/work-items`
+		},
+		items: [
+			{
+				version: 1,
+				subject_key: 'movie:1',
+				ordinal: 0,
+				subject_kind: 'movie',
+				subject_reference: '1',
+				subject: { display_name: 'Arrival' },
+				status: 'running',
+				stage_key: 'validating',
+				stage_name: 'Validating',
+				stage_number: 4,
+				stage_total: 9,
+				progress: { completed: 3, total: 8, unit: 'candidates' },
+				message: 'Checking image dimensions.',
+				sequence: 7,
+				updated_at: now
+			},
+			{
+				version: 1,
+				subject_key: 'movie:2',
+				ordinal: 1,
+				subject_kind: 'movie',
+				subject_reference: '2',
+				subject: { display_name: 'Blade Runner 2049' },
+				status: 'pending',
+				stage_key: null,
+				stage_name: null,
+				stage_number: null,
+				stage_total: 9,
+				progress: null,
+				message: null,
+				sequence: 7,
+				updated_at: now
+			}
+		],
+		next_cursor: null,
+		limit: 50,
+		historical_fallback: false
+	};
+}
+
+async function installStableEventSource(page: Page) {
+	await page.addInitScript(() => {
+		class StableEventSource {
+			addEventListener(type: string, listener: (event: Event) => void) {
+				if (type === 'open') queueMicrotask(() => listener(new Event('open')));
+			}
+			close() {}
+		}
+		Object.defineProperty(window, 'EventSource', { value: StableEventSource });
+	});
+}
+
+test('shows one promoted card per poster execution unit with lazy per-poster progress', async ({
+	page
+}) => {
+	await installStableEventSource(page);
+	const rows = [
+		groupRow('a1000000000000000000000000000001', 'Poster analysis · movies', 'movies', 0),
+		groupRow('a2000000000000000000000000000002', 'Poster analysis · television', 'tv', 0),
+		groupRow('a3000000000000000000000000000003', 'Movie poster chunk 1', 'movies', 0),
+		groupRow('a4000000000000000000000000000004', 'TV poster chunk 2', 'tv', 1)
+	];
+	let workItemRequests = 0;
+	const listRequest = page.waitForRequest(
+		(request) => new URL(request.url()).pathname === '/api/jobs'
+	);
+	await page.route('**/api/jobs?*', (route) =>
+		route.fulfill({
+			json: { view: 'queue', items: rows, next_cursor: null, limit: 50 }
+		})
+	);
+	await page.route(/\/api\/jobs\/[^/]+\/work-items(?:\?.*)?$/, (route) => {
+		workItemRequests += 1;
+		const match = new URL(route.request().url()).pathname.match(/\/api\/jobs\/([^/]+)\/work-items/);
+		return route.fulfill({ json: workItemPage(match?.[1] ?? rows[0].job_id) });
+	});
+
+	await page.goto('/projection-room');
+	const requestUrl = new URL((await listRequest).url());
+	expect(requestUrl.searchParams.get('hierarchy')).toBe('activity');
+	await expect(page.locator('article.activity-row')).toHaveCount(4);
+	for (const row of rows) {
+		await expect(page.getByRole('heading', { name: row.label, exact: true })).toBeVisible();
+	}
+	await expect(page.getByText('Stage 4 of 9 · Validating')).toHaveCount(4);
+	expect(workItemRequests).toBe(0);
+
+	const movieCard = page.locator('article.activity-row').filter({
+		has: page.getByRole('heading', { name: 'Poster analysis · movies', exact: true })
+	});
+	await movieCard.getByText('Poster progress', { exact: true }).click();
+	await expect(movieCard.getByText('Arrival', { exact: true })).toBeVisible();
+	await expect(movieCard.getByText('Stage 4 of 9 · Validating', { exact: true })).toHaveCount(2);
+	await expect(movieCard.getByText('3 of 8 candidates', { exact: true })).toBeVisible();
+	expect(workItemRequests).toBe(1);
+});
+
+test('keeps unified poster cards and their progress inside a phone viewport', async ({ page }) => {
+	await installStableEventSource(page);
+	const row = groupRow('b1000000000000000000000000000001', 'Poster analysis · television', 'tv', 0);
+	await page.route('**/api/jobs?*', (route) =>
+		route.fulfill({ json: { view: 'queue', items: [row], next_cursor: null, limit: 50 } })
+	);
+	await page.route(/\/api\/jobs\/[^/]+\/work-items(?:\?.*)?$/, (route) =>
+		route.fulfill({ json: workItemPage(row.job_id) })
+	);
+	await page.setViewportSize({ width: 390, height: 844 });
+	await page.goto('/projection-room');
+	const card = page.locator('article.activity-row');
+	await card.getByText('Poster progress', { exact: true }).click();
+	await expect(card.getByText('Arrival', { exact: true })).toBeVisible();
+	const bounds = await card.boundingBox();
+	expect(bounds).not.toBeNull();
+	expect(bounds!.x).toBeGreaterThanOrEqual(0);
+	expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+});

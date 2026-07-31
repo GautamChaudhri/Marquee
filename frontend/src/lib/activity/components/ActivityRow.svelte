@@ -5,6 +5,7 @@
 	import ActivityActions from './ActivityActions.svelte';
 	import BatchExpansion from './BatchExpansion.svelte';
 	import JobProgressCard from './JobProgressCard.svelte';
+	import PosterProgress from './PosterProgress.svelte';
 
 	type LifecycleAction = 'cancel' | 'pause' | 'resume' | 'change_priority' | 'retry';
 
@@ -31,6 +32,7 @@
 	} = $props();
 
 	const row = $derived(record.row);
+	const workItems = $derived(record.snapshot?.work_items ?? row?.work_items ?? null);
 	const visible = (column: ActivityColumn) => columns.includes(column);
 	const FEATURE_LABELS: Record<string, string> = {
 		ai_posters: 'AI posters',
@@ -82,7 +84,11 @@
 				>
 			{/if}
 		</div>
-		{#if row.is_parent}<BatchExpansion jobId={row.job_id} />{/if}
+		{#if workItems}
+			<PosterProgress jobId={row.job_id} summary={workItems} />
+		{:else if row.is_parent}
+			<BatchExpansion jobId={row.job_id} />
+		{/if}
 	</article>
 {/if}
 

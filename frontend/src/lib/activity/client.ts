@@ -17,7 +17,8 @@ import {
 	IncompatibleResponseError,
 	parseCommandResponse,
 	parseListEnvelope,
-	parseSnapshot
+	parseSnapshot,
+	parseWorkItemPage
 } from './validators';
 import type {
 	ActivityAttentionResponse,
@@ -36,7 +37,9 @@ import type {
 	ListJobsQuery,
 	OperationsHistoryResponse,
 	OperationsSnapshot,
-	RawDocumentKind
+	RawDocumentKind,
+	WorkItemPage,
+	WorkItemsQuery
 } from './types';
 
 type AttemptsQuery = NonNullable<
@@ -97,6 +100,16 @@ export function getPresentation(fetch: Fetch, jobId: string): Promise<JobPresent
 /** `GET /api/jobs/{id}/batch` — bounded batch-parent rollup. */
 export function getBatchSummary(fetch: Fetch, jobId: string): Promise<BatchSummaryResponse> {
 	return apiGet<BatchSummaryResponse>(fetch, `/jobs/${jobId}/batch`);
+}
+
+/** `GET /api/jobs/{id}/work-items` — stable lazy pages for grouped poster assets. */
+export async function listWorkItems(
+	fetch: Fetch,
+	jobId: string,
+	query: WorkItemsQuery = {},
+	signal?: AbortSignal
+): Promise<WorkItemPage> {
+	return parseWorkItemPage(await apiGet(fetch, `/jobs/${jobId}/work-items`, query, signal));
 }
 
 /** `GET /api/jobs/{id}/attempts` — the execution-audit attempts, paginated. */

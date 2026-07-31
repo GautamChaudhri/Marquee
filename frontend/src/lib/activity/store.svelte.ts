@@ -128,7 +128,8 @@ const LIFECYCLE_EVENTS = [
 	'batch.child_appended',
 	'batch.projected',
 	'batch.sealed',
-	'batch.repaired'
+	'batch.repaired',
+	'work_items.updated'
 ];
 
 const SUBSCRIBED_EVENTS = [PROGRESS_EVENT, RESET_EVENT, ...LIFECYCLE_EVENTS];

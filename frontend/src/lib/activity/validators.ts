@@ -15,7 +15,8 @@ import type {
 	CommandResponse,
 	JobEventFrame,
 	JobSnapshotResponse,
-	JobSubmissionResponse
+	JobSubmissionResponse,
+	WorkItemPage
 } from './types';
 
 /** The SSE frame schema version this client understands (`JobEventFrame.version`). */
@@ -79,6 +80,25 @@ export function parseSnapshot(data: unknown): JobSnapshotResponse {
 		throw new IncompatibleResponseError('job snapshot', data);
 	}
 	return data as JobSnapshotResponse;
+}
+
+/** Validate the stable ordinal work-item page before it drives a scroll region. */
+export function parseWorkItemPage(data: unknown): WorkItemPage {
+	if (
+		!isRecord(data) ||
+		data.version !== 1 ||
+		!isString(data.job_id) ||
+		!Array.isArray(data.items) ||
+		!isFiniteNumber(data.limit) ||
+		!(data.next_cursor == null || isFiniteNumber(data.next_cursor)) ||
+		!isRecord(data.summary) ||
+		data.summary.version !== 1 ||
+		!isFiniteNumber(data.summary.total) ||
+		!isFiniteNumber(data.summary.sequence)
+	) {
+		throw new IncompatibleResponseError('poster work-item page', data);
+	}
+	return data as WorkItemPage;
 }
 
 /** Validate a destructive/lifecycle command response before applying its effect. */

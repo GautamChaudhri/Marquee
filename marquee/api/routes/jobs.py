@@ -13,14 +13,17 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Select, and_, case, func, or_, select
+from sqlalchemy import Select, Text, and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from marquee.config import settings
 from marquee.core.filesystem import FilesystemBoundaryError
@@ -91,6 +94,13 @@ from marquee.core.jobs.presenters.base import (
     present_compact_progress,
     present_status,
 )
+from marquee.core.jobs.work_item_documents import (
+    WorkItemPage,
+    WorkItemProgress,
+    WorkItemRow,
+    WorkItemSummary,
+)
+from marquee.core.jobs.work_items import historical_work_item_fallback, work_item_summary
 from marquee.database import _get_session_factory, get_db
 from marquee.models import (
     Episode,
@@ -100,9 +110,11 @@ from marquee.models import (
     JobBatch,
     JobEvent,
     JobLog,
+    JobWorkItem,
     MediaFile,
     MediaOperationDetail,
     Movie,
+    PipelineRun,
     Season,
     Series,
 )
@@ -113,6 +125,74 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 QUEUE_RANK_LIMIT = 1000
+_POSTER_BATCH_TYPES = frozenset({"poster_pipeline_batch", "poster_pipeline_tv_batch"})
+
+
+def _activity_visibility_predicate():
+    child = aliased(Job)
+    parent = aliased(Job)
+    grouped_parent = and_(
+        Job.type.in_(_POSTER_BATCH_TYPES),
+        select(child.id)
+        .where(child.parent_id == Job.id, child.type == "poster_pipeline_group")
+        .exists(),
+    )
+    nested_atomic_child = and_(
+        Job.type == "poster_pipeline",
+        select(parent.id)
+        .where(
+            parent.id == Job.parent_id,
+            parent.type.in_((*_POSTER_BATCH_TYPES, "poster_pipeline_group")),
+        )
+        .exists(),
+    )
+    return and_(~grouped_parent, ~nested_atomic_child)
+
+
+def _activity_related_match(predicate: Callable[[Any], Any]):
+    parent = aliased(Job)
+    child = aliased(Job)
+    return or_(
+        predicate(Job),
+        select(parent.id).where(parent.id == Job.parent_id, predicate(parent)).exists(),
+        select(child.id).where(child.parent_id == Job.id, predicate(child)).exists(),
+    )
+
+
+def _member_subject_contains(model, fragment: dict[str, Any]):
+    return cast(model.subject_snapshot, JSONB).contains({"members": [{"subject": fragment}]})
+
+
+def _activity_subject_kind_match(subject_kind: str):
+    return _activity_related_match(
+        lambda model: or_(
+            model.subject_kind == subject_kind,
+            _member_subject_contains(model, {"kind": subject_kind}),
+        )
+    )
+
+
+def _activity_subject_reference_match(value: str):
+    fragments: list[dict[str, Any]] = [{"display_id": value}]
+    if value.isdecimal():
+        identifier = int(value)
+        fragments.extend({key: identifier} for key in ("movie_id", "series_id", "season_id"))
+    return _activity_related_match(
+        lambda model: or_(
+            model.subject_reference == value,
+            *(_member_subject_contains(model, fragment) for fragment in fragments),
+        )
+    )
+
+
+def _activity_type_match(values: Sequence[str]):
+    requested = tuple(values)
+    related = _activity_related_match(lambda model: model.type.in_(requested))
+    if "poster_pipeline" in requested:
+        return or_(related, Job.type == "poster_pipeline_group")
+    return related
+
+
 _QUEUE_PHASES = ("planned", "queued", "running", "stopping")
 _QUEUE_SORTS = ("default",)
 _HISTORY_SORTS = ("default", "created", "-created")
@@ -360,6 +440,7 @@ async def stream_job_events(
 async def list_jobs(
     db: Annotated[AsyncSession, Depends(get_db)],
     view: Literal["queue", "history"] = "queue",
+    hierarchy: Literal["all", "activity"] = "all",
     cursor: str | None = None,
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     sort: str = "default",
@@ -427,6 +508,7 @@ async def list_jobs(
 
     query = select(Job)
     filters: dict[str, Any] = {
+        "hierarchy": hierarchy,
         "q": q,
         "feature_area": feature_area.value if feature_area else None,
         "type": type,
@@ -454,23 +536,48 @@ async def list_jobs(
         query = query.where(Job.phase == "terminal")
         order = _history_order(sort)
 
+    if hierarchy == "activity":
+        query = query.where(_activity_visibility_predicate())
+
     if q:
         escaped = q.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+        def text_match(model):
+            return cast(model.subject_snapshot, Text).ilike(f"%{escaped}%", escape="\\")
+
         query = query.where(
-            Job.subject_snapshot.op("->>")("display_name").ilike(f"%{escaped}%", escape="\\")
+            _activity_related_match(text_match)
+            if hierarchy == "activity"
+            else Job.subject_snapshot.op("->>")("display_name").ilike(f"%{escaped}%", escape="\\")
         )
     if feature_area:
         query = query.where(Job.feature_area == feature_area.value)
     if type:
-        query = query.where(Job.type == type)
+        query = query.where(
+            _activity_type_match((type,)) if hierarchy == "activity" else Job.type == type
+        )
     if types:
-        query = query.where(Job.type.in_(types))
+        query = query.where(
+            _activity_type_match(types) if hierarchy == "activity" else Job.type.in_(types)
+        )
     if subject_kind:
-        query = query.where(Job.subject_kind == subject_kind)
+        query = query.where(
+            _activity_subject_kind_match(subject_kind)
+            if hierarchy == "activity"
+            else Job.subject_kind == subject_kind
+        )
     if subject_id:
-        query = query.where(Job.subject_reference == subject_id)
+        query = query.where(
+            _activity_subject_reference_match(subject_id)
+            if hierarchy == "activity"
+            else Job.subject_reference == subject_id
+        )
     if subject_reference:
-        query = query.where(Job.subject_reference.in_(subject_reference))
+        query = query.where(
+            or_(*(_activity_subject_reference_match(value) for value in subject_reference))
+            if hierarchy == "activity"
+            else Job.subject_reference.in_(subject_reference)
+        )
     if phase:
         query = query.where(Job.phase == phase)
     if outcome:
@@ -544,7 +651,9 @@ async def list_jobs(
                     if isinstance(last.attention, dict)
                     else None
                 )
-                key.append({"error": 2, "warning": 1}.get(level, 0))
+                key.append(
+                    {"error": 2, "warning": 1}.get(level if isinstance(level, str) else "", 0)
+                )
             elif expr is _RUNNING_FIRST:
                 key.append(0 if last.phase in ("running", "stopping") else 1)
             else:  # pragma: no cover - defensive
@@ -575,7 +684,7 @@ async def activity_attention(
                 func.count().filter(active, or_(warning, error)),
                 func.count().filter(active, warning),
                 func.count().filter(active, error),
-            )
+            ).where(_activity_visibility_predicate())
         )
     ).one()
     error_count = int(row[5] or 0)
@@ -653,6 +762,7 @@ class JobSnapshotResponse(BaseModel):
     allowed_actions: tuple[JobAction, ...]
     progress: CompactProgress | None
     progress_sequence: int
+    work_items: WorkItemSummary | None = Field(default=None, exclude_if=lambda value: value is None)
     parent_id: str | None
     root_id: str | None
     retry_of_job_id: str | None
@@ -685,6 +795,7 @@ async def _snapshot_for_job(job: Job, db: AsyncSession) -> JobSnapshotResponse:
         allowed_actions=present_actions(job, definition),
         progress=present_compact_progress(ctx),
         progress_sequence=job.progress_sequence,
+        work_items=work_item_summary(job),
         parent_id=job.parent_id,
         root_id=job.root_id,
         retry_of_job_id=job.retry_of_job_id,
@@ -706,6 +817,156 @@ async def _snapshot_for_job(job: Job, db: AsyncSession) -> JobSnapshotResponse:
 @router.get("/{job_id}/snapshot", response_model=JobSnapshotResponse)
 async def get_job_snapshot(job_id: str, db: Annotated[AsyncSession, Depends(get_db)]):
     return await _snapshot_for_job(await _load_job(db, job_id), db)
+
+
+def _work_item_stage_name(stage_key: str | None) -> str | None:
+    return stage_key.replace("_", " ").title() if stage_key else None
+
+
+def _stored_work_item(row: JobWorkItem) -> WorkItemRow:
+    progress = (
+        WorkItemProgress(completed=row.completed, total=row.total, unit=row.unit)
+        if row.completed is not None and row.total is not None
+        else None
+    )
+    return WorkItemRow(
+        subject_key=row.subject_key,
+        ordinal=row.ordinal,
+        subject_kind=row.subject_kind,
+        subject_reference=row.subject_reference,
+        subject=row.subject_snapshot,
+        status=row.status,
+        stage_key=row.stage_key,
+        stage_name=_work_item_stage_name(row.stage_key),
+        stage_number=row.stage_number,
+        stage_total=row.stage_total,
+        progress=progress,
+        message=row.message,
+        sequence=row.update_sequence,
+        updated_at=row.updated_at,
+    )
+
+
+def _fallback_work_item(
+    *,
+    job: Job,
+    wrapper: dict[str, Any],
+    ordinal: int,
+    run: PipelineRun | None,
+) -> WorkItemRow:
+    raw_subject = wrapper.get("subject")
+    subject = raw_subject if isinstance(raw_subject, dict) else {}
+    subject_key = str(wrapper.get("subject_key") or f"legacy:{ordinal}")[:200]
+    if job.outcome == "cancelled":
+        status = "cancelled"
+        message = "Poster analysis was cancelled; temporary results were removed."
+    elif run is not None and run.status == "failed":
+        status = "failed"
+        message = run.error or "Poster analysis failed."
+    elif run is not None and run.status == "no_candidates":
+        status = "no_change"
+        message = "No viable poster change was found."
+    elif run is not None and run.status == "completed" and run.selected_artifact_id is not None:
+        status = "succeeded"
+        message = "Poster analysis completed."
+    elif run is not None:
+        status = "review_required"
+        message = "Poster candidates are ready for review."
+    else:
+        status, message = historical_work_item_fallback(job)
+    terminal = status not in {"pending", "running"}
+    stage_key = "finalizing" if terminal else job.current_stage
+    stage_total = 9
+    stage_number = stage_total if terminal else None
+    progress_document = job.progress if isinstance(job.progress, dict) else {}
+    raw_overall = progress_document.get("overall")
+    overall = raw_overall if isinstance(raw_overall, dict) else {}
+    completed = overall.get("completed")
+    if not terminal and isinstance(completed, int | float):
+        stage_number = max(1, min(stage_total, int(completed)))
+    updated_at = (
+        run.completed_at if run is not None and run.completed_at is not None else job.updated_at
+    ) or job.created_at
+    subject_kind = str(subject.get("kind") or "poster")
+    reference = subject.get(f"{subject_kind}_id")
+    return WorkItemRow(
+        subject_key=subject_key,
+        ordinal=ordinal,
+        subject_kind=subject_kind[:40],
+        subject_reference=str(reference)[:64] if reference is not None else None,
+        subject=subject,
+        status=status,
+        stage_key=stage_key,
+        stage_name=_work_item_stage_name(stage_key),
+        stage_number=stage_number,
+        stage_total=stage_total,
+        progress=None,
+        message=message,
+        sequence=job.work_item_sequence,
+        updated_at=updated_at,
+    )
+
+
+@router.get("/{job_id}/work-items", response_model=WorkItemPage)
+async def list_job_work_items(
+    job_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    cursor: int | None = Query(default=None, ge=0, le=499),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> WorkItemPage:
+    """Return stable ordinal pages and an authoritative grouped-poster summary."""
+    job = await _load_job(db, job_id)
+    summary = work_item_summary(job) or WorkItemSummary(
+        total=0,
+        sequence=0,
+        updated_at=job.updated_at,
+        href=f"/api/jobs/{job.id}/work-items",
+    )
+    if job.work_item_summary is not None:
+        query = select(JobWorkItem).where(JobWorkItem.job_id == job_id)
+        if cursor is not None:
+            query = query.where(JobWorkItem.ordinal > cursor)
+        rows = list(
+            (await db.scalars(query.order_by(JobWorkItem.ordinal.asc()).limit(limit + 1))).all()
+        )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return WorkItemPage(
+            job_id=job.id,
+            summary=summary,
+            items=tuple(_stored_work_item(row) for row in rows),
+            next_cursor=rows[-1].ordinal if has_more and rows else None,
+            limit=limit,
+        )
+
+    snapshot = job.subject_snapshot if isinstance(job.subject_snapshot, dict) else {}
+    raw_members = snapshot.get("members")
+    members = list(raw_members) if isinstance(raw_members, list | tuple) else []
+    runs = {
+        run.subject_key: run
+        for run in (await db.scalars(select(PipelineRun).where(PipelineRun.job_id == job.id))).all()
+    }
+    start = cursor + 1 if cursor is not None else 0
+    bounded = members[start : start + limit + 1]
+    has_more = len(bounded) > limit
+    bounded = bounded[:limit]
+    items = tuple(
+        _fallback_work_item(
+            job=job,
+            wrapper=wrapper if isinstance(wrapper, dict) else {},
+            ordinal=start + offset,
+            run=runs.get(str(wrapper.get("subject_key"))) if isinstance(wrapper, dict) else None,
+        )
+        for offset, wrapper in enumerate(bounded)
+    )
+    return WorkItemPage(
+        job_id=job.id,
+        summary=summary,
+        items=items,
+        next_cursor=items[-1].ordinal if has_more and items else None,
+        limit=limit,
+        historical_fallback=True,
+    )
 
 
 async def _live_children_counts(db: AsyncSession, job_id: str) -> dict[str, int]:
@@ -1379,6 +1640,8 @@ async def list_job_children(
             values = decode_cursor(cursor, contract=contract)
             if sort == "failed_first":
                 after_rank, created_raw, after_id = values
+                if not isinstance(after_rank, str | int | float):
+                    raise ValueError("invalid failure rank cursor")
                 after_rank = int(after_rank)
             else:
                 created_raw, after_id = values

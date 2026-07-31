@@ -487,6 +487,26 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/jobs/{job_id}/work-items': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * List Job Work Items
+		 * @description Return stable ordinal pages and an authoritative grouped-poster summary.
+		 */
+		get: operations['list_job_work_items_api_jobs__job_id__work_items_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/library/episodes/{episode_id}': {
 		parameters: {
 			query?: never;
@@ -2905,6 +2925,7 @@ export interface components {
 			 * @default []
 			 */
 			warnings: components['schemas']['WarningItem'][];
+			work_items?: components['schemas']['WorkItemSummary'] | null;
 		};
 		/**
 		 * JobRow
@@ -2972,6 +2993,7 @@ export interface components {
 			 * @constant
 			 */
 			version: 1;
+			work_items?: components['schemas']['WorkItemSummary'] | null;
 		};
 		/** JobSnapshotResponse */
 		JobSnapshotResponse: {
@@ -3027,6 +3049,7 @@ export interface components {
 			 * @constant
 			 */
 			version: 1;
+			work_items?: components['schemas']['WorkItemSummary'] | null;
 		};
 		/**
 		 * JobSubmissionResponse
@@ -4236,6 +4259,148 @@ export interface components {
 			 */
 			kind: 'warnings';
 		};
+		/** WorkItemPage */
+		WorkItemPage: {
+			/**
+			 * Historical Fallback
+			 * @default false
+			 */
+			historical_fallback: boolean;
+			/** Items */
+			items: components['schemas']['WorkItemRow'][];
+			/** Job Id */
+			job_id: string;
+			/** Limit */
+			limit: number;
+			/** Next Cursor */
+			next_cursor?: number | null;
+			summary: components['schemas']['WorkItemSummary'];
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
+		/** WorkItemProgress */
+		WorkItemProgress: {
+			/** Completed */
+			completed: number;
+			/** Total */
+			total: number;
+			/** Unit */
+			unit?: string | null;
+		};
+		/** WorkItemRow */
+		WorkItemRow: {
+			/** Message */
+			message?: string | null;
+			/** Ordinal */
+			ordinal: number;
+			progress?: components['schemas']['WorkItemProgress'] | null;
+			/** Sequence */
+			sequence: number;
+			/** Stage Key */
+			stage_key?: string | null;
+			/** Stage Name */
+			stage_name?: string | null;
+			/** Stage Number */
+			stage_number?: number | null;
+			/**
+			 * Stage Total
+			 * @default 9
+			 */
+			stage_total: number;
+			/**
+			 * Status
+			 * @enum {string}
+			 */
+			status:
+				| 'pending'
+				| 'running'
+				| 'succeeded'
+				| 'no_change'
+				| 'review_required'
+				| 'failed'
+				| 'cancelled';
+			/** Subject */
+			subject: {
+				[key: string]: unknown;
+			};
+			/** Subject Key */
+			subject_key: string;
+			/** Subject Kind */
+			subject_kind: string;
+			/** Subject Reference */
+			subject_reference?: string | null;
+			/**
+			 * Updated At
+			 * Format: date-time
+			 */
+			updated_at: string;
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
+		/** WorkItemStatusCounts */
+		WorkItemStatusCounts: {
+			/**
+			 * Cancelled
+			 * @default 0
+			 */
+			cancelled: number;
+			/**
+			 * Failed
+			 * @default 0
+			 */
+			failed: number;
+			/**
+			 * No Change
+			 * @default 0
+			 */
+			no_change: number;
+			/**
+			 * Pending
+			 * @default 0
+			 */
+			pending: number;
+			/**
+			 * Review Required
+			 * @default 0
+			 */
+			review_required: number;
+			/**
+			 * Running
+			 * @default 0
+			 */
+			running: number;
+			/**
+			 * Succeeded
+			 * @default 0
+			 */
+			succeeded: number;
+		};
+		/** WorkItemSummary */
+		WorkItemSummary: {
+			counts?: components['schemas']['WorkItemStatusCounts'];
+			/** Href */
+			href: string;
+			/** Sequence */
+			sequence: number;
+			/** Total */
+			total: number;
+			/** Updated At */
+			updated_at?: string | null;
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
 	};
 	responses: never;
 	parameters: never;
@@ -4485,6 +4650,7 @@ export interface operations {
 		parameters: {
 			query?: {
 				view?: 'queue' | 'history';
+				hierarchy?: 'all' | 'activity';
 				cursor?: string | null;
 				limit?: number;
 				sort?: string;
@@ -5181,6 +5347,40 @@ export interface operations {
 				};
 				content: {
 					'application/json': components['schemas']['JobSnapshotResponse'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	list_job_work_items_api_jobs__job_id__work_items_get: {
+		parameters: {
+			query?: {
+				cursor?: number | null;
+				limit?: number;
+			};
+			header?: never;
+			path: {
+				job_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['WorkItemPage'];
 				};
 			};
 			/** @description Validation Error */

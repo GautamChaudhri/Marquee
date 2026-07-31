@@ -40,6 +40,10 @@ from marquee.core.jobs.log_capture import AttemptLogSink
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.orphan_reconciliation import assess_candidate, candidate_for_attempt
 from marquee.core.jobs.policies import RetryClassification
+from marquee.core.jobs.poster_cancellation import (
+    cleanup_cancelled_poster_attempt,
+    record_cleanup_warning,
+)
 from marquee.core.jobs.process_identity import read_boot_id
 from marquee.core.jobs.process_launcher import ProcessLauncher
 from marquee.core.jobs.safety_gates import (
@@ -52,6 +56,7 @@ from marquee.core.jobs.safety_gates import (
     requirements_for_policy,
 )
 from marquee.core.jobs.terminal_decision import TerminalDecision, WorkspaceDisposition
+from marquee.core.jobs.work_items import terminalize_work_items
 from marquee.core.jobs.workspaces import AttemptWorkspace, AttemptWorkspaceManager
 from marquee.database import _get_session_factory
 from marquee.models import RuntimeInstance
@@ -856,6 +861,59 @@ async def _record_evidence_degradation(
                 )
 
 
+async def _finalize_cancelled_workspace(
+    *,
+    ownership: AttemptOwnership,
+    definition: JobDefinition,
+    workspace: AttemptWorkspace,
+    summary: str,
+) -> None:
+    """Clean a read-only poster attempt only after the caller proved process death."""
+    if definition.job_type != "poster_pipeline_group":
+        workspace.quarantine(code="cancelled", summary=summary)
+        return
+    cleanup = await cleanup_cancelled_poster_attempt(
+        data_dir=Path(settings.DATA_DIR),
+        job_id=ownership.job_id,
+        attempt_id=ownership.attempt_id,
+        fence_token=ownership.fence_token,
+    )
+    if cleanup.complete:
+        try:
+            workspace.cleanup()
+            return
+        except Exception:  # noqa: BLE001 - preserve remainder rather than overclaim cleanup
+            warning = (
+                "Cancellation completed, but the attempt workspace could not be deleted; "
+                "it was quarantined."
+            )
+            await record_cleanup_warning(
+                job_id=ownership.job_id,
+                attempt_id=ownership.attempt_id,
+                warning=warning,
+            )
+    workspace.quarantine(
+        code="cleanup_incomplete",
+        summary=cleanup.warning or "cancelled poster cleanup was incomplete",
+    )
+
+
+async def _terminalize_failed_group_work(
+    *,
+    ownership: AttemptOwnership,
+    definition: JobDefinition,
+    summary: str,
+) -> None:
+    if definition.job_type == "poster_pipeline_group":
+        await terminalize_work_items(
+            job_id=ownership.job_id,
+            attempt_id=ownership.attempt_id,
+            fence_token=ownership.fence_token,
+            status="failed",
+            message=summary,
+        )
+
+
 async def _register_terminal_artifact(
     ownership: AttemptOwnership, *, source: Literal["result", "error"]
 ) -> None:
@@ -1075,9 +1133,10 @@ async def deliver_job(
                 async with log_sink.capture_python_logs():
                     result = await _execute_delivery(execution)
         except Exception as exc:
-            reason = (
-                exc.reason or "retry requested" if isinstance(exc, RetryRequested) else str(exc)
-            )
+            if isinstance(exc, RetryRequested):
+                reason = getattr(exc, "reason", None) or "retry requested"
+            else:
+                reason = str(exc)
             try:
                 await asyncio.shield(
                     process_launcher.shutdown(
@@ -1156,7 +1215,14 @@ async def deliver_job(
                         summary=reason or "execution cancelled",
                     )
                     await _register_terminal_artifact(ownership, source="error")
-                workspace.quarantine(code="cancelled", summary=reason or "execution cancelled")
+                    await _finalize_cancelled_workspace(
+                        ownership=ownership,
+                        definition=execution.definition,
+                        workspace=workspace,
+                        summary=reason or "execution cancelled",
+                    )
+                else:
+                    workspace.quarantine(code="cancelled", summary=reason or "execution cancelled")
                 raise DeliveryRejectedError("execution classified as cancelled") from exc
             disposition = await writer.fail(exc)
             exhausted = failure_classification == RetryClassification.TRANSIENT
@@ -1173,6 +1239,11 @@ async def deliver_job(
                     summary=terminal_summary,
                 )
                 await _register_terminal_artifact(ownership, source="error")
+                await _terminalize_failed_group_work(
+                    ownership=ownership,
+                    definition=execution.definition,
+                    summary=terminal_summary,
+                )
             workspace.quarantine(
                 code="retry_exhausted" if exhausted else "failed",
                 summary=terminal_summary,
@@ -1199,7 +1270,19 @@ async def deliver_job(
                     )
                 )
             await asyncio.shield(_register_terminal_artifact(ownership, source="error"))
-            workspace.quarantine(code="cancelled", summary="attempt cancelled before publication")
+            if disposition == WriteDisposition.APPLIED:
+                await asyncio.shield(
+                    _finalize_cancelled_workspace(
+                        ownership=ownership,
+                        definition=execution.definition,
+                        workspace=workspace,
+                        summary="attempt cancelled before publication",
+                    )
+                )
+            else:
+                workspace.quarantine(
+                    code="cancelled", summary="attempt cancelled before publication"
+                )
             raise
         await process_launcher.shutdown(
             cooperative_seconds=settings.JOB_PROCESS_COOPERATIVE_SECONDS,
@@ -1257,8 +1340,10 @@ async def deliver_job(
                         summary="cancellation won before terminal publication",
                     )
                     await _register_terminal_artifact(ownership, source="error")
-                    workspace.quarantine(
-                        code="cancelled",
+                    await _finalize_cancelled_workspace(
+                        ownership=ownership,
+                        definition=execution.definition,
+                        workspace=workspace,
                         summary="cancellation won before terminal publication",
                     )
                     return

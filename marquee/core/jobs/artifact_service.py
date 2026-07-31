@@ -877,6 +877,100 @@ async def expire_artifacts(*, data_dir: str | Path, limit: int = 50) -> dict[str
     }
 
 
+async def expire_attempt_artifacts(
+    *,
+    data_dir: str | Path,
+    job_id: str,
+    attempt_id: int,
+    family: str,
+) -> dict[str, int]:
+    """Physically expire one attempt's family-scoped artifacts, idempotently."""
+    if not _IDENTITY.fullmatch(job_id) or attempt_id < 1 or not family:
+        raise ArtifactError("attempt artifact cleanup identity is invalid")
+    factory = _get_session_factory()
+    claimed: list[tuple[int, str | None, str]] = []
+    async with factory() as session, session.begin():
+        rows = list(
+            (
+                await session.scalars(
+                    select(JobArtifact)
+                    .where(
+                        JobArtifact.job_id == job_id,
+                        JobArtifact.attempt_id == attempt_id,
+                        JobArtifact.status.in_(("pending", "available", "failed", "expiring")),
+                    )
+                    .order_by(JobArtifact.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        for row in rows:
+            metadata = row.artifact_metadata if isinstance(row.artifact_metadata, dict) else {}
+            if metadata.get("family") != family:
+                continue
+            claimed.append((row.id, row.storage_key, row.status))
+            row.status = "expiring"
+
+    boundary = artifact_boundary(data_dir)
+    removed: dict[int, str] = {}
+    failures: dict[int, str] = {}
+    for artifact_id, key, _previous in claimed:
+        disposition = "virtual"
+        try:
+            if key is not None:
+                classified = boundary.from_key("data", key)
+                deleted = await asyncio.to_thread(boundary.delete_file, classified, missing_ok=True)
+                disposition = "deleted" if deleted else "missing"
+                try:
+                    fd = await asyncio.to_thread(boundary.open_read, classified)
+                except (FileNotFoundError, FilesystemBoundaryError):
+                    pass
+                else:
+                    os.close(fd)
+                    raise ArtifactError("cancelled-attempt artifact remained after cleanup")
+            removed[artifact_id] = disposition
+        except Exception as exc:  # noqa: BLE001 - report incomplete cleanup honestly
+            failures[artifact_id] = type(exc).__name__[:40]
+
+    now = datetime.now(UTC)
+    previous_by_id = {artifact_id: previous for artifact_id, _key, previous in claimed}
+    async with factory() as session, session.begin():
+        rows = (
+            list(
+                (
+                    await session.scalars(
+                        select(JobArtifact)
+                        .where(JobArtifact.id.in_(previous_by_id))
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            if previous_by_id
+            else []
+        )
+        for row in rows:
+            metadata = dict(row.artifact_metadata or {})
+            if row.id in removed:
+                row.status = "expired"
+                row.artifact_metadata = {
+                    **metadata,
+                    "cancellation_cleanup": removed[row.id],
+                    "expired_at": now.isoformat(),
+                }
+            else:
+                previous = previous_by_id[row.id]
+                row.status = "available" if previous == "expiring" else previous
+                row.artifact_metadata = {
+                    **metadata,
+                    "cancellation_cleanup_failure": failures.get(row.id, "unknown"),
+                }
+    return {
+        "claimed": len(claimed),
+        "expired": len(removed),
+        "failed": len(failures),
+    }
+
+
 async def expire_logs(*, data_dir: str | Path, limit: int = 50) -> dict[str, int]:
     """Expire sealed physical logs before their owning job rows become eligible."""
     if not 1 <= limit <= 100:

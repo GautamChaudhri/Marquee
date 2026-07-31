@@ -1,7 +1,10 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import { getJobProgressStore } from '$lib/activity/context';
+	import PosterProgress from '$lib/activity/components/PosterProgress.svelte';
 	import PresentationSections from '$lib/activity/components/PresentationSections.svelte';
 	import TimelinePanel from '$lib/activity/components/detail/TimelinePanel.svelte';
 	import LogsPanel from '$lib/activity/components/detail/LogsPanel.svelte';
@@ -22,6 +25,18 @@
 
 	let { data }: { data: PageData } = $props();
 	let presentation = $derived(data.presentation);
+	const store = getJobProgressStore();
+	const workItems = $derived(
+		(presentation ? store.records.get(presentation.job_id)?.snapshot?.work_items : null) ??
+			presentation?.work_items ??
+			null
+	);
+
+	onMount(() => {
+		if (!presentation) return;
+		store.track(presentation.job_id);
+		return () => store.untrack(presentation!.job_id);
+	});
 
 	function tabFromUrl(value: string | null): DetailTab {
 		return tabs.some((tab) => tab.id === value) ? (value as DetailTab) : 'overview';
@@ -115,6 +130,9 @@
 								</li>{/each}
 						</ul>
 					</div>{/if}
+				{#if workItems}
+					<PosterProgress jobId={presentation.job_id} summary={workItems} expanded />
+				{/if}
 				{#if presentation.sections.length}<PresentationSections
 						sections={presentation.sections}
 					/>{:else}<p class="empty">No additional presentation sections are available.</p>{/if}

@@ -36,6 +36,6 @@ describe('Activity URL state', () => {
 	it('selects Operations without constructing a diagnostic fan-out', () => {
 		const state = parseActivityUrl(new URLSearchParams('view=operations&q=ignored'));
 		expect(state.view).toBe('operations');
-		expect(activityListQuery(state)).toEqual({ view: 'queue', limit: 1 });
+		expect(activityListQuery(state)).toEqual({ view: 'queue', hierarchy: 'activity', limit: 1 });
 	});
 });

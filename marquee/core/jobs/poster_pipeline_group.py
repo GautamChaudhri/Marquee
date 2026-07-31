@@ -39,10 +39,13 @@ from marquee.core.jobs.poster_pipeline import (
     _workspace_dir,
 )
 from marquee.core.jobs.runner_progress import RunnerProgressBridge
+from marquee.core.jobs.work_item_documents import poster_group_completion_message
+from marquee.core.jobs.work_items import PosterWorkItemTracker
 from marquee.models import Job, JobAttempt, PipelineRun
 
 if TYPE_CHECKING:
     from marquee.core.jobs.delivery import ExecutionContext
+
 
 def _member_snapshots(context: ExecutionContext) -> dict[str, dict[str, Any]]:
     snapshot = context.subject if isinstance(context.subject, Mapping) else {}
@@ -187,9 +190,7 @@ async def _write_group_file(
         "chunk_index": request.chunk_index,
         "members": members,
     }
-    payload = json.dumps(
-        document, allow_nan=False, separators=(",", ":"), sort_keys=True
-    ).encode()
+    payload = json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True).encode()
     written = await context.io.write(payload, workspace_dir / "group.json")
     return (
         {"group_file": "group.json", "group_checksum": written.sha256},
@@ -365,9 +366,7 @@ def _attach_candidate_artifacts(
     # Deliberately outside the survivor checksum — evidence is not part of the
     # eligibility contract it certifies.
     _attach_evidence_artifacts(document, evidence or {})
-    path.write_text(
-        json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True)
-    )
+    path.write_text(json.dumps(document, allow_nan=False, separators=(",", ":"), sort_keys=True))
 
 
 async def _project_group_runs(
@@ -391,9 +390,7 @@ async def _project_group_runs(
             archive_artifact = member["archive_artifact"]
             recommendation = member.get("recommendation")
             counts = member.get("counts") if isinstance(member.get("counts"), dict) else {}
-            timings = (
-                member.get("timings") if isinstance(member.get("timings"), dict) else {}
-            )
+            timings = member.get("timings") if isinstance(member.get("timings"), dict) else {}
             duration = member.get("duration_seconds")
             session.add(
                 PipelineRun(
@@ -432,9 +429,7 @@ async def _project_group_runs(
                         else None
                     ),
                     error=(
-                        str(member.get("error"))[:2000]
-                        if member.get("error") is not None
-                        else None
+                        str(member.get("error"))[:2000] if member.get("error") is not None else None
                     ),
                     completed_at=datetime.now(UTC),
                 )
@@ -460,8 +455,7 @@ def _validated_member_results(
         raise RuntimeError("poster group result member count is invalid")
     expected = [poster_subject_key(member) for member in request.members]
     actual = [
-        member.get("subject_key") if isinstance(member, dict) else None
-        for member in raw_members
+        member.get("subject_key") if isinstance(member, dict) else None for member in raw_members
     ]
     if actual != expected:
         raise RuntimeError("poster group result member identity or order is invalid")
@@ -480,15 +474,15 @@ def _validated_member_results(
         if not isinstance(candidate_files, dict):
             raise RuntimeError("poster group result candidate artifact map is invalid")
         expected_candidates = {
-            f"s{index:03d}-candidate-{position:03d}.jpg"
-            for position in range(len(candidate_files))
+            f"s{index:03d}-candidate-{position:03d}.jpg" for position in range(len(candidate_files))
         }
-        if any(
-            not isinstance(reference, str)
-            or not reference
-            or not isinstance(filename, str)
-            for reference, filename in candidate_files.items()
-        ) or set(candidate_files.values()) != expected_candidates:
+        if (
+            any(
+                not isinstance(reference, str) or not reference or not isinstance(filename, str)
+                for reference, filename in candidate_files.items()
+            )
+            or set(candidate_files.values()) != expected_candidates
+        ):
             raise RuntimeError("poster group result candidate artifact attribution is invalid")
         # Rejected candidates are review evidence, not primary output, but they
         # are announced files and so must be attributed just as exactly.
@@ -496,15 +490,15 @@ def _validated_member_results(
         if not isinstance(rejected_files, dict):
             raise RuntimeError("poster group result rejected artifact map is invalid")
         expected_rejected = {
-            f"s{index:03d}-rejected-{position:03d}.jpg"
-            for position in range(len(rejected_files))
+            f"s{index:03d}-rejected-{position:03d}.jpg" for position in range(len(rejected_files))
         }
-        if any(
-            not isinstance(reference, str)
-            or not reference
-            or not isinstance(filename, str)
-            for reference, filename in rejected_files.items()
-        ) or set(rejected_files.values()) != expected_rejected:
+        if (
+            any(
+                not isinstance(reference, str) or not reference or not isinstance(filename, str)
+                for reference, filename in rejected_files.items()
+            )
+            or set(rejected_files.values()) != expected_rejected
+        ):
             raise RuntimeError("poster group result rejected artifact attribution is invalid")
         if member["status"] == "failed":
             if archive_file is not None or candidate_files or rejected_files:
@@ -539,6 +533,14 @@ async def execute_poster_pipeline_group(
     expected_keys = {poster_subject_key(member) for member in request.members}
     if set(snapshots) != expected_keys:
         raise RuntimeError("poster group request and live snapshot members differ")
+    work_items = await PosterWorkItemTracker.create(
+        context,
+        [
+            (poster_subject_key(member), snapshots[poster_subject_key(member)])
+            for member in request.members
+        ],
+    )
+    await work_items.stage("resolving")
 
     group_ref, planned_run_ids = await _write_group_file(
         context,
@@ -546,6 +548,7 @@ async def execute_poster_pipeline_group(
         workspace_dir=workspace_dir,
         snapshots=snapshots,
     )
+    await work_items.stage("enumerating")
     shared, profile_error, residual_error = await _stage_personalization(
         context,
         library=request.library,
@@ -553,7 +556,12 @@ async def execute_poster_pipeline_group(
     )
     manifest = {"params": {**group_ref, **shared}}
     bridge = (
-        RunnerProgressBridge(context.progress, stage_map=_STAGE_MAP)
+        RunnerProgressBridge(
+            context.progress,
+            stage_map=_STAGE_MAP,
+            work_item_observer=work_items.observe,
+            work_item_stage_observer=work_items.stage,
+        )
         if isinstance(context.progress, ExecutionProgress)
         else None
     )
@@ -575,6 +583,7 @@ async def execute_poster_pipeline_group(
         if bridge is not None:
             with contextlib.suppress(Exception):
                 await bridge.close()
+        await work_items.close()
     if outcome.outcome == OUTCOME_CANCELLED:
         raise asyncio.CancelledError
     if outcome.outcome != OUTCOME_SUCCEEDED:
@@ -628,9 +637,7 @@ async def execute_poster_pipeline_group(
         key = poster_subject_key(member_request)
         member_warnings = raw_member.get("warnings")
         if isinstance(member_warnings, list):
-            warnings.extend(
-                f"{key}: {warning}" for warning in member_warnings[:2]
-            )
+            warnings.extend(f"{key}: {warning}" for warning in member_warnings[:2])
         run_id = planned_run_ids[index]
         status = str(raw_member.get("status") or "failed")
         recommendation = (
@@ -735,13 +742,11 @@ async def execute_poster_pipeline_group(
         # every member simply wants your pick must not read like a group where
         # members broke.
         aggregate_outcome = "review_required"
-        if failed_keys:
-            message = (
-                f"Grouped poster analysis completed with {len(failed_keys)} failed "
-                f"member(s) and {review_count} awaiting review."
-            )
-        else:
-            message = f"{review_count} poster selection(s) are ready for your review."
+        message = poster_group_completion_message(
+            total=len(member_outcomes),
+            failed=len(failed_keys),
+            review=review_count,
+        )
     elif member_outcomes and all(value == "no_change" for value in member_outcomes):
         aggregate_outcome = "no_change"
         message = "Grouped poster analysis completed without viable recommendations."
@@ -778,4 +783,17 @@ async def execute_poster_pipeline_group(
         snapshots=snapshots,
         projected=projected,
     )
+    work_item_outcomes: dict[str, tuple[str, str | None]] = {}
+    for member, member_outcome in zip(projected, member_outcomes, strict=True):
+        key = str(member["subject_key"])
+        if member_outcome == "failed":
+            item_message = str(member.get("error") or "Poster analysis failed.")[:2_000]
+        elif member_outcome == "review_required":
+            item_message = "Poster candidates are ready for review."
+        elif member_outcome == "no_change":
+            item_message = "No viable poster change was found."
+        else:
+            item_message = "Poster analysis completed."
+        work_item_outcomes[key] = (member_outcome, item_message)
+    await work_items.reconcile(work_item_outcomes)
     return result.model_dump(mode="json")

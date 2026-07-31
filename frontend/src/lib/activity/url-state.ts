@@ -89,9 +89,10 @@ function epoch(value: string): number | undefined {
 }
 
 export function activityListQuery(state: ActivityUrlState): ListJobsQuery {
-	if (state.view === 'operations') return { view: 'queue', limit: 1 };
+	if (state.view === 'operations') return { view: 'queue', hierarchy: 'activity', limit: 1 };
 	return {
 		view: state.view,
+		hierarchy: 'activity',
 		limit: 50,
 		sort: state.sort,
 		q: state.q || undefined,

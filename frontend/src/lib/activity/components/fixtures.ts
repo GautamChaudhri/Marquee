@@ -26,6 +26,7 @@ function subject(kind: string, displayName: string, context: string[]): Presenta
 export function makeRow(overrides: Partial<JobRow> = {}): JobRow {
 	return {
 		version: 1,
+		work_items: null,
 		job_id: 'job-public-1',
 		job_type: 'poster_pipeline',
 		label: 'Poster Pipeline',
@@ -109,6 +110,7 @@ export function makeSnapshot(
 		execution_class: row.execution_class,
 		progress_sequence: row.progress?.sequence ?? 0,
 		progress: row.progress ?? null,
+		work_items: row.work_items ?? null,
 		status: row.status,
 		attention: row.attention,
 		priority: row.priority,

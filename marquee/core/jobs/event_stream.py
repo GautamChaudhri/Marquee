@@ -61,6 +61,7 @@ _PUBLIC_DETAIL_KEYS: dict[str, frozenset[str]] = {
     "job.retried": frozenset({"original_job_id"}),
     "job.retry_requested": frozenset({"code", "summary"}),
     "progress.updated": frozenset({"progress_sequence"}),
+    "work_items.updated": frozenset({"work_item_sequence", "work_item_total"}),
     "log.available": frozenset({"attempt_id", "truncated"}),
     "log.truncated": frozenset({"attempt_id"}),
     "artifact.available": frozenset({"artifact_id", "kind", "name"}),

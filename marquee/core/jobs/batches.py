@@ -726,9 +726,9 @@ async def project_batch(
         if child.outcome in {"failed", "partially_succeeded", "dead_letter", "unsafe"}
         and child.id not in review_only_ids
     ]
-    failures = [
-        {"job_id": child.id, "outcome": child.outcome} for child in attention_children
-    ][:MAX_BATCH_FAILURE_ITEMS]
+    failures = [{"job_id": child.id, "outcome": child.outcome} for child in attention_children][
+        :MAX_BATCH_FAILURE_ITEMS
+    ]
     failure_summary = (
         {
             "items": failures,
@@ -741,7 +741,10 @@ async def project_batch(
         {
             "level": "error" if counts["unsafe"] else "warning",
             "reason": "unsafe" if counts["unsafe"] else "failed",
-            "message": "Some batch children require attention.",
+            "message": (
+                f"{len(attention_children)} of {projection.created_total} batch "
+                f"{'job needs' if len(attention_children) == 1 else 'jobs need'} attention."
+            ),
         }
         if failures
         else None
@@ -1016,11 +1019,7 @@ async def retry_batch(
     if definition.parent_policy.retry_children == "all":
         selected = all_children
     else:
-        selected = tuple(
-            child
-            for child in all_children
-            if _retryable_batch_child(child)
-        )
+        selected = tuple(child for child in all_children if _retryable_batch_child(child))
     initiator = _initiator_from_document(original.initiator)
     expanded: list[tuple[SubmissionIntent, Job]] = []
     for child in selected:
@@ -1035,9 +1034,7 @@ async def retry_batch(
                 members,
                 source_job=child,
                 initiator=initiator,
-                key_prefix=(
-                    f"retry-{original.id[:10]}-{child.id[:10]}-{expected_fence_token}"
-                ),
+                key_prefix=(f"retry-{original.id[:10]}-{child.id[:10]}-{expected_fence_token}"),
             )
             expanded.extend((intent, child) for intent in child_intents)
             continue

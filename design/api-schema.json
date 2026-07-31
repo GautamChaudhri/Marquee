@@ -2889,6 +2889,16 @@
             "maxItems": 100,
             "title": "Warnings",
             "type": "array"
+          },
+          "work_items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkItemSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3132,6 +3142,16 @@
             "default": 1,
             "title": "Version",
             "type": "integer"
+          },
+          "work_items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkItemSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3350,6 +3370,16 @@
             "default": 1,
             "title": "Version",
             "type": "integer"
+          },
+          "work_items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkItemSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -7247,6 +7277,343 @@
         ],
         "title": "WarningsSection",
         "type": "object"
+      },
+      "WorkItemPage": {
+        "additionalProperties": false,
+        "properties": {
+          "historical_fallback": {
+            "default": false,
+            "title": "Historical Fallback",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkItemRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "job_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Job Id",
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "maximum": 499.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/WorkItemSummary"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "summary",
+          "items",
+          "limit"
+        ],
+        "title": "WorkItemPage",
+        "type": "object"
+      },
+      "WorkItemProgress": {
+        "additionalProperties": false,
+        "properties": {
+          "completed": {
+            "minimum": 0.0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "total": {
+            "exclusiveMinimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "completed",
+          "total"
+        ],
+        "title": "WorkItemProgress",
+        "type": "object"
+      },
+      "WorkItemRow": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "ordinal": {
+            "maximum": 499.0,
+            "minimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkItemProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sequence": {
+            "minimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "stage_key": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Key"
+          },
+          "stage_name": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Name"
+          },
+          "stage_number": {
+            "anyOf": [
+              {
+                "maximum": 9.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Number"
+          },
+          "stage_total": {
+            "default": 9,
+            "maximum": 9.0,
+            "minimum": 1.0,
+            "title": "Stage Total",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "succeeded",
+              "no_change",
+              "review_required",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "title": "Subject",
+            "type": "object"
+          },
+          "subject_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Subject Key",
+            "type": "string"
+          },
+          "subject_kind": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Subject Kind",
+            "type": "string"
+          },
+          "subject_reference": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Reference"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subject_key",
+          "ordinal",
+          "subject_kind",
+          "subject",
+          "status",
+          "sequence",
+          "updated_at"
+        ],
+        "title": "WorkItemRow",
+        "type": "object"
+      },
+      "WorkItemStatusCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "failed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "no_change": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "No Change",
+            "type": "integer"
+          },
+          "pending": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Pending",
+            "type": "integer"
+          },
+          "review_required": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Review Required",
+            "type": "integer"
+          },
+          "running": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Running",
+            "type": "integer"
+          },
+          "succeeded": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Succeeded",
+            "type": "integer"
+          }
+        },
+        "title": "WorkItemStatusCounts",
+        "type": "object"
+      },
+      "WorkItemSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/WorkItemStatusCounts"
+          },
+          "href": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "total": {
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "sequence",
+          "href"
+        ],
+        "title": "WorkItemSummary",
+        "type": "object"
       }
     }
   },
@@ -7542,6 +7909,20 @@
                 "history"
               ],
               "title": "View",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hierarchy",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "activity"
+              ],
+              "title": "Hierarchy",
               "type": "string"
             }
           },
@@ -9073,6 +9454,79 @@
           }
         },
         "summary": "Get Job Snapshot",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/work-items": {
+      "get": {
+        "description": "Return stable ordinal pages and an authoritative grouped-poster summary.",
+        "operationId": "list_job_work_items_api_jobs__job_id__work_items_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 499,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Job Work Items",
         "tags": [
           "jobs"
         ]

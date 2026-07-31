@@ -28,6 +28,7 @@ from marquee.core.jobs.progress import (
     ProgressMetrics,
     ProgressWait,
 )
+from marquee.core.jobs.work_item_documents import WorkItemSummary
 
 PRESENTATION_VERSION = 1
 
@@ -442,6 +443,7 @@ class JobPresentation(StrictDocument):
     allowed_actions: tuple[JobAction, ...] = ()
     status: PresentationStatus
     progress: CompactProgress | None = None
+    work_items: WorkItemSummary | None = Field(default=None, exclude_if=lambda value: value is None)
     impact: PresentationImpact | None = None
     sections: tuple[PresentationSection, ...] = Field(default=(), max_length=24)
     warnings: tuple[WarningItem, ...] = Field(default=(), max_length=100)
@@ -485,6 +487,7 @@ class JobRow(StrictDocument):
     trigger: PresentationTrigger
     attention: PresentationAttention
     progress: CompactProgress | None = None
+    work_items: WorkItemSummary | None = Field(default=None, exclude_if=lambda value: value is None)
     impact: PresentationImpact | None = None
     allowed_actions: tuple[JobAction, ...] = ()
     is_parent: bool = False

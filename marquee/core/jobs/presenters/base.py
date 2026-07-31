@@ -59,7 +59,13 @@ from marquee.core.jobs.presentation import (
 )
 from marquee.core.jobs.progress import JobProgress
 from marquee.core.jobs.retry_capability import resolve_retry_capability
-from marquee.core.jobs.subjects import SUBJECT_SNAPSHOT_ADAPTER, SubjectSnapshot
+from marquee.core.jobs.subjects import (
+    SUBJECT_SNAPSHOT_ADAPTER,
+    PosterSubjectGroupSnapshot,
+    SubjectSnapshot,
+)
+from marquee.core.jobs.work_item_documents import poster_group_completion_message
+from marquee.core.jobs.work_items import work_item_summary
 
 if TYPE_CHECKING:
     from marquee.models import Job, MediaOperationDetail
@@ -325,9 +331,34 @@ def present_subject(
     )
 
 
+def present_context_subject(ctx: PresenterContext) -> PresentationSubject:
+    presented = present_subject(ctx.subject, missing_live_subject=ctx.live_subject_missing)
+    if ctx.job.type != "poster_pipeline_group" or not isinstance(
+        ctx.subject, PosterSubjectGroupSnapshot
+    ):
+        return presented
+    title = (
+        f"Poster analysis · {'movies' if ctx.subject.library == 'movies' else 'television'}"
+        if ctx.subject.batch_mode == "all_at_once"
+        else f"{'Movie' if ctx.subject.library == 'movies' else 'TV'} poster chunk "
+        f"{ctx.subject.chunk_index + 1}"
+    )
+    return presented.model_copy(update={"display_name": title})
+
+
 def present_status(job: Job) -> PresentationStatus:
     key = job.outcome if job.phase == "terminal" and job.outcome else job.phase
     label, tone = _STATUS_LABELS.get(key, (humanize_job_type(key), "neutral"))
+    if job.type == "poster_pipeline_group" and key == "partially_succeeded":
+        result = job.result if isinstance(job.result, dict) else {}
+        failed = int(result.get("failed_count") or 0)
+        total = int(result.get("member_count") or 0)
+        if failed and failed >= total:
+            label, tone = "Failed", "negative"
+        elif failed:
+            label, tone = "Partially failed", "warning"
+        else:
+            label, tone = "Ready for review", "warning"
     return PresentationStatus(
         phase=job.phase,
         outcome=job.outcome,
@@ -356,6 +387,24 @@ def present_trigger(job: Job, definition: JobDefinition) -> PresentationTrigger:
 
 def present_attention(ctx: PresenterContext) -> PresentationAttention:
     job = ctx.job
+    if job.type == "poster_pipeline_group" and isinstance(job.result, dict):
+        total = int(job.result.get("member_count") or 0)
+        failed = int(job.result.get("failed_count") or 0)
+        review = int(job.result.get("review_required_count") or 0)
+        if failed or review:
+            return PresentationAttention(
+                level=(
+                    AttentionLevel.ERROR
+                    if total > 0 and failed >= total
+                    else AttentionLevel.WARNING
+                ),
+                reason=AttentionReason.FAILED if failed else AttentionReason.REVIEW,
+                message=poster_group_completion_message(
+                    total=total,
+                    failed=failed,
+                    review=review,
+                ),
+            )
     stored = job.attention if isinstance(job.attention, dict) else None
     if stored is not None:
         try:
@@ -638,13 +687,14 @@ class JobPresenter:
             label_key=definition.label_key,
             feature_area=definition.feature_area,
             presentation_family=definition.presentation_family,
-            subject=present_subject(ctx.subject, missing_live_subject=ctx.live_subject_missing),
+            subject=present_context_subject(ctx),
             action=self.action(ctx),
             trigger=present_trigger(job, definition),
             attention=present_attention(ctx),
             allowed_actions=actions,
             status=present_status(job),
             progress=present_compact_progress(ctx),
+            work_items=work_item_summary(job),
             impact=present_impact(ctx),
             sections=tuple(sections[:24]),
             warnings=tuple(ctx.warnings[:100]),
@@ -677,12 +727,13 @@ class JobPresenter:
             label_key=definition.label_key,
             feature_area=definition.feature_area,
             presentation_family=definition.presentation_family,
-            subject=present_subject(ctx.subject, missing_live_subject=ctx.live_subject_missing),
+            subject=present_context_subject(ctx),
             action_headline=self.action(ctx).headline,
             status=present_status(job),
             trigger=present_trigger(job, definition),
             attention=present_attention(ctx),
             progress=present_compact_progress(ctx),
+            work_items=work_item_summary(job),
             impact=present_impact(ctx),
             allowed_actions=actions,
             is_parent=definition.parent_policy is not None,

@@ -16,6 +16,10 @@ export type JobPresentation = Schemas['JobPresentation'];
 export type PresentationSection = JobPresentation['sections'][number];
 export type PresentationValue = Schemas['Fact']['value'];
 export type BatchSummaryResponse = Schemas['BatchSummaryResponse'];
+export type WorkItemPage = Schemas['WorkItemPage'];
+export type WorkItemRow = Schemas['WorkItemRow'];
+export type WorkItemSummary = Schemas['WorkItemSummary'];
+export type WorkItemStatusCounts = Schemas['WorkItemStatusCounts'];
 export type ActivityAttentionResponse = Schemas['ActivityAttentionResponse'];
 export type OperationsSnapshot = Schemas['OperationsSnapshot'];
 export type OperationsHistoryResponse = Schemas['OperationsHistoryResponse'];
@@ -64,6 +68,9 @@ export type JobApiErrorDetail = Schemas['JobApiErrorDetail'];
 
 /** Bounded query for `GET /api/jobs`, straight from the generated path operation. */
 export type ListJobsQuery = NonNullable<paths['/api/jobs']['get']['parameters']['query']>;
+export type WorkItemsQuery = NonNullable<
+	paths['/api/jobs/{job_id}/work-items']['get']['parameters']['query']
+>;
 
 /** The `kind` path segment of `GET /api/jobs/{job_id}/raw/{kind}`. */
 export type RawDocumentKind =

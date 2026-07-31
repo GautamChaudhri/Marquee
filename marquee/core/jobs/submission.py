@@ -401,10 +401,14 @@ async def _resolve_poster_subject_group(
                 subject=subject,
             )
         )
-    label = "Movie" if group.library == "movies" else "TV"
+    display_name = (
+        f"Poster analysis · {'movies' if group.library == 'movies' else 'television'}"
+        if group.batch_mode == "all_at_once"
+        else f"{'Movie' if group.library == 'movies' else 'TV'} poster chunk {group.chunk_index + 1}"
+    )
     return PosterSubjectGroupSnapshot(
         display_id=f"poster-group:{group.library}:{locator.reference}",
-        display_name=f"{label} poster group {group.chunk_index + 1} ({len(members)} subjects)",
+        display_name=display_name,
         library=group.library,
         chunk_index=group.chunk_index,
         batch_mode=group.batch_mode,

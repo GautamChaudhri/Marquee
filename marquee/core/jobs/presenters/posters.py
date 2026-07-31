@@ -14,8 +14,6 @@ from marquee.core.jobs.presentation import (
     BadgeValue,
     BeforeAfterRow,
     BeforeAfterSection,
-    ChangeItem,
-    ChangeListSection,
     Fact,
     FactsSection,
     MetricCard,
@@ -80,48 +78,6 @@ _EXPLANATIONS = {
 }
 
 
-def _group_members_section(ctx: PresenterContext) -> ChangeListSection | None:
-    """List the subjects a grouped run covered, with each one's own outcome.
-
-    A group that fails before projection writes no ``PipelineRun`` rows at all,
-    so without this the operator sees "8 subjects · Failed" and has no way to
-    learn *which* eight. The sealed snapshot already carries every member.
-    """
-    subject = ctx.subject
-    if not isinstance(subject, PosterSubjectGroupSnapshot):
-        return None
-    failed = frozenset(getattr(ctx.result, "failed_subject_keys", ()) or ())
-    # Without a result document nothing is attributable to a member: a systemic
-    # failure took the whole chunk down before any subject was analyzed.
-    attributable = ctx.result is not None
-    visible_members = subject.members[:200]
-    items = tuple(
-        ChangeItem(
-            target_key=member.subject_key,
-            # Snapshot display names allow 500 characters; a change item allows 300.
-            target_label=member.subject.display_name[:300],
-            requested="Poster analysis",
-            outcome=(
-                "failed"
-                if member.subject_key in failed
-                else "succeeded"
-                if attributable
-                else "not_applied"
-            ),
-            reason=(
-                None
-                if attributable
-                else "The grouped run ended before this subject produced a result."
-            ),
-        )
-        for member in visible_members
-    )
-    title = "Subjects in this group"
-    if len(subject.members) > len(visible_members):
-        title = f"Subjects in this group (showing {len(visible_members)} of {len(subject.members)})"
-    return ChangeListSection(title=title, items=items) if items else None
-
-
 def _score_interpretation(score: float) -> str:
     if score >= 0.8:
         return "Strong match for the taste profile"
@@ -133,6 +89,14 @@ def _score_interpretation(score: float) -> str:
 class PosterPresenter(JobPresenter):
     def action(self, ctx: PresenterContext) -> PresentationAction:
         headline = _HEADLINES[self.job_type]
+        if self.job_type == "poster_pipeline_group" and isinstance(
+            ctx.subject, PosterSubjectGroupSnapshot
+        ):
+            headline = (
+                "Select posters across the movie library"
+                if ctx.subject.library == "movies"
+                else "Select posters across the TV library"
+            )
         candidate_count = ctx.summary_value("candidate_count", int)
         if self.job_type == "poster_pipeline" and isinstance(candidate_count, int):
             headline = f"Select a poster from {candidate_count} candidates"
@@ -176,10 +140,6 @@ class PosterPresenter(JobPresenter):
             )
         if facts:
             sections.append(FactsSection(title="Selection", facts=tuple(facts)))
-
-        members = _group_members_section(ctx)
-        if members is not None:
-            sections.append(members)
 
         cards: list[MetricCard] = []
         score = ctx.summary_value("score", float | int)

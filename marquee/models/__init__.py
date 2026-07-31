@@ -10,6 +10,7 @@ from marquee.models.job import (
     JobBatch,
     JobDispatch,
     JobEvent,
+    JobWorkItem,
     SchemaContract,
 )
 from marquee.models.job_evidence import (
@@ -48,6 +49,7 @@ __all__ = [
     "JobBatch",
     "JobDispatch",
     "JobEvent",
+    "JobWorkItem",
     "JobLog",
     "JobArtifact",
     "WorkerNode",

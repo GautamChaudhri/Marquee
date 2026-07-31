@@ -63,6 +63,15 @@ DISPATCH_DISPOSITIONS = (
 ATTEMPT_PHASES = ("admitted", "running", "stopping", "finished")
 ATTEMPT_OUTCOMES = ("succeeded", "failed", "cancelled", "interrupted", "retrying")
 BATCH_MODES = ("fixed", "dynamic")
+JOB_WORK_ITEM_STATUSES = (
+    "pending",
+    "running",
+    "succeeded",
+    "no_change",
+    "review_required",
+    "failed",
+    "cancelled",
+)
 
 
 def _in_clause(column: str, values: tuple[str, ...]) -> str:
@@ -96,6 +105,7 @@ class Job(Base):
         CheckConstraint("fence_token >= 0", name="ck_jobs_fence_token"),
         CheckConstraint("dispatch_generation >= 0", name="ck_jobs_dispatch_generation"),
         CheckConstraint("progress_sequence >= 0", name="ck_jobs_progress_sequence"),
+        CheckConstraint("work_item_sequence >= 0", name="ck_jobs_work_item_sequence"),
         Index("ix_jobs_phase_eligible", "phase", "eligible_at", "priority", "created_at"),
         Index("ix_jobs_subject", "subject_kind", "subject_reference"),
         Index(
@@ -193,6 +203,11 @@ class Job(Base):
     current_stage: Mapped[str | None] = mapped_column(String(80))
     current_subject: Mapped[dict | None] = mapped_column(JSON)
     attention: Mapped[dict | None] = mapped_column(JSON)
+    work_item_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    work_item_summary: Mapped[dict | None] = mapped_column(JSON)
+    work_item_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Time.
     created_at: Mapped[datetime] = mapped_column(
@@ -205,6 +220,65 @@ class Job(Base):
     terminal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class JobWorkItem(Base):
+    """Durable observation-only progress for one grouped poster library asset."""
+
+    __tablename__ = "job_work_items"
+    __table_args__ = (
+        CheckConstraint(
+            "ordinal >= 0 AND ordinal < 500",
+            name="ck_job_work_items_ordinal",
+        ),
+        CheckConstraint("fence_token >= 0", name="ck_job_work_items_fence_token"),
+        CheckConstraint("update_sequence >= 0", name="ck_job_work_items_update_sequence"),
+        CheckConstraint(
+            _in_clause("status", JOB_WORK_ITEM_STATUSES),
+            name="ck_job_work_items_status",
+        ),
+        CheckConstraint(
+            "stage_number IS NULL OR (stage_number >= 1 AND stage_number <= stage_total)",
+            name="ck_job_work_items_stage_number",
+        ),
+        CheckConstraint(
+            "stage_total >= 1 AND stage_total <= 9",
+            name="ck_job_work_items_stage_total",
+        ),
+        CheckConstraint(
+            "(completed IS NULL AND total IS NULL) OR "
+            "(completed >= 0 AND total > 0 AND completed <= total)",
+            name="ck_job_work_items_progress",
+        ),
+        UniqueConstraint("job_id", "ordinal", name="uq_job_work_items_job_ordinal"),
+    )
+
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    subject_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    subject_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    attempt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_attempts.id", ondelete="SET NULL"), nullable=True
+    )
+    fence_token: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), default="pending", server_default="pending", nullable=False
+    )
+    stage_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    stage_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stage_total: Mapped[int] = mapped_column(Integer, default=9, server_default="9", nullable=False)
+    completed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    update_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

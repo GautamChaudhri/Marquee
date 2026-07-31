@@ -64,7 +64,8 @@ async def owned_database(monkeypatch) -> AsyncIterator[_OwnedDatabase]:
     finally:
         await admin.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-            "WHERE datname = $1 AND pid <> pg_backend_pid()",
+            "WHERE datname = $1 AND pid <> pg_backend_pid() "
+            "AND backend_type = 'client backend'",
             name,
         )
         await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
@@ -111,6 +112,85 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
         source = Path(revision.path).read_text(encoding="utf-8")
         for table in PGQUEUER_TABLES | EXCLUDED_DEPLOYMENT_TABLES:
             assert f"create_table('{table}'" not in source
+
+
+@pytest.mark.asyncio
+async def test_work_item_migration_upgrades_existing_jobs_and_downgrades_cleanly(
+    owned_database: _OwnedDatabase,
+) -> None:
+    root = Path(__file__).resolve().parent.parent
+    config = Config(str(root / "alembic.ini"))
+    await asyncio.to_thread(command.upgrade, config, "0019_pipeline_subject_key")
+
+    job_id = uuid.uuid4().hex
+    connection = await owned_database.connect()
+    try:
+        await connection.execute(
+            """
+            INSERT INTO jobs (
+                id, type, payload_version, request, priority, root_id, subject_snapshot
+            ) VALUES ($1, 'poster_pipeline_group', 1, '{}'::json, 50, $1, '{}'::json)
+            """,
+            job_id,
+        )
+        attempt_id = await connection.fetchval(
+            """
+            INSERT INTO job_attempts (job_id, number, fence_token)
+            VALUES ($1, 1, 1) RETURNING id
+            """,
+            job_id,
+        )
+    finally:
+        await connection.close()
+
+    await asyncio.to_thread(command.upgrade, config, ALEMBIC_HEAD)
+    await asyncio.to_thread(command.check, config)
+    connection = await owned_database.connect()
+    try:
+        job = await connection.fetchrow(
+            """
+            SELECT work_item_sequence, work_item_summary, work_item_updated_at
+            FROM jobs WHERE id = $1
+            """,
+            job_id,
+        )
+        assert job is not None
+        assert tuple(job.values()) == (0, None, None)
+        await connection.execute(
+            """
+            INSERT INTO job_work_items (
+                job_id, subject_key, ordinal, subject_kind, subject_snapshot,
+                attempt_id, fence_token, status
+            ) VALUES ($1, 'movie:1', 0, 'movie', '{}'::json, $2, 1, 'pending')
+            """,
+            job_id,
+            attempt_id,
+        )
+        assert (
+            await connection.fetchval("SELECT status FROM job_work_items WHERE job_id = $1", job_id)
+            == "pending"
+        )
+    finally:
+        await connection.close()
+
+    await asyncio.to_thread(command.downgrade, config, "0019_pipeline_subject_key")
+    connection = await owned_database.connect()
+    try:
+        assert await connection.fetchval("SELECT to_regclass('job_work_items')") is None
+        assert (
+            await connection.fetchval(
+                """
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'jobs'
+                  AND column_name LIKE 'work_item%'
+                """
+            )
+            == 0
+        )
+    finally:
+        await connection.close()
 
 
 @pytest.mark.asyncio

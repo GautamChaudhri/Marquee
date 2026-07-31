@@ -16,6 +16,7 @@ operational degradation — they can never fail the underlying product operation
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -149,6 +150,8 @@ class RunnerProgressBridge:
         *,
         stage_map: dict[str, str],
         overall_from_stages: bool = True,
+        work_item_observer: Callable[[RunnerProgressFrame, str], Awaitable[None]] | None = None,
+        work_item_stage_observer: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._progress = progress
         self._stage_map = dict(stage_map)
@@ -158,6 +161,8 @@ class RunnerProgressBridge:
         self._stage_total = len(stage_order)
         self._furthest_ordinal = 0
         self._last_cursor: int | None = None
+        self._work_item_observer = work_item_observer
+        self._work_item_stage_observer = work_item_stage_observer
         self.degraded_frames = 0
 
     def _degrade(self, reason: str) -> None:
@@ -180,6 +185,14 @@ class RunnerProgressBridge:
         if mapped_stage is None or mapped_stage not in self._stage_ordinal:
             self._degrade(f"runner stage {parsed.stage!r} has no registered mapping")
             return
+
+        if self._work_item_observer is not None:
+            try:
+                await self._work_item_observer(parsed, mapped_stage)
+            except Exception:  # noqa: BLE001 - observation can never fail execution
+                logger.exception(
+                    "runner work-item observation degraded for %s", self._progress.job_id
+                )
 
         overall: ScopeObservation | None = None
         if self._overall_from_stages:
@@ -227,6 +240,13 @@ class RunnerProgressBridge:
         if stage_key not in self._stage_ordinal:
             self._degrade(f"handler stage {stage_key!r} is not in the registered vocabulary")
             return
+        if self._work_item_stage_observer is not None:
+            try:
+                await self._work_item_stage_observer(stage_key)
+            except Exception:  # noqa: BLE001 - observation can never fail execution
+                logger.exception(
+                    "handler work-item observation degraded for %s", self._progress.job_id
+                )
         ordinal = self._stage_ordinal[stage_key]
         if ordinal > self._furthest_ordinal:
             self._furthest_ordinal = ordinal

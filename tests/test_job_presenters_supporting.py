@@ -378,20 +378,12 @@ def _group_job(**overrides):
     return make_job(**values)
 
 
-def _member_rows(job):
-    presentation = present_job(job, definition_for("poster_pipeline_group"))
-    sections = [s for s in presentation.sections if s.kind == "change_list"]
-    assert len(sections) == 1, "the group presenter must list its subjects exactly once"
-    return {item.target_key: item for item in sections[0].items}
+def _group_presentation(job):
+    return present_job(job, definition_for("poster_pipeline_group"))
 
 
-def test_systemic_group_failure_still_names_every_subject():
-    """A chunk that dies before projection writes no PipelineRun rows.
-
-    Without the snapshot-backed listing the operator sees "3 subjects · Failed"
-    and cannot learn which titles need re-running.
-    """
-    rows = _member_rows(
+def test_systemic_group_failure_uses_lazy_work_item_summary():
+    presentation = _group_presentation(
         _group_job(
             outcome="failed",
             result=None,
@@ -404,15 +396,15 @@ def test_systemic_group_failure_still_names_every_subject():
         )
     )
 
-    assert set(rows) == {"series:71", "season:382", "season:383"}
-    assert rows["season:382"].target_label == "Avatar: The Last Airbender · Season 1"
-    # Nothing is attributable to an individual subject yet, so none is blamed.
-    assert {row.outcome for row in rows.values()} == {"not_applied"}
-    assert all(row.reason for row in rows.values())
+    assert presentation.subject.display_name == "TV poster chunk 3"
+    assert presentation.work_items is not None
+    assert presentation.work_items.total == 3
+    assert presentation.work_items.counts.failed == 3
+    assert not any(section.kind == "change_list" for section in presentation.sections)
 
 
-def test_partial_group_marks_only_the_members_that_failed():
-    rows = _member_rows(
+def test_partial_group_uses_exact_failure_summary():
+    presentation = _group_presentation(
         _group_job(
             outcome="partially_succeeded",
             result={
@@ -432,6 +424,66 @@ def test_partial_group_marks_only_the_members_that_failed():
         )
     )
 
-    assert rows["season:383"].outcome == "failed"
-    assert rows["series:71"].outcome == "succeeded"
-    assert rows["season:382"].outcome == "succeeded"
+    assert presentation.status.label == "Partially failed"
+    assert presentation.attention.message == "Partially failed: 1 of 3 posters needs attention."
+    assert presentation.work_items is not None
+    assert presentation.work_items.counts.failed == 1
+    assert presentation.work_items.counts.succeeded == 2
+    assert not any(section.kind == "change_list" for section in presentation.sections)
+
+
+def test_review_only_group_reads_ready_for_review_instead_of_failed():
+    presentation = _group_presentation(
+        _group_job(
+            outcome="partially_succeeded",
+            result={
+                "outcome": "review_required",
+                "library": "tv",
+                "chunk_index": 2,
+                "member_count": 3,
+                "succeeded_count": 0,
+                "no_change_count": 0,
+                "review_required_count": 3,
+                "failed_count": 0,
+                "projected_count": 3,
+                "run_ids": ["a" * 32, "b" * 32, "c" * 32],
+                "failed_subject_keys": [],
+                "message": "3 posters are ready for review.",
+            },
+        )
+    )
+
+    assert presentation.status.label == "Ready for review"
+    assert presentation.attention.reason.value == "review"
+    assert presentation.attention.message == "3 posters are ready for review."
+
+
+def test_all_member_group_failure_reads_failed_with_singular_grammar():
+    snapshot = {
+        **TV_GROUP_SNAPSHOT,
+        "members": [TV_GROUP_SNAPSHOT["members"][0]],
+    }
+    presentation = _group_presentation(
+        _group_job(
+            subject_snapshot=snapshot,
+            outcome="partially_succeeded",
+            result={
+                "outcome": "review_required",
+                "library": "tv",
+                "chunk_index": 2,
+                "member_count": 1,
+                "succeeded_count": 0,
+                "no_change_count": 0,
+                "review_required_count": 0,
+                "failed_count": 1,
+                "projected_count": 1,
+                "run_ids": ["a" * 32],
+                "failed_subject_keys": ["series:71"],
+                "message": "Failed: all 1 poster needs attention.",
+            },
+        )
+    )
+
+    assert presentation.status.label == "Failed"
+    assert presentation.status.tone == "negative"
+    assert presentation.attention.message == "Failed: all 1 poster needs attention."
