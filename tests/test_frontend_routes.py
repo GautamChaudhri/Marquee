@@ -7,11 +7,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.main import app
 from marquee.models import (
     Job,
+    JobArtifact,
     Movie,
     Series,
 )
@@ -125,6 +127,85 @@ async def test_library_missing_filter_can_exclude_review_queue_movies(
     body = resp.json()
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Still Missing"]
+
+
+@pytest.mark.asyncio
+async def test_review_queue_reset_requeues_movies_and_expires_review_evidence(
+    db: AsyncSession,
+    client: AsyncClient,
+    installed_pgqueuer,
+):
+    """The movie reset must use the same scoped, durable lifecycle as TV."""
+    awaiting = Movie(
+        title="Awaiting Reset",
+        year=2020,
+        folder_path="/m/awaiting-reset",
+        movie_file_path="awaiting-reset.mkv",
+        tmdb_id=101,
+        is_present=True,
+    )
+    decided = Movie(
+        title="Already Decided",
+        year=2021,
+        folder_path="/m/already-decided",
+        movie_file_path="already-decided.mkv",
+        tmdb_id=102,
+        is_present=True,
+        poster_path="/m/already-decided/poster.jpg",
+    )
+    db.add_all([awaiting, decided])
+    await db.flush()
+    awaiting_run = await seed_canonical_pipeline_run(
+        db,
+        run_id="movie-awaiting-reset",
+        movie_id=awaiting.id,
+        archive={"run_id": "movie-awaiting-reset", "movie_id": awaiting.id, "candidates": []},
+    )
+    decided_run = await seed_canonical_pipeline_run(
+        db,
+        run_id="movie-already-decided",
+        movie_id=decided.id,
+        archive={"run_id": "movie-already-decided", "movie_id": decided.id, "candidates": []},
+        feedback_event_id="decision",
+    )
+    await db.commit()
+
+    response = await client.post(
+        "/api/pipeline/review-queue/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:movie-review-queue"},
+    )
+
+    assert response.status_code == 202, response.text
+    children = (
+        (
+            await db.execute(
+                select(Job).where(
+                    Job.parent_id == response.json()["job_id"], Job.type == "poster_reset"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert {(job.subject_kind, job.subject_reference) for job in children} == {
+        ("movie", str(awaiting.id))
+    }
+
+    cleared = await client.get("/api/pipeline/review-queue")
+    assert cleared.json()["total"] == 0
+    requeued = await client.get("/api/library/movies?poster_status=missing&exclude_in_review=true")
+    assert [item["id"] for item in requeued.json()["items"]] == [awaiting.id]
+
+    artifacts = (await db.execute(select(JobArtifact))).scalars().all()
+    by_run = {
+        artifact.artifact_metadata.get("run_id"): artifact
+        for artifact in artifacts
+        if isinstance(artifact.artifact_metadata, dict)
+    }
+    assert by_run[awaiting_run.run_id].expires_at is not None
+    assert by_run[awaiting_run.run_id].expires_at <= datetime.now(UTC)
+    untouched = by_run[decided_run.run_id].expires_at
+    assert untouched is None or untouched > datetime.now(UTC)
 
 
 @pytest.mark.asyncio

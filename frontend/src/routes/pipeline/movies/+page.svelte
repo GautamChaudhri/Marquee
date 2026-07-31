@@ -3,7 +3,6 @@
 	import { page } from '$app/state';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
-	import { getRawDocument } from '$lib/activity/client';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import PosterBatchModeControl from '$lib/components/PosterBatchModeControl.svelte';
@@ -16,25 +15,17 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		approveReviewQueueAutoPicks,
-		clearPipelineCache,
-		getPipelineCache,
 		getPipelineMetrics,
 		getReviewQueue,
+		resetReviewQueuePosters,
 		runBatch,
 		triggerRun
 	} from '$lib/api/pipeline';
 	import { listMovies } from '$lib/api/library';
-	import {
-		describePlanScope,
-		parseSealedPlan,
-		type SealedPlan
-	} from '$lib/pipeline/maintenance-plan';
 	import { ApiError } from '$lib/api/client';
 	import { toast } from '$lib/toast';
-	import { bytesH } from '$lib/display';
 	import type {
 		BatchScope,
-		CacheSizes,
 		MovieListItem,
 		PipelineMetrics,
 		PosterBatchMode,
@@ -64,8 +55,6 @@
 	// svelte-ignore state_referenced_locally
 	let queue = $state<ReviewQueue>(data.queue);
 	// svelte-ignore state_referenced_locally
-	let cache = $state<CacheSizes | null>(data.cache);
-	// svelte-ignore state_referenced_locally
 	let metrics = $state<PipelineMetrics | null>(data.metrics);
 	// svelte-ignore state_referenced_locally
 	let missing = $state<MovieListItem[]>(data.missing.items);
@@ -87,9 +76,8 @@
 
 	async function refreshAll() {
 		try {
-			const [qd, cd, md, mv] = await Promise.all([
+			const [qd, md, mv] = await Promise.all([
 				getReviewQueue(fetch, { page_size: PAGE_SIZE }),
-				getPipelineCache(fetch).catch(() => cache),
 				getPipelineMetrics(fetch, { limit: 500 }).catch(() => metrics),
 				listMovies(fetch, {
 					poster_status: 'missing',
@@ -100,7 +88,6 @@
 			]);
 			queue = qd;
 			queuePage = 1;
-			cache = cd;
 			metrics = md;
 			if (mv) {
 				missing = mv.items;
@@ -155,6 +142,8 @@
 	// ── Auto-approve all review queue items ───────────────────────────────────
 	let approveAllOpen = $state(false);
 	let approveAllBusy = $state(false);
+	let resetOpen = $state(false);
+	let resetBusy = $state(false);
 
 	async function approveAllAutoPicks() {
 		if (queue.total === 0) return;
@@ -182,13 +171,29 @@
 		}
 	}
 
+	async function confirmResetAll() {
+		if (queue.total === 0) return;
+		resetBusy = true;
+		try {
+			const movies = queue.total;
+			await resetReviewQueuePosters(fetch);
+			toast(`Reset queued for ${movies} movie${movies === 1 ? '' : 's'}`, 'good');
+			resetOpen = false;
+			await refreshAll();
+			setTab('run');
+		} catch (e) {
+			toast(e instanceof Error ? e.message : 'Reset failed', 'bad');
+		} finally {
+			resetBusy = false;
+		}
+	}
+
 	// ── Runs (batch + single) ────────────────────────────────────────────────────
 	let initiatedJobIds = $state<string[]>([]);
 	let batchRunning = $state(false);
 
-	/** Per-job settle handlers, so the cache-clear dry run resolves quietly into
-	 *  state instead of announcing itself as finished poster work. Jobs with no
-	 *  registered handler fall back to the poster-work toast. */
+	/** Per-job settle handlers can update local state without showing the generic
+	 *  poster-work completion toast. */
 	const settledHandlers = new SvelteMap<
 		string,
 		(snapshot: JobSnapshotResponse) => void | Promise<void>
@@ -332,111 +337,6 @@
 		}
 	}
 
-	// ── Cache clear ─────────────────────────────────────────────────────────────
-	// Two-phase by design: a dry run seals the exact file list into a checksum,
-	// and only a second job quoting that checksum may delete. So opening the
-	// dialog plans, and confirming applies the plan that was shown.
-	let clearOpen = $state(false);
-	let clearBusy = $state(false);
-	let clearPlanning = false;
-	let clearPlanRevision = 0;
-	let inclEmbeddings = $state(true);
-	let inclArchives = $state(false);
-	let clearPlan = $state<SealedPlan | null>(null);
-
-	const clearScope = $derived(clearPlan ? describePlanScope(clearPlan) : null);
-
-	async function planClear() {
-		clearPlanning = true;
-		clearBusy = true;
-		try {
-			while (clearOpen) {
-				const revision = clearPlanRevision;
-				const flags = {
-					include_embeddings: inclEmbeddings,
-					include_archives: inclArchives
-				};
-				try {
-					const job = await clearPipelineCache(fetch, { ...flags, dry_run: true });
-					const snapshot = await new Promise<JobSnapshotResponse>((resolve) => {
-						trackJob(job.job_id, resolve);
-					});
-					if (revision !== clearPlanRevision) continue;
-					if (snapshot.status.outcome !== 'succeeded' && snapshot.status.outcome !== 'no_change') {
-						toast('Could not work out what to clear', 'bad');
-						return;
-					}
-					const plan = parseSealedPlan(await getRawDocument(fetch, job.job_id, 'result'));
-					if (revision !== clearPlanRevision) continue;
-					if (!plan) {
-						toast('Could not work out what to clear', 'bad');
-						return;
-					}
-					clearPlan = plan;
-					if (plan.plannedCount === 0) {
-						// `_pipeline_activity` holds back the work directories while any
-						// job is non-terminal, so an empty plan usually means "busy".
-						toast('Nothing to clear right now — a job may still be running', 'info');
-					}
-					return;
-				} catch (e) {
-					if (revision !== clearPlanRevision) continue;
-					toast(e instanceof Error ? e.message : 'Could not plan the clear', 'bad');
-					return;
-				}
-			}
-		} finally {
-			clearPlanning = false;
-			clearBusy = false;
-		}
-	}
-
-	function requestClearPlan() {
-		clearPlan = null;
-		clearPlanRevision += 1;
-		if (!clearPlanning) void planClear();
-	}
-
-	function openClear() {
-		clearOpen = true;
-		requestClearPlan();
-	}
-
-	/** Either flag changes the file list, so the sealed checksum no longer applies. */
-	function reclear() {
-		if (clearOpen) requestClearPlan();
-	}
-
-	async function doClear() {
-		const plan = clearPlan;
-		if (!plan || plan.plannedCount === 0) return;
-		clearBusy = true;
-		try {
-			const job = await clearPipelineCache(fetch, {
-				include_embeddings: inclEmbeddings,
-				include_archives: inclArchives,
-				dry_run: false,
-				confirmed_plan_checksum: plan.planChecksum
-			});
-			toast(`Clearing ${plan.plannedCount.toLocaleString()} files`, 'good');
-			clearOpen = false;
-			clearPlan = null;
-			trackJob(job.job_id, async (snapshot) => {
-				if (snapshot.status.outcome !== 'succeeded') {
-					// The plan is re-derived at execution time; if the cache moved
-					// underneath it the handler refuses rather than deleting a
-					// different set of files than the one that was confirmed.
-					toast('Clear did not complete — the cache changed, try again', 'bad');
-				}
-				await refreshAll();
-			});
-		} catch (e) {
-			toast(e instanceof Error ? e.message : 'Clear failed', 'bad');
-		} finally {
-			clearBusy = false;
-		}
-	}
-
 	// ── Helpers ─────────────────────────────────────────────────────────────────
 	function ago(iso: string | null): string {
 		if (!iso) return '—';
@@ -460,15 +360,7 @@
 	);
 </script>
 
-<SectionHeader title="Movie Posters" subtitle="Run, review, and tune poster selection">
-	{#snippet action()}
-		<button class="btn-sec clear-btn" onclick={openClear} disabled={!cache}>
-			<Icon name="refresh" size={14} />
-			Clear cache{#if cache}
-				({bytesH(cache.clearable_bytes)}){/if}
-		</button>
-	{/snippet}
-</SectionHeader>
+<SectionHeader title="Movie Posters" subtitle="Run, review, and tune poster selection" />
 
 <PosterLibraryToggle active="films" />
 
@@ -499,14 +391,12 @@
 	</div>
 {/if}
 
-<!-- Mounted outside the tab branches (as on the TV and overview pages): the
-     Clear-cache dialog is reachable from every tab, and its settle callbacks are
-     how the sealed plan arrives. -->
+<!-- Kept outside the tab branches so tracked work can refresh every workspace view. -->
 <FeatureActivityPanel
 	scopeKey="feature:pipeline:movies"
 	queries={[
-		{ feature_area: 'ai_posters', subject_kind: 'movie' },
-		{ feature_area: 'maintenance', type: 'pipeline_cache_clear' }
+		{ feature_area: 'ai_posters', type: 'poster_pipeline_batch' },
+		{ feature_area: 'ai_posters', type: 'poster_pipeline', subject_kind: 'movie' }
 	]}
 	jobIds={initiatedJobIds}
 	heading="Movie poster activity"
@@ -525,9 +415,18 @@
 	{:else}
 		<div class="rev-bar">
 			<span class="rev-count">{queue.total} run{queue.total === 1 ? '' : 's'} awaiting</span>
-			<button class="btn-gold" onclick={() => (approveAllOpen = true)} disabled={queue.total === 0}>
-				Approve all auto-picks
-			</button>
+			<div class="rev-actions">
+				<button class="btn-danger" onclick={() => (resetOpen = true)} disabled={queue.total === 0}>
+					Reset all in review
+				</button>
+				<button
+					class="btn-gold"
+					onclick={() => (approveAllOpen = true)}
+					disabled={queue.total === 0}
+				>
+					Approve all auto-picks
+				</button>
+			</div>
 		</div>
 		<div class="rev-grid">
 			{#each queue.items as item (item.run.run_id)}
@@ -605,20 +504,25 @@
 			</div>
 		</div>
 
-		<div class="missing-list">
+		<div class="rev-grid run-grid">
 			{#each missing as m (m.id)}
 				{@const ok = m.tmdb_id != null}
-				<div class="mv-row" class:sel={selected.has(m.id)} class:dis={!ok}>
-					<label class="mv-check">
+				<div class="run-card" class:sel={selected.has(m.id)} class:dis={!ok}>
+					<label class="run-card-select">
 						<input
 							type="checkbox"
 							checked={selected.has(m.id)}
 							disabled={!ok || batchRunning}
+							aria-label={`Select ${m.title}`}
 							onchange={() => toggleSelect(m.id)}
 						/>
 					</label>
-					<button class="mv-main" disabled={!ok || batchRunning} onclick={() => toggleSelect(m.id)}>
-						<div class="mv-thumb">
+					<button
+						class="run-card-main"
+						disabled={!ok || batchRunning}
+						onclick={() => toggleSelect(m.id)}
+					>
+						<div class="run-poster">
 							<PosterThumb
 								title={m.title}
 								year={m.year}
@@ -626,20 +530,20 @@
 								posterUrl={m.poster_url}
 							/>
 						</div>
-						<div class="mv-meta">
-							<span class="mv-title">{m.title}</span>
-							<span class="mv-year mono">{m.year ?? ''}</span>
-							{#if !ok}<span class="mv-hint">No TMDB id — sync first</span>{/if}
-						</div>
 					</button>
-					<button
-						class="btn-sec mv-run"
-						onclick={() => runSingle(m)}
-						disabled={!ok || batchRunning}
-						title={ok ? 'Run pipeline for this movie' : 'No TMDB id'}
-					>
-						Run
-					</button>
+					<div class="run-card-meta">
+						<div class="rev-title">{m.title}</div>
+						<div class="rev-sub">{m.year ?? '—'}</div>
+						{#if !ok}<div class="run-hint">No TMDB id — sync first</div>{/if}
+						<button
+							class="btn-sec run-card-action"
+							onclick={() => runSingle(m)}
+							disabled={!ok || batchRunning}
+							title={ok ? 'Run pipeline for this movie' : 'No TMDB id'}
+						>
+							Run
+						</button>
+					</div>
 				</div>
 			{/each}
 		</div>
@@ -726,59 +630,15 @@
 {/if}
 
 <ConfirmDialog
-	open={clearOpen}
-	title="Clear poster-pipeline cache"
-	confirmLabel={clearPlan && clearPlan.plannedCount > 0
-		? `Clear ${clearPlan.plannedCount.toLocaleString()} files`
-		: 'Clear cache'}
+	open={resetOpen}
+	title={`Reset ${queue.total} movie${queue.total === 1 ? '' : 's'}?`}
+	message="Deletes the deployed posters for every movie awaiting review (backups are kept), discards their runs and stored candidates, and returns them all to the Run tab to be analysed again."
+	confirmLabel={`Reset ${queue.total} movie${queue.total === 1 ? '' : 's'}`}
 	tone="bad"
-	busy={clearBusy}
-	confirmDisabled={!clearPlan || clearPlan.plannedCount === 0}
-	onConfirm={doClear}
-	onCancel={() => {
-		clearOpen = false;
-		clearPlan = null;
-	}}
->
-	<p class="dlg-note">
-		Removes downloaded poster candidates and working artifacts. Never touches your labels, taste
-		profile, the Key Art Engine, or deployed posters.
-	</p>
-	{#if cache}
-		<div class="size-line">
-			<span>Work + staging</span><span class="mono"
-				>{bytesH(cache.sizes_bytes.runs_work + cache.sizes_bytes.staging)}</span
-			>
-		</div>
-		<div class="size-line">
-			<span>Embedding cache</span><span class="mono">{bytesH(cache.sizes_bytes.embeddings)}</span>
-		</div>
-		<div class="size-line">
-			<span>Run archives (history)</span><span class="mono"
-				>{bytesH(cache.sizes_bytes.archives)}</span
-			>
-		</div>
-	{/if}
-	<label class="toggle">
-		<input type="checkbox" bind:checked={inclEmbeddings} onchange={reclear} />
-		Include embedding cache (re-derived next run)
-	</label>
-	<label class="toggle">
-		<input type="checkbox" bind:checked={inclArchives} onchange={reclear} />
-		Include run archives — <b>deletes results history</b>
-	</label>
-	<p class="dlg-plan" aria-live="polite">
-		{#if clearBusy && !clearPlan}
-			Working out exactly what would be removed…
-		{:else if clearPlan && clearPlan.plannedCount > 0}
-			{clearScope}
-		{:else if clearPlan}
-			Nothing to remove — work files are held back while any job is still running.
-		{:else}
-			Could not work out what to clear.
-		{/if}
-	</p>
-</ConfirmDialog>
+	busy={resetBusy}
+	onConfirm={confirmResetAll}
+	onCancel={() => (resetOpen = false)}
+/>
 
 <ConfirmDialog
 	open={approveAllOpen}
@@ -803,12 +663,6 @@
 		display: flex;
 		margin: -6px 0 16px;
 	}
-	.clear-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 7px;
-	}
-
 	/* ── Empty ── */
 	.empty {
 		display: flex;
@@ -847,6 +701,12 @@
 	.rev-count {
 		font-size: 13px;
 		color: var(--muted);
+	}
+	.rev-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 	.rev-grid {
 		display: grid;
@@ -896,7 +756,7 @@
 		margin-top: 2px;
 	}
 
-	/* ── Run: missing-poster list ── */
+	/* ── Run: missing-poster grid ── */
 	.run-bar {
 		display: flex;
 		align-items: center;
@@ -919,80 +779,64 @@
 		gap: 8px;
 		flex-wrap: wrap;
 	}
-	.missing-list {
+	.run-card {
+		position: relative;
 		display: flex;
 		flex-direction: column;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-sm);
-		overflow: hidden;
-		background: var(--panel);
-	}
-	.mv-row {
-		display: flex;
-		align-items: center;
-		gap: 10px;
-		padding: 8px 12px;
-		border-bottom: 1px solid var(--line);
-	}
-	.mv-row:last-child {
-		border-bottom: none;
-	}
-	.mv-row.sel {
-		background: var(--gold-soft);
-	}
-	.mv-row.dis {
-		opacity: 0.55;
-	}
-	.mv-check {
-		display: flex;
-		align-items: center;
-	}
-	.mv-main {
-		flex: 1;
-		display: flex;
-		align-items: center;
-		gap: 11px;
-		min-width: 0;
-		padding: 0;
-		border: none;
-		background: transparent;
-		text-align: left;
-		cursor: pointer;
-		color: inherit;
-	}
-	.mv-main:disabled {
-		cursor: default;
-	}
-	.mv-thumb {
-		width: 34px;
-		flex: none;
-	}
-	.mv-meta {
-		display: flex;
-		align-items: baseline;
 		gap: 8px;
 		min-width: 0;
 	}
-	.mv-title {
-		font-size: 13px;
-		font-weight: 550;
-		color: var(--text);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+	.run-card.dis {
+		opacity: 0.55;
 	}
-	.mv-year {
-		font-size: 11px;
-		color: var(--faint);
-		flex: none;
+	.run-card-select {
+		position: absolute;
+		top: 8px;
+		left: 8px;
+		z-index: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border: 1px solid var(--line2);
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--panel) 90%, transparent);
 	}
-	.mv-hint {
+	.run-card-main {
+		width: 100%;
+		padding: 0;
+		border: none;
+		background: transparent;
+		cursor: pointer;
+	}
+	.run-card-main:disabled {
+		cursor: default;
+	}
+	.run-poster {
+		transition:
+			transform 0.14s ease,
+			box-shadow 0.14s ease;
+	}
+	.run-card-main:hover:not(:disabled) .run-poster {
+		transform: translateY(-2px);
+	}
+	.run-card.sel .run-poster {
+		border-radius: var(--radius-sm);
+		box-shadow: 0 0 0 2px var(--gold);
+	}
+	.run-card-meta {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.run-hint {
 		font-size: 11px;
 		color: var(--low);
-		flex: none;
 	}
-	.mv-run {
-		flex: none;
+	.run-card-action {
+		align-self: flex-start;
+		margin-top: 2px;
 		padding: 6px 14px;
 	}
 	.loadmore {
@@ -1095,38 +939,6 @@
 		color: var(--text);
 	}
 
-	/* ── Dialog body ── */
-	.dlg-note {
-		margin: 0;
-		font-size: 12.5px;
-		color: var(--muted);
-		line-height: 1.5;
-	}
-	.dlg-plan {
-		margin: 0;
-		padding-top: 10px;
-		border-top: 1px solid var(--line);
-		font-size: 12.5px;
-		line-height: 1.5;
-		color: var(--text);
-	}
-	.size-line {
-		display: flex;
-		justify-content: space-between;
-		font-size: 12px;
-		color: var(--muted);
-		padding: 3px 0;
-		border-bottom: 1px solid var(--line);
-	}
-	.toggle {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 12.5px;
-		color: var(--text);
-		margin-top: 4px;
-	}
-
 	/* ── Buttons ── */
 	.btn-gold {
 		padding: 9px 18px;
@@ -1138,6 +950,23 @@
 		font-weight: 600;
 	}
 	.btn-gold:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+	.btn-danger {
+		padding: 9px 18px;
+		border-radius: 8px;
+		border: 1px solid var(--line2);
+		background: transparent;
+		color: var(--muted);
+		font-size: 13px;
+		font-weight: 600;
+	}
+	.btn-danger:hover:not(:disabled) {
+		color: var(--bad);
+		border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+	}
+	.btn-danger:disabled {
 		opacity: 0.55;
 		cursor: not-allowed;
 	}

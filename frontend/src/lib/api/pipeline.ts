@@ -93,6 +93,17 @@ export function approveReviewQueueAutoPicks(
 	);
 }
 
+/** Reset every movie awaiting review, preserving recoverable poster backups. */
+export function resetReviewQueuePosters(fetchFn: Fetch): Promise<JobSubmissionResponse> {
+	return apiSend<JobSubmissionResponse>(
+		fetchFn,
+		'POST',
+		'/pipeline/review-queue/reset',
+		{},
+		{ 'Idempotency-Key': `poster_deploy_reset:${randomUuid()}` }
+	);
+}
+
 /** Cross-run aggregates for the Metrics tab. */
 export function getPipelineMetrics(
 	fetchFn: Fetch,

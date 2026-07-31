@@ -202,12 +202,7 @@
 		resetBusy = true;
 		try {
 			const shows = reviewQueue.total_series;
-			const job = await resetTvReviewQueuePosters(fetch);
-			// Undecided runs are closed synchronously, so shows that never deployed
-			// a poster are already back in Run. Shows that *did* deploy one need
-			// their child to delete the file first — track the parent so the queues
-			// refresh again when it settles.
-			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
+			await resetTvReviewQueuePosters(fetch);
 			toast(`Reset queued for ${shows} shows`, 'good');
 			resetOpen = false;
 			await refresh();

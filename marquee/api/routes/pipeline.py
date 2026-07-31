@@ -533,9 +533,7 @@ async def run_pipeline_batch(
             "movie_id": movie.id,
             "tmdb_id": movie.tmdb_id,
             "title": movie.title,
-            "source_descriptors": [
-                {"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}
-            ],
+            "source_descriptors": [{"provider": "tmdb", "reference": f"movie:{movie.tmdb_id}"}],
         }
         for movie in movies
     ]
@@ -1125,6 +1123,132 @@ async def approve_review_queue_auto(
         "errors": errors,
         "deployment_jobs": deployment_jobs,
     }
+
+
+async def _expire_movie_run_artifacts(db: AsyncSession, run_ids: list[str]) -> int:
+    """Mark review-reset movie evidence for prompt retention collection.
+
+    Evidence is scoped by the immutable ``run_id`` in artifact metadata, rather
+    than by job: a parent can represent several movies, and expiring by job
+    would take evidence for movies outside the requested reset scope.
+    """
+    if not run_ids:
+        return 0
+    now = datetime.now(UTC)
+    artifacts = (
+        (
+            await db.execute(
+                select(JobArtifact).where(
+                    JobArtifact.status == "available",
+                    JobArtifact.kind.in_(("evidence_image", "command_report")),
+                    JobArtifact.artifact_metadata["run_id"].as_string().in_(run_ids),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for artifact in artifacts:
+        artifact.expires_at = now
+    return len(artifacts)
+
+
+async def _reset_movie_scope(
+    db: AsyncSession,
+    movies: list[Movie],
+    *,
+    idempotency_key: str,
+    scope_name: str,
+) -> JobSubmissionResponse:
+    """Start these movies over, including their poster-reset children and evidence."""
+    movie_ids = [movie.id for movie in movies]
+    runs = (
+        (
+            await db.execute(
+                select(PipelineRun).where(
+                    PipelineRun.media_type == "movie",
+                    PipelineRun.movie_id.in_(movie_ids),
+                    PipelineRun.status != "running",
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if movie_ids
+        else []
+    )
+
+    if db.in_transaction():
+        await db.commit()
+    try:
+        async with db.begin():
+            result = await create_poster_parent(
+                db,
+                parent_job_type="poster_deploy_reset",
+                idempotency_key=idempotency_key,
+                trigger=TriggerKind.BATCH,
+                initiator=Initiator(kind="system", identifier="pipeline-api"),
+                priority=40,
+                subjects=[("movie", movie_id) for movie_id in movie_ids],
+                scope_name=scope_name[:200],
+            )
+            expired = await _expire_movie_run_artifacts(db, [run.run_id for run in runs])
+            # A review run normally has no deployed poster yet. Its reset child
+            # is therefore a no-op and cannot close it; close it here so the
+            # movie is immediately eligible for the Run queue.
+            reset_key = f"poster_reset_{int(time.time())}"
+            closed = 0
+            for run in runs:
+                if run.feedback_event_id is None:
+                    run.feedback_event_id = reset_key
+                    closed += 1
+                db.add(
+                    ArtworkEvent(
+                        movie_id=run.movie_id,
+                        action="movie_reset",
+                        source="manual",
+                        detail=json.dumps({"run_id": run.run_id, "status": run.status}),
+                    )
+                )
+    except (SubmissionError, ValueError) as exc:
+        logger.warning("MOVIE RESET REJECTED | scope=%s | %s", scope_name, exc)
+        raise HTTPException(status_code=422, detail="poster_reset_scope_invalid") from exc
+
+    logger.info(
+        "MOVIE RESET | scope=%s | movies=%d | runs=%d | closed=%d | artifacts_expired=%d",
+        scope_name,
+        len(movie_ids),
+        len(runs),
+        closed,
+        expired,
+    )
+    return submission_response(result.parent)
+
+
+@router.post("/review-queue/reset", status_code=202)
+async def reset_review_queue_posters(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+) -> JobSubmissionResponse:
+    """Start every movie awaiting review over, mirroring the TV review reset."""
+    latest = _review_queue_latest()
+    movies = list(
+        (
+            await db.execute(
+                select(Movie).join(latest, latest.c.movie_id == Movie.id).order_by(Movie.title)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not movies:
+        raise HTTPException(status_code=409, detail="No movie runs are awaiting review")
+    return await _reset_movie_scope(
+        db,
+        movies,
+        idempotency_key=idempotency_key,
+        scope_name=f"Reset posters — {len(movies)} movies in review",
+    )
 
 
 @router.post("/review/reset", status_code=200)

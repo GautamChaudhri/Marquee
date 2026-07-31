@@ -11576,6 +11576,49 @@
         ]
       }
     },
+    "/api/pipeline/review-queue/reset": {
+      "post": {
+        "description": "Start every movie awaiting review over, mirroring the TV review reset.",
+        "operationId": "reset_review_queue_posters_api_pipeline_review_queue_reset_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmissionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Review Queue Posters",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
     "/api/pipeline/review/reset": {
       "post": {
         "description": "Reset the review queue's disposition only (JMC6H H19).\n\nMarks review-queue PipelineRuns as reviewed so they leave the Review tab. It\ndoes NOT touch deployed artwork or poster DB state: clearing or removing a\ndeployed poster is a separately authorized canonical ``poster_reset`` job, so\nthe database and the on-disk poster can never be left disagreeing here.",
