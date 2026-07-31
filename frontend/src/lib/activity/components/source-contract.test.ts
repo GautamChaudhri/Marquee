@@ -26,6 +26,17 @@ describe('shared activity component source contract', () => {
 		expect(progressSource).toContain('style:width={`${measurement.percent}%`}');
 	});
 
+	it('uses the Activity status palette consistently', () => {
+		const progressSource = sources.find(([name]) => name === 'ProgressMeasure.svelte')?.[1];
+		const attentionSource = sources.find(([name]) => name === 'ActivityAttentionStrip.svelte')?.[1];
+		expect(progressSource).toContain('background: var(--fill-color, var(--info))');
+		expect(progressSource).toContain(".measurement[data-tone='warning']");
+		expect(attentionSource).toContain("label: 'In Queue'");
+		expect(attentionSource).toContain("tone: 'running'");
+		expect(attentionSource).toContain("tone: 'retrying'");
+		expect(attentionSource).toContain("tone: 'attention'");
+	});
+
 	it('does not import a legacy job tracker or handwritten wire client', () => {
 		expect(combined).not.toMatch(/lib\/api\/(jobs|media-jobs)/);
 		expect(combined).not.toMatch(/lib\/jobs/);

@@ -31,13 +31,17 @@
 		type ActivityUrlState,
 		type ActivityView
 	} from '$lib/activity/url-state';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 	const store = getJobProgressStore();
 	let urlState = $derived(parseActivityUrl(page.url.searchParams));
+	// Only the bare Activity entry gets a smart default. A bookmarked Queue URL or a
+	// filtered queue stays put, even when it happens to have no matching rows.
+	let autoHistoryEligible = $state(
+		page.url.pathname === '/projection-room' && page.url.searchParams.size === 0
+	);
 	let scopeKey = $state('');
 	let attention = $derived<ActivityAttentionResponse | null>(data.attention);
 	let preferences = $state<ActivityPreferences>({ ...DEFAULT_ACTIVITY_PREFERENCES });
@@ -71,7 +75,27 @@
 		return () => handle.release();
 	});
 
+	$effect(() => {
+		// Queue remains the normal explicit view. On a plain visit, wait until its
+		// authoritative server result arrives; then surface retained outcomes when no
+		// active work exists instead of presenting an empty landing state.
+		if (
+			!autoHistoryEligible ||
+			urlState.view !== 'queue' ||
+			!scope ||
+			scope.loading ||
+			scope.error ||
+			records.length > 0
+		) {
+			return;
+		}
+		navigate({ ...urlState, view: 'history', phase: '', outcome: '', sort: 'default' }, true);
+	});
+
 	function navigate(next: ActivityUrlState, replace = false): void {
+		// A view button is an explicit choice, even though SvelteKit's page URL does
+		// not synchronously update when this page owns the History API mutation.
+		autoHistoryEligible = false;
 		const url = `/projection-room?${activityParams(next).toString()}`;
 		if (replace) window.history.replaceState(page.state, '', url);
 		else window.history.pushState(page.state, '', url);
@@ -202,7 +226,9 @@
 	onMount(() => {
 		preferences = loadActivityPreferences(localStorage);
 		popstateHandler = () => {
-			urlState = parseActivityUrl(new URL(window.location.href).searchParams);
+			const params = new URL(window.location.href).searchParams;
+			autoHistoryEligible = params.size === 0;
+			urlState = parseActivityUrl(params);
 		};
 		window.addEventListener('popstate', popstateHandler);
 		void refreshAttention();
@@ -218,17 +244,13 @@
 
 <svelte:head><title>Activity · Marquee</title></svelte:head>
 
-<SectionHeader
-	title="Activity"
-	subtitle="Projection Room · durable work, outcomes, and evidence across every Marquee feature."
-/>
-
 <ActivityAttentionStrip summary={attention} />
 
 <nav class="views" aria-label="Activity views">
 	{#each [{ id: 'queue', label: 'Queue', detail: 'Running and expected work' }, { id: 'history', label: 'History', detail: 'Completed outcomes' }, { id: 'operations', label: 'Operations', detail: 'Infrastructure diagnostics' }] as item (item.id)}
 		<button
 			type="button"
+			data-view={item.id}
 			class:active={urlState.view === item.id}
 			aria-current={urlState.view === item.id ? 'page' : undefined}
 			onclick={() => setView(item.id as ActivityView)}
@@ -382,10 +404,20 @@
 	.views button:last-child {
 		margin-left: 8px;
 	}
-	.views button.active {
+	.views button[data-view='queue'].active {
+		border-color: color-mix(in srgb, var(--info) 72%, var(--line));
+		background: color-mix(in srgb, var(--info) 13%, var(--panel));
+		color: var(--info);
+	}
+	.views button[data-view='history'].active {
 		border-color: var(--gold-deep);
 		background: var(--gold-soft);
 		color: var(--gold);
+	}
+	.views button[data-view='operations'].active {
+		border-color: color-mix(in srgb, var(--dovi) 72%, var(--line));
+		background: color-mix(in srgb, var(--dovi) 13%, var(--panel));
+		color: var(--dovi);
 	}
 	.views button.active span {
 		color: var(--text);

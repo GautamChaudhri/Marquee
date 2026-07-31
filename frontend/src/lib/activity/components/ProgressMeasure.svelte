@@ -16,7 +16,7 @@
 		prominent?: boolean;
 		settled?: boolean;
 		/** Colours the fill with the outcome once there is one. Null keeps the
-		 *  in-flight gold, which is the only honest colour for unfinished work. */
+		 *  in-flight blue reserved for unfinished work. */
 		tone?: string | null;
 	} = $props();
 
@@ -86,7 +86,7 @@
 	.fill {
 		height: 100%;
 		border-radius: inherit;
-		background: var(--fill-color, var(--gold));
+		background: var(--fill-color, var(--info));
 		transition: width 0.25s ease;
 	}
 	/* A finished bar carries the verdict: green when everything landed, amber when only
@@ -97,6 +97,9 @@
 	}
 	.measurement[data-tone='negative'] {
 		--fill-color: var(--bad);
+	}
+	.measurement[data-tone='warning'] {
+		--fill-color: var(--warn);
 	}
 	.measurement[data-tone='neutral'] {
 		--fill-color: var(--muted);

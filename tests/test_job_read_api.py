@@ -389,6 +389,40 @@ async def test_activity_attention_uses_the_same_hierarchy_predicate(db, client):
 
 
 @pytest.mark.asyncio
+async def test_activity_attention_includes_terminal_poster_groups_needing_review(db, client):
+    parent = poster_parent(job_id="review-parent-000000000000000001")
+    group = poster_group(job_id="review-group-0000000000000000001", parent_id=parent.id)
+    group.phase = "terminal"
+    group.outcome = "partially_succeeded"
+    group.terminal_at = NOW
+    group.work_item_summary = {
+        "version": 1,
+        "total": 2,
+        "counts": {
+            "pending": 0,
+            "running": 0,
+            "succeeded": 1,
+            "no_change": 0,
+            "review_required": 1,
+            "failed": 0,
+            "cancelled": 0,
+        },
+    }
+    db.add_all([parent, group])
+    await db.commit()
+
+    with count_queries() as queries:
+        response = await client.get("/api/jobs/attention")
+
+    assert response.status_code == 200
+    assert response.json()["needs_attention"] == 1
+    assert response.json()["warning"] == 1
+    assert response.json()["error"] == 0
+    assert response.json()["highest_severity"] == "warning"
+    assert queries[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_work_items_are_stably_paginated_with_authoritative_summary(db, client):
     parent = poster_parent(job_id="work-parent-0000000000000000001")
     group = poster_group(job_id="work-group-00000000000000000001", parent_id=parent.id)

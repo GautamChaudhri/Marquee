@@ -13,7 +13,7 @@
 		shows: { title: 'Television', sub: 'Series library' },
 		pipeline: { title: 'Poster Pipeline', sub: 'Run, review & tune selection' },
 		taste: { title: 'Key Art Engine', sub: 'Taste profile & bounded residual' },
-		'projection-room': { title: 'Activity', sub: 'Queue, history & operations' },
+		'projection-room': { title: 'Activity', sub: '' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }
 	};
 	const seg = $derived(page.url.pathname.split('/').filter(Boolean)[0] ?? 'dashboard');

@@ -5,13 +5,13 @@
 	const items = $derived(
 		summary
 			? [
-					{ label: 'Running', value: summary.running, tone: 'normal' },
-					{ label: 'Waiting / held', value: summary.waiting_held, tone: 'normal' },
-					{ label: 'Retrying', value: summary.retrying, tone: 'warning' },
+					{ label: 'Running', value: summary.running, tone: 'running' },
+					{ label: 'In Queue', value: summary.waiting_held, tone: 'queue' },
+					{ label: 'Retrying', value: summary.retrying, tone: 'retrying' },
 					{
 						label: 'Needs attention',
 						value: summary.needs_attention,
-						tone: summary.highest_severity
+						tone: 'attention'
 					}
 				]
 			: []
@@ -51,11 +51,33 @@
 		color: var(--muted);
 		font-size: 12px;
 	}
-	.item[data-tone='warning'] {
-		border-left-color: var(--warn);
+	.item[data-tone='running'] {
+		border-left-color: var(--info);
+		background: color-mix(in srgb, var(--info) 7%, var(--panel));
 	}
-	.item[data-tone='error'] {
-		border-left-color: var(--bad);
+	.item[data-tone='running'] span {
+		color: var(--info);
+	}
+	.item[data-tone='queue'] {
+		border-left-color: var(--queue);
+		background: color-mix(in srgb, var(--queue) 12%, var(--panel));
+	}
+	.item[data-tone='queue'] span {
+		color: var(--queue);
+	}
+	.item[data-tone='retrying'] {
+		border-left-color: var(--low);
+		background: color-mix(in srgb, var(--low) 7%, var(--panel));
+	}
+	.item[data-tone='retrying'] span {
+		color: var(--low);
+	}
+	.item[data-tone='attention'] {
+		border-left-color: var(--warn);
+		background: color-mix(in srgb, var(--warn) 7%, var(--panel));
+	}
+	.item[data-tone='attention'] span {
+		color: var(--warn);
 	}
 	.item strong {
 		color: var(--text);

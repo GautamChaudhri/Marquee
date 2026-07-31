@@ -12,8 +12,21 @@ test('renders the canonical Activity shell', async ({ page }) => {
 	});
 	await page.setViewportSize({ width: 1280, height: 900 });
 	await page.goto('/projection-room');
-	await expect(page.getByRole('heading', { name: 'Activity', exact: true })).toBeVisible();
+	await expect(page).toHaveURL(/view=history/);
+	await expect(page.locator('header').getByText('Activity', { exact: true })).toHaveCount(1);
+	await expect(page.getByText('Queue, history & operations')).toHaveCount(0);
+	await expect(
+		page.getByText(
+			'Projection Room · durable work, outcomes, and evidence across every Marquee feature.'
+		)
+	).toHaveCount(0);
 	await expect(page.getByRole('link', { name: 'Activity' })).toHaveCount(1);
+	await expect(page.getByRole('heading', { name: 'History', exact: true })).toBeVisible();
+	await expect(page.getByText('No outcomes match.')).toBeVisible();
+
+	await page.getByRole('button', { name: /Queue/ }).click();
+	await expect(page).toHaveURL(/view=queue/);
+	await expect(page.getByRole('heading', { name: 'Queue', exact: true })).toBeVisible();
 	await expect(page.getByText('Nothing is waiting.')).toBeVisible();
 });
 

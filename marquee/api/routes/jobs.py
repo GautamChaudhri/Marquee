@@ -669,9 +669,27 @@ async def activity_attention(
 ) -> ActivityAttentionResponse:
     """Return one bounded aggregate for the Activity strip and navigation badge."""
     retrying = func.coalesce(Job.progress["wait"]["kind"].as_string() == "retry", False)
-    warning = Job.attention["level"].as_string() == AttentionLevel.WARNING.value
-    error = Job.attention["level"].as_string() == AttentionLevel.ERROR.value
+    warning = func.coalesce(
+        Job.attention["level"].as_string() == AttentionLevel.WARNING.value,
+        False,
+    )
+    error = func.coalesce(
+        Job.attention["level"].as_string() == AttentionLevel.ERROR.value,
+        False,
+    )
     active = Job.phase.in_(_QUEUE_PHASES)
+    review_required = func.coalesce(
+        Job.work_item_summary["counts"]["review_required"].as_integer(), 0
+    ) > 0
+    failed_work_item = (
+        func.coalesce(Job.work_item_summary["counts"]["failed"].as_integer(), 0) > 0
+    )
+    poster_group_attention = and_(
+        Job.type == "poster_pipeline_group",
+        or_(review_required, failed_work_item),
+    )
+    error_attention = or_(error, failed_work_item)
+    needs_attention = or_(warning, error_attention, poster_group_attention)
     row = (
         await db.execute(
             select(
@@ -681,9 +699,12 @@ async def activity_attention(
                     ~retrying,
                 ),
                 func.count().filter(active, retrying),
-                func.count().filter(active, or_(warning, error)),
-                func.count().filter(active, warning),
-                func.count().filter(active, error),
+                # This is intentionally not limited to the Queue: a completed poster
+                # group can still require a choice or retry. Count visible cards, not
+                # hidden parents/children or individual poster subjects.
+                func.count().filter(needs_attention),
+                func.count().filter(needs_attention, ~error_attention),
+                func.count().filter(error_attention),
             ).where(_activity_visibility_predicate())
         )
     ).one()
