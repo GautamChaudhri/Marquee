@@ -46,6 +46,7 @@ def _minimal_presentation(**overrides) -> JobPresentation:
         "label": "System check",
         "label_key": "jobs.system_noop.label",
         "feature_area": FeatureArea.SYSTEM,
+        "feature_label": "System",
         "presentation_family": "system",
         "subject": PresentationSubject(
             kind="system_work", display_id="system:noop", display_name="System no-op"

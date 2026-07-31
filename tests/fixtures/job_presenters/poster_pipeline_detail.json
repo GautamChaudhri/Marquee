@@ -18,6 +18,7 @@
   },
   "failures": [],
   "feature_area": "ai_posters",
+  "feature_label": "Posters",
   "impact": {
     "duration_seconds": 900.0,
     "input_bytes": null,

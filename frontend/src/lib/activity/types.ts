@@ -20,6 +20,10 @@ export type WorkItemPage = Schemas['WorkItemPage'];
 export type WorkItemRow = Schemas['WorkItemRow'];
 export type WorkItemSummary = Schemas['WorkItemSummary'];
 export type WorkItemStatusCounts = Schemas['WorkItemStatusCounts'];
+export type ContainedWorkPage = Schemas['ContainedWorkPage'];
+export type ContainedWorkItem = Schemas['ContainedWorkItem'];
+export type ContainedWorkSummary = Schemas['ContainedWorkSummary'];
+export type ActivityCatalogResponse = Schemas['ActivityCatalogResponse'];
 export type ActivityAttentionResponse = Schemas['ActivityAttentionResponse'];
 export type OperationsSnapshot = Schemas['OperationsSnapshot'];
 export type OperationsHistoryResponse = Schemas['OperationsHistoryResponse'];
@@ -70,6 +74,9 @@ export type JobApiErrorDetail = Schemas['JobApiErrorDetail'];
 export type ListJobsQuery = NonNullable<paths['/api/jobs']['get']['parameters']['query']>;
 export type WorkItemsQuery = NonNullable<
 	paths['/api/jobs/{job_id}/work-items']['get']['parameters']['query']
+>;
+export type ContainedWorkQuery = NonNullable<
+	paths['/api/jobs/{job_id}/contained-work']['get']['parameters']['query']
 >;
 
 /** The `kind` path segment of `GET /api/jobs/{job_id}/raw/{kind}`. */

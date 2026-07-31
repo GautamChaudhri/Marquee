@@ -9,7 +9,7 @@ from sqlalchemy import event
 
 from marquee.database import _get_engine
 from marquee.main import app
-from marquee.models import Job, JobAttempt, JobWorkItem
+from marquee.models import Job, JobAttempt, JobBatch, JobWorkItem
 
 jobs_route = importlib.import_module("marquee.api.routes.jobs")
 
@@ -105,6 +105,28 @@ def poster_atomic(*, job_id: str, parent_id: str, title: str = "Legacy Movie") -
         "display_name": title,
         "movie_id": 2,
         "title": title,
+    }
+    return job
+
+
+def poster_collection_parent(*, job_id: str, job_type: str, operation: str) -> Job:
+    job = make_job(job_id=job_id, phase="queued")
+    job.type = job_type
+    job.request = {"operation": operation, "scope": "all", "selection_count": 2}
+    job.feature_area = "ai_posters"
+    job.presentation_family = "ai_posters"
+    job.subject_kind = "aggregate_batch"
+    job.subject_reference = job_id
+    job.subject_snapshot = {
+        "version": 1,
+        "kind": "aggregate_batch",
+        "display_id": f"batch:{job_id}",
+        "display_name": "Historical poster collection operation",
+        "snapshot_at": NOW.isoformat(),
+        "batch_type": job_type,
+        "child_count": 2,
+        "sealed": True,
+        "scope_summary": "Two movie posters",
     }
     return job
 
@@ -327,6 +349,192 @@ async def test_activity_hierarchy_promotes_groups_and_keeps_legacy_parent(db, cl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("job_type", "operation", "child_type", "title", "disclosure"),
+    [
+        (
+            "poster_heal",
+            "heal",
+            "poster_restore",
+            "Heal Missing Posters · 2 Subjects",
+            "Posters Being Healed",
+        ),
+        (
+            "poster_deploy_reset",
+            "reset",
+            "poster_reset",
+            "Reset Deployed Posters · 2 Subjects",
+            "Posters Being Reset",
+        ),
+        (
+            "poster_backup_all",
+            "backup",
+            "poster_backup_subject",
+            "Back Up Posters · 2 Subjects",
+            "Posters Being Backed Up",
+        ),
+    ],
+)
+async def test_collection_operations_consolidate_children_and_expose_contained_work(
+    db, client, job_type, operation, child_type, title, disclosure
+):
+    parent = poster_collection_parent(
+        job_id=f"{operation}-parent".ljust(32, "0")[:32],
+        job_type=job_type,
+        operation=operation,
+    )
+    succeeded = poster_atomic(
+        job_id=f"{operation}-child-1".ljust(32, "0")[:32],
+        parent_id=parent.id,
+        title="Alpha Movie",
+    )
+    succeeded.type = child_type
+    succeeded.phase = "terminal"
+    succeeded.outcome = "succeeded"
+    succeeded.terminal_at = NOW
+    pending = poster_atomic(
+        job_id=f"{operation}-child-2".ljust(32, "0")[:32],
+        parent_id=parent.id,
+        title="Beta Movie",
+    )
+    pending.type = child_type
+    standalone = poster_atomic(
+        job_id=f"{operation}-standalone".ljust(32, "0")[:32],
+        parent_id=parent.id,
+        title="Standalone Movie",
+    )
+    standalone.type = child_type
+    standalone.parent_id = None
+    standalone.root_id = standalone.id
+    batch = JobBatch(
+        parent_job_id=parent.id,
+        mode="fixed",
+        generation=1,
+        sealed=True,
+        sealed_at=NOW,
+        sealed_child_total=2,
+        created_total=2,
+        terminal_total=1,
+        succeeded_total=1,
+        partially_succeeded_total=0,
+        no_change_total=0,
+        failed_total=0,
+        cancelled_total=0,
+        superseded_total=0,
+        dead_letter_total=0,
+        unsafe_total=0,
+        projection_sequence=4,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add_all([parent, succeeded, pending, standalone, batch])
+    await db.commit()
+
+    response = await client.get(
+        "/api/jobs", params={"view": "queue", "hierarchy": "activity"}
+    )
+    assert response.status_code == 200
+    rows = {item["job_id"]: item for item in response.json()["items"]}
+    assert set(rows) == {parent.id, standalone.id}
+    assert rows[parent.id]["subject"]["display_name"] == title
+    assert rows[parent.id]["contained_work"] == {
+        "version": 1,
+        "source": "child_jobs",
+        "label": disclosure,
+        "item_label_singular": "subject",
+        "item_label_plural": "subjects",
+        "total": 2,
+        "completed": 1,
+        "counts": {
+            "pending": 1,
+            "running": 0,
+            "retrying": 0,
+            "succeeded": 1,
+            "no_change": 0,
+            "review_required": 0,
+            "failed": 0,
+            "cancelled": 0,
+        },
+        "sequence": 4,
+        "updated_at": NOW.isoformat().replace("+00:00", "Z"),
+        "href": f"/api/jobs/{parent.id}/contained-work",
+    }
+
+    contained = await client.get(
+        f"/api/jobs/{parent.id}/contained-work", params={"limit": 1}
+    )
+    assert contained.status_code == 200
+    body = contained.json()
+    assert body["summary"]["label"] == disclosure
+    assert len(body["items"]) == 1
+    assert body["items"][0]["detail_href"].endswith(body["items"][0]["key"])
+    assert body["next_cursor"] is not None
+
+
+@pytest.mark.asyncio
+async def test_collection_operation_historical_fallback_aggregates_children(db, client):
+    parent = poster_collection_parent(
+        job_id="historical-heal-parent".ljust(32, "0"),
+        job_type="poster_heal",
+        operation="heal",
+    )
+    child = poster_atomic(
+        job_id="historical-heal-child".ljust(32, "0"),
+        parent_id=parent.id,
+        title="Historical Movie",
+    )
+    child.type = "poster_restore"
+    child.phase = "terminal"
+    child.outcome = "failed"
+    child.terminal_at = NOW
+    db.add_all([parent, child])
+    await db.commit()
+
+    response = await client.get(
+        "/api/jobs", params={"view": "queue", "hierarchy": "activity"}
+    )
+    assert response.status_code == 200
+    row = response.json()["items"][0]
+    assert row["job_id"] == parent.id
+    assert row["subject"]["display_name"] == "Heal Missing Posters · 1 Subject"
+    assert row["contained_work"]["counts"]["failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_activity_catalog_is_registry_driven(client):
+    response = await client.get("/api/jobs/activity-catalog")
+
+    assert response.status_code == 200
+    body = response.json()
+    features = {item["value"]: item["label"] for item in body["features"]}
+    assert features["ai_posters"] == "Posters"
+    job_types = {item["value"]: item for item in body["job_types"]}
+    assert job_types["poster_heal"]["visibility"] == "consolidate_parent"
+    assert job_types["poster_pipeline_group"]["contained_work"] == "work_items"
+
+
+@pytest.mark.asyncio
+async def test_unknown_retained_job_type_uses_safe_generic_activity_presentation(db, client):
+    job = make_job(job_id="unknown-history-0000000000000000", phase="terminal", outcome="failed")
+    job.type = "retired_external_job"
+    db.add(job)
+    await db.commit()
+
+    listing = await client.get("/api/jobs", params={"view": "history", "hierarchy": "activity"})
+    assert listing.status_code == 200
+    row = listing.json()["items"][0]
+    assert row["job_id"] == job.id
+    assert row["label"] == "Retired External Job"
+    assert row["feature_label"] == "Other"
+    assert row["subject"]["monogram"] == "?"
+
+    detail = await client.get(f"/api/jobs/{job.id}/presentation")
+    assert detail.status_code == 200
+    assert detail.json()["presenter_key"] == "jobs.generic_unknown"
+    assert detail.json()["allowed_actions"] == ["open_detail"]
+
+
+@pytest.mark.asyncio
 async def test_activity_filters_match_hidden_parent_and_contained_assets(db, client):
     parent = poster_parent(job_id="filter-parent-00000000000000001")
     group = poster_group(job_id="filter-group-000000000000000001", parent_id=parent.id)
@@ -364,6 +572,40 @@ async def test_activity_filters_match_hidden_parent_and_contained_assets(db, cli
         )
         assert response.status_code == 200
         assert [item["job_id"] for item in response.json()["items"]] == [group.id]
+
+
+@pytest.mark.asyncio
+async def test_promoted_group_evidence_scope_includes_only_declared_atomic_children(db, client):
+    parent = poster_parent(job_id="evidence-parent-0000000000000001")
+    group = poster_group(job_id="evidence-group-00000000000000001", parent_id=parent.id)
+    atomic = poster_atomic(
+        job_id="evidence-atomic-0000000000000001",
+        parent_id=group.id,
+        title="Contained Movie",
+    )
+    unrelated = poster_atomic(
+        job_id="evidence-other-00000000000000001",
+        parent_id=parent.id,
+        title="Unrelated Movie",
+    )
+    db.add_all([parent, group, atomic, unrelated])
+    await db.flush()
+    for job in (group, atomic, unrelated):
+        db.add(JobAttempt(job_id=job.id, number=1, fence_token=1, phase="running"))
+    await db.commit()
+
+    direct = await client.get(f"/api/jobs/{group.id}/attempts")
+    assert direct.status_code == 200
+    assert {item["origin_job_id"] for item in direct.json()["items"]} == {group.id}
+
+    contained = await client.get(
+        f"/api/jobs/{group.id}/attempts", params={"scope": "contained"}
+    )
+    assert contained.status_code == 200
+    assert {item["origin_job_id"] for item in contained.json()["items"]} == {
+        group.id,
+        atomic.id,
+    }
 
 
 @pytest.mark.asyncio
@@ -473,8 +715,8 @@ async def test_work_items_are_stably_paginated_with_authoritative_summary(db, cl
                 fence_token=1,
                 status="review_required",
                 stage_key="finalizing",
-                stage_number=9,
-                stage_total=9,
+                stage_number=12,
+                stage_total=20,
                 message="Poster candidates are ready for review.",
                 update_sequence=4,
                 updated_at=NOW,
@@ -505,6 +747,8 @@ async def test_work_items_are_stably_paginated_with_authoritative_summary(db, cl
     )
     assert second.status_code == 200
     assert [item["subject_key"] for item in second.json()["items"]] == ["movie:2"]
+    assert second.json()["items"][0]["stage_number"] == 12
+    assert second.json()["items"][0]["stage_total"] == 20
     assert second.json()["next_cursor"] is None
 
 

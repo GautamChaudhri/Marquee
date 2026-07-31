@@ -3,7 +3,7 @@
 	import { listEvents } from '../../client';
 	import type { EventItem } from '../../types';
 
-	let { jobId }: { jobId: string } = $props();
+	let { jobId, contained = false }: { jobId: string; contained?: boolean } = $props();
 	let items = $state<EventItem[]>([]);
 	let cursor = $state<string | null>(null);
 	let loading = $state(false);
@@ -20,7 +20,7 @@
 			const page = await listEvents(
 				fetch,
 				jobId,
-				{ cursor: cursor ?? undefined, limit: 100 },
+				{ cursor: cursor ?? undefined, limit: 100, scope: contained ? 'contained' : 'self' },
 				controller.signal
 			);
 			items = [...items, ...page.items];
@@ -35,6 +35,11 @@
 
 	onMount(loadMore);
 	onDestroy(() => controller?.abort());
+
+	function originName(event: EventItem): string {
+		const value = event.origin_subject.display_name ?? event.origin_subject.title;
+		return typeof value === 'string' && value ? value : event.origin_job_id;
+	}
 </script>
 
 <section aria-labelledby="timeline-heading">
@@ -45,6 +50,10 @@
 	<div class="timeline">
 		{#each items as event (event.id)}
 			<article class="event">
+				{#if contained && event.origin_job_id !== jobId}<a
+						class="origin"
+						href={`/projection-room/jobs/${event.origin_job_id}`}>{originName(event)}</a
+					>{/if}
 				<time datetime={event.created_at ?? undefined}
 					>{event.created_at
 						? new Date(event.created_at).toLocaleString()
@@ -105,6 +114,11 @@
 		grid-column: 2 / -1;
 		color: var(--muted);
 		overflow-wrap: anywhere;
+	}
+	.origin {
+		grid-column: 1 / -1;
+		color: var(--muted);
+		font-size: 11px;
 	}
 	button {
 		justify-self: start;

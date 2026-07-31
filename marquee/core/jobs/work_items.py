@@ -122,8 +122,8 @@ class _ObservedItem:
     message: str | None = None
 
 
-class PosterWorkItemTracker:
-    """Coalesce runner observations without taking execution authority."""
+class JobWorkItemTracker:
+    """Coalesce bounded contained-work observations without taking execution authority."""
 
     def __init__(
         self,
@@ -137,17 +137,7 @@ class PosterWorkItemTracker:
         definition = getattr(context, "definition", None)
         policy = getattr(definition, "progress_policy", None)
         declared_stages = getattr(policy, "stages", ())
-        self._stages = tuple(key for key, _label in declared_stages) or (
-            "resolving",
-            "enumerating",
-            "downloading",
-            "validating",
-            "deduplicating",
-            "extracting",
-            "scoring",
-            "rendering",
-            "finalizing",
-        )
+        self._stages = tuple(key for key, _label in declared_stages) or ("working",)
         self._stage_numbers = {key: index + 1 for index, key in enumerate(self._stages)}
         self._items = [
             _ObservedItem(
@@ -171,7 +161,7 @@ class PosterWorkItemTracker:
         cls,
         context: ExecutionContext,
         members: Sequence[tuple[str, Mapping[str, Any]]],
-    ) -> PosterWorkItemTracker:
+    ) -> JobWorkItemTracker:
         tracker = cls(context, members)
         await tracker._safe_initialize()
         return tracker
@@ -214,19 +204,19 @@ class PosterWorkItemTracker:
                     attempt_id=self._attempt_id,
                     event_key="work_items.updated",
                     state=job.phase,
-                    message="Poster progress initialized",
+                    message="Contained work progress initialized",
                     detail={
                         "work_item_sequence": job.work_item_sequence,
                         "work_item_total": len(self._items),
                     },
                     canonical_version=self._fence_token,
                 )
-        except Exception:  # noqa: BLE001 - telemetry must not fail poster processing
+        except Exception:  # noqa: BLE001 - telemetry must not fail domain processing
             self._enabled = False
-            logger.exception("poster work-item initialization could not be persisted")
+            logger.exception("contained work-item initialization could not be persisted")
 
     async def observe(self, frame: RunnerProgressFrame, mapped_stage: str) -> None:
-        if not self._enabled:
+        if not self._enabled or mapped_stage not in self._stage_numbers:
             return
         async with self._lock:
             targets: list[_ObservedItem]
@@ -280,13 +270,13 @@ class PosterWorkItemTracker:
         async with self._lock:
             for key, item in self._by_key.items():
                 status, message = outcomes.get(
-                    key, ("failed", "Poster processing did not produce a terminal result.")
+                    key, ("failed", "Processing did not produce a terminal result.")
                 )
                 if status not in _TERMINAL:
                     status = "failed"
                 item.status = status
-                item.stage_key = "finalizing"
-                item.stage_number = self._stage_numbers.get("finalizing", len(self._stages))
+                item.stage_key = self._stages[-1]
+                item.stage_number = len(self._stages)
                 item.completed = None
                 item.total = None
                 item.unit = None
@@ -376,7 +366,7 @@ class PosterWorkItemTracker:
                     attempt_id=self._attempt_id,
                     event_key="work_items.updated",
                     state=job.phase,
-                    message="Poster progress updated",
+                    message="Contained work progress updated",
                     detail={
                         "work_item_sequence": sequence,
                         "work_item_total": len(self._items),
@@ -384,9 +374,13 @@ class PosterWorkItemTracker:
                     canonical_version=self._fence_token,
                 )
             return True
-        except Exception:  # noqa: BLE001 - telemetry must not fail poster processing
-            logger.exception("poster work-item progress could not be persisted")
+        except Exception:  # noqa: BLE001 - telemetry must not fail domain processing
+            logger.exception("contained work-item progress could not be persisted")
             return False
+
+
+class PosterWorkItemTracker(JobWorkItemTracker):
+    """Poster-pipeline adapter retained for stable imports and domain wiring."""
 
 
 async def terminalize_work_items(

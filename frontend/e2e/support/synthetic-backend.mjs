@@ -47,6 +47,7 @@ const presentation = {
 	label: 'Poster Pipeline',
 	label_key: 'jobs.poster_pipeline.label',
 	feature_area: 'ai_posters',
+	feature_label: 'Posters',
 	presentation_family: 'ai_posters',
 	presenter_key: 'jobs.poster_pipeline',
 	presenter_version: 1,
@@ -119,6 +120,8 @@ const presentation = {
 
 const attempts = [
 	{
+		origin_job_id: DETAIL_JOB_ID,
+		origin_subject: { display_name: 'Deleted synthetic movie' },
 		number: 2,
 		phase: 'terminal',
 		outcome: 'failed',
@@ -135,6 +138,8 @@ const attempts = [
 		error: { message: 'redacted' }
 	},
 	{
+		origin_job_id: DETAIL_JOB_ID,
+		origin_subject: { display_name: 'Deleted synthetic movie' },
 		number: 1,
 		phase: 'terminal',
 		outcome: 'failed',

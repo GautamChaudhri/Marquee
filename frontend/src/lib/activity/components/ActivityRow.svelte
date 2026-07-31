@@ -3,9 +3,8 @@
 	import type { ConnectionState, JobRecord } from '../store.svelte';
 	import type { CommandResponse, JobRow } from '../types';
 	import ActivityActions from './ActivityActions.svelte';
-	import BatchExpansion from './BatchExpansion.svelte';
+	import ContainedWorkDisclosure from './ContainedWorkDisclosure.svelte';
 	import JobProgressCard from './JobProgressCard.svelte';
-	import PosterProgress from './PosterProgress.svelte';
 
 	type LifecycleAction = 'cancel' | 'pause' | 'resume' | 'change_priority' | 'retry';
 
@@ -36,18 +35,12 @@
 
 	const row = $derived(record.row);
 	const workItems = $derived(record.snapshot?.work_items ?? row?.work_items ?? null);
+	const containedWork = $derived(record.snapshot?.contained_work ?? row?.contained_work ?? null);
 	// The disclosure state lives here, not in PosterProgress, so the button that owns it
 	// can sit in the control bar while the panel it reveals renders below.
 	let rosterOpen = $state(false);
 	const rosterId = $derived(`roster-${record.jobId}`);
 	const visible = (column: ActivityColumn) => columns.includes(column);
-	const FEATURE_LABELS: Record<string, string> = {
-		ai_posters: 'AI posters',
-		library_integrations: 'Library',
-		ml_taste: 'Taste & ML',
-		maintenance: 'Maintenance',
-		system: 'System'
-	};
 	const time = $derived(row?.terminal_at ?? row?.started_at ?? row?.created_at ?? null);
 	// The chip row is optional to the point of being empty — every chip in it can be
 	// switched off, and time now lives inside the card. An empty bordered strip is worse
@@ -84,12 +77,13 @@
 			{connection}
 			recordFreshness={record.freshness}
 			{workItems}
+			{containedWork}
 			showActions={false}
 		/>
 		<!-- One bar for everything you can do with the row and when it happened. Each of
 		     these used to occupy a line of its own, three deep. -->
 		<div class="rowbar">
-			{#if workItems}
+			{#if containedWork}
 				<button
 					type="button"
 					class="roster-toggle"
@@ -99,7 +93,7 @@
 					onclick={() => (rosterOpen = !rosterOpen)}
 				>
 					<span class="chevron" aria-hidden="true"></span>
-					Posters in This Group
+					{containedWork.label}
 				</button>
 			{/if}
 			<ActivityActions {row} {onCommand} />
@@ -109,9 +103,7 @@
 		</div>
 		{#if hasSecondary}
 			<div class="secondary" aria-label="Activity details">
-				{#if visible('feature')}<span
-						><b>Feature</b>{FEATURE_LABELS[row.feature_area] ?? 'Other'}</span
-					>{/if}
+				{#if visible('feature')}<span><b>Feature</b>{row.feature_label}</span>{/if}
 				{#if visible('trigger')}<span><b>Trigger</b>{row.trigger.label}</span>{/if}
 				{#if visible('impact') && row.impact}
 					<span><b>Impact</b>{row.impact.label ?? `${row.impact.items_processed ?? 0} items`}</span>
@@ -128,10 +120,13 @@
 				{/if}
 			</div>
 		{/if}
-		{#if workItems}
-			<PosterProgress id={rosterId} jobId={row.job_id} summary={workItems} bind:open={rosterOpen} />
-		{:else if row.is_parent}
-			<BatchExpansion jobId={row.job_id} />
+		{#if containedWork}
+			<ContainedWorkDisclosure
+				id={rosterId}
+				jobId={row.job_id}
+				summary={containedWork}
+				bind:open={rosterOpen}
+			/>
 		{/if}
 	</article>
 {/if}

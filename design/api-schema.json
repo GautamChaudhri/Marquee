@@ -73,6 +73,90 @@
         "title": "ActivityAttentionResponse",
         "type": "object"
       },
+      "ActivityCatalogFeature": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "$ref": "#/components/schemas/FeatureArea"
+          }
+        },
+        "required": [
+          "value",
+          "label"
+        ],
+        "title": "ActivityCatalogFeature",
+        "type": "object"
+      },
+      "ActivityCatalogJobType": {
+        "properties": {
+          "contained_work": {
+            "title": "Contained Work",
+            "type": "string"
+          },
+          "feature_area": {
+            "$ref": "#/components/schemas/FeatureArea"
+          },
+          "feature_label": {
+            "title": "Feature Label",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "visibility": {
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "feature_area",
+          "feature_label",
+          "visibility",
+          "contained_work"
+        ],
+        "title": "ActivityCatalogJobType",
+        "type": "object"
+      },
+      "ActivityCatalogResponse": {
+        "properties": {
+          "features": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityCatalogFeature"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "job_types": {
+            "items": {
+              "$ref": "#/components/schemas/ActivityCatalogJobType"
+            },
+            "title": "Job Types",
+            "type": "array"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "features",
+          "job_types"
+        ],
+        "title": "ActivityCatalogResponse",
+        "type": "object"
+      },
       "ArtifactItem": {
         "additionalProperties": false,
         "properties": {
@@ -242,6 +326,15 @@
             "title": "Name",
             "type": "string"
           },
+          "origin_job_id": {
+            "title": "Origin Job Id",
+            "type": "string"
+          },
+          "origin_subject": {
+            "additionalProperties": true,
+            "title": "Origin Subject",
+            "type": "object"
+          },
           "retention_class": {
             "title": "Retention Class",
             "type": "string"
@@ -280,7 +373,9 @@
           "created_at",
           "available",
           "virtual",
-          "download_url"
+          "download_url",
+          "origin_job_id",
+          "origin_subject"
         ],
         "title": "ArtifactItemResponse",
         "type": "object"
@@ -432,6 +527,15 @@
             "title": "Number",
             "type": "integer"
           },
+          "origin_job_id": {
+            "title": "Origin Job Id",
+            "type": "string"
+          },
+          "origin_subject": {
+            "additionalProperties": true,
+            "title": "Origin Subject",
+            "type": "object"
+          },
           "outcome": {
             "anyOf": [
               {
@@ -508,7 +612,9 @@
           "exit_code",
           "exit_signal",
           "metrics",
-          "error"
+          "error",
+          "origin_job_id",
+          "origin_subject"
         ],
         "title": "AttemptItem",
         "type": "object"
@@ -1759,6 +1865,362 @@
         "title": "ConfigUpdate",
         "type": "object"
       },
+      "ContainedWorkItem": {
+        "additionalProperties": false,
+        "properties": {
+          "detail_href": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail Href"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "ordinal": {
+            "maximum": 499.0,
+            "minimum": 0.0,
+            "title": "Ordinal",
+            "type": "integer"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkItemProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sequence": {
+            "minimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "stage_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Key"
+          },
+          "stage_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Name"
+          },
+          "stage_number": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Number"
+          },
+          "stage_total": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Total"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "running",
+              "retrying",
+              "succeeded",
+              "no_change",
+              "review_required",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "status_label": {
+            "title": "Status Label",
+            "type": "string"
+          },
+          "status_tone": {
+            "enum": [
+              "neutral",
+              "active",
+              "positive",
+              "warning",
+              "negative"
+            ],
+            "title": "Status Tone",
+            "type": "string"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "title": "Subject",
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "ordinal",
+          "subject",
+          "status",
+          "status_label",
+          "status_tone",
+          "sequence",
+          "updated_at"
+        ],
+        "title": "ContainedWorkItem",
+        "type": "object"
+      },
+      "ContainedWorkPage": {
+        "additionalProperties": false,
+        "properties": {
+          "historical_fallback": {
+            "default": false,
+            "title": "Historical Fallback",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ContainedWorkItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/ContainedWorkSummary"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id",
+          "summary",
+          "items",
+          "limit"
+        ],
+        "title": "ContainedWorkPage",
+        "type": "object"
+      },
+      "ContainedWorkStatusCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "cancelled": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "failed": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Failed",
+            "type": "integer"
+          },
+          "no_change": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "No Change",
+            "type": "integer"
+          },
+          "pending": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Pending",
+            "type": "integer"
+          },
+          "retrying": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Retrying",
+            "type": "integer"
+          },
+          "review_required": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Review Required",
+            "type": "integer"
+          },
+          "running": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Running",
+            "type": "integer"
+          },
+          "succeeded": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Succeeded",
+            "type": "integer"
+          }
+        },
+        "title": "ContainedWorkStatusCounts",
+        "type": "object"
+      },
+      "ContainedWorkSummary": {
+        "additionalProperties": false,
+        "description": "Source-neutral disclosure metadata used by every Activity card.",
+        "properties": {
+          "completed": {
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Completed",
+            "type": "integer"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ContainedWorkStatusCounts"
+          },
+          "href": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "item_label_plural": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Item Label Plural",
+            "type": "string"
+          },
+          "item_label_singular": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Item Label Singular",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 0.0,
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "work_items",
+              "child_jobs"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "total": {
+            "maximum": 500.0,
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "version": {
+            "const": 1,
+            "default": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source",
+          "label",
+          "item_label_singular",
+          "item_label_plural",
+          "total",
+          "completed",
+          "sequence",
+          "href"
+        ],
+        "title": "ContainedWorkSummary",
+        "type": "object"
+      },
       "DiagnosticLinks": {
         "additionalProperties": false,
         "properties": {
@@ -1925,6 +2387,15 @@
             ],
             "title": "Message"
           },
+          "origin_job_id": {
+            "title": "Origin Job Id",
+            "type": "string"
+          },
+          "origin_subject": {
+            "additionalProperties": true,
+            "title": "Origin Subject",
+            "type": "object"
+          },
           "stage": {
             "anyOf": [
               {
@@ -1949,7 +2420,9 @@
           "stage",
           "message",
           "detail",
-          "created_at"
+          "created_at",
+          "origin_job_id",
+          "origin_subject"
         ],
         "title": "EventItem",
         "type": "object"
@@ -2723,6 +3196,16 @@
           "attention": {
             "$ref": "#/components/schemas/PresentationAttention"
           },
+          "contained_work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContainedWorkSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "evidence": {
             "$ref": "#/components/schemas/EvidenceAvailability"
           },
@@ -2737,6 +3220,12 @@
           },
           "feature_area": {
             "$ref": "#/components/schemas/FeatureArea"
+          },
+          "feature_label": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Feature Label",
+            "type": "string"
           },
           "impact": {
             "anyOf": [
@@ -2909,6 +3398,7 @@
           "label",
           "label_key",
           "feature_area",
+          "feature_label",
           "presentation_family",
           "subject",
           "action",
@@ -2940,6 +3430,16 @@
           },
           "attention": {
             "$ref": "#/components/schemas/PresentationAttention"
+          },
+          "contained_work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContainedWorkSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "created_at": {
             "anyOf": [
@@ -2988,6 +3488,12 @@
           },
           "feature_area": {
             "$ref": "#/components/schemas/FeatureArea"
+          },
+          "feature_label": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Feature Label",
+            "type": "string"
           },
           "fence_token": {
             "minimum": 0.0,
@@ -3166,6 +3672,7 @@
           "status",
           "trigger",
           "attention",
+          "feature_label",
           "fence_token",
           "execution_class",
           "priority",
@@ -3197,6 +3704,16 @@
               }
             ],
             "title": "Configuration Version"
+          },
+          "contained_work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContainedWorkSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "created_at": {
             "anyOf": [
@@ -7446,7 +7963,7 @@
           "stage_number": {
             "anyOf": [
               {
-                "maximum": 9.0,
+                "maximum": 100.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -7458,7 +7975,7 @@
           },
           "stage_total": {
             "default": 9,
-            "maximum": 9.0,
+            "maximum": 100.0,
             "minimum": 1.0,
             "title": "Stage Total",
             "type": "integer"
@@ -8348,6 +8865,27 @@
         ]
       }
     },
+    "/api/jobs/activity-catalog": {
+      "get": {
+        "operationId": "activity_catalog_api_jobs_activity_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Activity Catalog",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/jobs/attention": {
       "get": {
         "description": "Return one bounded aggregate for the Activity strip and navigation badge.",
@@ -8477,6 +9015,20 @@
               "title": "Limit",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "self",
+              "enum": [
+                "self",
+                "contained"
+              ],
+              "title": "Scope",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -8595,6 +9147,20 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "self",
+              "enum": [
+                "self",
+                "contained"
+              ],
+              "title": "Scope",
+              "type": "string"
             }
           }
         ],
@@ -9045,6 +9611,77 @@
         ]
       }
     },
+    "/api/jobs/{job_id}/contained-work": {
+      "get": {
+        "description": "Return one source-neutral, stable page for an Activity disclosure.",
+        "operationId": "list_contained_work_api_jobs__job_id__contained_work_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContainedWorkPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Contained Work",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
     "/api/jobs/{job_id}/events": {
       "get": {
         "operationId": "list_job_events_api_jobs__job_id__events_get",
@@ -9084,6 +9721,20 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "default": "self",
+              "enum": [
+                "self",
+                "contained"
+              ],
+              "title": "Scope",
+              "type": "string"
             }
           }
         ],

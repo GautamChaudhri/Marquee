@@ -61,18 +61,44 @@ from marquee.core.jobs.presentation import (
     TextValue,
     WarningItem,
 )
-from marquee.core.jobs.progress import JobProgress
+from marquee.core.jobs.progress import JobProgress, ProgressMeasurement
 from marquee.core.jobs.retry_capability import resolve_retry_capability
 from marquee.core.jobs.subjects import (
     SUBJECT_SNAPSHOT_ADAPTER,
     PosterSubjectGroupSnapshot,
     SubjectSnapshot,
 )
-from marquee.core.jobs.work_item_documents import poster_group_completion_message
+from marquee.core.jobs.work_item_documents import (
+    ContainedWorkStatusCounts,
+    ContainedWorkSummary,
+    poster_group_completion_message,
+)
 from marquee.core.jobs.work_items import work_item_summary
 
 if TYPE_CHECKING:
-    from marquee.models import Job, MediaOperationDetail
+    from marquee.models import Job, JobBatch, MediaOperationDetail
+
+
+@dataclass(frozen=True)
+class BatchProgressProjection:
+    """Coordinator fields required by Activity presentation.
+
+    Stored ``JobBatch`` rows and aggregate-only historical child jobs both adapt
+    to this shape, keeping presenters independent from projection storage.
+    """
+
+    created_total: int
+    terminal_total: int
+    succeeded_total: int
+    partially_succeeded_total: int
+    no_change_total: int
+    failed_total: int
+    cancelled_total: int
+    superseded_total: int
+    dead_letter_total: int
+    unsafe_total: int
+    projection_sequence: int
+    updated_at: Any
 
 
 class PresentationIntegrityError(RuntimeError):
@@ -118,6 +144,7 @@ class PresenterContext:
     result: BuiltInResultV1 | StrictDocument | None
     error: SafeJobErrorV1 | None
     progress: JobProgress | None
+    batch: JobBatch | BatchProgressProjection | None = None
     mutation: MutationEvidenceV1 | None = None
     warnings: list[WarningItem] = field(default_factory=list)
     live: Mapping[str, Any] = field(default_factory=dict)
@@ -182,6 +209,7 @@ def load_context(
     logs_available: bool = False,
     artifacts_available: bool = False,
     mutation_detail: MediaOperationDetail | None = None,
+    batch: JobBatch | BatchProgressProjection | None = None,
 ) -> PresenterContext:
     """Validate stored documents into a presenter context.
 
@@ -265,6 +293,7 @@ def load_context(
         result=result,
         error=error,
         progress=progress,
+        batch=batch,
         mutation=mutation,
         live=dict(live or {}),
         live_subject_missing=live_subject_missing,
@@ -337,26 +366,45 @@ def present_subject(
 
 def present_context_subject(ctx: PresenterContext) -> PresentationSubject:
     presented = present_subject(ctx.subject, missing_live_subject=ctx.live_subject_missing)
-    if ctx.job.type != "poster_pipeline_group" or not isinstance(
+    if ctx.job.type == "poster_pipeline_group" and isinstance(
         ctx.subject, PosterSubjectGroupSnapshot
     ):
-        return presented
-    subject = ctx.subject
-    return presented.model_copy(
-        update={
-            "display_name": poster_group_display_name(
-                library=subject.library,
-                member_count=len(subject.members),
-            ),
-            "context": poster_group_batch_context(
-                parent_job_id=ctx.job.parent_id,
-                chunk_index=subject.chunk_index,
-                chunk_total=subject.chunk_total,
-                batch_mode=subject.batch_mode,
-            ),
-            "monogram": "FP" if subject.library == "movies" else "TVP",
-        }
-    )
+        subject = ctx.subject
+        return presented.model_copy(
+            update={
+                "display_name": poster_group_display_name(
+                    library=subject.library,
+                    member_count=len(subject.members),
+                ),
+                "context": poster_group_batch_context(
+                    parent_job_id=ctx.job.parent_id,
+                    chunk_index=subject.chunk_index,
+                    chunk_total=subject.chunk_total,
+                    batch_mode=subject.batch_mode,
+                ),
+                "monogram": "FP" if subject.library == "movies" else "TVP",
+            }
+        )
+    policy = ctx.definition.activity_policy
+    updates: dict[str, Any] = {}
+    if policy.monogram is not None:
+        updates["monogram"] = policy.monogram
+    if ctx.batch is not None:
+        title = {
+            "poster_pipeline_batch": "Get Film Posters",
+            "poster_pipeline_tv_batch": "Get Television Posters",
+            "poster_heal": "Heal Missing Posters",
+            "poster_deploy_reset": "Reset Deployed Posters",
+            "poster_backup_all": "Back Up Posters",
+        }.get(ctx.job.type)
+        if title is not None:
+            noun = (
+                policy.item_label_singular.title()
+                if ctx.batch.created_total == 1
+                else policy.item_label_plural.title()
+            )
+            updates["display_name"] = f"{title} · {ctx.batch.created_total} {noun}"
+    return presented.model_copy(update=updates) if updates else presented
 
 
 def present_status(job: Job) -> PresentationStatus:
@@ -422,6 +470,34 @@ def present_attention(ctx: PresenterContext) -> PresentationAttention:
                     failed=failed,
                     review=review,
                 ),
+            )
+    if ctx.batch is not None and ctx.definition.activity_policy.contained_work.value == "child_jobs":
+        batch = ctx.batch
+        total = batch.created_total
+        failed = batch.failed_total + batch.dead_letter_total + batch.unsafe_total
+        review = batch.partially_succeeded_total
+        if failed or review:
+            if failed >= total and total > 0:
+                noun = "poster" if total == 1 else "posters"
+                message = f"Failed: all {total} {noun} errored."
+                level = AttentionLevel.ERROR
+            elif failed:
+                verb = "needs" if failed == 1 else "need"
+                message = f"Partially failed: {failed} of {total} posters {verb} attention"
+                if review:
+                    review_verb = "is" if review == 1 else "are"
+                    message += f"; {review} {review_verb} ready for review"
+                message += "."
+                level = AttentionLevel.WARNING
+            else:
+                noun = "poster" if review == 1 else "posters"
+                verb = "is" if review == 1 else "are"
+                message = f"Ready for review: {review} {noun} {verb} waiting for a choice."
+                level = AttentionLevel.WARNING
+            return PresentationAttention(
+                level=level,
+                reason=AttentionReason.FAILED if failed else AttentionReason.REVIEW,
+                message=message,
             )
     stored = job.attention if isinstance(job.attention, dict) else None
     if stored is not None:
@@ -495,7 +571,33 @@ def _display_label(text: str | None) -> str | None:
 def present_compact_progress(ctx: PresenterContext) -> CompactProgress | None:
     progress = ctx.progress
     if progress is None:
-        return None
+        batch = ctx.batch
+        if batch is None or batch.created_total <= 0:
+            return None
+        policy = ctx.definition.activity_policy
+        headline = {
+            "poster_heal": "Healing missing posters",
+            "poster_deploy_reset": "Resetting deployed posters",
+            "poster_backup_all": "Backing up posters",
+        }.get(ctx.job.type, "Processing contained work")
+        if ctx.job.phase == "stopping":
+            headline = "Cancelling"
+        elif ctx.job.phase == "terminal":
+            headline = "Complete"
+        return CompactProgress(
+            headline=headline,
+            stage_key="contained_work",
+            stage_label=f"{batch.terminal_total} of {batch.created_total} {policy.item_label_plural}",
+            overall=ProgressMeasurement.determinate(
+                scope_id="contained-work-overall",
+                completed=batch.terminal_total,
+                total=batch.created_total,
+                unit=policy.item_label_plural,
+            ),
+            current=ProgressMeasurement.indeterminate(scope_id="contained-work-current"),
+            updated_at=batch.updated_at,
+            sequence=max(1, batch.projection_sequence),
+        )
     return CompactProgress(
         headline=_display_label(progress.headline),
         stage_key=progress.stage.key,
@@ -512,6 +614,62 @@ def present_compact_progress(ctx: PresenterContext) -> CompactProgress | None:
         wait=progress.wait,
         updated_at=progress.updated_at,
         sequence=progress.sequence,
+    )
+
+
+def present_contained_work(ctx: PresenterContext) -> ContainedWorkSummary | None:
+    policy = ctx.definition.activity_policy
+    if policy.contained_work.value == "none" or policy.disclosure_label is None:
+        return None
+    if policy.contained_work.value == "work_items":
+        summary = work_item_summary(ctx.job)
+        if summary is None:
+            return None
+        counts = summary.counts
+        completed = (
+            counts.succeeded
+            + counts.no_change
+            + counts.review_required
+            + counts.failed
+            + counts.cancelled
+        )
+        return ContainedWorkSummary(
+            source="work_items",
+            label=policy.disclosure_label,
+            item_label_singular=policy.item_label_singular,
+            item_label_plural=policy.item_label_plural,
+            total=summary.total,
+            completed=completed,
+            counts=ContainedWorkStatusCounts(**counts.model_dump()),
+            sequence=summary.sequence,
+            updated_at=summary.updated_at,
+            href=f"/api/jobs/{ctx.job.id}/contained-work",
+        )
+    batch = ctx.batch
+    if batch is None:
+        return None
+    outstanding = max(0, batch.created_total - batch.terminal_total)
+    pending = outstanding if ctx.job.phase in {"planned", "queued"} else 0
+    running = outstanding - pending
+    return ContainedWorkSummary(
+        source="child_jobs",
+        label=policy.disclosure_label,
+        item_label_singular=policy.item_label_singular,
+        item_label_plural=policy.item_label_plural,
+        total=batch.created_total,
+        completed=batch.terminal_total,
+        counts=ContainedWorkStatusCounts(
+            pending=pending,
+            running=running,
+            succeeded=batch.succeeded_total,
+            no_change=batch.no_change_total,
+            review_required=batch.partially_succeeded_total,
+            failed=batch.failed_total + batch.dead_letter_total + batch.unsafe_total,
+            cancelled=batch.cancelled_total + batch.superseded_total,
+        ),
+        sequence=batch.projection_sequence,
+        updated_at=batch.updated_at,
+        href=f"/api/jobs/{ctx.job.id}/contained-work",
     )
 
 
@@ -704,6 +862,7 @@ class JobPresenter:
             label=humanize_job_type(job.type),
             label_key=definition.label_key,
             feature_area=definition.feature_area,
+            feature_label=definition.activity_policy.feature_label,
             presentation_family=definition.presentation_family,
             subject=present_context_subject(ctx),
             action=self.action(ctx),
@@ -713,6 +872,7 @@ class JobPresenter:
             status=present_status(job),
             progress=present_compact_progress(ctx),
             work_items=work_item_summary(job),
+            contained_work=present_contained_work(ctx),
             impact=present_impact(ctx),
             sections=tuple(sections[:24]),
             warnings=tuple(ctx.warnings[:100]),
@@ -752,6 +912,8 @@ class JobPresenter:
             attention=present_attention(ctx),
             progress=present_compact_progress(ctx),
             work_items=work_item_summary(job),
+            contained_work=present_contained_work(ctx),
+            feature_label=definition.activity_policy.feature_label,
             impact=present_impact(ctx),
             allowed_actions=actions,
             is_parent=definition.parent_policy is not None,

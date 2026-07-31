@@ -38,6 +38,8 @@ function subject(
 export function makeRow(overrides: Partial<JobRow> = {}): JobRow {
 	return {
 		version: 1,
+		feature_label: 'Posters',
+		contained_work: null,
 		work_items: null,
 		job_id: 'job-public-1',
 		job_type: 'poster_pipeline',
@@ -191,6 +193,7 @@ export function makePresentation(
 		failures: [],
 		warnings: [],
 		suggested_actions: [],
-		...overrides
+		...overrides,
+		feature_label: overrides.feature_label ?? row.feature_label
 	};
 }

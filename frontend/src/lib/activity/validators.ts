@@ -13,6 +13,7 @@
 import { ApiError } from '../api/client';
 import type {
 	CommandResponse,
+	ContainedWorkPage,
 	JobEventFrame,
 	JobSnapshotResponse,
 	JobSubmissionResponse,
@@ -99,6 +100,26 @@ export function parseWorkItemPage(data: unknown): WorkItemPage {
 		throw new IncompatibleResponseError('poster work-item page', data);
 	}
 	return data as WorkItemPage;
+}
+
+/** Validate a source-neutral contained-work page before it drives Activity UI. */
+export function parseContainedWorkPage(data: unknown): ContainedWorkPage {
+	if (
+		!isRecord(data) ||
+		data.version !== 1 ||
+		!isString(data.job_id) ||
+		!Array.isArray(data.items) ||
+		!isFiniteNumber(data.limit) ||
+		!isStringOrNull(data.next_cursor) ||
+		!isRecord(data.summary) ||
+		data.summary.version !== 1 ||
+		!isString(data.summary.source) ||
+		!isFiniteNumber(data.summary.total) ||
+		!isFiniteNumber(data.summary.sequence)
+	) {
+		throw new IncompatibleResponseError('contained-work page', data);
+	}
+	return data as ContainedWorkPage;
 }
 
 /** Validate a destructive/lifecycle command response before applying its effect. */

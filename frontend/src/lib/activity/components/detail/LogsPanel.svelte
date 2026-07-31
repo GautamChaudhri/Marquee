@@ -3,17 +3,17 @@
 	import { listAttemptLogs, listAttempts } from '../../client';
 	import type { AttemptItem, AttemptLogLine, AttemptLogPage } from '../../types';
 
-	let { jobId }: { jobId: string } = $props();
+	let { jobId, contained = false }: { jobId: string; contained?: boolean } = $props();
 	let attempts = $state<AttemptItem[]>([]);
-	let selected = $state<number | null>(null);
+	let selected = $state<AttemptItem | null>(null);
 	let lines = $state<AttemptLogLine[]>([]);
 	let pageMeta = $state<AttemptLogPage | null>(null);
 	let loading = $state(false);
 	let error = $state<string | null>(null);
 	let controller: AbortController | null = null;
 
-	async function choose(number: number) {
-		selected = number;
+	async function choose(attempt: AttemptItem) {
+		selected = attempt;
 		lines = [];
 		pageMeta = null;
 		await loadMore();
@@ -28,8 +28,8 @@
 		try {
 			const page = await listAttemptLogs(
 				fetch,
-				jobId,
-				selected,
+				selected.origin_job_id,
+				selected.number,
 				{
 					after: pageMeta?.next_cursor ?? undefined,
 					limit: 200
@@ -49,14 +49,28 @@
 	onMount(async () => {
 		try {
 			controller = new AbortController();
-			const response = await listAttempts(fetch, jobId, { limit: 50 }, controller.signal);
+			const response = await listAttempts(
+				fetch,
+				jobId,
+				{ limit: 50, scope: contained ? 'contained' : 'self' },
+				controller.signal
+			);
 			attempts = response.items;
-			if (attempts.length) await choose(attempts[0].number);
+			if (attempts.length) await choose(attempts[0]);
 		} catch (reason) {
 			error = reason instanceof Error ? reason.message : 'Attempts unavailable';
 		}
 	});
 	onDestroy(() => controller?.abort());
+
+	function attemptKey(attempt: AttemptItem): string {
+		return `${attempt.origin_job_id}:${attempt.number}`;
+	}
+
+	function originName(attempt: AttemptItem): string {
+		const value = attempt.origin_subject.display_name ?? attempt.origin_subject.title;
+		return typeof value === 'string' && value ? value : attempt.origin_job_id;
+	}
 </script>
 
 <section aria-labelledby="logs-heading">
@@ -67,15 +81,19 @@
 		</div>
 		{#if selected !== null}<a
 				class="download"
-				href={`/api/jobs/${jobId}/attempts/${selected}/logs/download`}>Download attempt log</a
+				href={`/api/jobs/${selected.origin_job_id}/attempts/${selected.number}/logs/download`}
+				>Download attempt log</a
 			>{/if}
 	</div>
 	{#if attempts.length}<label
 			>Attempt<select
-				value={selected ?? ''}
-				onchange={(event) => void choose(Number(event.currentTarget.value))}
-				>{#each attempts as attempt (attempt.number)}<option value={attempt.number}
-						>#{attempt.number} · {attempt.phase}{attempt.outcome
+				value={selected ? attemptKey(selected) : ''}
+				onchange={(event) => {
+					const attempt = attempts.find((item) => attemptKey(item) === event.currentTarget.value);
+					if (attempt) void choose(attempt);
+				}}
+				>{#each attempts as attempt (attemptKey(attempt))}<option value={attemptKey(attempt)}
+						>{contained ? `${originName(attempt)} · ` : ''}#${attempt.number} · {attempt.phase}{attempt.outcome
 							? ` · ${attempt.outcome}`
 							: ''}</option
 					>{/each}</select

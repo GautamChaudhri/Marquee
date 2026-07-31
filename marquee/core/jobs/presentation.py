@@ -28,7 +28,7 @@ from marquee.core.jobs.progress import (
     ProgressMetrics,
     ProgressWait,
 )
-from marquee.core.jobs.work_item_documents import WorkItemSummary
+from marquee.core.jobs.work_item_documents import ContainedWorkSummary, WorkItemSummary
 
 PRESENTATION_VERSION = 1
 
@@ -439,6 +439,7 @@ class JobPresentation(StrictDocument):
     label: str = Field(min_length=1, max_length=200)
     label_key: str = Field(min_length=1, max_length=120)
     feature_area: FeatureArea
+    feature_label: str = Field(min_length=1, max_length=80)
     presentation_family: str = Field(min_length=1, max_length=80)
     subject: PresentationSubject
     action: PresentationAction
@@ -448,6 +449,9 @@ class JobPresentation(StrictDocument):
     status: PresentationStatus
     progress: CompactProgress | None = None
     work_items: WorkItemSummary | None = Field(default=None, exclude_if=lambda value: value is None)
+    contained_work: ContainedWorkSummary | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     impact: PresentationImpact | None = None
     sections: tuple[PresentationSection, ...] = Field(default=(), max_length=24)
     warnings: tuple[WarningItem, ...] = Field(default=(), max_length=100)
@@ -492,6 +496,10 @@ class JobRow(StrictDocument):
     attention: PresentationAttention
     progress: CompactProgress | None = None
     work_items: WorkItemSummary | None = Field(default=None, exclude_if=lambda value: value is None)
+    contained_work: ContainedWorkSummary | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    feature_label: str = Field(min_length=1, max_length=100)
     impact: PresentationImpact | None = None
     allowed_actions: tuple[JobAction, ...] = ()
     is_parent: bool = False

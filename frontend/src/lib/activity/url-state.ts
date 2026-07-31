@@ -22,13 +22,6 @@ export interface ActivityUrlState {
 }
 
 const VIEWS = new Set<ActivityView>(['queue', 'history', 'operations']);
-const FEATURES = new Set([
-	'ai_posters',
-	'library_integrations',
-	'ml_taste',
-	'maintenance',
-	'system'
-]);
 const ATTENTION = new Set(['normal', 'warning', 'error']);
 const TRIGGERS = new Set([
 	'manual',
@@ -62,7 +55,7 @@ export function parseActivityUrl(params: URLSearchParams): ActivityUrlState {
 	return {
 		view,
 		q: (params.get('q') ?? '').slice(0, 100),
-		featureArea: allowed(params.get('feature_area'), FEATURES),
+		featureArea: (params.get('feature_area') ?? '').slice(0, 80),
 		jobType: (params.get('type') ?? '').slice(0, 80),
 		subjectKind: (params.get('subject_kind') ?? '').slice(0, 40),
 		phase: view === 'queue' ? allowed(params.get('phase'), QUEUE_PHASES) : '',

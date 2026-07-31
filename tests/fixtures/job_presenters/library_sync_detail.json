@@ -18,6 +18,7 @@
   },
   "failures": [],
   "feature_area": "library_integrations",
+  "feature_label": "Library integrations",
   "impact": {
     "duration_seconds": 900.0,
     "input_bytes": null,

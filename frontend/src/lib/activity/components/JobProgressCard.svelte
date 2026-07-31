@@ -1,7 +1,13 @@
 <script lang="ts">
 	import type { ConnectionState, RecordFreshness } from '../store.svelte';
 	import { activityCallout, metricCards } from '../presentation';
-	import type { JobPresentation, JobRow, JobSnapshotResponse, WorkItemSummary } from '../types';
+	import type {
+		ContainedWorkSummary,
+		JobPresentation,
+		JobRow,
+		JobSnapshotResponse,
+		WorkItemSummary
+	} from '../types';
 	import ActivityCallout from './ActivityCallout.svelte';
 	import ConcurrentSubjects from './ConcurrentSubjects.svelte';
 	import EvidenceMetrics from './EvidenceMetrics.svelte';
@@ -24,6 +30,7 @@
 		artworkUrl = null,
 		activityHref = '/projection-room',
 		workItems = null,
+		containedWork = null,
 		showActions = true,
 		onCancel
 	}: {
@@ -40,6 +47,8 @@
 		activityHref?: string | null;
 		/** Per-subject rollup. Drives the outcome pills once the job settles. */
 		workItems?: WorkItemSummary | null;
+		/** Source-neutral contained-work summary for collection cards. */
+		containedWork?: ContainedWorkSummary | null;
 		/** False when an ActivityActions bar beside the card already owns this job's
 		 *  commands — otherwise Details, Logs, Artifacts and Cancel appear twice. */
 		showActions?: boolean;
@@ -78,10 +87,12 @@
 	// A poster group's title already reads "Get Television Posters · 8 Subjects", which is what
 	// the headline would say again in different words. Expanded cards keep it — there the
 	// explanation is the point and the subject header is not competing for the same line.
-	const showHeadline = $derived(variant === 'expanded' || subject.kind !== 'poster_subject_group');
+	const showHeadline = $derived(variant === 'expanded' || !containedWork);
 	// Counts describe a result, so they wait for one. Mid-run they would be a second,
 	// slower progress reading beside the bar.
-	const outcomes = $derived(workItems && status.phase === 'terminal' ? workItems : null);
+	const outcomes = $derived(
+		status.phase === 'terminal' ? (containedWork ?? workItems ?? null) : null
+	);
 	// "Finalizing" is a stage, and a finished job is not in one. Once the work is over
 	// the bar names the ending instead of the last thing that was happening.
 	const barLabel = $derived(

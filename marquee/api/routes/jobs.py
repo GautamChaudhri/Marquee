@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
@@ -43,6 +44,7 @@ from marquee.core.jobs.contracts import (
     AttentionLevel,
     FeatureArea,
     JobAction,
+    MigrationState,
     TriggerKind,
 )
 from marquee.core.jobs.control import (
@@ -61,7 +63,12 @@ from marquee.core.jobs.control import (
 from marquee.core.jobs.control import (
     set_paused as control_set_paused,
 )
-from marquee.core.jobs.definitions import JobDefinition
+from marquee.core.jobs.definitions import (
+    ActivityPolicy,
+    ActivityVisibility,
+    ContainedWorkSource,
+    JobDefinition,
+)
 from marquee.core.jobs.event_stream import EventClient, JobEventFrame, job_event_tailer
 from marquee.core.jobs.labels import humanize_job_type
 from marquee.core.jobs.log_capture import (
@@ -86,15 +93,18 @@ from marquee.core.jobs.presentation import (
     PresentationStatus,
     RowLinks,
 )
-from marquee.core.jobs.presenters import load_context, resolve_presenter
+from marquee.core.jobs.presenters import GENERIC_PRESENTER, load_context, resolve_presenter
 from marquee.core.jobs.presenters.base import (
+    BatchProgressProjection,
     PresentationIntegrityError,
     present_actions,
     present_attention,
     present_compact_progress,
+    present_contained_work,
     present_status,
 )
 from marquee.core.jobs.work_item_documents import (
+    ContainedWorkSummary,
     WorkItemPage,
     WorkItemProgress,
     WorkItemRow,
@@ -125,28 +135,113 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 QUEUE_RANK_LIMIT = 1000
-_POSTER_BATCH_TYPES = frozenset({"poster_pipeline_batch", "poster_pipeline_tv_batch"})
-
-
 def _activity_visibility_predicate():
     child = aliased(Job)
     parent = aliased(Job)
-    grouped_parent = and_(
-        Job.type.in_(_POSTER_BATCH_TYPES),
-        select(child.id)
-        .where(child.parent_id == Job.id, child.type == "poster_pipeline_group")
-        .exists(),
+    hidden: list[Any] = []
+    for definition in JOB_DEFINITION_REGISTRY:
+        policy = definition.activity_policy
+        if policy.visibility == ActivityVisibility.PROMOTE_CHILDREN:
+            hidden.append(
+                and_(
+                    Job.type == definition.job_type,
+                    select(child.id)
+                    .where(
+                        child.parent_id == Job.id,
+                        child.type.in_(policy.promoted_child_types),
+                    )
+                    .exists(),
+                )
+            )
+        for child_type in policy.hidden_child_types:
+            hidden.append(
+                and_(
+                    Job.type == child_type,
+                    select(parent.id)
+                    .where(parent.id == Job.parent_id, parent.type == definition.job_type)
+                    .exists(),
+                )
+            )
+    return ~or_(*hidden) if hidden else True
+
+
+async def _batch_projections_for_jobs(
+    db: AsyncSession, jobs: list[Job]
+) -> dict[str, JobBatch | BatchProgressProjection]:
+    """Batch-load stored coordinator projections and bounded historical fallbacks."""
+    candidates = {
+        job.id: (_definition_for(job.type), job)
+        for job in jobs
+        if _definition_for(job.type).activity_policy.contained_work
+        == ContainedWorkSource.CHILD_JOBS
+    }
+    if not candidates:
+        return {}
+
+    stored = list(
+        (
+            await db.scalars(
+                select(JobBatch).where(JobBatch.parent_job_id.in_(tuple(candidates)))
+            )
+        ).all()
     )
-    nested_atomic_child = and_(
-        Job.type == "poster_pipeline",
-        select(parent.id)
-        .where(
-            parent.id == Job.parent_id,
-            parent.type.in_((*_POSTER_BATCH_TYPES, "poster_pipeline_group")),
+    projections: dict[str, JobBatch | BatchProgressProjection] = {
+        batch.parent_job_id: batch for batch in stored
+    }
+    missing = {
+        job_id: value for job_id, value in candidates.items() if job_id not in projections
+    }
+    if not missing:
+        return projections
+
+    child_predicates = [
+        and_(Job.parent_id == job_id, Job.type.in_(definition.activity_policy.hidden_child_types))
+        for job_id, (definition, _job) in missing.items()
+        if definition.activity_policy.hidden_child_types
+    ]
+    if not child_predicates:
+        return projections
+    count = func.count(Job.id)
+    rows = (
+        await db.execute(
+            select(
+                Job.parent_id,
+                count.label("created_total"),
+                count.filter(Job.phase == "terminal").label("terminal_total"),
+                count.filter(Job.outcome == "succeeded").label("succeeded_total"),
+                count.filter(Job.outcome == "partially_succeeded").label(
+                    "partially_succeeded_total"
+                ),
+                count.filter(Job.outcome == "no_change").label("no_change_total"),
+                count.filter(Job.outcome == "failed").label("failed_total"),
+                count.filter(Job.outcome == "cancelled").label("cancelled_total"),
+                count.filter(Job.outcome == "superseded").label("superseded_total"),
+                count.filter(Job.outcome == "dead_letter").label("dead_letter_total"),
+                count.filter(Job.outcome == "unsafe").label("unsafe_total"),
+                func.coalesce(func.max(Job.progress_sequence), 0).label("projection_sequence"),
+                func.max(Job.updated_at).label("updated_at"),
+            )
+            .where(or_(*child_predicates))
+            .group_by(Job.parent_id)
         )
-        .exists(),
-    )
-    return and_(~grouped_parent, ~nested_atomic_child)
+    ).all()
+    for row in rows:
+        parent = missing[row.parent_id][1]
+        projections[row.parent_id] = BatchProgressProjection(
+            created_total=row.created_total,
+            terminal_total=row.terminal_total,
+            succeeded_total=row.succeeded_total,
+            partially_succeeded_total=row.partially_succeeded_total,
+            no_change_total=row.no_change_total,
+            failed_total=row.failed_total,
+            cancelled_total=row.cancelled_total,
+            superseded_total=row.superseded_total,
+            dead_letter_total=row.dead_letter_total,
+            unsafe_total=row.unsafe_total,
+            projection_sequence=row.projection_sequence,
+            updated_at=row.updated_at or parent.updated_at,
+        )
+    return projections
 
 
 def _activity_related_match(predicate: Callable[[Any], Any]):
@@ -157,6 +252,31 @@ def _activity_related_match(predicate: Callable[[Any], Any]):
         select(parent.id).where(parent.id == Job.parent_id, predicate(parent)).exists(),
         select(child.id).where(child.parent_id == Job.id, predicate(child)).exists(),
     )
+
+
+def _evidence_job_predicate(
+    *, job: Job, definition: JobDefinition, scope: Literal["self", "contained"], column: Any
+):
+    policy = definition.activity_policy
+    child_types = policy.hidden_child_types
+    if not child_types and policy.contained_work == ContainedWorkSource.CHILD_JOBS:
+        child_types = definition.child_job_types
+    if scope == "self" or not child_types:
+        return column == job.id
+    child = aliased(Job)
+    descendants = select(child.id).where(child.parent_id == job.id)
+    descendants = descendants.where(child.type.in_(child_types))
+    return or_(column == job.id, column.in_(descendants))
+
+
+async def _origin_subjects(db: AsyncSession, job_ids: set[str]) -> dict[str, dict[str, Any]]:
+    if not job_ids:
+        return {}
+    rows = (await db.execute(select(Job.id, Job.subject_snapshot).where(Job.id.in_(job_ids)))).all()
+    return {
+        job_id: snapshot if isinstance(snapshot, dict) else {}
+        for job_id, snapshot in rows
+    }
 
 
 def _member_subject_contains(model, fragment: dict[str, Any]):
@@ -206,16 +326,27 @@ def _error(status_code: int, code: str, message: str, **fields) -> HTTPException
 
 def _definition_for(job_type: str) -> JobDefinition:
     definition = JOB_DEFINITION_REGISTRY.find(job_type)
-    if definition is None:
-        raise _error(
-            409,
-            "unknown_job_definition",
-            "The stored job type has no registered definition.",
-        )
-    return definition
+    if definition is not None:
+        return definition
+    base = JOB_DEFINITION_REGISTRY.find("system_noop")
+    if base is None:  # pragma: no cover - manifest coverage guarantees the fallback source
+        raise RuntimeError("system_noop definition is required for historical presentation")
+    return replace(
+        base,
+        job_type=job_type,
+        label_key="jobs.unknown_historical",
+        presentation_family="unknown_historical",
+        presenter_key=GENERIC_PRESENTER.key,
+        enabled=False,
+        migration_state=MigrationState.DEFINED_DISABLED,
+        disabled_reason="Retained historical job type is no longer registered.",
+        activity_policy=ActivityPolicy(feature_label="Other", monogram="?"),
+    )
 
 
 def _presenter_for(definition: JobDefinition):
+    if definition.presenter_key == GENERIC_PRESENTER.key:
+        return GENERIC_PRESENTER
     return resolve_presenter(definition)
 
 
@@ -551,7 +682,11 @@ async def list_jobs(
             else Job.subject_snapshot.op("->>")("display_name").ilike(f"%{escaped}%", escape="\\")
         )
     if feature_area:
-        query = query.where(Job.feature_area == feature_area.value)
+        query = query.where(
+            _activity_related_match(lambda model: model.feature_area == feature_area.value)
+            if hierarchy == "activity"
+            else Job.feature_area == feature_area.value
+        )
     if type:
         query = query.where(
             _activity_type_match((type,)) if hierarchy == "activity" else Job.type == type
@@ -628,11 +763,15 @@ async def list_jobs(
     has_more = len(rows) > limit
     rows = rows[:limit]
 
+    batches = await _batch_projections_for_jobs(db, rows)
+
     items: list[JobRow] = []
     for job in rows:
         definition = _definition_for(job.type)
         presenter = _presenter_for(definition)
-        items.append(presenter.present_row(load_context(job, definition)))
+        items.append(
+            presenter.present_row(load_context(job, definition, batch=batches.get(job.id)))
+        )
 
     if view == "queue":
         await _attach_queue_ranks(db, items, rows)
@@ -684,12 +823,8 @@ async def activity_attention(
     failed_work_item = (
         func.coalesce(Job.work_item_summary["counts"]["failed"].as_integer(), 0) > 0
     )
-    poster_group_attention = and_(
-        Job.type == "poster_pipeline_group",
-        or_(review_required, failed_work_item),
-    )
     error_attention = or_(error, failed_work_item)
-    needs_attention = or_(warning, error_attention, poster_group_attention)
+    needs_attention = or_(warning, error_attention, review_required)
     row = (
         await db.execute(
             select(
@@ -784,6 +919,9 @@ class JobSnapshotResponse(BaseModel):
     progress: CompactProgress | None
     progress_sequence: int
     work_items: WorkItemSummary | None = Field(default=None, exclude_if=lambda value: value is None)
+    contained_work: ContainedWorkSummary | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     parent_id: str | None
     root_id: str | None
     retry_of_job_id: str | None
@@ -797,9 +935,101 @@ class JobSnapshotResponse(BaseModel):
     links: RowLinks
 
 
+ContainedWorkState = Literal[
+    "pending",
+    "running",
+    "retrying",
+    "succeeded",
+    "no_change",
+    "review_required",
+    "failed",
+    "cancelled",
+]
+
+
+class ContainedWorkItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    key: str
+    ordinal: int = Field(ge=0, le=499)
+    subject: dict[str, Any]
+    status: ContainedWorkState
+    status_label: str
+    status_tone: Literal["neutral", "active", "positive", "warning", "negative"]
+    stage_key: str | None = None
+    stage_name: str | None = None
+    stage_number: int | None = Field(default=None, ge=1, le=100)
+    stage_total: int | None = Field(default=None, ge=1, le=100)
+    progress: WorkItemProgress | None = None
+    message: str | None = Field(default=None, max_length=2_000)
+    sequence: int = Field(ge=0)
+    updated_at: datetime
+    detail_href: str | None = None
+
+
+class ContainedWorkPage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1] = 1
+    job_id: str
+    summary: ContainedWorkSummary
+    items: tuple[ContainedWorkItem, ...]
+    next_cursor: str | None = None
+    limit: int = Field(ge=1, le=100)
+    historical_fallback: bool = False
+
+
+class ActivityCatalogFeature(BaseModel):
+    value: FeatureArea
+    label: str
+
+
+class ActivityCatalogJobType(BaseModel):
+    value: str
+    label: str
+    feature_area: FeatureArea
+    feature_label: str
+    visibility: str
+    contained_work: str
+
+
+class ActivityCatalogResponse(BaseModel):
+    version: Literal[1] = 1
+    features: tuple[ActivityCatalogFeature, ...]
+    job_types: tuple[ActivityCatalogJobType, ...]
+
+
+@router.get("/activity-catalog", response_model=ActivityCatalogResponse)
+async def activity_catalog() -> ActivityCatalogResponse:
+    features: dict[FeatureArea, str] = {}
+    job_types: list[ActivityCatalogJobType] = []
+    for definition in JOB_DEFINITION_REGISTRY:
+        policy = definition.activity_policy
+        features.setdefault(definition.feature_area, policy.feature_label)
+        job_types.append(
+            ActivityCatalogJobType(
+                value=definition.job_type,
+                label=humanize_job_type(definition.job_type),
+                feature_area=definition.feature_area,
+                feature_label=policy.feature_label,
+                visibility=policy.visibility.value,
+                contained_work=policy.contained_work.value,
+            )
+        )
+    return ActivityCatalogResponse(
+        features=tuple(
+            ActivityCatalogFeature(value=value, label=label)
+            for value, label in sorted(features.items(), key=lambda item: item[1])
+        ),
+        job_types=tuple(sorted(job_types, key=lambda item: item.label)),
+    )
+
+
 async def _snapshot_for_job(job: Job, db: AsyncSession) -> JobSnapshotResponse:
     definition = _definition_for(job.type)
-    ctx = load_context(job, definition)
+    batch = (await _batch_projections_for_jobs(db, [job])).get(job.id)
+    ctx = load_context(job, definition, batch=batch)
     last_event_id = await db.scalar(select(func.max(JobEvent.id)).where(JobEvent.job_id == job.id))
     return JobSnapshotResponse(
         job_id=job.id,
@@ -817,6 +1047,7 @@ async def _snapshot_for_job(job: Job, db: AsyncSession) -> JobSnapshotResponse:
         progress=present_compact_progress(ctx),
         progress_sequence=job.progress_sequence,
         work_items=work_item_summary(job),
+        contained_work=present_contained_work(ctx),
         parent_id=job.parent_id,
         root_id=job.root_id,
         retry_of_job_id=job.retry_of_job_id,
@@ -993,6 +1224,194 @@ async def list_job_work_items(
     )
 
 
+_CONTAINED_STATUS_COPY: dict[str, tuple[ContainedWorkState, str, str]] = {
+    "pending": ("pending", "In queue", "neutral"),
+    "running": ("running", "Running", "active"),
+    "retrying": ("retrying", "Retrying", "warning"),
+    "succeeded": ("succeeded", "Succeeded", "positive"),
+    "no_change": ("no_change", "No change needed", "positive"),
+    "review_required": ("review_required", "Needs attention", "warning"),
+    "failed": ("failed", "Failed", "negative"),
+    "cancelled": ("cancelled", "Cancelled", "neutral"),
+}
+
+
+def _contained_work_item(row: WorkItemRow) -> ContainedWorkItem:
+    state, label, tone = _CONTAINED_STATUS_COPY[row.status]
+    return ContainedWorkItem(
+        key=row.subject_key,
+        ordinal=row.ordinal,
+        subject=row.subject,
+        status=state,
+        status_label=label,
+        status_tone=tone,
+        stage_key=row.stage_key,
+        stage_name=row.stage_name,
+        stage_number=row.stage_number,
+        stage_total=row.stage_total,
+        progress=row.progress,
+        message=row.message,
+        sequence=row.sequence,
+        updated_at=row.updated_at,
+    )
+
+
+def _child_contained_state(job: Job, row: JobRow) -> tuple[ContainedWorkState, str, str]:
+    if job.phase != "terminal":
+        if row.progress is not None and row.progress.wait is not None:
+            return _CONTAINED_STATUS_COPY["retrying"]
+        return _CONTAINED_STATUS_COPY["running" if job.phase in {"running", "stopping"} else "pending"]
+    state = {
+        "succeeded": "succeeded",
+        "no_change": "no_change",
+        "partially_succeeded": "review_required",
+        "cancelled": "cancelled",
+        "superseded": "cancelled",
+    }.get(job.outcome or "", "failed")
+    return _CONTAINED_STATUS_COPY[state]
+
+
+def _child_contained_item(*, job: Job, row: JobRow, ordinal: int) -> ContainedWorkItem:
+    state, label, tone = _child_contained_state(job, row)
+    compact = row.progress
+    measurement = None
+    if compact is not None:
+        candidate = compact.current or compact.overall
+        if (
+            candidate is not None
+            and candidate.completed is not None
+            and candidate.total is not None
+        ):
+            measurement = WorkItemProgress(
+                completed=int(candidate.completed),
+                total=int(candidate.total),
+                unit=candidate.unit,
+            )
+    return ContainedWorkItem(
+        key=job.id,
+        ordinal=ordinal,
+        subject=row.subject.model_dump(mode="json", exclude_none=True),
+        status=state,
+        status_label=label,
+        status_tone=tone,
+        stage_key=compact.stage_key if compact is not None else None,
+        stage_name=compact.stage_label if compact is not None else None,
+        progress=measurement,
+        message=row.attention.message if row.attention.message else None,
+        sequence=(compact.sequence or job.progress_sequence) if compact is not None else job.progress_sequence,
+        updated_at=(compact.updated_at if compact is not None else None) or job.updated_at,
+        detail_href=row.links.detail,
+    )
+
+
+@router.get("/{job_id}/contained-work", response_model=ContainedWorkPage)
+async def list_contained_work(
+    job_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    cursor: str | None = None,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> ContainedWorkPage:
+    """Return one source-neutral, stable page for an Activity disclosure."""
+    job = await _load_job(db, job_id)
+    definition = _definition_for(job.type)
+    policy = definition.activity_policy
+    batch = (await _batch_projections_for_jobs(db, [job])).get(job.id)
+    ctx = load_context(job, definition, batch=batch)
+    summary = present_contained_work(ctx)
+    if summary is None:
+        raise HTTPException(404, "Job does not expose contained Activity work")
+    contract = cursor_contract(
+        view="contained_work",
+        filters={"job_id": job.id, "source": summary.source},
+        sort="ordinal",
+    )
+
+    if summary.source == "work_items":
+        after = None
+        if cursor:
+            try:
+                (after_raw,) = decode_cursor(cursor, contract=contract)
+                if after_raw is None or isinstance(after_raw, bool):
+                    raise ValueError("contained-work cursor ordinal is invalid")
+                after = int(after_raw)
+            except (InvalidCursorError, ValueError) as exc:
+                raise _error(422, ERROR_INVALID_CURSOR, str(exc)) from None
+        page = await list_job_work_items(job.id, db, cursor=after, limit=limit)
+        work_items = tuple(_contained_work_item(item) for item in page.items)
+        next_cursor = (
+            encode_cursor(contract=contract, key=(page.next_cursor,))
+            if page.next_cursor is not None
+            else None
+        )
+        return ContainedWorkPage(
+            job_id=job.id,
+            summary=summary,
+            items=work_items,
+            next_cursor=next_cursor,
+            limit=limit,
+            historical_fallback=page.historical_fallback,
+        )
+
+    offset = 0
+    after_created: datetime | None = None
+    after_id: str | None = None
+    if cursor:
+        try:
+            offset_raw, created_raw, after_id_raw = decode_cursor(cursor, contract=contract)
+            if offset_raw is None or isinstance(offset_raw, bool):
+                raise ValueError("contained-work cursor ordinal is invalid")
+            if not isinstance(after_id_raw, str):
+                raise ValueError("contained-work cursor job ID is invalid")
+            offset = int(offset_raw) + 1
+            after_created = _parse_cursor_datetime(created_raw, "created_at")
+            after_id = after_id_raw
+        except (InvalidCursorError, ValueError) as exc:
+            raise _error(422, ERROR_INVALID_CURSOR, str(exc)) from None
+    child_types = policy.hidden_child_types or definition.child_job_types
+    query = select(Job).where(Job.parent_id == job.id)
+    if child_types:
+        query = query.where(Job.type.in_(child_types))
+    if after_created is not None and after_id is not None:
+        query = query.where(
+            or_(
+                Job.created_at > after_created,
+                and_(Job.created_at == after_created, Job.id > after_id),
+            )
+        )
+    rows = list(
+        (
+            await db.scalars(
+                query.order_by(Job.created_at.asc(), Job.id.asc()).limit(limit + 1)
+            )
+        ).all()
+    )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items: list[ContainedWorkItem] = []
+    for index, child_job in enumerate(rows):
+        child_definition = _definition_for(child_job.type)
+        presented = _presenter_for(child_definition).present_row(
+            load_context(child_job, child_definition)
+        )
+        items.append(
+            _child_contained_item(job=child_job, row=presented, ordinal=offset + index)
+        )
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        next_cursor = encode_cursor(
+            contract=contract,
+            key=(offset + len(rows) - 1, _cursor_value(last.created_at), last.id),
+        )
+    return ContainedWorkPage(
+        job_id=job.id,
+        summary=summary,
+        items=tuple(items),
+        next_cursor=next_cursor,
+        limit=limit,
+    )
+
+
 async def _live_children_counts(db: AsyncSession, job_id: str) -> dict[str, int]:
     rows = (
         await db.execute(
@@ -1079,6 +1498,7 @@ async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(
     job, logs_available, artifacts_available, mutation_detail = evidence
     definition = _definition_for(job.type)
     presenter = _presenter_for(definition)
+    batch = (await _batch_projections_for_jobs(db, [job])).get(job.id)
     live: dict[str, Any] = {}
     if definition.child_job_types:
         live["children"] = {
@@ -1095,6 +1515,7 @@ async def get_job_presentation(job_id: str, db: Annotated[AsyncSession, Depends(
             logs_available=logs_available,
             artifacts_available=artifacts_available,
             mutation_detail=mutation_detail,
+            batch=batch,
         )
     except PresentationIntegrityError as exc:
         logger.error("presentation integrity failure for job %s: %s", job_id, exc)
@@ -1124,6 +1545,8 @@ class AttemptItem(BaseModel):
     exit_signal: int | None
     metrics: dict | None
     error: dict | None
+    origin_job_id: str
+    origin_subject: dict[str, Any]
 
 
 class AttemptListResponse(BaseModel):
@@ -1140,19 +1563,39 @@ async def list_job_attempts(
     db: Annotated[AsyncSession, Depends(get_db)],
     cursor: str | None = None,
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: Literal["self", "contained"] = "self",
 ):
-    await _load_job(db, job_id)
-    contract = cursor_contract(view="attempts", filters={"job_id": job_id}, sort="number")
-    query = select(JobAttempt).where(JobAttempt.job_id == job_id).order_by(JobAttempt.number.asc())
+    job = await _load_job(db, job_id)
+    definition = _definition_for(job.type)
+    contract = cursor_contract(
+        view="attempts", filters={"job_id": job_id, "scope": scope}, sort="origin_number"
+    )
+    query = select(JobAttempt).where(
+        _evidence_job_predicate(
+            job=job, definition=definition, scope=scope, column=JobAttempt.job_id
+        )
+    )
     if cursor:
         try:
-            (after_number,) = decode_cursor(cursor, contract=contract)
+            after_job_id, after_number = decode_cursor(cursor, contract=contract)
         except (InvalidCursorError, ValueError) as exc:
             raise _error(422, ERROR_INVALID_CURSOR, str(exc)) from None
-        query = query.where(JobAttempt.number > after_number)
-    rows = list((await db.scalars(query.limit(limit + 1))).all())
+        query = query.where(
+            or_(
+                JobAttempt.job_id > after_job_id,
+                and_(JobAttempt.job_id == after_job_id, JobAttempt.number > after_number),
+            )
+        )
+    rows = list(
+        (
+            await db.scalars(
+                query.order_by(JobAttempt.job_id.asc(), JobAttempt.number.asc()).limit(limit + 1)
+            )
+        ).all()
+    )
     has_more = len(rows) > limit
     rows = rows[:limit]
+    origins = await _origin_subjects(db, {attempt.job_id for attempt in rows})
     items = [
         AttemptItem(
             number=attempt.number,
@@ -1169,11 +1612,15 @@ async def list_job_attempts(
             exit_signal=attempt.exit_signal,
             metrics=attempt.metrics,
             error=attempt.error,
+            origin_job_id=attempt.job_id,
+            origin_subject=origins.get(attempt.job_id, {}),
         )
         for attempt in rows
     ]
     next_cursor = (
-        encode_cursor(contract=contract, key=(rows[-1].number,)) if has_more and rows else None
+        encode_cursor(contract=contract, key=(rows[-1].job_id, rows[-1].number))
+        if has_more and rows
+        else None
     )
     return AttemptListResponse(items=items, next_cursor=next_cursor, limit=limit)
 
@@ -1398,6 +1845,8 @@ class EventItem(BaseModel):
     message: str | None
     detail: dict | None
     created_at: datetime | None
+    origin_job_id: str
+    origin_subject: dict[str, Any]
 
 
 class EventListResponse(BaseModel):
@@ -1414,10 +1863,16 @@ async def list_job_events(
     db: Annotated[AsyncSession, Depends(get_db)],
     cursor: str | None = None,
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: Literal["self", "contained"] = "self",
 ):
-    await _load_job(db, job_id)
-    contract = cursor_contract(view="events", filters={"job_id": job_id}, sort="id")
-    query = select(JobEvent).where(JobEvent.job_id == job_id).order_by(JobEvent.id.asc())
+    job = await _load_job(db, job_id)
+    definition = _definition_for(job.type)
+    contract = cursor_contract(
+        view="events", filters={"job_id": job_id, "scope": scope}, sort="id"
+    )
+    query = select(JobEvent).where(
+        _evidence_job_predicate(job=job, definition=definition, scope=scope, column=JobEvent.job_id)
+    ).order_by(JobEvent.id.asc())
     if cursor:
         try:
             (after_id,) = decode_cursor(cursor, contract=contract)
@@ -1427,6 +1882,7 @@ async def list_job_events(
     rows = list((await db.scalars(query.limit(limit + 1))).all())
     has_more = len(rows) > limit
     rows = rows[:limit]
+    origins = await _origin_subjects(db, {event.job_id for event in rows})
     items = [
         EventItem(
             id=event.id,
@@ -1440,6 +1896,8 @@ async def list_job_events(
             }
             or None,
             created_at=event.created_at,
+            origin_job_id=event.job_id,
+            origin_subject=origins.get(event.job_id, {}),
         )
         for event in rows
     ]
@@ -1466,6 +1924,8 @@ class ArtifactItemResponse(BaseModel):
     available: bool
     virtual: bool
     download_url: str | None
+    origin_job_id: str
+    origin_subject: dict[str, Any]
 
 
 class ArtifactListResponse(BaseModel):
@@ -1482,10 +1942,18 @@ async def list_job_artifacts(
     db: Annotated[AsyncSession, Depends(get_db)],
     cursor: str | None = None,
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    scope: Literal["self", "contained"] = "self",
 ):
-    await _load_job(db, job_id)
-    contract = cursor_contract(view="artifacts", filters={"job_id": job_id}, sort="id")
-    query = select(JobArtifact).where(JobArtifact.job_id == job_id).order_by(JobArtifact.id.asc())
+    job = await _load_job(db, job_id)
+    definition = _definition_for(job.type)
+    contract = cursor_contract(
+        view="artifacts", filters={"job_id": job_id, "scope": scope}, sort="id"
+    )
+    query = select(JobArtifact).where(
+        _evidence_job_predicate(
+            job=job, definition=definition, scope=scope, column=JobArtifact.job_id
+        )
+    ).order_by(JobArtifact.id.asc())
     if cursor:
         try:
             (after_id,) = decode_cursor(cursor, contract=contract)
@@ -1495,6 +1963,7 @@ async def list_job_artifacts(
     rows = list((await db.scalars(query.limit(limit + 1))).all())
     has_more = len(rows) > limit
     rows = rows[:limit]
+    origins = await _origin_subjects(db, {artifact.job_id for artifact in rows})
     items = [
         ArtifactItemResponse(
             id=artifact.id,
@@ -1512,10 +1981,12 @@ async def list_job_artifacts(
             and (artifact.expires_at is None or artifact.expires_at > datetime.now(UTC)),
             virtual=artifact.virtual_source is not None,
             download_url=(
-                f"/api/jobs/{job_id}/artifacts/{artifact.id}/download"
+                f"/api/jobs/{artifact.job_id}/artifacts/{artifact.id}/download"
                 if artifact.status == "available"
                 else None
             ),
+            origin_job_id=artifact.job_id,
+            origin_subject=origins.get(artifact.job_id, {}),
         )
         for artifact in rows
     ]

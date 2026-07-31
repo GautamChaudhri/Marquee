@@ -158,6 +158,23 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/jobs/activity-catalog': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/** Activity Catalog */
+		get: operations['activity_catalog_api_jobs_activity_catalog_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/jobs/attention': {
 		parameters: {
 			query?: never;
@@ -343,6 +360,26 @@ export interface paths {
 		};
 		/** List Job Children */
 		get: operations['list_job_children_api_jobs__job_id__children_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/jobs/{job_id}/contained-work': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * List Contained Work
+		 * @description Return one source-neutral, stable page for an Activity disclosure.
+		 */
+		get: operations['list_contained_work_api_jobs__job_id__contained_work_get'];
 		put?: never;
 		post?: never;
 		delete?: never;
@@ -2069,6 +2106,39 @@ export interface components {
 			/** Warning */
 			warning: number;
 		};
+		/** ActivityCatalogFeature */
+		ActivityCatalogFeature: {
+			/** Label */
+			label: string;
+			value: components['schemas']['FeatureArea'];
+		};
+		/** ActivityCatalogJobType */
+		ActivityCatalogJobType: {
+			/** Contained Work */
+			contained_work: string;
+			feature_area: components['schemas']['FeatureArea'];
+			/** Feature Label */
+			feature_label: string;
+			/** Label */
+			label: string;
+			/** Value */
+			value: string;
+			/** Visibility */
+			visibility: string;
+		};
+		/** ActivityCatalogResponse */
+		ActivityCatalogResponse: {
+			/** Features */
+			features: components['schemas']['ActivityCatalogFeature'][];
+			/** Job Types */
+			job_types: components['schemas']['ActivityCatalogJobType'][];
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
 		/** ArtifactItem */
 		ArtifactItem: {
 			/** Artifact Kind */
@@ -2110,6 +2180,12 @@ export interface components {
 			kind: string;
 			/** Name */
 			name: string;
+			/** Origin Job Id */
+			origin_job_id: string;
+			/** Origin Subject */
+			origin_subject: {
+				[key: string]: unknown;
+			};
 			/** Retention Class */
 			retention_class: string;
 			/** Size Bytes */
@@ -2160,6 +2236,12 @@ export interface components {
 			} | null;
 			/** Number */
 			number: number;
+			/** Origin Job Id */
+			origin_job_id: string;
+			/** Origin Subject */
+			origin_subject: {
+				[key: string]: unknown;
+			};
 			/** Outcome */
 			outcome: string | null;
 			/** Phase */
@@ -2586,6 +2668,163 @@ export interface components {
 				[key: string]: unknown;
 			};
 		};
+		/** ContainedWorkItem */
+		ContainedWorkItem: {
+			/** Detail Href */
+			detail_href?: string | null;
+			/** Key */
+			key: string;
+			/** Message */
+			message?: string | null;
+			/** Ordinal */
+			ordinal: number;
+			progress?: components['schemas']['WorkItemProgress'] | null;
+			/** Sequence */
+			sequence: number;
+			/** Stage Key */
+			stage_key?: string | null;
+			/** Stage Name */
+			stage_name?: string | null;
+			/** Stage Number */
+			stage_number?: number | null;
+			/** Stage Total */
+			stage_total?: number | null;
+			/**
+			 * Status
+			 * @enum {string}
+			 */
+			status:
+				| 'pending'
+				| 'running'
+				| 'retrying'
+				| 'succeeded'
+				| 'no_change'
+				| 'review_required'
+				| 'failed'
+				| 'cancelled';
+			/** Status Label */
+			status_label: string;
+			/**
+			 * Status Tone
+			 * @enum {string}
+			 */
+			status_tone: 'neutral' | 'active' | 'positive' | 'warning' | 'negative';
+			/** Subject */
+			subject: {
+				[key: string]: unknown;
+			};
+			/**
+			 * Updated At
+			 * Format: date-time
+			 */
+			updated_at: string;
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
+		/** ContainedWorkPage */
+		ContainedWorkPage: {
+			/**
+			 * Historical Fallback
+			 * @default false
+			 */
+			historical_fallback: boolean;
+			/** Items */
+			items: components['schemas']['ContainedWorkItem'][];
+			/** Job Id */
+			job_id: string;
+			/** Limit */
+			limit: number;
+			/** Next Cursor */
+			next_cursor?: string | null;
+			summary: components['schemas']['ContainedWorkSummary'];
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
+		/** ContainedWorkStatusCounts */
+		ContainedWorkStatusCounts: {
+			/**
+			 * Cancelled
+			 * @default 0
+			 */
+			cancelled: number;
+			/**
+			 * Failed
+			 * @default 0
+			 */
+			failed: number;
+			/**
+			 * No Change
+			 * @default 0
+			 */
+			no_change: number;
+			/**
+			 * Pending
+			 * @default 0
+			 */
+			pending: number;
+			/**
+			 * Retrying
+			 * @default 0
+			 */
+			retrying: number;
+			/**
+			 * Review Required
+			 * @default 0
+			 */
+			review_required: number;
+			/**
+			 * Running
+			 * @default 0
+			 */
+			running: number;
+			/**
+			 * Succeeded
+			 * @default 0
+			 */
+			succeeded: number;
+		};
+		/**
+		 * ContainedWorkSummary
+		 * @description Source-neutral disclosure metadata used by every Activity card.
+		 */
+		ContainedWorkSummary: {
+			/** Completed */
+			completed: number;
+			counts?: components['schemas']['ContainedWorkStatusCounts'];
+			/** Href */
+			href: string;
+			/** Item Label Plural */
+			item_label_plural: string;
+			/** Item Label Singular */
+			item_label_singular: string;
+			/** Label */
+			label: string;
+			/** Sequence */
+			sequence: number;
+			/**
+			 * Source
+			 * @enum {string}
+			 */
+			source: 'work_items' | 'child_jobs';
+			/** Total */
+			total: number;
+			/** Updated At */
+			updated_at?: string | null;
+			/**
+			 * Version
+			 * @default 1
+			 * @constant
+			 */
+			version: 1;
+		};
 		/** DiagnosticLinks */
 		DiagnosticLinks: {
 			/** Artifacts */
@@ -2637,6 +2876,12 @@ export interface components {
 			id: number;
 			/** Message */
 			message: string | null;
+			/** Origin Job Id */
+			origin_job_id: string;
+			/** Origin Subject */
+			origin_subject: {
+				[key: string]: unknown;
+			};
 			/** Stage */
 			stage: string | null;
 			/** State */
@@ -2866,6 +3111,7 @@ export interface components {
 			 */
 			allowed_actions: components['schemas']['JobAction'][];
 			attention: components['schemas']['PresentationAttention'];
+			contained_work?: components['schemas']['ContainedWorkSummary'] | null;
 			evidence?: components['schemas']['EvidenceAvailability'];
 			/**
 			 * Failures
@@ -2873,6 +3119,8 @@ export interface components {
 			 */
 			failures: components['schemas']['FailureItem'][];
 			feature_area: components['schemas']['FeatureArea'];
+			/** Feature Label */
+			feature_label: string;
 			impact?: components['schemas']['PresentationImpact'] | null;
 			/** Job Id */
 			job_id: string;
@@ -2940,6 +3188,7 @@ export interface components {
 			 */
 			allowed_actions: components['schemas']['JobAction'][];
 			attention: components['schemas']['PresentationAttention'];
+			contained_work?: components['schemas']['ContainedWorkSummary'] | null;
 			/** Created At */
 			created_at?: string | null;
 			/** Duration Seconds */
@@ -2950,6 +3199,8 @@ export interface components {
 			/** Execution Class */
 			execution_class: string;
 			feature_area: components['schemas']['FeatureArea'];
+			/** Feature Label */
+			feature_label: string;
 			/** Fence Token */
 			fence_token: number;
 			impact?: components['schemas']['PresentationImpact'] | null;
@@ -3002,6 +3253,7 @@ export interface components {
 			attention: components['schemas']['PresentationAttention'];
 			/** Configuration Version */
 			configuration_version: number | null;
+			contained_work?: components['schemas']['ContainedWorkSummary'] | null;
 			/** Created At */
 			created_at: string | null;
 			/** Desired State */
@@ -4734,6 +4986,26 @@ export interface operations {
 			};
 		};
 	};
+	activity_catalog_api_jobs_activity_catalog_get: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['ActivityCatalogResponse'];
+				};
+			};
+		};
+	};
 	activity_attention_api_jobs_attention_get: {
 		parameters: {
 			query?: never;
@@ -4792,6 +5064,7 @@ export interface operations {
 			query?: {
 				cursor?: string | null;
 				limit?: number;
+				scope?: 'self' | 'contained';
 			};
 			header?: never;
 			path: {
@@ -4858,6 +5131,7 @@ export interface operations {
 			query?: {
 				cursor?: string | null;
 				limit?: number;
+				scope?: 'self' | 'contained';
 			};
 			header?: never;
 			path: {
@@ -5092,11 +5366,46 @@ export interface operations {
 			};
 		};
 	};
+	list_contained_work_api_jobs__job_id__contained_work_get: {
+		parameters: {
+			query?: {
+				cursor?: string | null;
+				limit?: number;
+			};
+			header?: never;
+			path: {
+				job_id: string;
+			};
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['ContainedWorkPage'];
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
 	list_job_events_api_jobs__job_id__events_get: {
 		parameters: {
 			query?: {
 				cursor?: string | null;
 				limit?: number;
+				scope?: 'self' | 'contained';
 			};
 			header?: never;
 			path: {

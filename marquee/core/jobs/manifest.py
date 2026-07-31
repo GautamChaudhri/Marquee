@@ -18,6 +18,9 @@ from marquee.core.jobs.contracts import (
 from marquee.core.jobs.definitions import (
     ActiveOverlapMode,
     ActiveOverlapPolicy,
+    ActivityPolicy,
+    ActivityVisibility,
+    ContainedWorkSource,
     JobDefinition,
     JobDefinitionRegistry,
     TimeoutPolicy,
@@ -113,6 +116,59 @@ def _spec(
 
 _R = EffectSafety.READ_ONLY
 _U = EffectSafety.UNSAFE_MUTATION
+
+_FEATURE_LABELS = {
+    FeatureArea.AI_POSTERS: "Posters",
+    FeatureArea.LIBRARY_INTEGRATIONS: "Library integrations",
+    FeatureArea.ML_TASTE: "Taste and ranking",
+    FeatureArea.MAINTENANCE: "Maintenance",
+    FeatureArea.SYSTEM: "System",
+}
+
+
+def _activity_policy(spec: _DefinitionSpec) -> ActivityPolicy:
+    common = {"feature_label": _FEATURE_LABELS[spec.feature]}
+    if spec.job_type in {"poster_pipeline_batch", "poster_pipeline_tv_batch"}:
+        return ActivityPolicy(
+            visibility=ActivityVisibility.PROMOTE_CHILDREN,
+            contained_work=ContainedWorkSource.CHILD_JOBS,
+            promoted_child_types=frozenset({"poster_pipeline_group"}),
+            hidden_child_types=frozenset({"poster_pipeline"}),
+            item_label_singular="subject",
+            item_label_plural="subjects",
+            disclosure_label="Posters in This Group",
+            monogram="FP" if spec.job_type == "poster_pipeline_batch" else "TVP",
+            **common,
+        )
+    if spec.job_type == "poster_pipeline_group":
+        return ActivityPolicy(
+            contained_work=ContainedWorkSource.WORK_ITEMS,
+            hidden_child_types=frozenset({"poster_pipeline"}),
+            item_label_singular="subject",
+            item_label_plural="subjects",
+            disclosure_label="Posters in This Group",
+            monogram="P",
+            stage_catalog_key="poster_pipeline",
+            **common,
+        )
+    parent_copy = {
+        "poster_heal": ("Posters Being Healed", "PH"),
+        "poster_deploy_reset": ("Posters Being Reset", "PR"),
+        "poster_backup_all": ("Posters Being Backed Up", "PB"),
+    }
+    if spec.job_type in parent_copy:
+        disclosure, monogram = parent_copy[spec.job_type]
+        return ActivityPolicy(
+            visibility=ActivityVisibility.CONSOLIDATE_PARENT,
+            contained_work=ContainedWorkSource.CHILD_JOBS,
+            hidden_child_types=spec.child_job_types,
+            item_label_singular="subject",
+            item_label_plural="subjects",
+            disclosure_label=disclosure,
+            monogram=monogram,
+            **common,
+        )
+    return ActivityPolicy(**common)
 
 _SPECS = (
     _spec(
@@ -665,6 +721,7 @@ def _definition(spec: _DefinitionSpec) -> JobDefinition:
         ),
         failure_classifier=default_failure_classifier,
         configuration_audit="snapshot" if configuration_keys else "audited_empty",
+        activity_policy=_activity_policy(spec),
         overlap_policy=_overlap_policy(spec),
         safety_policy=(
             SafetyPolicy(media_file=True, media_write=True)

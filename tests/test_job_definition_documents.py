@@ -14,6 +14,7 @@ from marquee.core.jobs.contracts import (
     MigrationState,
 )
 from marquee.core.jobs.definitions import (
+    ActivityPolicy,
     DisabledJobDefinitionError,
     DuplicateJobDefinitionError,
     InvalidJobDefinitionError,
@@ -57,6 +58,7 @@ def _definition(**updates) -> JobDefinition:
         job_type="system_noop",
         label_key="jobs.system_noop",
         feature_area=FeatureArea.SYSTEM,
+        activity_policy=ActivityPolicy(feature_label="System"),
         presentation_family="system",
         presenter_key="system.noop",
         enabled=True,

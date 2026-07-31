@@ -16,12 +16,14 @@ import type { paths } from '../api/generated/openapi';
 import {
 	IncompatibleResponseError,
 	parseCommandResponse,
+	parseContainedWorkPage,
 	parseListEnvelope,
 	parseSnapshot,
 	parseWorkItemPage
 } from './validators';
 import type {
 	ActivityAttentionResponse,
+	ActivityCatalogResponse,
 	ArtifactListResponse,
 	AttemptListResponse,
 	AttemptLogPage,
@@ -30,6 +32,8 @@ import type {
 	BulkActionResponse,
 	ChildListResponse,
 	CommandResponse,
+	ContainedWorkPage,
+	ContainedWorkQuery,
 	EventListResponse,
 	JobListResponse,
 	JobPresentation,
@@ -71,6 +75,11 @@ export function getActivityAttention(fetch: Fetch): Promise<ActivityAttentionRes
 	return apiGet<ActivityAttentionResponse>(fetch, '/jobs/attention');
 }
 
+/** Definition-owned labels and filter options for the extensible Activity surface. */
+export function getActivityCatalog(fetch: Fetch): Promise<ActivityCatalogResponse> {
+	return apiGet<ActivityCatalogResponse>(fetch, '/jobs/activity-catalog');
+}
+
 /** One versioned bounded snapshot for the lazy secondary Operations surface. */
 export function getOperations(fetch: Fetch, signal?: AbortSignal): Promise<OperationsSnapshot> {
 	return apiGet<OperationsSnapshot>(fetch, '/system/operations', undefined, signal);
@@ -110,6 +119,18 @@ export async function listWorkItems(
 	signal?: AbortSignal
 ): Promise<WorkItemPage> {
 	return parseWorkItemPage(await apiGet(fetch, `/jobs/${jobId}/work-items`, query, signal));
+}
+
+/** `GET /api/jobs/{id}/contained-work` — generic lazy Activity disclosure rows. */
+export async function listContainedWork(
+	fetch: Fetch,
+	jobId: string,
+	query: ContainedWorkQuery = {},
+	signal?: AbortSignal
+): Promise<ContainedWorkPage> {
+	return parseContainedWorkPage(
+		await apiGet(fetch, `/jobs/${jobId}/contained-work`, query, signal)
+	);
 }
 
 /** `GET /api/jobs/{id}/attempts` — the execution-audit attempts, paginated. */

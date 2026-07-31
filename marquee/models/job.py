@@ -243,7 +243,7 @@ class JobWorkItem(Base):
             name="ck_job_work_items_stage_number",
         ),
         CheckConstraint(
-            "stage_total >= 1 AND stage_total <= 9",
+            "stage_total >= 1 AND stage_total <= 100",
             name="ck_job_work_items_stage_total",
         ),
         CheckConstraint(

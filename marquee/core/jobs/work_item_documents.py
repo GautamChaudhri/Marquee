@@ -19,6 +19,8 @@ WorkItemStatus = Literal[
     "cancelled",
 ]
 
+ContainedWorkSource = Literal["work_items", "child_jobs"]
+
 
 def poster_group_completion_message(*, total: int, failed: int, review: int) -> str:
     """Produce exact, grammatical operator-facing grouped-poster wording."""
@@ -57,6 +59,33 @@ class WorkItemSummary(StrictDocument):
     href: str = Field(min_length=1, max_length=200)
 
 
+class ContainedWorkStatusCounts(StrictDocument):
+    pending: int = Field(default=0, ge=0)
+    running: int = Field(default=0, ge=0)
+    retrying: int = Field(default=0, ge=0)
+    succeeded: int = Field(default=0, ge=0)
+    no_change: int = Field(default=0, ge=0)
+    review_required: int = Field(default=0, ge=0)
+    failed: int = Field(default=0, ge=0)
+    cancelled: int = Field(default=0, ge=0)
+
+
+class ContainedWorkSummary(StrictDocument):
+    """Source-neutral disclosure metadata used by every Activity card."""
+
+    version: Literal[1] = 1
+    source: ContainedWorkSource
+    label: str = Field(min_length=1, max_length=100)
+    item_label_singular: str = Field(min_length=1, max_length=40)
+    item_label_plural: str = Field(min_length=1, max_length=40)
+    total: int = Field(ge=0, le=500)
+    completed: int = Field(ge=0, le=500)
+    counts: ContainedWorkStatusCounts = Field(default_factory=ContainedWorkStatusCounts)
+    sequence: int = Field(ge=0)
+    updated_at: datetime | None = None
+    href: str = Field(min_length=1, max_length=200)
+
+
 class WorkItemProgress(StrictDocument):
     completed: int = Field(ge=0)
     total: int = Field(gt=0)
@@ -73,8 +102,8 @@ class WorkItemRow(StrictDocument):
     status: WorkItemStatus
     stage_key: str | None = Field(default=None, max_length=80)
     stage_name: str | None = Field(default=None, max_length=100)
-    stage_number: int | None = Field(default=None, ge=1, le=9)
-    stage_total: int = Field(default=9, ge=1, le=9)
+    stage_number: int | None = Field(default=None, ge=1, le=100)
+    stage_total: int = Field(default=9, ge=1, le=100)
     progress: WorkItemProgress | None = None
     message: str | None = Field(default=None, max_length=2_000)
     sequence: int = Field(ge=0)

@@ -3,7 +3,7 @@
 	import { listArtifacts } from '../../client';
 	import type { ArtifactItemResponse } from '../../types';
 
-	let { jobId }: { jobId: string } = $props();
+	let { jobId, contained = false }: { jobId: string; contained?: boolean } = $props();
 	let items = $state<ArtifactItemResponse[]>([]);
 	let cursor = $state<string | null>(null);
 	let loading = $state(false);
@@ -25,7 +25,7 @@
 			const page = await listArtifacts(
 				fetch,
 				jobId,
-				{ cursor: cursor ?? undefined, limit: 50 },
+				{ cursor: cursor ?? undefined, limit: 50, scope: contained ? 'contained' : 'self' },
 				controller.signal
 			);
 			items = [...items, ...page.items];
@@ -41,6 +41,11 @@
 
 	onMount(loadMore);
 	onDestroy(() => controller?.abort());
+
+	function originName(item: ArtifactItemResponse): string {
+		const value = item.origin_subject.display_name ?? item.origin_subject.title;
+		return typeof value === 'string' && value ? value : item.origin_job_id;
+	}
 </script>
 
 <section aria-labelledby="artifacts-heading">
@@ -58,6 +63,9 @@
 					<strong>{item.name}</strong><span
 						>{item.kind} · {size(item.size_bytes)} · {item.retention_class}</span
 					>{#if item.expires_at}<span>Expires {new Date(item.expires_at).toLocaleString()}</span
+						>{/if}{#if contained && item.origin_job_id !== jobId}<a
+							class="origin"
+							href={`/projection-room/jobs/${item.origin_job_id}`}>{originName(item)}</a
 						>{/if}
 				</div>
 				<span class:available={item.available}>{item.status}</span

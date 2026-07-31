@@ -60,6 +60,46 @@ class ActiveOverlapMode(StrEnum):
     ALLOW = "allow"
 
 
+class ActivityVisibility(StrEnum):
+    """How one definition participates in the operator-facing Activity hierarchy."""
+
+    SELF = "self"
+    CONSOLIDATE_PARENT = "consolidate_parent"
+    PROMOTE_CHILDREN = "promote_children"
+
+
+class ContainedWorkSource(StrEnum):
+    NONE = "none"
+    WORK_ITEMS = "work_items"
+    CHILD_JOBS = "child_jobs"
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityPolicy:
+    """Definition-owned Activity visibility and contained-work presentation contract."""
+
+    visibility: ActivityVisibility = ActivityVisibility.SELF
+    contained_work: ContainedWorkSource = ContainedWorkSource.NONE
+    promoted_child_types: frozenset[str] = field(default_factory=frozenset)
+    hidden_child_types: frozenset[str] = field(default_factory=frozenset)
+    feature_label: str = "Other"
+    item_label_singular: str = "item"
+    item_label_plural: str = "items"
+    disclosure_label: str | None = None
+    monogram: str | None = None
+    stage_catalog_key: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "promoted_child_types", frozenset(self.promoted_child_types))
+        object.__setattr__(self, "hidden_child_types", frozenset(self.hidden_child_types))
+        if self.visibility == ActivityVisibility.PROMOTE_CHILDREN and not self.promoted_child_types:
+            raise ValueError("promote_children Activity policies require promoted child types")
+        if self.contained_work == ContainedWorkSource.NONE and self.disclosure_label is not None:
+            raise ValueError("Activity disclosure labels require contained work")
+        if self.monogram is not None and not 1 <= len(self.monogram) <= 4:
+            raise ValueError("Activity monograms must contain 1..4 characters")
+
+
 @dataclass(frozen=True, slots=True)
 class ActiveOverlapPolicy:
     """Definition-owned policy for canonical active-work resolution."""
@@ -89,6 +129,7 @@ class JobDefinition:
     terminal_policy: TerminalDecisionPolicy
     failure_classifier: Callable[[BaseException], RetryClassification]
     configuration_audit: str
+    activity_policy: ActivityPolicy
     overlap_policy: ActiveOverlapPolicy = field(
         default_factory=lambda: ActiveOverlapPolicy(ActiveOverlapMode.COALESCE_EQUIVALENT)
     )

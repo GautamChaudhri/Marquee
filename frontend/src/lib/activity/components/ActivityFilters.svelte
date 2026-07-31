@@ -1,8 +1,11 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
+	import { getActivityCatalog } from '../client';
+	import type { ActivityCatalogResponse } from '../types';
 	import type { ActivityUrlState } from '../url-state';
 
 	let {
-		state,
+		state: filterState,
 		onApply,
 		onClear
 	}: {
@@ -10,6 +13,21 @@
 		onApply: (state: ActivityUrlState) => void;
 		onClear: () => void;
 	} = $props();
+	let catalog = $state<ActivityCatalogResponse | null>(null);
+
+	onMount(() => {
+		let active = true;
+		void getActivityCatalog(fetch)
+			.then((value) => {
+				if (active) catalog = value;
+			})
+			.catch(() => {
+				// Filters remain usable with their current values if catalog discovery fails.
+			});
+		return () => {
+			active = false;
+		};
+	});
 	const SUBJECT_KINDS = [
 		['movie', 'Movie'],
 		['series', 'Series'],
@@ -27,13 +45,13 @@
 		const data = new FormData(event.currentTarget as HTMLFormElement);
 		const value = (key: string) => String(data.get(key) ?? '').trim();
 		onApply({
-			...state,
+			...filterState,
 			q: value('q'),
 			featureArea: value('feature_area'),
 			jobType: value('type'),
 			subjectKind: value('subject_kind'),
-			phase: state.view === 'queue' ? value('phase') : '',
-			outcome: state.view === 'history' ? value('outcome') : '',
+			phase: filterState.view === 'queue' ? value('phase') : '',
+			outcome: filterState.view === 'history' ? value('outcome') : '',
 			attention: value('attention'),
 			trigger: value('trigger'),
 			rootId: value('root_id'),
@@ -47,45 +65,48 @@
 	}
 </script>
 
-<form onsubmit={submit} aria-label={`${state.view} filters`}>
+<form onsubmit={submit} aria-label={`${filterState.view} filters`}>
 	<label class="search">
 		<span>Search subjects</span>
 		<input
 			name="q"
 			type="search"
 			maxlength="100"
-			value={state.q}
+			value={filterState.q}
 			placeholder="Movie, show, file…"
 		/>
 	</label>
 	<label>
 		<span>Feature</span>
-		<select name="feature_area" value={state.featureArea}>
+		<select name="feature_area" value={filterState.featureArea}>
 			<option value="">All features</option>
-			<option value="ai_posters">AI posters</option>
-			<option value="library_integrations">Library</option>
-			<option value="ml_taste">Taste & ML</option>
-			<option value="maintenance">Maintenance</option>
-			<option value="system">System</option>
+			{#each catalog?.features ?? [] as feature (feature.value)}
+				<option value={feature.value}>{feature.label}</option>
+			{/each}
 		</select>
 	</label>
 	<label>
 		<span>Job type</span>
-		<input name="type" value={state.jobType} maxlength="80" placeholder="All types" />
+		<select name="type" value={filterState.jobType}>
+			<option value="">All types</option>
+			{#each catalog?.job_types ?? [] as jobType (jobType.value)}
+				<option value={jobType.value}>{jobType.label}</option>
+			{/each}
+		</select>
 	</label>
 	<label>
 		<span>Subject</span>
-		<select name="subject_kind" value={state.subjectKind}>
+		<select name="subject_kind" value={filterState.subjectKind}>
 			<option value="">All subjects</option>
 			{#each SUBJECT_KINDS as [kind, label] (kind)}
 				<option value={kind}>{label}</option>
 			{/each}
 		</select>
 	</label>
-	{#if state.view === 'queue'}
+	{#if filterState.view === 'queue'}
 		<label>
 			<span>State</span>
-			<select name="phase" value={state.phase}>
+			<select name="phase" value={filterState.phase}>
 				<option value="">All Queue states</option>
 				<option value="running">Running</option>
 				<option value="stopping">Cancelling</option>
@@ -96,7 +117,7 @@
 	{:else}
 		<label>
 			<span>Outcome</span>
-			<select name="outcome" value={state.outcome}>
+			<select name="outcome" value={filterState.outcome}>
 				<option value="">All outcomes</option>
 				<option value="succeeded">Succeeded</option>
 				<option value="partially_succeeded">Partially succeeded</option>
@@ -111,7 +132,7 @@
 	{/if}
 	<label>
 		<span>Attention</span>
-		<select name="attention" value={state.attention}>
+		<select name="attention" value={filterState.attention}>
 			<option value="">Any severity</option>
 			<option value="error">Error</option>
 			<option value="warning">Warning</option>
@@ -120,7 +141,7 @@
 	</label>
 	<label>
 		<span>Trigger</span>
-		<select name="trigger" value={state.trigger}>
+		<select name="trigger" value={filterState.trigger}>
 			<option value="">Any trigger</option>
 			{#each ['manual', 'schedule', 'policy', 'batch', 'parent', 'healing', 'system', 'webhook'] as trigger (trigger)}
 				<option value={trigger}>{trigger}</option>
@@ -129,42 +150,42 @@
 	</label>
 	<label>
 		<span>Batch / root</span>
-		<input name="root_id" value={state.rootId} maxlength="32" placeholder="Root job ID" />
+		<input name="root_id" value={filterState.rootId} maxlength="32" placeholder="Root job ID" />
 	</label>
 	<label>
 		<span>Correlation</span>
 		<input
 			name="correlation_id"
-			value={state.correlationId}
+			value={filterState.correlationId}
 			maxlength="64"
 			placeholder="Correlation ID"
 		/>
 	</label>
 	<label>
 		<span>Worker</span>
-		<input name="worker_id" value={state.workerId} maxlength="100" placeholder="Any worker" />
+		<input name="worker_id" value={filterState.workerId} maxlength="100" placeholder="Any worker" />
 	</label>
 	<label>
 		<span>Execution class</span>
 		<input
 			name="execution_class"
-			value={state.executionClass}
+			value={filterState.executionClass}
 			maxlength="80"
 			placeholder="Any class"
 		/>
 	</label>
 	<label>
 		<span>Created after</span>
-		<input name="created_after" type="date" value={state.createdAfter} />
+		<input name="created_after" type="date" value={filterState.createdAfter} />
 	</label>
 	<label>
 		<span>Created before</span>
-		<input name="created_before" type="date" value={state.createdBefore} />
+		<input name="created_before" type="date" value={filterState.createdBefore} />
 	</label>
-	{#if state.view === 'history'}
+	{#if filterState.view === 'history'}
 		<label>
 			<span>Sort</span>
-			<select name="sort" value={state.sort}>
+			<select name="sort" value={filterState.sort}>
 				<option value="default">Finished newest first</option>
 				<option value="-created">Created newest first</option>
 				<option value="created">Created oldest first</option>

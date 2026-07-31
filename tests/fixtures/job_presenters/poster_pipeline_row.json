@@ -18,6 +18,7 @@
     "logs_available": false
   },
   "feature_area": "ai_posters",
+  "feature_label": "Posters",
   "fence_token": 1,
   "impact": {
     "duration_seconds": 900.0,

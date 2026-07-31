@@ -4,7 +4,7 @@
 	import { onMount } from 'svelte';
 	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import { getJobProgressStore } from '$lib/activity/context';
-	import PosterProgress from '$lib/activity/components/PosterProgress.svelte';
+	import ContainedWorkDisclosure from '$lib/activity/components/ContainedWorkDisclosure.svelte';
 	import PresentationSections from '$lib/activity/components/PresentationSections.svelte';
 	import TimelinePanel from '$lib/activity/components/detail/TimelinePanel.svelte';
 	import LogsPanel from '$lib/activity/components/detail/LogsPanel.svelte';
@@ -26,9 +26,9 @@
 	let { data }: { data: PageData } = $props();
 	let presentation = $derived(data.presentation);
 	const store = getJobProgressStore();
-	const workItems = $derived(
-		(presentation ? store.records.get(presentation.job_id)?.snapshot?.work_items : null) ??
-			presentation?.work_items ??
+	const containedWork = $derived(
+		(presentation ? store.records.get(presentation.job_id)?.snapshot?.contained_work : null) ??
+			presentation?.contained_work ??
 			null
 	);
 
@@ -43,6 +43,7 @@
 	}
 
 	let activeTab = $derived(tabFromUrl(page.url.searchParams.get('tab')));
+	const containedEvidence = $derived(containedWork != null);
 
 	function selectTab(tab: DetailTab) {
 		const url = new URL(page.url);
@@ -87,9 +88,9 @@
 			>{#if presentation.action.explanation}<p>{presentation.action.explanation}</p>{/if}
 		</div>
 		<div class="meta">
-			<span>{presentation.feature_area.replaceAll('_', ' ')}</span><span
-				>{presentation.trigger.label}</span
-			><span>{presentation.presentation_family}</span>
+			<span>{presentation.feature_label}</span><span>{presentation.trigger.label}</span><span
+				>{presentation.presentation_family}</span
+			>
 		</div>
 	</div>
 
@@ -130,21 +131,21 @@
 								</li>{/each}
 						</ul>
 					</div>{/if}
-				{#if workItems}
-					<!-- The detail page is where you came to look at the posters, so the roster
-				     is open from the start and there is nothing to toggle. -->
-				<PosterProgress jobId={presentation.job_id} summary={workItems} open />
+				{#if containedWork}
+					<!-- The detail page is already the diagnostic destination, so contained work
+					     starts open and uses the same bounded component as the Activity card. -->
+					<ContainedWorkDisclosure jobId={presentation.job_id} summary={containedWork} open />
 				{/if}
 				{#if presentation.sections.length}<PresentationSections
 						sections={presentation.sections}
 					/>{:else}<p class="empty">No additional presentation sections are available.</p>{/if}
 			</div>
 		{:else if activeTab === 'timeline'}
-			<TimelinePanel jobId={presentation.job_id} />
+			<TimelinePanel jobId={presentation.job_id} contained={containedEvidence} />
 		{:else if activeTab === 'logs'}
-			<LogsPanel jobId={presentation.job_id} />
+			<LogsPanel jobId={presentation.job_id} contained={containedEvidence} />
 		{:else if activeTab === 'artifacts'}
-			<ArtifactsPanel jobId={presentation.job_id} />
+			<ArtifactsPanel jobId={presentation.job_id} contained={containedEvidence} />
 		{:else if activeTab === 'raw'}
 			<RawDataPanel jobId={presentation.job_id} />
 		{:else}

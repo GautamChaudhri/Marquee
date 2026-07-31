@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { WorkItemSummary } from '../types';
+	import type { ContainedWorkSummary, WorkItemSummary } from '../types';
 
-	let { summary }: { summary: WorkItemSummary } = $props();
+	let { summary }: { summary: WorkItemSummary | ContainedWorkSummary } = $props();
 
-	type CountKey = keyof NonNullable<WorkItemSummary['counts']>;
+	type CountKey = 'succeeded' | 'review_required' | 'failed' | 'no_change' | 'cancelled';
 
 	// Only settled outcomes appear here — this row is the verdict on a finished run, so
 	// `pending` and `running` have no entry. Ordered best outcome first, which is also
@@ -21,10 +21,11 @@
 			([, count]) => count > 0
 		)
 	);
+	const label = $derived('source' in summary ? 'Contained work outcomes' : 'Poster outcomes');
 </script>
 
 {#if entries.length > 0}
-	<div class="outcomes" aria-label="Poster outcomes">
+	<div class="outcomes" aria-label={label}>
 		{#each entries as [key, count, label] (key)}
 			<span data-status={key}><strong>{count}</strong> {label}</span>
 		{/each}

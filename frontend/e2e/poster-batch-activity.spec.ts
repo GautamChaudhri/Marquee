@@ -17,6 +17,7 @@ function groupRow(
 		label: title,
 		label_key: 'jobs.poster_pipeline_group.label',
 		feature_area: 'ai_posters',
+		feature_label: 'Posters',
 		presentation_family: 'ai_posters',
 		subject: {
 			kind: 'poster_subject_group',
@@ -80,6 +81,28 @@ function groupRow(
 			updated_at: now,
 			href: `/api/jobs/${jobId}/work-items`
 		},
+		contained_work: {
+			version: 1,
+			source: 'work_items',
+			label: 'Posters in This Group',
+			item_label_singular: 'subject',
+			item_label_plural: 'subjects',
+			total: 2,
+			completed: 0,
+			counts: {
+				pending: 1,
+				running: 1,
+				retrying: 0,
+				succeeded: 0,
+				no_change: 0,
+				review_required: 0,
+				failed: 0,
+				cancelled: 0
+			},
+			sequence: 7,
+			updated_at: now,
+			href: `/api/jobs/${jobId}/contained-work`
+		},
 		priority: 50,
 		fence_token: 3,
 		execution_class: 'gpu',
@@ -104,16 +127,22 @@ function groupRow(
 	};
 }
 
-function workItemPage(jobId: string) {
+function containedWorkPage(jobId: string) {
 	return {
 		version: 1,
 		job_id: jobId,
 		summary: {
 			version: 1,
+			source: 'work_items',
+			label: 'Posters in This Group',
+			item_label_singular: 'subject',
+			item_label_plural: 'subjects',
 			total: 2,
+			completed: 0,
 			counts: {
 				pending: 1,
 				running: 1,
+				retrying: 0,
 				succeeded: 0,
 				no_change: 0,
 				review_required: 0,
@@ -122,17 +151,17 @@ function workItemPage(jobId: string) {
 			},
 			sequence: 7,
 			updated_at: now,
-			href: `/api/jobs/${jobId}/work-items`
+			href: `/api/jobs/${jobId}/contained-work`
 		},
 		items: [
 			{
 				version: 1,
-				subject_key: 'movie:1',
+				key: 'movie:1',
 				ordinal: 0,
-				subject_kind: 'movie',
-				subject_reference: '1',
 				subject: { display_name: 'Arrival' },
 				status: 'running',
+				status_label: 'Running',
+				status_tone: 'active',
 				stage_key: 'validating',
 				stage_name: 'Validating',
 				stage_number: 4,
@@ -144,12 +173,12 @@ function workItemPage(jobId: string) {
 			},
 			{
 				version: 1,
-				subject_key: 'movie:2',
+				key: 'movie:2',
 				ordinal: 1,
-				subject_kind: 'movie',
-				subject_reference: '2',
 				subject: { display_name: 'Blade Runner 2049' },
 				status: 'pending',
+				status_label: 'Pending',
+				status_tone: 'neutral',
 				stage_key: null,
 				stage_name: null,
 				stage_number: null,
@@ -197,10 +226,12 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 			json: { view: 'queue', items: rows, next_cursor: null, limit: 50 }
 		})
 	);
-	await page.route(/\/api\/jobs\/[^/]+\/work-items(?:\?.*)?$/, (route) => {
+	await page.route(/\/api\/jobs\/[^/]+\/contained-work(?:\?.*)?$/, (route) => {
 		workItemRequests += 1;
-		const match = new URL(route.request().url()).pathname.match(/\/api\/jobs\/([^/]+)\/work-items/);
-		return route.fulfill({ json: workItemPage(match?.[1] ?? rows[0].job_id) });
+		const match = new URL(route.request().url()).pathname.match(
+			/\/api\/jobs\/([^/]+)\/contained-work/
+		);
+		return route.fulfill({ json: containedWorkPage(match?.[1] ?? rows[0].job_id) });
 	});
 
 	await page.goto('/projection-room');
@@ -226,9 +257,8 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 	await expect(rosterButton).not.toHaveText(/\d/);
 	await rosterButton.click();
 	await expect(movieCard.getByText('Arrival', { exact: true })).toBeVisible();
-	// The roster names posters; it no longer restates the card's stage or its bar.
-	await expect(movieCard.getByText('Validating', { exact: true })).toHaveCount(1);
-	await expect(movieCard.getByText('3 of 8 candidates', { exact: true })).toHaveCount(0);
+	await expect(movieCard.getByText(/Stage 4 of 9/)).toBeVisible();
+	await expect(movieCard.getByText(/3 \/ 8 candidates/)).toBeVisible();
 	expect(workItemRequests).toBe(1);
 });
 
@@ -241,8 +271,8 @@ test('hides selection until Select is pressed and letters tiles by library', asy
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: rows, next_cursor: null, limit: 50 } })
 	);
-	await page.route(/\/api\/jobs\/[^/]+\/work-items(?:\?.*)?$/, (route) =>
-		route.fulfill({ json: workItemPage(rows[0].job_id) })
+	await page.route(/\/api\/jobs\/[^/]+\/contained-work(?:\?.*)?$/, (route) =>
+		route.fulfill({ json: containedWorkPage(rows[0].job_id) })
 	);
 
 	await page.goto('/projection-room');
@@ -281,8 +311,8 @@ test('keeps unified poster cards and their progress inside a phone viewport', as
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: [row], next_cursor: null, limit: 50 } })
 	);
-	await page.route(/\/api\/jobs\/[^/]+\/work-items(?:\?.*)?$/, (route) =>
-		route.fulfill({ json: workItemPage(row.job_id) })
+	await page.route(/\/api\/jobs\/[^/]+\/contained-work(?:\?.*)?$/, (route) =>
+		route.fulfill({ json: containedWorkPage(row.job_id) })
 	);
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/projection-room');
