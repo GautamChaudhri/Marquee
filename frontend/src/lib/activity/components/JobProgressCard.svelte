@@ -12,6 +12,7 @@
 	import EvidenceMetrics from './EvidenceMetrics.svelte';
 	import ProgressMeasure from './ProgressMeasure.svelte';
 	import SubjectHeader from './SubjectHeader.svelte';
+	import WorkItemOutcomes from './WorkItemOutcomes.svelte';
 
 	type Variant = 'compact' | 'expanded';
 	type CancelHandler = (jobId: string, expectedFenceToken: number) => void | Promise<void>;
@@ -42,7 +43,7 @@
 		artworkUrl?: string | null;
 		/** null when the card is already rendered on the Activity page. */
 		activityHref?: string | null;
-		/** Per-subject rollup, used to count the attention callout. */
+		/** Per-subject rollup. Drives the outcome pills once the job settles. */
 		workItems?: WorkItemSummary | null;
 		/** False when an ActivityActions bar beside the card already owns this job's
 		 *  commands — otherwise Details, Logs, Artifacts and Cancel appear twice. */
@@ -59,6 +60,9 @@
 	// Just the name. "Stage 9 of 9" is what the bar's own "9 / 9 stages" count says,
 	// and printing both put the same sentence on the card twice.
 	const stageName = $derived(progress?.headline ?? progress?.stage_label ?? null);
+	// Terminal outcomes that did not run to the end. Everything else reached the last
+	// stage, whether or not every subject inside it produced a result.
+	const HALTED_OUTCOMES = new Set(['failed', 'dead_letter', 'unsafe', 'cancelled']);
 	const actions = $derived(
 		snapshot?.allowed_actions ?? presentation?.allowed_actions ?? row.allowed_actions
 	);
@@ -75,6 +79,24 @@
 		status.phase === 'terminal' ||
 			progress?.freshness === 'terminal' ||
 			recordFreshness === 'terminal'
+	);
+	// A poster group's title already reads "Television Posters · 8 Titles", which is what
+	// the headline would say again in different words. Expanded cards keep it — there the
+	// explanation is the point and the subject header is not competing for the same line.
+	const showHeadline = $derived(
+		variant === 'expanded' || subject.kind !== 'poster_subject_group'
+	);
+	// Counts describe a result, so they wait for one. Mid-run they would be a second,
+	// slower progress reading beside the bar.
+	const outcomes = $derived(workItems && status.phase === 'terminal' ? workItems : null);
+	// "Finalizing" is a stage, and a finished job is not in one. Once the work is over
+	// the bar names the ending instead of the last thing that was happening.
+	const barLabel = $derived(
+		!settled
+			? stageName
+			: HALTED_OUTCOMES.has(status.outcome ?? '')
+				? 'Stopped'
+				: 'Complete'
 	);
 	const metrics = $derived(metricCards(presentation));
 	const ioSummary = $derived.by(() => {
@@ -127,20 +149,23 @@
 		<span class="status"><i aria-hidden="true"></i>{status.label}</span>
 	</div>
 
-	<div class="action">
-		<strong>{actionHeadline}</strong>
-		{#if stageName && !progress?.overall}
-			<!-- Normally the progress bar carries the stage. A job with no overall measure
-			     has no bar to carry it, so it falls back to a line of its own here. -->
-			<span class="stage">{stageName}</span>
-		{/if}
-	</div>
+	{#if showHeadline || (stageName && !progress?.overall)}
+		<div class="action">
+			{#if showHeadline}<strong>{actionHeadline}</strong>{/if}
+			{#if stageName && !progress?.overall}
+				<!-- Normally the progress bar carries the stage. A job with no overall measure
+				     has no bar to carry it, so it falls back to a line of its own here. -->
+				<span class="stage">{stageName}</span>
+			{/if}
+		</div>
+	{/if}
 
 	{#if progress?.overall}
 		<ProgressMeasure
 			measurement={progress.overall}
-			label={stageName}
-			fallbackLabel={settled ? 'Reached' : 'Overall progress'}
+			label={barLabel}
+			fallbackLabel={settled ? 'Complete' : 'Overall progress'}
+			tone={settled ? status.tone : null}
 			prominent
 			{settled}
 		/>
@@ -157,6 +182,7 @@
 	{/if}
 	{#if ioSummary}<span class="io-summary">{ioSummary}</span>{/if}
 
+	{#if outcomes}<WorkItemOutcomes summary={outcomes} />{/if}
 	{#if callout}<ActivityCallout {callout} />{/if}
 
 	{#if variant === 'expanded'}

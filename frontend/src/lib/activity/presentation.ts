@@ -14,8 +14,6 @@ export interface ActivityCalloutView {
 	label: string;
 	message: string | null;
 	tone: CardTone;
-	/** Folded into the label as "Ready for review (3)" when the work items supply it. */
-	count: number | null;
 }
 
 const ATTENTION_LABELS: Record<PresentationAttention['reason'], string> = {
@@ -24,7 +22,9 @@ const ATTENTION_LABELS: Record<PresentationAttention['reason'], string> = {
 	held: 'Paused',
 	retrying: 'Retrying',
 	needs_input: 'Needs attention',
-	review: 'Ready for review',
+	// The pipeline finished and chose nothing — a decision is owed, which is not the
+	// same as something pleasant being ready. "Ready for review" read like the latter.
+	review: 'Needs attention',
 	failed: 'Failed',
 	unsafe: 'Unsafe to continue'
 };
@@ -45,14 +45,10 @@ const CONNECTION_LABELS: Partial<Record<ConnectionState, string>> = {
 	stopped: 'Live updates paused'
 };
 
-// Attention reasons the work-item summary can count exactly. When it can, the number
-// replaces the prose: "Ready for review (3)" says what "3 posters are ready for
-// review." said, without restating the label a second time.
-const COUNTABLE_REASONS: Partial<Record<PresentationAttention['reason'], 'review_required' | 'failed'>> =
-	{
-		review: 'review_required',
-		failed: 'failed'
-	};
+// Attention reasons a finished run's outcome pills state exactly, and better: the pills
+// give the whole split ("7 succeeded · 1 needs attention") where the callout could only
+// repeat one half of it in prose.
+const PILL_COVERED_REASONS = new Set<PresentationAttention['reason']>(['review', 'failed']);
 
 export function activityCallout(
 	status: PresentationStatus,
@@ -66,28 +62,35 @@ export function activityCallout(
 		return {
 			label: 'Cancelling',
 			message: attention.message ?? null,
-			tone: 'warning',
-			count: null
+			tone: 'warning'
 		};
 	}
 	if (attention.reason !== 'none') {
-		const countKey = COUNTABLE_REASONS[attention.reason];
-		const count = countKey && workItems ? (workItems.counts?.[countKey] ?? null) : null;
+		// A finished run with per-poster outcomes says it all in the pill row above, so
+		// the callout stands down. It does not stand down for a whole-group failure —
+		// `error` level means every member failed, and that message is a real error
+		// summary the counts cannot reproduce.
+		if (
+			workItems &&
+			status.phase === 'terminal' &&
+			attention.level !== 'error' &&
+			PILL_COVERED_REASONS.has(attention.reason)
+		) {
+			return null;
+		}
 		return {
 			label: ATTENTION_LABELS[attention.reason],
-			message: count == null ? (attention.message ?? attention.remediation ?? null) : null,
+			message: attention.message ?? attention.remediation ?? null,
 			tone:
 				ATTENTION_TONES[attention.reason] ??
-				(attention.level === 'error' ? 'negative' : 'warning'),
-			count
+				(attention.level === 'error' ? 'negative' : 'warning')
 		};
 	}
 	if (progress?.wait) {
 		return {
 			label: 'Waiting',
 			message: progress.wait.eligible_at ? `Eligible at ${progress.wait.eligible_at}` : null,
-			tone: 'warning',
-			count: null
+			tone: 'warning'
 		};
 	}
 	if (
@@ -101,12 +104,11 @@ export function activityCallout(
 		return {
 			label: CONNECTION_LABELS[connection] ?? 'Activity unavailable',
 			message: null,
-			tone: connection === 'incompatible' ? 'negative' : 'warning',
-			count: null
+			tone: connection === 'incompatible' ? 'negative' : 'warning'
 		};
 	}
 	if (recordFreshness === 'stale' || progress?.freshness === 'stale') {
-		return { label: 'Progress may be stale', message: null, tone: 'warning', count: null };
+		return { label: 'Progress may be stale', message: null, tone: 'warning' };
 	}
 	return null;
 }

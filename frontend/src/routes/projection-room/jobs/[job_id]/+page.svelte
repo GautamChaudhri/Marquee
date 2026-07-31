@@ -131,7 +131,9 @@
 						</ul>
 					</div>{/if}
 				{#if workItems}
-					<PosterProgress jobId={presentation.job_id} summary={workItems} expanded />
+					<!-- The detail page is where you came to look at the posters, so the roster
+				     is open from the start and there is nothing to toggle. -->
+				<PosterProgress jobId={presentation.job_id} summary={workItems} open />
 				{/if}
 				{#if presentation.sections.length}<PresentationSections
 						sections={presentation.sections}

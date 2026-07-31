@@ -1,15 +1,22 @@
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { listWorkItems } from '../client';
 	import type { WorkItemPage, WorkItemRow, WorkItemSummary } from '../types';
 
 	let {
 		jobId,
 		summary,
-		expanded = false
-	}: { jobId: string; summary: WorkItemSummary; expanded?: boolean } = $props();
+		open = $bindable(false),
+		id = undefined
+	}: {
+		jobId: string;
+		summary: WorkItemSummary;
+		/** Owned by the caller so the toggle can live in a shared row of controls
+		 *  rather than being trapped above the panel it opens. */
+		open?: boolean;
+		id?: string;
+	} = $props();
 
-	let open = $state(false);
 	let items = $state<WorkItemRow[]>([]);
 	let nextCursor = $state<number | null>(null);
 	let displaySummary = $state<WorkItemSummary | null>(null);
@@ -29,28 +36,18 @@
 		'failed',
 		'cancelled'
 	]);
+	// Each word names exactly one thing that can happen to a poster: it was chosen, the
+	// pipeline ran clean but chose nothing and a person must, an error stopped it, or no
+	// source offered anything to choose from.
 	const STATUS_LABELS: Record<WorkItemRow['status'], string> = {
 		pending: 'Pending',
 		running: 'Running',
 		succeeded: 'Succeeded',
-		no_change: 'No change',
-		review_required: 'Ready for review',
-		failed: 'Needs attention',
+		no_change: 'No candidates',
+		review_required: 'Needs attention',
+		failed: 'Failed',
 		cancelled: 'Cancelled'
 	};
-	type CountKey =
-		'pending' | 'running' | 'succeeded' | 'no_change' | 'review_required' | 'failed' | 'cancelled';
-	const COUNT_LABELS: Array<[CountKey, string]> = [
-		['running', 'running'],
-		['pending', 'pending'],
-		['succeeded', 'succeeded'],
-		['no_change', 'no change'],
-		['review_required', 'ready for review'],
-		['failed', 'need attention'],
-		['cancelled', 'cancelled']
-	];
-	const currentSummary = $derived(displaySummary ?? summary);
-
 	$effect(() => {
 		if (displaySummary === null || summary.sequence > displaySummary.sequence) {
 			displaySummary = summary;
@@ -67,27 +64,11 @@
 	});
 
 	onDestroy(() => controller?.abort());
-	onMount(() => {
-		if (expanded) open = true;
-	});
 
 	function subjectName(item: WorkItemRow): string {
 		const subject = item.subject as Record<string, unknown>;
 		const value = subject.display_name ?? subject.title ?? subject.series_title;
 		return typeof value === 'string' && value ? value : item.subject_key;
-	}
-
-	function countEntries(): Array<[string, number, string]> {
-		return COUNT_LABELS.flatMap(([key, label]) => {
-			const count = currentSummary.counts?.[key] ?? 0;
-			const displayLabel =
-				key === 'failed'
-					? count === 1
-						? 'poster needs attention'
-						: 'posters need attention'
-					: label;
-			return count > 0 ? [[key, count, displayLabel]] : [];
-		});
 	}
 
 	async function fetchPages(target: number): Promise<void> {
@@ -150,20 +131,9 @@
 	}
 </script>
 
-<details class="poster-progress" bind:open>
-	<summary>
-		<span>Poster progress</span>
-		<span class="total">{currentSummary.total} posters</span>
-	</summary>
-	<div class="summary-counts" aria-label="Poster progress summary">
-		{#each countEntries() as [key, count, label] (key)}
-			<span data-status={key}><strong>{count}</strong> {label}</span>
-		{/each}
-	</div>
-	<p class="legend">
-		<strong>Succeeded</strong> — Marquee picked a poster.
-		<strong>Ready for review</strong> — Marquee needs you to choose.
-	</p>
+<!-- Panel only. The button that opens it lives in the row's control bar so it sits
+     beside Details and Retry instead of claiming a line of its own. -->
+<div class="poster-progress" {id} hidden={!open}>
 	{#if error}
 		<div class="load-error" role="alert">
 			<span>{error}</span><button type="button" onclick={refreshLoaded}>Try again</button>
@@ -177,7 +147,6 @@
 			<div
 				class="item"
 				class:settled={TERMINAL_STATUSES.has(item.status)}
-				class:spans={item.status === 'failed' && Boolean(item.message)}
 				data-status={item.status}
 			>
 				<strong>{subjectName(item)}</strong>
@@ -197,45 +166,15 @@
 			</button>
 		{/if}
 	</div>
-</details>
+</div>
 
 <style>
 	.poster-progress {
 		min-width: 0;
-		border-top: 1px solid var(--line);
-		padding: 8px;
+		padding: 0 8px 8px;
 	}
-	.poster-progress summary {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		cursor: pointer;
-		color: var(--muted);
-		font-size: 12px;
-		font-weight: 700;
-		list-style-position: inside;
-	}
-	.total {
-		font-variant-numeric: tabular-nums;
-		font-weight: 500;
-	}
-	.summary-counts {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-		margin: 10px 0;
-	}
-	.summary-counts span {
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		padding: 4px 8px;
-		color: var(--muted);
-		font-size: 11px;
-	}
-	.summary-counts [data-status='failed'],
-	.summary-counts [data-status='review_required'] {
-		border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+	.poster-progress[hidden] {
+		display: none;
 	}
 	.items {
 		display: grid;
@@ -262,8 +201,7 @@
 		overflow-wrap: anywhere;
 	}
 	/* Colour is reserved for a settled outcome — see TERMINAL_STATUSES. */
-	.item.settled[data-status='succeeded'],
-	.item.settled[data-status='no_change'] {
+	.item.settled[data-status='succeeded'] {
 		border-left-color: var(--good);
 	}
 	.item.settled[data-status='failed'] {
@@ -272,11 +210,10 @@
 	.item.settled[data-status='review_required'] {
 		border-left-color: var(--warn);
 	}
+	/* Green would claim a poster was chosen. Nothing was — no source offered one. */
+	.item.settled[data-status='no_change'],
 	.item.settled[data-status='cancelled'] {
 		border-left-color: var(--muted);
-	}
-	.item.spans {
-		grid-column: 1 / -1;
 	}
 	.item p,
 	.empty {
@@ -295,15 +232,6 @@
 		clip: rect(0, 0, 0, 0);
 		white-space: nowrap;
 		border: 0;
-	}
-	.legend {
-		margin: 0 0 10px;
-		color: var(--faint2);
-		font-size: 10.5px;
-	}
-	.legend strong {
-		color: var(--muted);
-		font-weight: 700;
 	}
 	.load-error {
 		display: flex;

@@ -23,6 +23,7 @@ from marquee.core.jobs.documents import (
     poster_pipeline_subject_key,
 )
 from marquee.core.jobs.event_service import job_event_writer
+from marquee.core.jobs.labels import poster_group_display_name
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pgqueuer_gateway import (
     MAX_BULK_ENQUEUE,
@@ -401,16 +402,19 @@ async def _resolve_poster_subject_group(
                 subject=subject,
             )
         )
-    display_name = (
-        f"Poster analysis · {'movies' if group.library == 'movies' else 'television'}"
-        if group.batch_mode == "all_at_once"
-        else f"{'Movie' if group.library == 'movies' else 'TV'} poster chunk {group.chunk_index + 1}"
-    )
     return PosterSubjectGroupSnapshot(
         display_id=f"poster-group:{group.library}:{locator.reference}",
-        display_name=display_name,
+        # The batch token is not in hand here — the parent job does not exist yet — so
+        # the presenter adds "Batch 7F3A" as subject context on top of this name.
+        display_name=poster_group_display_name(
+            library=group.library,
+            chunk_index=group.chunk_index,
+            chunk_total=group.chunk_total,
+            batch_mode=group.batch_mode,
+        ),
         library=group.library,
         chunk_index=group.chunk_index,
+        chunk_total=group.chunk_total,
         batch_mode=group.batch_mode,
         members=tuple(members),
     )

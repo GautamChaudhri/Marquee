@@ -9,7 +9,12 @@ export const subjects: Record<string, PresentationSubject> = {
 		'Posters',
 		'Candidate set'
 	]),
-	posterGroup: subject('poster_subject_group', 'TV poster chunk 13', [], 'TVP')
+	posterGroup: subject(
+		'poster_subject_group',
+		'Television Posters · 8 Titles',
+		['Batch 7F3A', 'Group 11 of 26'],
+		'TVP'
+	)
 };
 
 function subject(

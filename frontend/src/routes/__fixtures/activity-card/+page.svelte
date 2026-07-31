@@ -21,15 +21,15 @@
 		cancelSent = true;
 	}
 
-	// A settled poster chunk: "TVP" tile, the stage on the bar, and a counted amber
-	// callout in place of the label-plus-restated-message pair it used to show.
+	// A settled poster group: "TVP" tile, the batch and group ordinals under the title,
+	// the stage on the bar, and the outcome stated by pills instead of a callout.
 	const reviewRow = makeRow({
 		job_id: 'poster-group-1',
 		job_type: 'poster_pipeline_group',
 		subject: subjects.posterGroup,
 		action_headline: 'Select posters across the TV library',
 		status: {
-			label: 'Ready for review',
+			label: 'Partially succeeded',
 			label_key: 'jobs.status.partially_succeeded',
 			phase: 'terminal',
 			outcome: 'partially_succeeded',
@@ -38,7 +38,7 @@
 		attention: {
 			level: 'warning',
 			reason: 'review',
-			message: '1 poster is ready for review.',
+			message: '1 poster needs attention.',
 			remediation: null
 		}
 	});
@@ -80,8 +80,8 @@
 		<h2>Compact card</h2>
 		<JobProgressCard row={makeRow({ subject: subjects.series })} />
 	</section>
-	<section aria-label="Poster chunk awaiting review fixture">
-		<h2>Poster chunk awaiting review</h2>
+	<section aria-label="Settled poster group fixture">
+		<h2>Poster group with an open decision</h2>
 		<JobProgressCard row={reviewRow} workItems={reviewWorkItems} />
 	</section>
 </div>

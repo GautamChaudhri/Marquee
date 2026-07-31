@@ -422,17 +422,17 @@ def test_systemic_group_failure_uses_lazy_work_item_summary():
         )
     )
 
-    assert presentation.subject.display_name == "TV poster chunk 3"
+    assert presentation.subject.display_name == "Get Television Posters · Group 3"
     assert presentation.work_items is not None
     assert presentation.work_items.total == 3
     assert presentation.work_items.counts.failed == 3
     assert not any(section.kind == "change_list" for section in presentation.sections)
 
 
-def test_group_subject_carries_a_library_monogram():
-    """The artwork tile cannot initial "TV poster chunk 3" into anything useful."""
+def test_group_subject_names_its_action_and_position():
+    """A bare chunk index named nothing; the title says what the job does and which."""
     tv = _group_presentation(_group_job())
-    assert tv.subject.display_name == "TV poster chunk 3"
+    assert tv.subject.display_name == "Get Television Posters · Group 3"
     assert tv.subject.monogram == "TVP"
 
     movies = _group_presentation(
@@ -446,8 +446,45 @@ def test_group_subject_carries_a_library_monogram():
             },
         )
     )
-    assert movies.subject.display_name == "Movie poster chunk 1"
+    assert movies.subject.display_name == "Get Film Posters · Group 1"
     assert movies.subject.monogram == "FP"
+
+
+def test_group_title_counts_its_siblings_when_the_total_is_known():
+    """"Group 3" alone does not say whether four more follow or forty."""
+    snapshot = {**TV_GROUP_SNAPSHOT, "chunk_total": 12}
+    presentation = _group_presentation(
+        _group_job(
+            subject_snapshot=snapshot,
+            request={**_group_job().request, "chunk_total": 12},
+        )
+    )
+    assert presentation.subject.display_name == "Get Television Posters · Group 3 of 12"
+
+
+def test_group_context_locates_it_inside_its_batch():
+    """Two runs of the same library are otherwise indistinguishable."""
+    presentation = _group_presentation(_group_job(parent_id="job000000000000000000000007f3a"))
+    assert presentation.subject.context == ("Batch 7F3A",)
+
+
+def test_group_context_is_empty_without_a_parent_batch():
+    """A group submitted on its own belongs to no batch, so it claims none."""
+    assert _group_presentation(_group_job()).subject.context == ()
+
+
+def test_all_at_once_group_has_no_group_ordinal():
+    """One group means there is no position to state — only the action it performs."""
+    snapshot = {**TV_GROUP_SNAPSHOT, "chunk_index": 0, "batch_mode": "all_at_once"}
+    presentation = _group_presentation(
+        _group_job(
+            parent_id="job000000000000000000000007f3a",
+            subject_snapshot=snapshot,
+            request={**_group_job().request, "chunk_index": 0, "batch_mode": "all_at_once"},
+        )
+    )
+    assert presentation.subject.display_name == "Get Television Posters"
+    assert presentation.subject.context == ("Batch 7F3A",)
 
 
 def test_ordinary_subjects_have_no_monogram():
@@ -487,15 +524,46 @@ def test_partial_group_uses_exact_failure_summary():
         )
     )
 
-    assert presentation.status.label == "Partially failed"
-    assert presentation.attention.message == "Partially failed: 1 of 3 posters needs attention."
+    # Two of three posters were chosen. Naming that "Partially failed" told the
+    # pessimistic half of the story; the pills on the card give the exact split.
+    assert presentation.status.label == "Partially succeeded"
+    assert presentation.attention.message == "1 of 3 posters failed."
     assert presentation.work_items is not None
     assert presentation.work_items.counts.failed == 1
     assert presentation.work_items.counts.succeeded == 2
     assert not any(section.kind == "change_list" for section in presentation.sections)
 
 
-def test_review_only_group_reads_ready_for_review_instead_of_failed():
+def test_group_with_some_undecided_posters_reads_partially_succeeded():
+    """Seven picks and one open decision is a partial success, not a review queue."""
+    snapshot = {**TV_GROUP_SNAPSHOT}
+    presentation = _group_presentation(
+        _group_job(
+            subject_snapshot=snapshot,
+            outcome="partially_succeeded",
+            result={
+                "outcome": "review_required",
+                "library": "tv",
+                "chunk_index": 2,
+                "member_count": 3,
+                "succeeded_count": 2,
+                "no_change_count": 0,
+                "review_required_count": 1,
+                "failed_count": 0,
+                "projected_count": 3,
+                "run_ids": ["a" * 32, "b" * 32, "c" * 32],
+                "failed_subject_keys": [],
+                "message": "1 poster needs attention.",
+            },
+        )
+    )
+
+    assert presentation.status.label == "Partially succeeded"
+    assert presentation.attention.reason.value == "review"
+    assert presentation.attention.message == "1 poster needs attention."
+
+
+def test_group_that_picked_nothing_reads_needs_attention():
     presentation = _group_presentation(
         _group_job(
             outcome="partially_succeeded",
@@ -511,14 +579,16 @@ def test_review_only_group_reads_ready_for_review_instead_of_failed():
                 "projected_count": 3,
                 "run_ids": ["a" * 32, "b" * 32, "c" * 32],
                 "failed_subject_keys": [],
-                "message": "3 posters are ready for review.",
+                "message": "3 posters need attention.",
             },
         )
     )
 
-    assert presentation.status.label == "Ready for review"
+    # Nothing was picked, so nothing partially succeeded. "Ready for review" read like
+    # something good was waiting; what is waiting is a decision.
+    assert presentation.status.label == "Needs attention"
     assert presentation.attention.reason.value == "review"
-    assert presentation.attention.message == "3 posters are ready for review."
+    assert presentation.attention.message == "3 posters need attention."
 
 
 def test_all_member_group_failure_reads_failed_with_singular_grammar():
@@ -542,11 +612,11 @@ def test_all_member_group_failure_reads_failed_with_singular_grammar():
                 "projected_count": 1,
                 "run_ids": ["a" * 32],
                 "failed_subject_keys": ["series:71"],
-                "message": "Failed: all 1 poster needs attention.",
+                "message": "Failed: all 1 poster errored.",
             },
         )
     )
 
     assert presentation.status.label == "Failed"
     assert presentation.status.tone == "negative"
-    assert presentation.attention.message == "Failed: all 1 poster needs attention."
+    assert presentation.attention.message == "Failed: all 1 poster errored."

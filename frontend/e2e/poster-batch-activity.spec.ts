@@ -17,7 +17,7 @@ function groupRow(jobId: string, title: string, library: 'movies' | 'tv', chunkI
 			display_name: title,
 			artwork_key: null,
 			monogram: library === 'movies' ? 'FP' : 'TVP',
-			context: [library === 'movies' ? 'Movies' : 'Television'],
+			context: ['Batch 7F3A'],
 			snapshot_at: now,
 			missing_live_subject: false
 		},
@@ -170,10 +170,10 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 }) => {
 	await installStableEventSource(page);
 	const rows = [
-		groupRow('a1000000000000000000000000000001', 'Poster analysis · movies', 'movies', 0),
-		groupRow('a2000000000000000000000000000002', 'Poster analysis · television', 'tv', 0),
-		groupRow('a3000000000000000000000000000003', 'Movie poster chunk 1', 'movies', 0),
-		groupRow('a4000000000000000000000000000004', 'TV poster chunk 2', 'tv', 1)
+		groupRow('a1000000000000000000000000000001', 'Get Film Posters', 'movies', 0),
+		groupRow('a2000000000000000000000000000002', 'Get Television Posters', 'tv', 0),
+		groupRow('a3000000000000000000000000000003', 'Get Film Posters · Group 1 of 4', 'movies', 0),
+		groupRow('a4000000000000000000000000000004', 'Get Television Posters · Group 2 of 4', 'tv', 1)
 	];
 	let workItemRequests = 0;
 	const listRequest = page.waitForRequest(
@@ -204,9 +204,9 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 	expect(workItemRequests).toBe(0);
 
 	const movieCard = page.locator('article.activity-row').filter({
-		has: page.getByRole('heading', { name: 'Poster analysis · movies', exact: true })
+		has: page.getByRole('heading', { name: 'Get Film Posters', exact: true })
 	});
-	await movieCard.getByText('Poster progress', { exact: true }).click();
+	await movieCard.getByRole('button', { name: /Posters in This Run/ }).click();
 	await expect(movieCard.getByText('Arrival', { exact: true })).toBeVisible();
 	// The roster names posters; it no longer restates the card's stage or its bar.
 	await expect(movieCard.getByText('Validating', { exact: true })).toHaveCount(1);
@@ -217,8 +217,8 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 test('hides selection until Select is pressed and letters tiles by library', async ({ page }) => {
 	await installStableEventSource(page);
 	const rows = [
-		groupRow('c1000000000000000000000000000001', 'Movie poster chunk 1', 'movies', 0),
-		groupRow('c2000000000000000000000000000002', 'TV poster chunk 2', 'tv', 1)
+		groupRow('c1000000000000000000000000000001', 'Get Film Posters · Group 1 of 4', 'movies', 0),
+		groupRow('c2000000000000000000000000000002', 'Get Television Posters · Group 2 of 4', 'tv', 1)
 	];
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: rows, next_cursor: null, limit: 50 } })
@@ -236,9 +236,9 @@ test('hides selection until Select is pressed and letters tiles by library', asy
 
 	await expect(page.getByRole('checkbox')).toHaveCount(0);
 	await page.getByRole('button', { name: 'Select', exact: true }).click();
-	await expect(page.getByRole('checkbox', { name: 'Select TV poster chunk 2' })).toBeVisible();
+	await expect(page.getByRole('checkbox', { name: 'Select Get Television Posters · Group 2 of 4' })).toBeVisible();
 
-	await page.getByRole('checkbox', { name: 'Select TV poster chunk 2' }).check();
+	await page.getByRole('checkbox', { name: 'Select Get Television Posters · Group 2 of 4' }).check();
 	await expect(page.getByText('1 selected')).toBeVisible();
 
 	// Leaving the mode drops the selection with it — a checked box nobody can see
@@ -250,7 +250,7 @@ test('hides selection until Select is pressed and letters tiles by library', asy
 
 test('keeps unified poster cards and their progress inside a phone viewport', async ({ page }) => {
 	await installStableEventSource(page);
-	const row = groupRow('b1000000000000000000000000000001', 'Poster analysis · television', 'tv', 0);
+	const row = groupRow('b1000000000000000000000000000001', 'Get Television Posters', 'tv', 0);
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: [row], next_cursor: null, limit: 50 } })
 	);
@@ -260,7 +260,7 @@ test('keeps unified poster cards and their progress inside a phone viewport', as
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/projection-room');
 	const card = page.locator('article.activity-row');
-	await card.getByText('Poster progress', { exact: true }).click();
+	await card.getByRole('button', { name: /Posters in This Run/ }).click();
 	await expect(card.getByText('Arrival', { exact: true })).toBeVisible();
 	const bounds = await card.boundingBox();
 	expect(bounds).not.toBeNull();

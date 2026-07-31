@@ -29,7 +29,11 @@ from marquee.core.jobs.documents import (
     SafeJobErrorV1,
     StrictDocument,
 )
-from marquee.core.jobs.labels import humanize_job_type
+from marquee.core.jobs.labels import (
+    humanize_job_type,
+    poster_group_batch_context,
+    poster_group_display_name,
+)
 from marquee.core.jobs.mutation_documents import MutationEvidenceV1
 from marquee.core.jobs.mutation_evidence import read_mutation_evidence
 from marquee.core.jobs.policies import ActionContext, allowed_actions
@@ -337,14 +341,21 @@ def present_context_subject(ctx: PresenterContext) -> PresentationSubject:
         ctx.subject, PosterSubjectGroupSnapshot
     ):
         return presented
-    movies = ctx.subject.library == "movies"
-    title = (
-        f"Poster analysis · {'movies' if movies else 'television'}"
-        if ctx.subject.batch_mode == "all_at_once"
-        else f"{'Movie' if movies else 'TV'} poster chunk {ctx.subject.chunk_index + 1}"
-    )
+    subject = ctx.subject
     return presented.model_copy(
-        update={"display_name": title, "monogram": "FP" if movies else "TVP"}
+        update={
+            "display_name": poster_group_display_name(
+                library=subject.library,
+                chunk_index=subject.chunk_index,
+                chunk_total=subject.chunk_total,
+                batch_mode=subject.batch_mode,
+            ),
+            # Which submission this group came from. The stored snapshot cannot carry
+            # the batch token because the parent job did not exist when the subject was
+            # frozen; the group ordinal is in the title, so this line holds only this.
+            "context": poster_group_batch_context(parent_job_id=ctx.job.parent_id),
+            "monogram": "FP" if subject.library == "movies" else "TVP",
+        }
     )
 
 
@@ -352,15 +363,20 @@ def present_status(job: Job) -> PresentationStatus:
     key = job.outcome if job.phase == "terminal" and job.outcome else job.phase
     label, tone = _STATUS_LABELS.get(key, (humanize_job_type(key), "neutral"))
     if job.type == "poster_pipeline_group" and key == "partially_succeeded":
+        # `review_required` has no canonical outcome, so it borrows this key. The label
+        # is keyed on what was actually picked, not on the alias: a group that chose
+        # seven posters and left one undecided partially succeeded, and one that chose
+        # nothing at all did not succeed at any level.
         result = job.result if isinstance(job.result, dict) else {}
         failed = int(result.get("failed_count") or 0)
         total = int(result.get("member_count") or 0)
+        succeeded = int(result.get("succeeded_count") or 0)
         if failed and failed >= total:
             label, tone = "Failed", "negative"
-        elif failed:
-            label, tone = "Partially failed", "warning"
+        elif succeeded == 0:
+            label, tone = "Needs attention", "warning"
         else:
-            label, tone = "Ready for review", "warning"
+            label, tone = "Partially succeeded", "warning"
     return PresentationStatus(
         phase=job.phase,
         outcome=job.outcome,

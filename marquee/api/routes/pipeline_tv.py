@@ -564,14 +564,15 @@ def _poster_child_intents(
     """Freeze TV asset identity and labels before creating canonical children."""
     if group_enabled:
         children: list[SubmissionIntent] = []
-        for chunk_index, chunk in enumerate(
-            _tv_group_chunks(
-                assets,
-                season_by_id=season_by_id,
-                target_size=chunk_size,
-                batch_mode=batch_mode,
-            )
-        ):
+        # Materialised before the loop so every child knows how many groups the
+        # submission produced, which is what lets a group label itself "Group 3 of 12".
+        group_chunks = _tv_group_chunks(
+            assets,
+            season_by_id=season_by_id,
+            target_size=chunk_size,
+            batch_mode=batch_mode,
+        )
+        for chunk_index, chunk in enumerate(group_chunks):
             members = [
                 _poster_member_request(
                     asset,
@@ -586,6 +587,7 @@ def _poster_child_intents(
                     request={
                         "library": "tv",
                         "chunk_index": chunk_index,
+                        "chunk_total": len(group_chunks),
                         "batch_mode": batch_mode,
                         "members": members,
                     },

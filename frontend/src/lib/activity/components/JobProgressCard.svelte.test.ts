@@ -3,6 +3,26 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import JobProgressCard from './JobProgressCard.svelte';
 import { makePresentation, makeRow, makeSnapshot, subjects } from './fixtures';
+import type { WorkItemSummary } from '../types';
+
+function reviewWorkItems(): WorkItemSummary {
+	return {
+		version: 1,
+		total: 8,
+		counts: {
+			pending: 0,
+			running: 0,
+			succeeded: 5,
+			no_change: 0,
+			review_required: 3,
+			failed: 0,
+			cancelled: 0
+		},
+		sequence: 4,
+		updated_at: null,
+		href: '/api/jobs/job-1/work-items'
+	};
+}
 
 describe('subject and terminal golden matrix', () => {
 	for (const [kind, subject] of Object.entries(subjects)) {
@@ -15,11 +35,13 @@ describe('subject and terminal golden matrix', () => {
 		});
 	}
 
+	// A finished bar names the ending, not the stage it was in when it ended, and takes
+	// the outcome's colour. "Stopped" is reserved for work that did not run to the end.
 	for (const fixture of [
-		['success', 'succeeded', 'Complete', 'positive'],
-		['no-change', 'no_change', 'No changes needed', 'positive'],
-		['failure', 'failed', 'Failed', 'negative'],
-		['cancellation', 'cancelled', 'Cancelled', 'warning']
+		['success', 'succeeded', 'Complete', 'positive', 'Complete'],
+		['no-change', 'no_change', 'No changes needed', 'positive', 'Complete'],
+		['failure', 'failed', 'Failed', 'negative', 'Stopped'],
+		['cancellation', 'cancelled', 'Cancelled', 'warning', 'Stopped']
 	] as const) {
 		it(`preserves progress for terminal ${fixture[0]}`, () => {
 			const row = makeRow({
@@ -34,10 +56,10 @@ describe('subject and terminal golden matrix', () => {
 			});
 			render(JobProgressCard, { props: { row } });
 			expect(screen.getByText(fixture[2], { selector: '.status' })).toBeVisible();
-			expect(screen.getByRole('progressbar', { name: 'Comparing candidates' })).toHaveAttribute(
-				'aria-valuenow',
-				'37'
-			);
+			const meter = screen.getByRole('progressbar', { name: fixture[4] });
+			// The stopping point survives; a failure must not snap to 100%.
+			expect(meter).toHaveAttribute('aria-valuenow', '37');
+			expect(meter.closest('.measurement')).toHaveAttribute('data-tone', fixture[3]);
 		});
 	}
 
@@ -164,53 +186,72 @@ describe('attention, freshness, evidence, and concurrent work', () => {
 		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'negative');
 	});
 
-	it('presents a run awaiting a decision as ready, not as a failure', () => {
+	it('asks for a decision without calling it a failure', () => {
 		const row = makeRow({
 			attention: {
 				level: 'warning',
 				reason: 'review',
-				message: '3 poster selection(s) are ready for your review.',
+				message: '3 poster selection(s) need your attention.',
 				remediation: null
 			}
 		});
 		render(JobProgressCard, { props: { row } });
-		expect(screen.getByText('Ready for review')).toBeVisible();
+		// "Ready for review" read like something pleasant was waiting. What is waiting
+		// is a decision nobody has made.
+		expect(screen.getByText('Needs attention')).toBeVisible();
 		// Amber, not the muted gray a tone with no matching rule silently produced.
 		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'warning');
 	});
 
-	it('counts a review callout from the work items instead of repeating the label', () => {
+	it('replaces a settled run’s callout with the exact outcome split', () => {
 		const row = makeRow({
+			status: {
+				label: 'Partially succeeded',
+				label_key: 'jobs.status.partially_succeeded',
+				phase: 'terminal',
+				outcome: 'partially_succeeded',
+				tone: 'warning'
+			},
 			attention: {
 				level: 'warning',
 				reason: 'review',
-				message: '3 poster selection(s) are ready for your review.',
+				message: '3 posters need attention.',
 				remediation: null
 			}
 		});
-		render(JobProgressCard, {
-			props: {
-				row,
-				workItems: {
-					version: 1,
-					total: 8,
-					counts: {
-						pending: 0,
-						running: 0,
-						succeeded: 5,
-						no_change: 0,
-						review_required: 3,
-						failed: 0,
-						cancelled: 0
-					},
-					sequence: 4,
-					updated_at: null,
-					href: '/api/jobs/job-1/work-items'
-				}
+		render(JobProgressCard, { props: { row, workItems: reviewWorkItems() } });
+
+		const outcomes = screen.getByLabelText('Poster outcomes');
+		expect(outcomes).toHaveTextContent('5 succeeded');
+		expect(outcomes).toHaveTextContent('3 needs attention');
+		// The pills state both halves; the callout could only repeat one of them.
+		expect(document.querySelector('.callout')).toBeNull();
+	});
+
+	it('keeps the callout when every member failed, because the pills cannot say why', () => {
+		const row = makeRow({
+			status: {
+				label: 'Failed',
+				label_key: 'jobs.status.failed',
+				phase: 'terminal',
+				outcome: 'failed',
+				tone: 'negative'
+			},
+			attention: {
+				level: 'error',
+				reason: 'failed',
+				message: 'The poster group runner did not start.',
+				remediation: null
 			}
 		});
-		expect(screen.getByText('Ready for review (3)')).toBeVisible();
-		expect(screen.queryByText(/are ready for your review/)).not.toBeInTheDocument();
+		render(JobProgressCard, { props: { row, workItems: reviewWorkItems() } });
+		expect(screen.getByText('The poster group runner did not start.')).toBeVisible();
+		expect(document.querySelector('.callout')).toHaveAttribute('data-tone', 'negative');
+	});
+
+	it('withholds outcome pills while the run is still going', () => {
+		render(JobProgressCard, { props: { row: makeRow(), workItems: reviewWorkItems() } });
+		expect(screen.queryByLabelText('Poster outcomes')).not.toBeInTheDocument();
 	});
 
 	it('renders cancelling from the authoritative stopping phase', () => {
@@ -363,11 +404,18 @@ describe('settled jobs stop advertising work in flight', () => {
 	it('still shows where a failed job actually stopped', () => {
 		render(JobProgressCard, { props: { row: terminalRow() } });
 		// The retained determinate measure is evidence and must survive.
-		expect(screen.getByRole('progressbar', { name: 'Comparing candidates' })).toHaveAttribute(
+		expect(screen.getByRole('progressbar', { name: 'Complete' })).toHaveAttribute(
 			'aria-valuenow',
 			'37'
 		);
 		expect(screen.getByText('3 / 8 steps')).toBeVisible();
+	});
+
+	it('names the ending rather than the stage it ended in', () => {
+		render(JobProgressCard, { props: { row: terminalRow() } });
+		// "Finalizing" is a stage, and a finished job is not in one.
+		expect(screen.queryByText('Comparing candidates')).not.toBeInTheDocument();
+		expect(document.querySelector('.measurement')).toHaveAttribute('data-tone', 'warning');
 	});
 
 	it('settles on the record partition even if the row still claims to be running', () => {

@@ -129,6 +129,10 @@ class PosterPipelineGroupRequestV1(StrictDocument):
 
     library: Literal["movies", "tv"]
     chunk_index: int = Field(ge=0)
+    # How many groups the submission was split into, so a group can say "Group 3 of 12"
+    # instead of a bare index. Optional: groups stored before this field existed keep
+    # validating, and their presentation falls back to the index alone.
+    chunk_total: int | None = Field(default=None, ge=1)
     batch_mode: Literal["chunked", "all_at_once"] = "chunked"
     members: tuple[PosterPipelineRequestV1, ...] = Field(
         min_length=1, max_length=MAX_POSTER_GROUP_MEMBERS
@@ -136,6 +140,8 @@ class PosterPipelineGroupRequestV1(StrictDocument):
 
     @model_validator(mode="after")
     def require_one_library_and_unique_subjects(self) -> PosterPipelineGroupRequestV1:
+        if self.chunk_total is not None and self.chunk_index >= self.chunk_total:
+            raise ValueError("poster group chunk_index must fall inside chunk_total")
         identities = tuple(poster_pipeline_subject_identity(member) for member in self.members)
         if any(kind == "episode" for kind, _ in identities):
             raise ValueError("poster groups support movie, series, and season subjects only")

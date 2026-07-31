@@ -6,7 +6,8 @@
 		fallbackLabel,
 		label: labelOverride = null,
 		prominent = false,
-		settled = false
+		settled = false,
+		tone = null
 	}: {
 		measurement: ProgressMeasurement;
 		fallbackLabel: string;
@@ -14,6 +15,9 @@
 		label?: string | null;
 		prominent?: boolean;
 		settled?: boolean;
+		/** Colours the fill with the outcome once there is one. Null keeps the
+		 *  in-flight gold, which is the only honest colour for unfinished work. */
+		tone?: string | null;
 	} = $props();
 
 	const label = $derived(labelOverride ?? measurement.label ?? fallbackLabel);
@@ -24,7 +28,7 @@
 	);
 </script>
 
-<div class="measurement" data-mode={measurement.mode}>
+<div class="measurement" data-mode={measurement.mode} data-tone={tone}>
 	<div class="measure-label" class:prominent>
 		<span>{label}</span>
 		{#if count}<span class="count">{count}</span>{/if}
@@ -82,8 +86,20 @@
 	.fill {
 		height: 100%;
 		border-radius: inherit;
-		background: var(--gold);
+		background: var(--fill-color, var(--gold));
 		transition: width 0.25s ease;
+	}
+	/* A finished bar carries the verdict: green when everything landed, amber when only
+	   some of it did, red where it stopped. A failure keeps its stopping point rather
+	   than snapping to 100%, so the colour is what says it did not finish. */
+	.measurement[data-tone='positive'] {
+		--fill-color: var(--good);
+	}
+	.measurement[data-tone='negative'] {
+		--fill-color: var(--bad);
+	}
+	.measurement[data-tone='neutral'] {
+		--fill-color: var(--muted);
 	}
 	.indeterminate .fill {
 		width: 35%;

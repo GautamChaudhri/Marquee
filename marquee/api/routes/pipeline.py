@@ -562,12 +562,16 @@ async def run_pipeline_batch(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Materialised before the intents so every child knows how many groups the
+        # submission produced, which is what lets a group label itself "Group 3 of 12".
+        group_chunks = linear_poster_groups(member_requests, group_plan)
         children = [
             SubmissionIntent(
                 job_type="poster_pipeline_group",
                 request={
                     "library": "movies",
                     "chunk_index": chunk_index,
+                    "chunk_total": len(group_chunks),
                     "batch_mode": group_plan.mode,
                     "members": members,
                 },
@@ -580,9 +584,7 @@ async def run_pipeline_batch(
                 idempotency_key=f"poster_pipeline_group:batch-{nonce}-chunk-{chunk_index}",
                 priority=80,
             )
-            for chunk_index, members in enumerate(
-                linear_poster_groups(member_requests, group_plan)
-            )
+            for chunk_index, members in enumerate(group_chunks)
         ]
     else:
         children = [

@@ -317,7 +317,7 @@ async def test_activity_hierarchy_promotes_groups_and_keeps_legacy_parent(db, cl
     assert activity.status_code == 200
     rows = {item["job_id"]: item for item in activity.json()["items"]}
     assert set(rows) == {group.id, legacy_parent.id, reset.id}
-    assert rows[group.id]["subject"]["display_name"] == "Poster analysis · movies"
+    assert rows[group.id]["subject"]["display_name"] == "Get Film Posters"
     assert rows[group.id]["is_parent"] is False
     assert rows[legacy_parent.id]["is_parent"] is True
     assert rows[reset.id]["job_type"] == "poster_reset"

@@ -7,7 +7,7 @@
 <aside class="callout" data-tone={callout.tone} aria-label="Activity notice">
 	<span class="marker" aria-hidden="true"></span>
 	<div>
-		<strong>{callout.count == null ? callout.label : `${callout.label} (${callout.count})`}</strong>
+		<strong>{callout.label}</strong>
 		{#if callout.message}<span>{callout.message}</span>{/if}
 	</div>
 </aside>

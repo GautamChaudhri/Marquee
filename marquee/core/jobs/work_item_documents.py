@@ -22,20 +22,20 @@ WorkItemStatus = Literal[
 
 def poster_group_completion_message(*, total: int, failed: int, review: int) -> str:
     """Produce exact, grammatical operator-facing grouped-poster wording."""
+    # "Failed" means an error stopped the pipeline; "needs attention" means it ran
+    # clean but chose nothing, so a person has to. The two are never interchangeable.
     if failed >= total and total > 0:
         noun = "poster" if total == 1 else "posters"
-        verb = "needs" if total == 1 else "need"
-        return f"Failed: all {total} {noun} {verb} attention."
+        return f"Failed: all {total} {noun} errored."
     if failed:
-        verb = "needs" if failed == 1 else "need"
-        message = f"Partially failed: {failed} of {total} posters {verb} attention"
+        message = f"{failed} of {total} posters failed"
         if review:
-            review_verb = "is" if review == 1 else "are"
-            message += f"; {review} {review_verb} ready for review"
+            review_verb = "needs" if review == 1 else "need"
+            message += f"; {review} {review_verb} attention"
         return f"{message}."
     noun = "poster" if review == 1 else "posters"
-    verb = "is" if review == 1 else "are"
-    return f"{review} {noun} {verb} ready for review."
+    verb = "needs" if review == 1 else "need"
+    return f"{review} {noun} {verb} attention."
 
 
 class WorkItemStatusCounts(StrictDocument):

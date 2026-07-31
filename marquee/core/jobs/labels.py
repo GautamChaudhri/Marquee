@@ -33,3 +33,32 @@ def humanize_job_type(job_type: str) -> str:
         job_type,
         " ".join(word.capitalize() for word in job_type.split("_") if word),
     )
+
+
+def poster_group_display_name(
+    *, library: str, chunk_index: int, chunk_total: int | None, batch_mode: str
+) -> str:
+    """Name a poster group by what it does and which group it is.
+
+    Shared by submission (which writes the durable snapshot) and the presenter (which
+    re-derives it), so a stored name and a rendered one never drift apart. The member
+    count is deliberately absent — the roster below the card already counts them.
+    """
+    prefix = "Get Film Posters" if library == "movies" else "Get Television Posters"
+    if batch_mode == "all_at_once":
+        return prefix
+    position = f"Group {chunk_index + 1}"
+    if chunk_total is not None:
+        position = f"{position} of {chunk_total}"
+    return f"{prefix} · {position}"
+
+
+def poster_group_batch_context(*, parent_job_id: str | None) -> tuple[str, ...]:
+    """Identify the submission a poster group came from.
+
+    Batches have no human-readable number of their own, so the token is the tail of the
+    parent job id — every group of one submission shares that parent.
+    """
+    if not parent_job_id:
+        return ()
+    return (f"Batch {parent_job_id[-4:].upper()}",)

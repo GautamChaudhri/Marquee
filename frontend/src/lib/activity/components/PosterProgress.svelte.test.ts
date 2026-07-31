@@ -72,7 +72,6 @@ describe('PosterProgress', () => {
 	beforeEach(() => listWorkItems.mockReset());
 
 	it('loads the first 50 stable rows only when disclosed and shows exact progress', async () => {
-		const user = userEvent.setup();
 		listWorkItems.mockResolvedValue(
 			page(
 				Array.from({ length: 50 }, (_value, ordinal) => item(ordinal)),
@@ -80,15 +79,17 @@ describe('PosterProgress', () => {
 			)
 		);
 
-		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary() } });
+		// The toggle lives in the row's control bar now, so the panel is told whether it
+		// is open rather than deciding for itself. Closed still means no request.
+		const view = render(PosterProgress, {
+			props: { jobId: 'poster-group', summary: summary(), open: false }
+		});
 		expect(listWorkItems).not.toHaveBeenCalled();
-		expect(screen.getByText('90 posters')).toBeVisible();
-		expect(screen.getByLabelText('Poster progress summary')).toHaveTextContent('1 running');
-		expect(screen.getByLabelText('Poster progress summary')).toHaveTextContent(
-			'1 poster needs attention'
-		);
+		// The outcome counts moved onto the card. Burying the result of a run inside a
+		// collapsed disclosure was the one place it was least likely to be read.
+		expect(screen.queryByLabelText('Poster progress summary')).not.toBeInTheDocument();
 
-		await user.click(screen.getByText('Poster progress'));
+		await view.rerender({ jobId: 'poster-group', summary: summary(), open: true });
 
 		await waitFor(() => expect(listWorkItems).toHaveBeenCalledTimes(1));
 		expect(listWorkItems).toHaveBeenCalledWith(
@@ -106,7 +107,6 @@ describe('PosterProgress', () => {
 	});
 
 	it('withholds colour from rows that have not settled', async () => {
-		const user = userEvent.setup();
 		listWorkItems.mockResolvedValue(
 			page(
 				[
@@ -119,8 +119,7 @@ describe('PosterProgress', () => {
 			)
 		);
 
-		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary() } });
-		await user.click(screen.getByText('Poster progress'));
+		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary(), open: true } });
 		await screen.findByText('Movie 1');
 
 		const rows = [...document.querySelectorAll('.item')];
@@ -154,9 +153,8 @@ describe('PosterProgress', () => {
 			);
 
 		const view = render(PosterProgress, {
-			props: { jobId: 'poster-group', summary: summary() }
+			props: { jobId: 'poster-group', summary: summary(), open: true }
 		});
-		await user.click(screen.getByText('Poster progress'));
 		await user.click(await screen.findByRole('button', { name: 'Load 50 more' }));
 
 		await waitFor(() => expect(listWorkItems).toHaveBeenCalledTimes(2));
@@ -169,7 +167,7 @@ describe('PosterProgress', () => {
 		);
 		expect(screen.getByText('Movie 51')).toBeVisible();
 
-		await view.rerender({ jobId: 'poster-group', summary: summary(2) });
+		await view.rerender({ jobId: 'poster-group', summary: summary(2), open: true });
 		await waitFor(() => expect(listWorkItems).toHaveBeenCalledTimes(3));
 		expect(screen.queryByText(/Stage \d+ of \d+/)).not.toBeInTheDocument();
 		// Boilerplate messages are dropped, but a failure is unreadable without its reason.
@@ -182,8 +180,7 @@ describe('PosterProgress', () => {
 			.mockRejectedValueOnce(new Error('Poster rows are temporarily unavailable.'))
 			.mockResolvedValueOnce(page([item(0)], null));
 
-		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary() } });
-		await user.click(screen.getByText('Poster progress'));
+		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary(), open: true } });
 		expect(await screen.findByRole('alert')).toHaveTextContent(
 			'Poster rows are temporarily unavailable.'
 		);

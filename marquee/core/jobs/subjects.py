@@ -107,6 +107,8 @@ class PosterSubjectGroupSnapshot(SubjectSnapshotBase):
     kind: Literal["poster_subject_group"] = "poster_subject_group"
     library: Literal["movies", "tv"]
     chunk_index: int = Field(ge=0)
+    # Mirrors PosterPipelineGroupRequestV1.chunk_total; see the note there.
+    chunk_total: int | None = Field(default=None, ge=1)
     batch_mode: Literal["chunked", "all_at_once"] = "chunked"
     members: tuple[PosterSubjectGroupMemberSnapshot, ...] = Field(
         min_length=1, max_length=MAX_POSTER_GROUP_MEMBERS
@@ -114,6 +116,8 @@ class PosterSubjectGroupSnapshot(SubjectSnapshotBase):
 
     @model_validator(mode="after")
     def require_one_library_and_unique_members(self) -> PosterSubjectGroupSnapshot:
+        if self.chunk_total is not None and self.chunk_index >= self.chunk_total:
+            raise ValueError("poster group snapshot chunk_index must fall inside chunk_total")
         keys = tuple(member.subject_key for member in self.members)
         if len(set(keys)) != len(keys):
             raise ValueError("poster group snapshot members must be unique")
