@@ -1,12 +1,7 @@
 <script lang="ts">
 	import type { ConnectionState, RecordFreshness } from '../store.svelte';
 	import { activityCallout, metricCards } from '../presentation';
-	import type {
-		JobPresentation,
-		JobRow,
-		JobSnapshotResponse,
-		WorkItemSummary
-	} from '../types';
+	import type { JobPresentation, JobRow, JobSnapshotResponse, WorkItemSummary } from '../types';
 	import ActivityCallout from './ActivityCallout.svelte';
 	import ConcurrentSubjects from './ConcurrentSubjects.svelte';
 	import EvidenceMetrics from './EvidenceMetrics.svelte';
@@ -80,23 +75,17 @@
 			progress?.freshness === 'terminal' ||
 			recordFreshness === 'terminal'
 	);
-	// A poster group's title already reads "Television Posters · 8 Titles", which is what
+	// A poster group's title already reads "Get Television Posters · 8 Subjects", which is what
 	// the headline would say again in different words. Expanded cards keep it — there the
 	// explanation is the point and the subject header is not competing for the same line.
-	const showHeadline = $derived(
-		variant === 'expanded' || subject.kind !== 'poster_subject_group'
-	);
+	const showHeadline = $derived(variant === 'expanded' || subject.kind !== 'poster_subject_group');
 	// Counts describe a result, so they wait for one. Mid-run they would be a second,
 	// slower progress reading beside the bar.
 	const outcomes = $derived(workItems && status.phase === 'terminal' ? workItems : null);
 	// "Finalizing" is a stage, and a finished job is not in one. Once the work is over
 	// the bar names the ending instead of the last thing that was happening.
 	const barLabel = $derived(
-		!settled
-			? stageName
-			: HALTED_OUTCOMES.has(status.outcome ?? '')
-				? 'Stopped'
-				: 'Complete'
+		!settled ? stageName : HALTED_OUTCOMES.has(status.outcome ?? '') ? 'Stopped' : 'Complete'
 	);
 	const metrics = $derived(metricCards(presentation));
 	const ioSummary = $derived.by(() => {

@@ -514,6 +514,37 @@ def _validated_member_results(
     return raw_members
 
 
+def _member_work_item_outcome(
+    member: Mapping[str, Any],
+    *,
+    fallback_personalization_mode: str,
+) -> tuple[str, str]:
+    """Return the existing member outcome with a concise, case-specific UI message."""
+    if member.get("status") == "failed":
+        return "failed", str(member.get("error") or "Poster analysis failed.")[:2_000]
+
+    candidate_count = min(int(member.get("candidate_count") or 0), _MAX_COUNT)
+    raw_recommendation = member.get("recommendation")
+    member_outcome, _message, _review_reason = _map_outcome(
+        str(member.get("status") or ""),
+        raw_recommendation if isinstance(raw_recommendation, dict) else None,
+        candidate_count,
+    )
+    raw_counts = member.get("counts")
+    counts = raw_counts if isinstance(raw_counts, dict) else {}
+    collecting = (
+        str(member.get("personalization_mode") or fallback_personalization_mode) == "collecting"
+        and int(counts.get("ranked", 0) or 0) > 0
+    )
+    if collecting:
+        return "review_required", "Choose a poster to teach Marquee your preferences."
+    if member_outcome == "review_required":
+        return "review_required", "No candidate passed the configured filters."
+    if member_outcome == "no_change":
+        return "no_change", "No viable poster change was found."
+    return "succeeded", "Poster analysis completed."
+
+
 async def execute_poster_pipeline_group(
     context: ExecutionContext,
     request: PosterPipelineGroupRequestV1,
@@ -715,25 +746,18 @@ async def execute_poster_pipeline_group(
         )
 
     member_outcomes: list[str] = []
+    work_item_outcomes: dict[str, tuple[str, str | None]] = {}
     failed_keys: list[str] = []
     for member in projected:
         key = str(member["subject_key"])
-        if member["status"] == "failed":
-            member_outcomes.append("failed")
-            failed_keys.append(key)
-            continue
-        candidate_count = min(int(member.get("candidate_count") or 0), _MAX_COUNT)
-        member_outcome, _message, _reason = _map_outcome(
-            member["status"], member.get("recommendation"), candidate_count
+        member_outcome, item_message = _member_work_item_outcome(
+            member,
+            fallback_personalization_mode=str(shared["personalization_mode"]),
         )
-        counts = member.get("counts") if isinstance(member.get("counts"), dict) else {}
-        if (
-            str(member.get("personalization_mode") or shared["personalization_mode"])
-            == "collecting"
-            and int(counts.get("ranked", 0) or 0) > 0
-        ):
-            member_outcome = "review_required"
         member_outcomes.append(member_outcome)
+        work_item_outcomes[key] = (member_outcome, item_message)
+        if member_outcome == "failed":
+            failed_keys.append(key)
 
     review_count = member_outcomes.count("review_required")
     if failed_keys or review_count:
@@ -783,17 +807,5 @@ async def execute_poster_pipeline_group(
         snapshots=snapshots,
         projected=projected,
     )
-    work_item_outcomes: dict[str, tuple[str, str | None]] = {}
-    for member, member_outcome in zip(projected, member_outcomes, strict=True):
-        key = str(member["subject_key"])
-        if member_outcome == "failed":
-            item_message = str(member.get("error") or "Poster analysis failed.")[:2_000]
-        elif member_outcome == "review_required":
-            item_message = "Poster candidates are ready for review."
-        elif member_outcome == "no_change":
-            item_message = "No viable poster change was found."
-        else:
-            item_message = "Poster analysis completed."
-        work_item_outcomes[key] = (member_outcome, item_message)
     await work_items.reconcile(work_item_outcomes)
     return result.model_dump(mode="json")

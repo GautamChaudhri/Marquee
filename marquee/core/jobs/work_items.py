@@ -58,7 +58,7 @@ def historical_work_item_fallback(job: Job) -> tuple[WorkItemStatus, str | None]
     if job.outcome == "partially_succeeded":
         return (
             "review_required",
-            "This retained group needs attention; per-poster status was not recorded.",
+            "This older run needs review; no poster-specific reason was recorded.",
         )
     if job.outcome in {"cancelled", "superseded"}:
         return "cancelled", "Poster analysis was cancelled."

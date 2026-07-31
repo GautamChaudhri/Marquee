@@ -1,3 +1,4 @@
+import importlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -9,6 +10,8 @@ from sqlalchemy import event
 from marquee.database import _get_engine
 from marquee.main import app
 from marquee.models import Job, JobAttempt, JobWorkItem
+
+jobs_route = importlib.import_module("marquee.api.routes.jobs")
 
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 SYSTEM_SUBJECT = {
@@ -317,7 +320,7 @@ async def test_activity_hierarchy_promotes_groups_and_keeps_legacy_parent(db, cl
     assert activity.status_code == 200
     rows = {item["job_id"]: item for item in activity.json()["items"]}
     assert set(rows) == {group.id, legacy_parent.id, reset.id}
-    assert rows[group.id]["subject"]["display_name"] == "Get Film Posters"
+    assert rows[group.id]["subject"]["display_name"] == "Get Film Posters · 1 Subject"
     assert rows[group.id]["is_parent"] is False
     assert rows[legacy_parent.id]["is_parent"] is True
     assert rows[reset.id]["job_type"] == "poster_reset"
@@ -515,6 +518,49 @@ async def test_historical_group_work_items_fall_back_without_backfill(
     assert response.json()["historical_fallback"] is True
     assert response.json()["summary"]["counts"][expected_status] == 2
     assert {item["status"] for item in response.json()["items"]} == {expected_status}
+    if outcome == "partially_succeeded":
+        assert {item["message"] for item in response.json()["items"]} == {
+            "This older run needs review; no poster-specific reason was recorded."
+        }
+
+
+@pytest.mark.parametrize(
+    ("status", "selected_artifact_id", "expected_message"),
+    [
+        ("flagged_manual", None, "No candidate passed the configured filters."),
+        ("completed", None, "Poster candidates are ready for review."),
+    ],
+)
+def test_historical_pipeline_runs_explain_review_required(
+    status, selected_artifact_id, expected_message
+):
+    job = poster_group(
+        job_id="historical-message-group-00000001",
+        parent_id="historical-message-parent-0000001",
+    )
+    job.phase = "terminal"
+    job.outcome = "partially_succeeded"
+    job.work_item_sequence = 0
+    run = type(
+        "HistoricalRun",
+        (),
+        {
+            "status": status,
+            "selected_artifact_id": selected_artifact_id,
+            "completed_at": NOW,
+            "error": None,
+        },
+    )()
+
+    row = jobs_route._fallback_work_item(
+        job=job,
+        wrapper=job.subject_snapshot["members"][0],
+        ordinal=0,
+        run=run,
+    )
+
+    assert row.status == "review_required"
+    assert row.message == expected_message
 
 
 @pytest.mark.asyncio

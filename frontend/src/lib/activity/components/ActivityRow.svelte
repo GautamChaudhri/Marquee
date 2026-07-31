@@ -55,11 +55,11 @@
 	const hasSecondary = $derived(
 		Boolean(
 			row &&
-				(visible('feature') ||
-					visible('trigger') ||
-					(visible('impact') && row.impact) ||
-					row.queue_rank != null ||
-					row.retry_of_job_id)
+			(visible('feature') ||
+				visible('trigger') ||
+				(visible('impact') && row.impact) ||
+				row.queue_rank != null ||
+				row.retry_of_job_id)
 		)
 	);
 </script>
@@ -99,8 +99,7 @@
 					onclick={() => (rosterOpen = !rosterOpen)}
 				>
 					<span class="chevron" aria-hidden="true"></span>
-					Posters in This Run
-					<span class="count">{workItems.total}</span>
+					Posters in This Group
 				</button>
 			{/if}
 			<ActivityActions {row} {onCommand} />
@@ -115,9 +114,7 @@
 					>{/if}
 				{#if visible('trigger')}<span><b>Trigger</b>{row.trigger.label}</span>{/if}
 				{#if visible('impact') && row.impact}
-					<span
-						><b>Impact</b>{row.impact.label ?? `${row.impact.items_processed ?? 0} items`}</span
-					>
+					<span><b>Impact</b>{row.impact.label ?? `${row.impact.items_processed ?? 0} items`}</span>
 				{/if}
 				{#if row.queue_rank != null}
 					<span title="Approximate position within this execution class">
@@ -132,12 +129,7 @@
 			</div>
 		{/if}
 		{#if workItems}
-			<PosterProgress
-				id={rosterId}
-				jobId={row.job_id}
-				summary={workItems}
-				bind:open={rosterOpen}
-			/>
+			<PosterProgress id={rosterId} jobId={row.job_id} summary={workItems} bind:open={rosterOpen} />
 		{:else if row.is_parent}
 			<BatchExpansion jobId={row.job_id} />
 		{/if}
@@ -189,18 +181,14 @@
 	.roster-toggle {
 		display: inline-flex;
 		align-items: center;
-		gap: 9px;
+		gap: 6px;
 		min-height: 32px;
-		padding: 6px 11px;
+		padding: 6px 9px;
 		border: 1px solid var(--line2);
-		border-radius: 999px;
+		border-radius: 7px;
 		background: var(--panel2);
 		color: var(--text);
 		font-size: 11px;
-		font-weight: 700;
-	}
-	.roster-toggle:hover {
-		border-color: var(--gold);
 	}
 	/* An explicit chevron: the default disclosure triangle was easy to miss and gave no
 	   hover affordance. It points down once the panel below is showing. */
@@ -215,13 +203,6 @@
 	}
 	.roster-toggle.open .chevron {
 		transform: rotate(90deg);
-	}
-	.count {
-		padding-left: 8px;
-		border-left: 1px solid var(--line2);
-		color: var(--muted);
-		font-variant-numeric: tabular-nums;
-		font-weight: 500;
 	}
 	/* Pushed right whatever else shares the bar. */
 	time {

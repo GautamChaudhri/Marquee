@@ -151,7 +151,7 @@
 			>
 				<strong>{subjectName(item)}</strong>
 				<span class="sr-only">{STATUS_LABELS[item.status]}</span>
-				{#if item.status === 'failed' && item.message}
+				{#if (item.status === 'failed' || item.status === 'review_required') && item.message}
 					<p>{item.message}</p>
 				{/if}
 			</div>

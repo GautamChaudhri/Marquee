@@ -63,7 +63,7 @@ def _context(
                             "subject": MappingProxyType(snapshot),
                         }
                     )
-                for key, snapshot in snapshots.items()
+                    for key, snapshot in snapshots.items()
                 )
             }
         ),
@@ -84,6 +84,53 @@ def test_member_snapshots_accept_delivery_immutable_shape() -> None:
 
     assert resolved == _snapshots(request)
     assert all(isinstance(snapshot, dict) for snapshot in resolved.values())
+
+
+@pytest.mark.parametrize(
+    ("member", "fallback_mode", "expected_outcome", "expected_message"),
+    [
+        (
+            {
+                "status": "flagged_manual",
+                "candidate_count": 4,
+                "counts": {"ranked": 0},
+                "recommendation": None,
+                "personalization_mode": "personalized",
+            },
+            "personalized",
+            "review_required",
+            "No candidate passed the configured filters.",
+        ),
+        (
+            {
+                "status": "completed",
+                "candidate_count": 4,
+                "counts": {"ranked": 2},
+                "recommendation": None,
+                "personalization_mode": "collecting",
+            },
+            "personalized",
+            "review_required",
+            "Choose a poster to teach Marquee your preferences.",
+        ),
+        (
+            {"status": "failed", "error": "TMDB returned no usable artwork."},
+            "personalized",
+            "failed",
+            "TMDB returned no usable artwork.",
+        ),
+    ],
+)
+def test_member_work_item_outcomes_keep_case_specific_messages(
+    member: dict[str, Any],
+    fallback_mode: str,
+    expected_outcome: str,
+    expected_message: str,
+) -> None:
+    assert group_handler._member_work_item_outcome(
+        member,
+        fallback_personalization_mode=fallback_mode,
+    ) == (expected_outcome, expected_message)
 
 
 def _result_document(
@@ -108,9 +155,7 @@ def _result_document(
                 "candidate_files": {},
                 "personalization_mode": "personalized",
             }
-            for index, (member, run_id) in enumerate(
-                zip(request.members, run_ids, strict=True)
-            )
+            for index, (member, run_id) in enumerate(zip(request.members, run_ids, strict=True))
         ],
     }
 
@@ -404,9 +449,7 @@ def test_group_result_requires_exact_member_and_run_identity(corruption: str) ->
         document["members"][1]["archive_file"] = "run-000.json"
         expected = "archive attribution"
     else:
-        document["members"][1]["candidate_files"] = {
-            "poster-1.jpg": "s000-candidate-000.jpg"
-        }
+        document["members"][1]["candidate_files"] = {"poster-1.jpg": "s000-candidate-000.jpg"}
         expected = "candidate artifact attribution"
 
     with pytest.raises(RuntimeError, match=expected):
@@ -476,9 +519,7 @@ def test_member_archive_ceiling_never_exceeds_what_registration_accepts() -> Non
     ``register_physical_artifact``; raising only the policy leaves the handler
     rejecting archives the store would have taken.
     """
-    assert (
-        ARTIFACT_POLICIES["command_report"].max_bytes >= poster_pipeline.MAX_RUN_ARCHIVE_BYTES
-    )
+    assert ARTIFACT_POLICIES["command_report"].max_bytes >= poster_pipeline.MAX_RUN_ARCHIVE_BYTES
     assert ARTIFACT_POLICIES["command_report"].max_bytes >= MAX_POSTER_GROUP_RESULT_BYTES
 
 

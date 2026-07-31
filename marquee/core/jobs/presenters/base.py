@@ -346,14 +346,14 @@ def present_context_subject(ctx: PresenterContext) -> PresentationSubject:
         update={
             "display_name": poster_group_display_name(
                 library=subject.library,
+                member_count=len(subject.members),
+            ),
+            "context": poster_group_batch_context(
+                parent_job_id=ctx.job.parent_id,
                 chunk_index=subject.chunk_index,
                 chunk_total=subject.chunk_total,
                 batch_mode=subject.batch_mode,
             ),
-            # Which submission this group came from. The stored snapshot cannot carry
-            # the batch token because the parent job did not exist when the subject was
-            # frozen; the group ordinal is in the title, so this line holds only this.
-            "context": poster_group_batch_context(parent_job_id=ctx.job.parent_id),
             "monogram": "FP" if subject.library == "movies" else "TVP",
         }
     )

@@ -404,13 +404,10 @@ async def _resolve_poster_subject_group(
         )
     return PosterSubjectGroupSnapshot(
         display_id=f"poster-group:{group.library}:{locator.reference}",
-        # The batch token is not in hand here — the parent job does not exist yet — so
-        # the presenter adds "Batch 7F3A" as subject context on top of this name.
+        # The parent batch does not exist yet, so its token is added by the presenter.
         display_name=poster_group_display_name(
             library=group.library,
-            chunk_index=group.chunk_index,
-            chunk_total=group.chunk_total,
-            batch_mode=group.batch_mode,
+            member_count=len(members),
         ),
         library=group.library,
         chunk_index=group.chunk_index,

@@ -131,6 +131,37 @@ describe('PosterProgress', () => {
 		]);
 	});
 
+	it('explains yellow and red outcomes while keeping other settled rows compact', async () => {
+		listWorkItems.mockResolvedValue(
+			page(
+				[
+					item(0, {
+						status: 'review_required',
+						message: 'Choose a poster to teach Marquee your preferences.'
+					}),
+					item(1, {
+						status: 'failed',
+						message: 'No poster files were downloaded or found in the cache.'
+					}),
+					item(2, { status: 'no_change', message: 'No viable poster change was found.' }),
+					item(3, { status: 'succeeded', message: 'Poster analysis completed.' })
+				],
+				null
+			)
+		);
+
+		render(PosterProgress, { props: { jobId: 'poster-group', summary: summary(), open: true } });
+
+		expect(
+			await screen.findByText('Choose a poster to teach Marquee your preferences.')
+		).toBeVisible();
+		expect(
+			screen.getByText('No poster files were downloaded or found in the cache.')
+		).toBeVisible();
+		expect(screen.queryByText('No viable poster change was found.')).not.toBeInTheDocument();
+		expect(screen.queryByText('Poster analysis completed.')).not.toBeInTheDocument();
+	});
+
 	it('paginates by stable ordinal and refreshes every loaded row after a sequence advance', async () => {
 		const user = userEvent.setup();
 		listWorkItems

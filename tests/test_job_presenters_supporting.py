@@ -422,17 +422,17 @@ def test_systemic_group_failure_uses_lazy_work_item_summary():
         )
     )
 
-    assert presentation.subject.display_name == "Get Television Posters · Group 3"
+    assert presentation.subject.display_name == "Get Television Posters · 3 Subjects"
     assert presentation.work_items is not None
     assert presentation.work_items.total == 3
     assert presentation.work_items.counts.failed == 3
     assert not any(section.kind == "change_list" for section in presentation.sections)
 
 
-def test_group_subject_names_its_action_and_position():
-    """A bare chunk index named nothing; the title says what the job does and which."""
+def test_group_subject_names_its_action_and_subject_count():
+    """The title says what the job does and how many immutable members it contains."""
     tv = _group_presentation(_group_job())
-    assert tv.subject.display_name == "Get Television Posters · Group 3"
+    assert tv.subject.display_name == "Get Television Posters · 3 Subjects"
     assert tv.subject.monogram == "TVP"
 
     movies = _group_presentation(
@@ -446,12 +446,12 @@ def test_group_subject_names_its_action_and_position():
             },
         )
     )
-    assert movies.subject.display_name == "Get Film Posters · Group 1"
+    assert movies.subject.display_name == "Get Film Posters · 1 Subject"
     assert movies.subject.monogram == "FP"
 
 
-def test_group_title_counts_its_siblings_when_the_total_is_known():
-    """"Group 3" alone does not say whether four more follow or forty."""
+def test_group_context_counts_its_siblings_when_the_total_is_known():
+    """The context retains the chunk's position when the total is known."""
     snapshot = {**TV_GROUP_SNAPSHOT, "chunk_total": 12}
     presentation = _group_presentation(
         _group_job(
@@ -459,18 +459,19 @@ def test_group_title_counts_its_siblings_when_the_total_is_known():
             request={**_group_job().request, "chunk_total": 12},
         )
     )
-    assert presentation.subject.display_name == "Get Television Posters · Group 3 of 12"
+    assert presentation.subject.display_name == "Get Television Posters · 3 Subjects"
+    assert presentation.subject.context == ("Group 3 of 12",)
 
 
 def test_group_context_locates_it_inside_its_batch():
     """Two runs of the same library are otherwise indistinguishable."""
     presentation = _group_presentation(_group_job(parent_id="job000000000000000000000007f3a"))
-    assert presentation.subject.context == ("Batch 7F3A",)
+    assert presentation.subject.context == ("Batch 7F3A", "Group 3")
 
 
-def test_group_context_is_empty_without_a_parent_batch():
-    """A group submitted on its own belongs to no batch, so it claims none."""
-    assert _group_presentation(_group_job()).subject.context == ()
+def test_standalone_group_keeps_its_position_without_a_parent_batch():
+    """A standalone chunk still identifies its group position."""
+    assert _group_presentation(_group_job()).subject.context == ("Group 3",)
 
 
 def test_all_at_once_group_has_no_group_ordinal():
@@ -483,7 +484,7 @@ def test_all_at_once_group_has_no_group_ordinal():
             request={**_group_job().request, "chunk_index": 0, "batch_mode": "all_at_once"},
         )
     )
-    assert presentation.subject.display_name == "Get Television Posters"
+    assert presentation.subject.display_name == "Get Television Posters · 3 Subjects"
     assert presentation.subject.context == ("Batch 7F3A",)
 
 

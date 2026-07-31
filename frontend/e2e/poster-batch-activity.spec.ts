@@ -2,7 +2,13 @@ import { expect, test, type Page } from '@playwright/test';
 
 const now = '2026-07-30T19:00:00Z';
 
-function groupRow(jobId: string, title: string, library: 'movies' | 'tv', chunkIndex: number) {
+function groupRow(
+	jobId: string,
+	title: string,
+	library: 'movies' | 'tv',
+	chunkIndex: number,
+	chunkTotal: number | null = null
+) {
 	return {
 		version: 1,
 		job_id: jobId,
@@ -17,7 +23,10 @@ function groupRow(jobId: string, title: string, library: 'movies' | 'tv', chunkI
 			display_name: title,
 			artwork_key: null,
 			monogram: library === 'movies' ? 'FP' : 'TVP',
-			context: ['Batch 7F3A'],
+			context: [
+				'Batch 7F3A',
+				...(chunkTotal == null ? [] : [`Group ${chunkIndex + 1} of ${chunkTotal}`])
+			],
 			snapshot_at: now,
 			missing_live_subject: false
 		},
@@ -170,10 +179,10 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 }) => {
 	await installStableEventSource(page);
 	const rows = [
-		groupRow('a1000000000000000000000000000001', 'Get Film Posters', 'movies', 0),
-		groupRow('a2000000000000000000000000000002', 'Get Television Posters', 'tv', 0),
-		groupRow('a3000000000000000000000000000003', 'Get Film Posters · Group 1 of 4', 'movies', 0),
-		groupRow('a4000000000000000000000000000004', 'Get Television Posters · Group 2 of 4', 'tv', 1)
+		groupRow('a1000000000000000000000000000001', 'Get Film Posters · 2 Subjects', 'movies', 0),
+		groupRow('a2000000000000000000000000000002', 'Get Television Posters · 2 Subjects', 'tv', 0),
+		groupRow('a3000000000000000000000000000003', 'Get Film Posters · 2 Subjects', 'movies', 0, 4),
+		groupRow('a4000000000000000000000000000004', 'Get Television Posters · 2 Subjects', 'tv', 1, 4)
 	];
 	let workItemRequests = 0;
 	const listRequest = page.waitForRequest(
@@ -194,9 +203,12 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 	const requestUrl = new URL((await listRequest).url());
 	expect(requestUrl.searchParams.get('hierarchy')).toBe('activity');
 	await expect(page.locator('article.activity-row')).toHaveCount(4);
-	for (const row of rows) {
-		await expect(page.getByRole('heading', { name: row.label, exact: true })).toBeVisible();
-	}
+	await expect(page.getByRole('heading', { name: 'Get Film Posters · 2 Subjects' })).toHaveCount(2);
+	await expect(
+		page.getByRole('heading', { name: 'Get Television Posters · 2 Subjects' })
+	).toHaveCount(2);
+	await expect(page.getByText('Batch 7F3A · Group 1 of 4')).toBeVisible();
+	await expect(page.getByText('Batch 7F3A · Group 2 of 4')).toBeVisible();
 	// The stage now labels the progress bar itself — once per card, not once beside
 	// the headline and again as the bar's "N / N stages" count.
 	await expect(page.getByText('Validating', { exact: true })).toHaveCount(4);
@@ -204,9 +216,11 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 	expect(workItemRequests).toBe(0);
 
 	const movieCard = page.locator('article.activity-row').filter({
-		has: page.getByRole('heading', { name: 'Get Film Posters', exact: true })
+		has: page.getByText('Batch 7F3A · Group 1 of 4', { exact: true })
 	});
-	await movieCard.getByRole('button', { name: /Posters in This Run/ }).click();
+	const rosterButton = movieCard.getByRole('button', { name: 'Posters in This Group' });
+	await expect(rosterButton).not.toHaveText(/\d/);
+	await rosterButton.click();
 	await expect(movieCard.getByText('Arrival', { exact: true })).toBeVisible();
 	// The roster names posters; it no longer restates the card's stage or its bar.
 	await expect(movieCard.getByText('Validating', { exact: true })).toHaveCount(1);
@@ -217,8 +231,8 @@ test('shows one promoted card per poster execution unit with lazy per-poster pro
 test('hides selection until Select is pressed and letters tiles by library', async ({ page }) => {
 	await installStableEventSource(page);
 	const rows = [
-		groupRow('c1000000000000000000000000000001', 'Get Film Posters · Group 1 of 4', 'movies', 0),
-		groupRow('c2000000000000000000000000000002', 'Get Television Posters · Group 2 of 4', 'tv', 1)
+		groupRow('c1000000000000000000000000000001', 'Get Film Posters · 2 Subjects', 'movies', 0, 4),
+		groupRow('c2000000000000000000000000000002', 'Get Television Posters · 2 Subjects', 'tv', 1, 4)
 	];
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: rows, next_cursor: null, limit: 50 } })
@@ -236,9 +250,11 @@ test('hides selection until Select is pressed and letters tiles by library', asy
 
 	await expect(page.getByRole('checkbox')).toHaveCount(0);
 	await page.getByRole('button', { name: 'Select', exact: true }).click();
-	await expect(page.getByRole('checkbox', { name: 'Select Get Television Posters · Group 2 of 4' })).toBeVisible();
+	await expect(
+		page.getByRole('checkbox', { name: 'Select Get Television Posters · 2 Subjects' })
+	).toBeVisible();
 
-	await page.getByRole('checkbox', { name: 'Select Get Television Posters · Group 2 of 4' }).check();
+	await page.getByRole('checkbox', { name: 'Select Get Television Posters · 2 Subjects' }).check();
 	await expect(page.getByText('1 selected')).toBeVisible();
 
 	// Leaving the mode drops the selection with it — a checked box nobody can see
@@ -250,7 +266,12 @@ test('hides selection until Select is pressed and letters tiles by library', asy
 
 test('keeps unified poster cards and their progress inside a phone viewport', async ({ page }) => {
 	await installStableEventSource(page);
-	const row = groupRow('b1000000000000000000000000000001', 'Get Television Posters', 'tv', 0);
+	const row = groupRow(
+		'b1000000000000000000000000000001',
+		'Get Television Posters · 2 Subjects',
+		'tv',
+		0
+	);
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: [row], next_cursor: null, limit: 50 } })
 	);
@@ -260,7 +281,7 @@ test('keeps unified poster cards and their progress inside a phone viewport', as
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/projection-room');
 	const card = page.locator('article.activity-row');
-	await card.getByRole('button', { name: /Posters in This Run/ }).click();
+	await card.getByRole('button', { name: 'Posters in This Group' }).click();
 	await expect(card.getByText('Arrival', { exact: true })).toBeVisible();
 	const bounds = await card.boundingBox();
 	expect(bounds).not.toBeNull();

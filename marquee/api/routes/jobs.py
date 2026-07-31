@@ -866,6 +866,9 @@ def _fallback_work_item(
     elif run is not None and run.status == "no_candidates":
         status = "no_change"
         message = "No viable poster change was found."
+    elif run is not None and run.status == "flagged_manual":
+        status = "review_required"
+        message = "No candidate passed the configured filters."
     elif run is not None and run.status == "completed" and run.selected_artifact_id is not None:
         status = "succeeded"
         message = "Poster analysis completed."

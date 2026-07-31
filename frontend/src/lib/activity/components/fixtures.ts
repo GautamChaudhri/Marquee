@@ -11,7 +11,7 @@ export const subjects: Record<string, PresentationSubject> = {
 	]),
 	posterGroup: subject(
 		'poster_subject_group',
-		'Television Posters · 8 Titles',
+		'Get Television Posters · 8 Subjects',
 		['Batch 7F3A', 'Group 11 of 26'],
 		'TVP'
 	)
