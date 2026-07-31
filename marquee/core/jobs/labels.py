@@ -50,6 +50,10 @@ def poster_group_batch_context(
     batch_mode: str,
 ) -> tuple[str, ...]:
     """Identify the batch and chunk position without repeating either in the title."""
+    if batch_mode == "all_at_once":
+        # One execution card owns the selected poster set, so do not expose the
+        # structural coordinator's batch identifier or a meaningless group number.
+        return ("Unified run",)
     context: list[str] = []
     if parent_job_id:
         context.append(f"Batch {parent_job_id[-4:].upper()}")

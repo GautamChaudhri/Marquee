@@ -35,7 +35,7 @@
 			{disabled}
 			onclick={() => (mode = 'all_at_once')}
 		>
-			All at once
+			Unified
 		</button>
 	</div>
 
@@ -55,7 +55,9 @@
 		</label>
 		<span id="batch-mode-help" class="help">Each completed chunk becomes reviewable.</span>
 	{:else}
-		<span id="batch-mode-help" class="help">Faster startup; cancelling stops the whole batch.</span>
+		<span id="batch-mode-help" class="help"
+			>One unified run; cancelling stops the complete run.</span
+		>
 	{/if}
 </div>
 

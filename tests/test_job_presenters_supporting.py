@@ -474,8 +474,8 @@ def test_standalone_group_keeps_its_position_without_a_parent_batch():
     assert _group_presentation(_group_job()).subject.context == ("Group 3",)
 
 
-def test_all_at_once_group_has_no_group_ordinal():
-    """One group means there is no position to state — only the action it performs."""
+def test_all_at_once_group_is_presented_as_a_unified_run():
+    """One visible execution unit needs its mode, not internal batch coordinates."""
     snapshot = {**TV_GROUP_SNAPSHOT, "chunk_index": 0, "batch_mode": "all_at_once"}
     presentation = _group_presentation(
         _group_job(
@@ -485,7 +485,7 @@ def test_all_at_once_group_has_no_group_ordinal():
         )
     )
     assert presentation.subject.display_name == "Get Television Posters · 3 Subjects"
-    assert presentation.subject.context == ("Batch 7F3A",)
+    assert presentation.subject.context == ("Unified run",)
 
 
 def test_ordinary_subjects_have_no_monogram():

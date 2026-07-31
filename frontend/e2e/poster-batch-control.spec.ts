@@ -52,9 +52,9 @@ test('movie and TV Run pages expose per-run batching controls', async ({ page })
 
 	await page.goto('/pipeline/tv');
 	const tvControl = await expectDefaultChunkControl(page);
-	await tvControl.getByRole('button', { name: 'All at once' }).click();
+	await tvControl.getByRole('button', { name: 'Unified' }).click();
 	await expect(tvControl.getByRole('spinbutton', { name: 'Chunk size' })).toHaveCount(0);
-	await expect(tvControl).toContainText('cancelling stops the whole batch');
+	await expect(tvControl).toContainText('cancelling stops the complete run');
 	const tvRequest = page.waitForRequest(
 		(request) =>
 			request.method() === 'POST' && new URL(request.url()).pathname === '/api/pipeline/tv/batch'

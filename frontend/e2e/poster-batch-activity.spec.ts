@@ -7,7 +7,8 @@ function groupRow(
 	title: string,
 	library: 'movies' | 'tv',
 	chunkIndex: number,
-	chunkTotal: number | null = null
+	chunkTotal: number | null = null,
+	batchMode: 'chunked' | 'all_at_once' = 'chunked'
 ) {
 	return {
 		version: 1,
@@ -23,10 +24,13 @@ function groupRow(
 			display_name: title,
 			artwork_key: null,
 			monogram: library === 'movies' ? 'FP' : 'TVP',
-			context: [
-				'Batch 7F3A',
-				...(chunkTotal == null ? [] : [`Group ${chunkIndex + 1} of ${chunkTotal}`])
-			],
+			context:
+				batchMode === 'all_at_once'
+					? ['Unified run']
+					: [
+							'Batch 7F3A',
+							...(chunkTotal == null ? [] : [`Group ${chunkIndex + 1} of ${chunkTotal}`])
+						],
 			snapshot_at: now,
 			missing_live_subject: false
 		},
@@ -270,7 +274,9 @@ test('keeps unified poster cards and their progress inside a phone viewport', as
 		'b1000000000000000000000000000001',
 		'Get Television Posters · 2 Subjects',
 		'tv',
-		0
+		0,
+		null,
+		'all_at_once'
 	);
 	await page.route('**/api/jobs?*', (route) =>
 		route.fulfill({ json: { view: 'queue', items: [row], next_cursor: null, limit: 50 } })
@@ -281,6 +287,8 @@ test('keeps unified poster cards and their progress inside a phone viewport', as
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/projection-room');
 	const card = page.locator('article.activity-row');
+	await expect(card.getByText('Unified run', { exact: true })).toBeVisible();
+	await expect(card.getByText(/Batch 7F3A|Group \d/)).toHaveCount(0);
 	await card.getByRole('button', { name: 'Posters in This Group' }).click();
 	await expect(card.getByText('Arrival', { exact: true })).toBeVisible();
 	const bounds = await card.boundingBox();
