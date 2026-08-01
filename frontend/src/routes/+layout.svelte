@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import '$lib/styles/workspace.css';
 	import favicon from '$lib/assets/favicon.svg';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import TopBar from '$lib/components/TopBar.svelte';

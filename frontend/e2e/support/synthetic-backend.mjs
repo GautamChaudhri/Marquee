@@ -21,6 +21,66 @@ const emptyPipelineMetrics = {
 	avg_stage_seconds: {},
 	total_stage_seconds: {}
 };
+// Two films and two shows with nothing deployed, so the poster workspaces' Run tabs
+// have something to select. Deliberately small: the specs assert on counts.
+const missingMovies = [
+	{
+		id: 8101,
+		title: 'Synthetic Feature One',
+		year: 2019,
+		tmdb_id: 8101,
+		genres: null,
+		container: null,
+		video_width: null,
+		video_height: null,
+		resolution: null,
+		poster_status: 'missing',
+		poster_url: null,
+		media_file_id: null
+	},
+	{
+		id: 8102,
+		title: 'Synthetic Feature Two',
+		year: 2021,
+		tmdb_id: 8102,
+		genres: null,
+		container: null,
+		video_width: null,
+		video_height: null,
+		resolution: null,
+		poster_status: 'missing',
+		poster_url: null,
+		media_file_id: null
+	}
+];
+const tvRunQueueItems = [
+	{
+		series: {
+			id: 9201,
+			title: 'Synthetic Series One',
+			year: 2018,
+			tmdb_id: 9201,
+			poster_url: null
+		},
+		show_poster_missing: true,
+		missing_seasons: [],
+		assets_to_run: [{ media_type: 'series' }],
+		no_tmdb: false
+	},
+	{
+		series: {
+			id: 9202,
+			title: 'Synthetic Series Two',
+			year: 2022,
+			tmdb_id: 9202,
+			poster_url: null
+		},
+		show_poster_missing: true,
+		missing_seasons: [],
+		assets_to_run: [{ media_type: 'series' }],
+		no_tmdb: false
+	}
+];
 const emptyTvSummary = {
 	shows_total: 0,
 	shows_with_show_poster: 0,
@@ -317,7 +377,26 @@ const server = createServer((req, res) => {
 		);
 		return;
 	}
+	if (path === '/api/pipeline/run-queue') {
+		json(res, 200, {
+			total: missingMovies.length,
+			page: 1,
+			page_size: 60,
+			items: missingMovies
+		});
+		return;
+	}
 	if (path === '/api/library/movies') {
+		// Keep legacy callers such as older library views deterministic as well.
+		if (url.searchParams.get('poster_status') === 'missing') {
+			json(res, 200, {
+				total: missingMovies.length,
+				page: 1,
+				page_size: 60,
+				items: missingMovies
+			});
+			return;
+		}
 		json(res, 200, { total: 0, page: 1, page_size: 60, items: [] });
 		return;
 	}
@@ -342,7 +421,7 @@ const server = createServer((req, res) => {
 		return;
 	}
 	if (path === '/api/pipeline/tv/run-queue') {
-		json(res, 200, { total: 0, items: [] });
+		json(res, 200, { total: tvRunQueueItems.length, items: tvRunQueueItems });
 		return;
 	}
 	if (path === '/api/pipeline/tv/review-queue') {

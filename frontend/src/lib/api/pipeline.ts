@@ -8,6 +8,8 @@ import type {
 	OcrLabelCaptureResult,
 	OcrLabelClearResult,
 	OcrLabelRunState,
+	MovieListItem,
+	Paginated,
 	PipelineMetrics,
 	PipelineSummary,
 	PosterBatchOptions,
@@ -41,6 +43,14 @@ export function getPipelineSummary(fetchFn: Fetch): Promise<PipelineSummary> {
 	return apiGet<PipelineSummary>(fetchFn, '/pipeline/summary');
 }
 
+/** Movies currently eligible to start poster analysis, excluding active and review-pending work. */
+export function getMovieRunQueue(
+	fetchFn: Fetch,
+	params: { page?: number; page_size?: number } = {}
+): Promise<Paginated<MovieListItem>> {
+	return apiGet<Paginated<MovieListItem>>(fetchFn, '/pipeline/run-queue', params);
+}
+
 export function rescanPosters(fetchFn: Fetch): Promise<JobSubmissionResponse> {
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/rescan-posters', {});
 }
@@ -61,13 +71,9 @@ export function runPosterMaintenance(
 	fetchFn: Fetch,
 	body: { dry_run?: boolean; confirmed_plan_checksum?: string } = {}
 ): Promise<JobSubmissionResponse> {
-	return apiSend<JobSubmissionResponse>(
-		fetchFn,
-		'POST',
-		'/pipeline/maintenance',
-		body,
-		{ 'Idempotency-Key': `poster_maintenance:${randomUuid()}` }
-	);
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/maintenance', body, {
+		'Idempotency-Key': `poster_maintenance:${randomUuid()}`
+	});
 }
 
 /** Latest unreviewed run per movie, for the Review tab. */
@@ -87,9 +93,7 @@ export function approveReviewQueueAutoPicks(
 		'POST',
 		'/pipeline/review-queue/approve-auto',
 		body,
-		body.deploy === false
-			? undefined
-			: { 'Idempotency-Key': `poster_deploy:${randomUuid()}` }
+		body.deploy === false ? undefined : { 'Idempotency-Key': `poster_deploy:${randomUuid()}` }
 	);
 }
 
@@ -132,13 +136,9 @@ export function clearPipelineCache(
 		confirmed_plan_checksum?: string;
 	} = {}
 ): Promise<JobSubmissionResponse> {
-	return apiSend<JobSubmissionResponse>(
-		fetchFn,
-		'POST',
-		'/pipeline/cache/clear',
-		body,
-		{ 'Idempotency-Key': `pipeline_cache_clear:${randomUuid()}` }
-	);
+	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/pipeline/cache/clear', body, {
+		'Idempotency-Key': `pipeline_cache_clear:${randomUuid()}`
+	});
 }
 
 /** Run history for one movie, newest first. */

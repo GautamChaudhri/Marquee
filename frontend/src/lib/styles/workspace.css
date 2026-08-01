@@ -1,0 +1,115 @@
+/* Shared chrome for the poster-pipeline workspaces (/pipeline/movies, /pipeline/tv).
+   Both pages render the same header shape and the same button vocabulary, and Svelte's
+   scoped styles cannot be shared between two route components — so these rules live here.
+   Everything header-related is namespaced under .workspace-head; only .pill and .chev are
+   top-level, because cards inside the page bodies use them too. */
+
+.workspace-head {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	margin-bottom: 18px;
+}
+.workspace-head .head-top {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	flex-wrap: wrap;
+}
+.workspace-head .titles h1 {
+	margin: 0;
+	font-size: 18px;
+	font-weight: 650;
+	letter-spacing: -0.01em;
+}
+.workspace-head .titles p {
+	margin: 3px 0 0;
+	font-size: 13px;
+	color: var(--muted);
+}
+/* PosterLibraryToggle carries its own bottom margin for standalone use; beside a
+   title it is just another item in the row. */
+.workspace-head .scope .library-switch {
+	margin-bottom: 0;
+}
+/* One toolbar: what you are looking at on the left, what you can do to it on the right. */
+.workspace-head .head-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	flex-wrap: wrap;
+	padding: 8px 10px;
+	border: 1px solid var(--line);
+	border-radius: 999px;
+	background: var(--panel);
+}
+.workspace-head .head-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+/* One button vocabulary for the whole workspace: pills, matching the tabs and the
+   library switch. Weight carries the hierarchy, not the shape. */
+.pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 14px;
+	border-radius: 999px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--muted);
+	font-size: 13px;
+	font-weight: 500;
+	white-space: nowrap;
+	transition:
+		background 0.12s,
+		border-color 0.12s,
+		color 0.12s;
+}
+.pill:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+.pill.primary {
+	border-color: var(--gold-deep);
+	background: linear-gradient(180deg, var(--gold), var(--gold-deep));
+	color: var(--on-gold);
+}
+.pill.primary:hover:not(:disabled) {
+	filter: brightness(1.06);
+}
+.pill.quiet {
+	border-color: var(--line2);
+	background: var(--panel2);
+	color: var(--text);
+}
+.pill.quiet:hover:not(:disabled) {
+	border-color: color-mix(in srgb, var(--gold) 45%, var(--line2));
+}
+.pill.ghost:hover:not(:disabled) {
+	background: var(--panel2);
+	color: var(--text);
+}
+.pill.danger:hover:not(:disabled) {
+	color: var(--bad);
+	border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+.chev {
+	color: var(--gold);
+	font-size: 15px;
+	line-height: 1;
+}
+
+/* The toolbar carries one more pill than it used to (batching, select, select-all),
+   so it squares off a little earlier — a 999px bar reads wrong once it wraps. */
+@media (max-width: 1080px) {
+	.workspace-head .head-bar {
+		border-radius: var(--radius);
+		align-items: stretch;
+	}
+}

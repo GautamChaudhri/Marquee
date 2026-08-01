@@ -5,7 +5,7 @@
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
-	import PosterBatchModeControl from '$lib/components/PosterBatchModeControl.svelte';
+	import PosterBatchPopover from '$lib/components/PosterBatchPopover.svelte';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
@@ -26,8 +26,9 @@
 		runSeries,
 		runTvBatch
 	} from '$lib/api/pipeline-tv';
+	import { batchOptionsFor } from '$lib/pipeline/batch-options';
+	import { posterBatchChunkSize, posterBatchMode } from '$lib/pipeline/batch-prefs';
 	import { toast } from '$lib/toast';
-	import type { PosterBatchMode, PosterBatchOptions } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -61,6 +62,7 @@
 	// svelte-ignore state_referenced_locally
 	let summary = $state(data.summary);
 	const selected = new SvelteSet<number>();
+	let selectMode = $state(false);
 
 	// Counts read the same local state the tab bodies render, so a refresh cannot leave
 	// a badge disagreeing with the list underneath it.
@@ -74,8 +76,6 @@
 	let batchRunning = $state(false);
 	let resetOpen = $state(false);
 	let resetBusy = $state(false);
-	let batchMode = $state<PosterBatchMode>('chunked');
-	let chunkSize = $state(8);
 	const pendingSeriesIds = new SvelteSet<number>();
 	const pendingSeriesJobs = new SvelteMap<string, number>();
 
@@ -121,12 +121,21 @@
 		});
 	}
 
-	function currentBatchOptions(): PosterBatchOptions {
-		if (batchMode === 'all_at_once') return { batch_mode: batchMode };
-		return {
-			batch_mode: batchMode,
-			chunk_size: Math.min(16, Math.max(1, Math.round(Number(chunkSize) || 8)))
-		};
+	const eligibleRun = $derived(runQueue.items.filter((item) => !item.no_tmdb));
+	const allSelected = $derived(
+		eligibleRun.length > 0 && eligibleRun.every((item) => selected.has(item.series.id))
+	);
+
+	function toggleAll() {
+		if (allSelected) selected.clear();
+		else for (const item of eligibleRun) selected.add(item.series.id);
+	}
+
+	// Leaving selection mode discards the selection: a hidden checkbox that is still
+	// checked would arm a bulk command nobody can see.
+	function endSelectMode() {
+		selectMode = false;
+		selected.clear();
 	}
 
 	async function startBatch(scope: 'missing' | 'all' | 'selected', seriesIds?: number[]) {
@@ -136,7 +145,7 @@
 			const job = await runTvBatch(fetch, {
 				scope,
 				series_ids: seriesIds,
-				...currentBatchOptions()
+				...batchOptionsFor($posterBatchMode, $posterBatchChunkSize)
 			});
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			await refresh();
@@ -152,7 +161,7 @@
 		try {
 			const job = await runSeries(fetch, seriesId, {
 				include: 'all_missing',
-				...currentBatchOptions()
+				...batchOptionsFor($posterBatchMode, $posterBatchChunkSize)
 			});
 			pendingSeriesJobs.set(job.job_id, seriesId);
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
@@ -218,7 +227,7 @@
 <header class="workspace-head">
 	<div class="head-top">
 		<div class="titles">
-			<h1>TV Posters</h1>
+			<h1>Television Posters</h1>
 			<p>{summary.shows_fully_covered}/{summary.shows_total} shows fully covered</p>
 		</div>
 		<div class="scope">
@@ -231,6 +240,23 @@
 		<TabBar {tabs} active={tab} onSelect={setTab} />
 		<div class="head-actions">
 			{#if tab === 'run'}
+				<PosterBatchPopover
+					bind:mode={$posterBatchMode}
+					bind:chunkSize={$posterBatchChunkSize}
+					disabled={batchRunning}
+				/>
+				<button
+					class="pill {selectMode ? 'quiet' : 'ghost'}"
+					aria-pressed={selectMode}
+					onclick={() => (selectMode ? endSelectMode() : (selectMode = true))}
+				>
+					{selectMode ? 'Done' : 'Select'}
+				</button>
+				{#if selectMode}
+					<button class="pill ghost" onclick={toggleAll} disabled={eligibleRun.length === 0}>
+						{allSelected ? 'None' : 'All'}
+					</button>
+				{/if}
 				{#if selected.size > 0}
 					<button
 						class="pill ghost"
@@ -264,11 +290,6 @@
 			{/if}
 		</div>
 	</div>
-	{#if tab === 'run'}
-		<div class="batch-options">
-			<PosterBatchModeControl bind:mode={batchMode} bind:chunkSize disabled={batchRunning} />
-		</div>
-	{/if}
 </header>
 
 <ConfirmDialog
@@ -301,18 +322,20 @@
 			{@const placeholders = runPosterPlaceholders(item)}
 			<div class="run-row" class:picked={selected.has(item.series.id)}>
 				<div class="card-head">
-					<label class="pick">
-						<input
-							type="checkbox"
-							checked={selected.has(item.series.id)}
-							aria-label={`Select ${item.series.title}`}
-							disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
-							onchange={() =>
-								selected.has(item.series.id)
-									? selected.delete(item.series.id)
-									: selected.add(item.series.id)}
-						/>
-					</label>
+					{#if selectMode}
+						<label class="pick">
+							<input
+								type="checkbox"
+								checked={selected.has(item.series.id)}
+								aria-label={`Select ${item.series.title}`}
+								disabled={item.no_tmdb || batchRunning || pendingSeriesIds.has(item.series.id)}
+								onchange={() =>
+									selected.has(item.series.id)
+										? selected.delete(item.series.id)
+										: selected.add(item.series.id)}
+							/>
+						</label>
+					{/if}
 					<div class="series-meta">
 						<strong title={item.series.title}>{item.series.title}</strong>
 						<span class="sub">{item.series.year ?? '—'}</span>
@@ -414,55 +437,9 @@
 {/if}
 
 <style>
-	/* Header: title + library scope on one line, then a single toolbar that pairs
-	   the tabs with the actions that belong to the tab you are on. */
-	.workspace-head {
-		display: flex;
-		flex-direction: column;
-		gap: 14px;
-		margin-bottom: 18px;
-	}
-	.head-top {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-		flex-wrap: wrap;
-	}
-	.titles h1 {
-		margin: 0;
-		font-size: 18px;
-		font-weight: 650;
-		letter-spacing: -0.01em;
-	}
-	.titles p {
-		margin: 3px 0 0;
-		font-size: 13px;
-		color: var(--muted);
-	}
-	.scope :global(.library-switch) {
-		margin-bottom: 0;
-	}
-	.head-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 16px;
-		flex-wrap: wrap;
-		padding: 8px 10px;
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		background: var(--panel);
-	}
-	.head-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.batch-options {
-		display: flex;
-	}
+	/* Header chrome and the .pill button vocabulary live in $lib/styles/workspace.css —
+	   the Films workspace renders the same toolbar. */
+
 	/* Two columns of cards: a card is only as tall as one poster row, so half the
 	   page height was going to empty space beside short titles. */
 	.run-list,
@@ -616,69 +593,11 @@
 		display: flex;
 		justify-content: space-between;
 	}
-	/* One button vocabulary for the whole workspace: pills, matching the tabs
-	   and the library switch. Weight carries the hierarchy, not the shape. */
 	.row-actions {
 		display: flex;
 		align-items: center;
 		gap: 6px;
 		flex: 0 0 auto;
-	}
-	.pill {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		padding: 8px 14px;
-		border-radius: 999px;
-		border: 1px solid transparent;
-		background: transparent;
-		color: var(--muted);
-		font-size: 13px;
-		font-weight: 500;
-		white-space: nowrap;
-		transition:
-			background 0.12s,
-			border-color 0.12s,
-			color 0.12s;
-	}
-	.pill:disabled {
-		opacity: 0.45;
-		cursor: not-allowed;
-	}
-	.pill.primary {
-		border-color: var(--gold-deep);
-		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
-		color: var(--on-gold);
-	}
-	.pill.primary:hover:not(:disabled) {
-		filter: brightness(1.06);
-	}
-	.pill.quiet {
-		border-color: var(--line2);
-		background: var(--panel2);
-		color: var(--text);
-	}
-	.pill.quiet:hover:not(:disabled) {
-		border-color: color-mix(in srgb, var(--gold) 45%, var(--line2));
-	}
-	.pill.ghost:hover:not(:disabled) {
-		background: var(--panel2);
-		color: var(--text);
-	}
-	.pill.danger:hover:not(:disabled) {
-		color: var(--bad);
-		border-color: color-mix(in srgb, var(--bad) 40%, transparent);
-	}
-	.chev {
-		color: var(--gold);
-		font-size: 15px;
-		line-height: 1;
-	}
-	@media (max-width: 1000px) {
-		.head-bar {
-			border-radius: var(--radius);
-			align-items: stretch;
-		}
 	}
 	@media (max-width: 1180px) {
 		.run-list,

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,6 +64,7 @@ from marquee.core.movie_queries import (
 )
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.rate_limit import RateLimiter
+from marquee.core.sort_title import title_sort_expr
 from marquee.database import get_db
 from marquee.models import (
     ArtworkEvent,
@@ -482,6 +483,58 @@ async def _active_movie_poster_jobs(db: AsyncSession) -> set[int]:
     return active
 
 
+@router.get("/run-queue")
+async def movie_run_queue(
+    db: Annotated[AsyncSession, Depends(get_db)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(60, ge=1, le=200),
+):
+    """Movies that are ready for poster analysis, excluding active and review-pending work."""
+    active = await _active_movie_poster_jobs(db)
+    conditions = [
+        movie_downloaded(),
+        Movie.poster_path.is_(None),
+        ~movie_review_pending(),
+    ]
+    if active:
+        conditions.append(Movie.id.not_in(sorted(active)))
+
+    base = select(Movie).where(*conditions)
+    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    movies = list(
+        (
+            await db.execute(
+                base.order_by(title_sort_expr()).limit(page_size).offset((page - 1) * page_size)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    movie_ids = [movie.id for movie in movies]
+    media_rows = (
+        (
+            await db.execute(
+                select(MediaFile).where(
+                    MediaFile.movie_id.in_(movie_ids),
+                    MediaFile.is_active.is_(True),
+                    MediaFile.is_present.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+        if movie_ids
+        else []
+    )
+    media_by_movie = {media_file.movie_id: media_file for media_file in media_rows}
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [enrich_movie(movie, media_by_movie.get(movie.id)) for movie in movies],
+    }
+
+
 @router.post("/batch", status_code=202)
 async def run_pipeline_batch(
     body: BatchRunRequest,
@@ -638,12 +691,12 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         select(func.count(Movie.id)).where(downloaded, Movie.poster_path.is_not(None))
     )
     # The Run tab's own predicate, so the card and the tab cannot disagree:
-    # missing a poster *and* not already sitting in the review queue.
-    movies_awaiting_run = await db.scalar(
-        select(func.count(Movie.id)).where(
-            downloaded, Movie.poster_path.is_(None), ~movie_review_pending()
-        )
-    )
+    # missing a poster, not already sitting in review, and not covered by active work.
+    run_queue_conditions = [downloaded, Movie.poster_path.is_(None), ~movie_review_pending()]
+    active_movie_ids = await _active_movie_poster_jobs(db)
+    if active_movie_ids:
+        run_queue_conditions.append(Movie.id.not_in(sorted(active_movie_ids)))
+    movies_awaiting_run = await db.scalar(select(func.count(Movie.id)).where(*run_queue_conditions))
     latest = _review_queue_latest()
     latest_runs = _latest_run_per_movie()
     movies_in_review = await db.scalar(select(func.count()).select_from(latest))
@@ -678,7 +731,7 @@ async def pipeline_summary(db: Annotated[AsyncSession, Depends(get_db)]):
         payload = job.request if isinstance(job.request, dict) else {}
         if job.type == "poster_pipeline_batch":
             summary["movie_count"] = len(payload.get("movie_ids") or [])
-        elif job.subject_type == "movie" or payload.get("movie_id") is not None:
+        elif job.subject_kind == "movie" or payload.get("movie_id") is not None:
             summary["movie_count"] = 1
         else:
             summary["movie_count"] = 0

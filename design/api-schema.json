@@ -11639,6 +11639,61 @@
         ]
       }
     },
+    "/api/pipeline/run-queue": {
+      "get": {
+        "description": "Movies that are ready for poster analysis, excluding active and review-pending work.",
+        "operationId": "movie_run_queue_api_pipeline_run_queue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 60,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Movie Run Queue",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
     "/api/pipeline/runs/{run_id}": {
       "get": {
         "description": "Full results payload for a run (auto-pick, ranked, rejected-by-stage).",

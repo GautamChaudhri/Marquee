@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -127,6 +128,128 @@ async def test_library_missing_filter_can_exclude_review_queue_movies(
     body = resp.json()
     assert body["total"] == 1
     assert [item["title"] for item in body["items"]] == ["Still Missing"]
+
+
+@pytest.mark.asyncio
+async def test_movie_run_queue_withholds_active_and_review_work(
+    db: AsyncSession,
+    client: AsyncClient,
+):
+    now = datetime.now(UTC)
+
+    def queued_job(
+        *,
+        job_type: str,
+        movie_id: int | None = None,
+        parent_id: str | None = None,
+        request: dict | None = None,
+        phase: str = "queued",
+        outcome: str | None = None,
+    ) -> Job:
+        job_id = uuid4().hex
+        return Job(
+            id=job_id,
+            type=job_type,
+            payload_version=1,
+            request=request or {},
+            phase=phase,
+            outcome=outcome,
+            desired_state="run",
+            fence_token=1,
+            root_id=parent_id or job_id,
+            parent_id=parent_id,
+            trigger_kind="manual",
+            feature_area="ai_posters",
+            presentation_family="poster_pipeline",
+            subject_kind="movie" if movie_id is not None else "poster_subject_group",
+            subject_reference=str(movie_id) if movie_id is not None else job_id,
+            subject_snapshot={"version": 1, "kind": "movie"},
+            terminal_at=now if phase == "terminal" else None,
+        )
+
+    movies = [
+        Movie(
+            title=title,
+            year=2020,
+            folder_path=f"/m/{index}",
+            movie_file_path=f"/m/{index}/{title}.mkv",
+            tmdb_id=tmdb_id,
+        )
+        for index, (title, tmdb_id) in enumerate(
+            (
+                ("Runnable", 1),
+                ("Active Single", 2),
+                ("Active Group", 3),
+                ("Active Batch", 4),
+                ("Needs Review", 5),
+                ("Failed Run", 6),
+                ("Cancelled Run", 7),
+                ("No TMDB", None),
+            ),
+            start=1,
+        )
+    ]
+    db.add_all(movies)
+    await db.flush()
+    by_title = {movie.title: movie for movie in movies}
+
+    active_single = queued_job(movie_id=by_title["Active Single"].id, job_type="poster_pipeline")
+    active_group = queued_job(
+        job_type="poster_pipeline_group",
+        request={
+            "library": "movies",
+            "members": [{"movie_id": by_title["Active Group"].id}],
+        },
+    )
+    active_parent = queued_job(job_type="poster_pipeline_batch")
+    completed_child = queued_job(
+        job_type="poster_pipeline",
+        movie_id=by_title["Active Batch"].id,
+        parent_id=active_parent.id,
+        phase="terminal",
+        outcome="succeeded",
+    )
+    failed = queued_job(
+        job_type="poster_pipeline",
+        movie_id=by_title["Failed Run"].id,
+        phase="terminal",
+        outcome="failed",
+    )
+    cancelled = queued_job(
+        job_type="poster_pipeline",
+        movie_id=by_title["Cancelled Run"].id,
+        phase="terminal",
+        outcome="cancelled",
+    )
+    db.add_all([active_single, active_group, active_parent, completed_child, failed, cancelled])
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="movie-run-queue-review",
+        movie_id=by_title["Needs Review"].id,
+        archive={
+            "run_id": "movie-run-queue-review",
+            "movie_id": by_title["Needs Review"].id,
+            "candidates": [],
+        },
+    )
+    await db.commit()
+
+    response = await client.get("/api/pipeline/run-queue")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 4
+    assert [item["title"] for item in body["items"]] == [
+        "Cancelled Run",
+        "Failed Run",
+        "No TMDB",
+        "Runnable",
+    ]
+    assert next(item for item in body["items"] if item["title"] == "No TMDB")["tmdb_id"] is None
+
+    summary = await client.get("/api/pipeline/summary")
+    assert summary.status_code == 200
+    assert summary.json()["movies_awaiting_run"] == body["total"]
 
 
 @pytest.mark.asyncio

@@ -1117,6 +1117,26 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/pipeline/run-queue': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		/**
+		 * Movie Run Queue
+		 * @description Movies that are ready for poster analysis, excluding active and review-pending work.
+		 */
+		get: operations['movie_run_queue_api_pipeline_run_queue_get'];
+		put?: never;
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/pipeline/runs/{run_id}': {
 		parameters: {
 			query?: never;
@@ -6730,6 +6750,38 @@ export interface operations {
 				};
 				content: {
 					'application/json': unknown;
+				};
+			};
+		};
+	};
+	movie_run_queue_api_pipeline_run_queue_get: {
+		parameters: {
+			query?: {
+				page?: number;
+				page_size?: number;
+			};
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody?: never;
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
 				};
 			};
 		};

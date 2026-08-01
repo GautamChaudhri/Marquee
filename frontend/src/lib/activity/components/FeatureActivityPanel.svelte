@@ -200,6 +200,9 @@
 		display: grid;
 		gap: 10px;
 	}
+	.feature-activity {
+		margin-block-end: 16px;
+	}
 	header {
 		display: flex;
 		align-items: center;

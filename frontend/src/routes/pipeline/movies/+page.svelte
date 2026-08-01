@@ -5,8 +5,7 @@
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
-	import PosterBatchModeControl from '$lib/components/PosterBatchModeControl.svelte';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import PosterBatchPopover from '$lib/components/PosterBatchPopover.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
@@ -15,23 +14,18 @@
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		approveReviewQueueAutoPicks,
+		getMovieRunQueue,
 		getPipelineMetrics,
 		getReviewQueue,
 		resetReviewQueuePosters,
 		runBatch,
 		triggerRun
 	} from '$lib/api/pipeline';
-	import { listMovies } from '$lib/api/library';
 	import { ApiError } from '$lib/api/client';
+	import { batchOptionsFor } from '$lib/pipeline/batch-options';
+	import { posterBatchChunkSize, posterBatchMode } from '$lib/pipeline/batch-prefs';
 	import { toast } from '$lib/toast';
-	import type {
-		BatchScope,
-		MovieListItem,
-		PipelineMetrics,
-		PosterBatchMode,
-		PosterBatchOptions,
-		ReviewQueue
-	} from '$lib/api/types';
+	import type { BatchScope, MovieListItem, PipelineMetrics, ReviewQueue } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
@@ -65,8 +59,7 @@
 	let queuePage = $state(1);
 	let reviewLoadingMore = $state(false);
 	const selected = new SvelteSet<number>();
-	let batchMode = $state<PosterBatchMode>('chunked');
-	let chunkSize = $state(8);
+	let selectMode = $state(false);
 
 	const tabs = $derived([
 		{ id: 'run', label: 'Run', count: missingTotal },
@@ -74,17 +67,19 @@
 		{ id: 'metrics', label: 'Metrics' }
 	]);
 
+	// The subtitle carries the count the deleted in-body action bars used to show.
+	const headSubtitle = $derived(
+		tab === 'review'
+			? `${queue.total} run${queue.total === 1 ? '' : 's'} awaiting review`
+			: `${missingTotal} film${missingTotal === 1 ? '' : 's'} missing posters`
+	);
+
 	async function refreshAll() {
 		try {
 			const [qd, md, mv] = await Promise.all([
 				getReviewQueue(fetch, { page_size: PAGE_SIZE }),
 				getPipelineMetrics(fetch, { limit: 500 }).catch(() => metrics),
-				listMovies(fetch, {
-					poster_status: 'missing',
-					sort: 'title',
-					page_size: PAGE_SIZE,
-					exclude_in_review: true
-				}).catch(() => null)
+				getMovieRunQueue(fetch, { page_size: PAGE_SIZE }).catch(() => null)
 			]);
 			queue = qd;
 			queuePage = 1;
@@ -106,12 +101,7 @@
 		try {
 			const [qd, mv] = await Promise.all([
 				getReviewQueue(fetch, { page_size: PAGE_SIZE }),
-				listMovies(fetch, {
-					poster_status: 'missing',
-					sort: 'title',
-					page_size: PAGE_SIZE,
-					exclude_in_review: true
-				}).catch(() => null)
+				getMovieRunQueue(fetch, { page_size: PAGE_SIZE }).catch(() => null)
 			]);
 			queue = qd;
 			queuePage = 1;
@@ -245,12 +235,11 @@
 			for (const m of eligibleLoaded) selected.add(m.id);
 		}
 	}
-	function currentBatchOptions(): PosterBatchOptions {
-		if (batchMode === 'all_at_once') return { batch_mode: batchMode };
-		return {
-			batch_mode: batchMode,
-			chunk_size: Math.min(16, Math.max(1, Math.round(Number(chunkSize) || 8)))
-		};
+	// Leaving selection mode discards the selection: a hidden checkbox that is still
+	// checked would arm a bulk command nobody can see.
+	function endSelectMode() {
+		selectMode = false;
+		selected.clear();
 	}
 
 	async function startBatch(scope: BatchScope, movieIds?: number[]) {
@@ -261,7 +250,7 @@
 			const job = await runBatch(fetch, {
 				scope,
 				movie_ids: movieIds,
-				...currentBatchOptions()
+				...batchOptionsFor($posterBatchMode, $posterBatchChunkSize)
 			});
 			trackJob(job.job_id);
 			const selectedCount = scope === 'selected' ? (movieIds?.length ?? 0) : null;
@@ -272,6 +261,7 @@
 				'info'
 			);
 			if (scope === 'selected') selected.clear();
+			await refreshQueues();
 		} catch (e) {
 			batchRunning = false;
 			const msg =
@@ -289,10 +279,12 @@
 		try {
 			const ref = await triggerRun(fetch, m.id);
 			trackJob(ref.job_id);
-			await goto(ref.detail_url);
+			toast('Poster analysis queued', 'info');
+			await refreshQueues();
 		} catch (e) {
 			if (e instanceof ApiError && e.status === 409) {
 				toast('The same poster analysis was already submitted', 'info');
+				await refreshQueues();
 			} else {
 				toast(e instanceof Error ? e.message : 'Run failed to start', 'bad');
 			}
@@ -303,11 +295,8 @@
 		if (loadingMore) return;
 		loadingMore = true;
 		try {
-			const next = await listMovies(fetch, {
-				poster_status: 'missing',
-				sort: 'title',
+			const next = await getMovieRunQueue(fetch, {
 				page_size: PAGE_SIZE,
-				exclude_in_review: true,
 				page: missingPage + 1
 			});
 			missingPage += 1;
@@ -360,9 +349,69 @@
 	);
 </script>
 
-<SectionHeader title="Movie Posters" subtitle="Run, review, and tune poster selection" />
+<header class="workspace-head">
+	<div class="head-top">
+		<div class="titles">
+			<h1>Film Posters</h1>
+			<p>{headSubtitle}</p>
+		</div>
+		<div class="scope">
+			<PosterLibraryToggle active="films" />
+		</div>
+	</div>
 
-<PosterLibraryToggle active="films" />
+	<!-- One toolbar: what you are looking at on the left, what you can do to it on the right. -->
+	<div class="head-bar">
+		<TabBar {tabs} active={tab} onSelect={setTab} />
+		<div class="head-actions">
+			{#if tab === 'run'}
+				<PosterBatchPopover
+					bind:mode={$posterBatchMode}
+					bind:chunkSize={$posterBatchChunkSize}
+					disabled={batchRunning}
+				/>
+				<button
+					class="pill {selectMode ? 'quiet' : 'ghost'}"
+					aria-pressed={selectMode}
+					onclick={() => (selectMode ? endSelectMode() : (selectMode = true))}
+				>
+					{selectMode ? 'Done' : 'Select'}
+				</button>
+				{#if selectMode}
+					<button class="pill ghost" onclick={toggleAll} disabled={eligibleLoaded.length === 0}>
+						{allSelected ? 'None' : 'All'}
+					</button>
+				{/if}
+				{#if selectedCount > 0}
+					<button
+						class="pill ghost"
+						onclick={() => startBatch('selected', [...selected])}
+						disabled={batchRunning}
+					>
+						Run selected ({selectedCount})
+					</button>
+				{/if}
+				<button class="pill quiet" onclick={() => startBatch('all')} disabled={batchRunning}>
+					Re-run whole library
+				</button>
+				<button class="pill primary" onclick={() => startBatch('missing')} disabled={batchRunning}>
+					Run all missing
+				</button>
+			{:else if tab === 'review'}
+				<button class="pill danger" onclick={() => (resetOpen = true)} disabled={queue.total === 0}>
+					Reset all in review
+				</button>
+				<button
+					class="pill primary"
+					onclick={() => (approveAllOpen = true)}
+					disabled={queue.total === 0}
+				>
+					Approve all auto-picks
+				</button>
+			{/if}
+		</div>
+	</div>
+</header>
 
 {#if data.onboarding && data.onboarding.state !== 'personalized'}
 	<a
@@ -379,16 +428,6 @@
 		</div>
 		<span style="color:var(--gold); font-weight:600;">Start →</span>
 	</a>
-{/if}
-
-<div class="tabwrap">
-	<TabBar {tabs} active={tab} onSelect={setTab} />
-</div>
-
-{#if tab === 'run'}
-	<div class="batch-options">
-		<PosterBatchModeControl bind:mode={batchMode} bind:chunkSize disabled={batchRunning} />
-	</div>
 {/if}
 
 <!-- Kept outside the tab branches so tracked work can refresh every workspace view. -->
@@ -413,21 +452,6 @@
 			<span>Runs awaiting a poster decision will collect here. Start one from the Run tab.</span>
 		</div>
 	{:else}
-		<div class="rev-bar">
-			<span class="rev-count">{queue.total} run{queue.total === 1 ? '' : 's'} awaiting</span>
-			<div class="rev-actions">
-				<button class="btn-danger" onclick={() => (resetOpen = true)} disabled={queue.total === 0}>
-					Reset all in review
-				</button>
-				<button
-					class="btn-gold"
-					onclick={() => (approveAllOpen = true)}
-					disabled={queue.total === 0}
-				>
-					Approve all auto-picks
-				</button>
-			</div>
-		</div>
 		<div class="rev-grid">
 			{#each queue.items as item (item.run.run_id)}
 				{@const c = item.run.counts ?? {}}
@@ -456,7 +480,7 @@
 		</div>
 		{#if queue.items.length < queue.total}
 			<div class="loadmore">
-				<button class="btn-sec" onclick={loadMoreReview} disabled={reviewLoadingMore}>
+				<button class="pill quiet" onclick={loadMoreReview} disabled={reviewLoadingMore}>
 					{reviewLoadingMore
 						? 'Loading…'
 						: `Load more review items — ${queue.items.length} of ${queue.total}`}
@@ -470,79 +494,63 @@
 	{#if missing.length === 0}
 		<div class="empty">
 			<Icon name="pipeline" size={34} stroke={1} />
-			<strong>Every movie has a poster</strong>
-			<span>Nothing is missing artwork right now. You can still re-evaluate the whole library.</span
-			>
-			<button class="btn-sec" onclick={() => startBatch('all')} disabled={batchRunning}>
-				Re-run whole library
-			</button>
+			<strong>Every film has a poster</strong>
+			<span>
+				Nothing is missing artwork right now — use <strong>Re-run whole library</strong> above to re-evaluate
+				everything.
+			</span>
 		</div>
 	{:else}
-		<div class="run-bar">
-			<label class="selall">
-				<input type="checkbox" checked={allSelected} onchange={toggleAll} disabled={batchRunning} />
-				<span>
-					{selectedCount > 0
-						? `${selectedCount} selected`
-						: `${missingTotal} movie${missingTotal === 1 ? '' : 's'} missing posters`}
-				</span>
-			</label>
-			<div class="run-actions">
-				<button class="btn-ghost" onclick={() => startBatch('all')} disabled={batchRunning}>
-					Re-run whole library
-				</button>
-				<button
-					class="btn-sec"
-					onclick={() => startBatch('selected', [...selected])}
-					disabled={batchRunning || selectedCount === 0}
-				>
-					Run selected ({selectedCount})
-				</button>
-				<button class="btn-gold" onclick={() => startBatch('missing')} disabled={batchRunning}>
-					Run all missing ({missingTotal})
-				</button>
-			</div>
-		</div>
-
-		<div class="rev-grid run-grid">
+		<div class="rev-grid">
 			{#each missing as m (m.id)}
 				{@const ok = m.tmdb_id != null}
 				<div class="run-card" class:sel={selected.has(m.id)} class:dis={!ok}>
-					<label class="run-card-select">
-						<input
-							type="checkbox"
-							checked={selected.has(m.id)}
+					<div class="run-poster-wrap">
+						<button
+							class="run-card-main"
+							disabled={selectMode && (!ok || batchRunning)}
+							onclick={() => (selectMode ? toggleSelect(m.id) : goto(`/films/${m.id}`))}
+						>
+							<div class="run-poster">
+								<PosterThumb
+									title={m.title}
+									year={m.year}
+									posterStatus={m.poster_status}
+									posterUrl={m.poster_url}
+								/>
+							</div>
+						</button>
+
+						{#if selectMode}
+							<label class="run-card-select">
+								<input
+									type="checkbox"
+									checked={selected.has(m.id)}
+									disabled={!ok || batchRunning}
+									aria-label={`Select ${m.title}`}
+									onchange={() => toggleSelect(m.id)}
+								/>
+							</label>
+						{/if}
+
+						<!-- Sibling of the poster button, not a child: a button cannot nest in a button. -->
+						<button
+							class="pill primary run-card-run"
+							onclick={(event) => {
+								event.stopPropagation();
+								runSingle(m);
+							}}
 							disabled={!ok || batchRunning}
-							aria-label={`Select ${m.title}`}
-							onchange={() => toggleSelect(m.id)}
-						/>
-					</label>
-					<button
-						class="run-card-main"
-						disabled={!ok || batchRunning}
-						onclick={() => toggleSelect(m.id)}
-					>
-						<div class="run-poster">
-							<PosterThumb
-								title={m.title}
-								year={m.year}
-								posterStatus={m.poster_status}
-								posterUrl={m.poster_url}
-							/>
-						</div>
-					</button>
+							aria-label={`Run poster pipeline for ${m.title}`}
+							title={ok ? 'Run pipeline for this film' : 'No TMDB id'}
+						>
+							Run
+						</button>
+					</div>
 					<div class="run-card-meta">
 						<div class="rev-title">{m.title}</div>
 						<div class="rev-sub">{m.year ?? '—'}</div>
 						{#if !ok}<div class="run-hint">No TMDB id — sync first</div>{/if}
-						<button
-							class="btn-sec run-card-action"
-							onclick={() => runSingle(m)}
-							disabled={!ok || batchRunning}
-							title={ok ? 'Run pipeline for this movie' : 'No TMDB id'}
-						>
-							Run
-						</button>
 					</div>
 				</div>
 			{/each}
@@ -550,7 +558,7 @@
 
 		{#if missing.length < missingTotal}
 			<div class="loadmore">
-				<button class="btn-sec" onclick={loadMore} disabled={loadingMore}>
+				<button class="pill quiet" onclick={loadMore} disabled={loadingMore}>
 					{loadingMore ? 'Loading…' : `Load more — ${missing.length} of ${missingTotal}`}
 				</button>
 			</div>
@@ -654,15 +662,9 @@
 />
 
 <style>
-	.tabwrap {
-		padding-bottom: 14px;
-		border-bottom: 1px solid var(--line);
-		margin-bottom: 20px;
-	}
-	.batch-options {
-		display: flex;
-		margin: -6px 0 16px;
-	}
+	/* Header chrome and the .pill button vocabulary live in $lib/styles/workspace.css —
+	   the Television workspace renders the same toolbar. */
+
 	/* ── Empty ── */
 	.empty {
 		display: flex;
@@ -682,32 +684,14 @@
 	}
 	.empty span {
 		font-size: 13px;
-		max-width: 360px;
+		max-width: 380px;
 		line-height: 1.5;
 	}
-	.empty button {
-		margin-top: 6px;
+	.empty span strong {
+		font-size: inherit;
 	}
 
 	/* ── Review grid ── */
-	.rev-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		flex-wrap: wrap;
-		margin-bottom: 14px;
-	}
-	.rev-count {
-		font-size: 13px;
-		color: var(--muted);
-	}
-	.rev-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
 	.rev-grid {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -757,30 +741,7 @@
 	}
 
 	/* ── Run: missing-poster grid ── */
-	.run-bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		flex-wrap: wrap;
-		margin-bottom: 14px;
-	}
-	.selall {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 13px;
-		color: var(--muted);
-		cursor: pointer;
-	}
-	.run-actions {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
 	.run-card {
-		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
@@ -789,11 +750,37 @@
 	.run-card.dis {
 		opacity: 0.55;
 	}
+	/* Anchors the checkbox and the Run overlay over the poster. Not interactive itself —
+	   the two buttons inside it are siblings, because a button cannot nest in a button. */
+	.run-poster-wrap {
+		position: relative;
+	}
+	/* Dims the artwork while the Run pill is showing, so the pill reads against a busy
+	   poster. Sits under both overlays and never takes a click. */
+	.run-poster-wrap::after {
+		content: '';
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--ink) 55%, transparent);
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.14s ease;
+	}
+	.run-poster-wrap:hover::after,
+	.run-poster-wrap:focus-within::after {
+		opacity: 1;
+	}
+	/* No pill to make room for means no scrim. */
+	.run-card.dis .run-poster-wrap::after {
+		content: none;
+	}
 	.run-card-select {
 		position: absolute;
 		top: 8px;
 		left: 8px;
-		z-index: 1;
+		z-index: 2;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -803,11 +790,20 @@
 		border-radius: 6px;
 		background: color-mix(in srgb, var(--panel) 90%, transparent);
 	}
+	.run-card-select input {
+		accent-color: var(--gold);
+		width: 15px;
+		height: 15px;
+	}
 	.run-card-main {
+		display: block;
 		width: 100%;
 		padding: 0;
 		border: none;
 		background: transparent;
+		/* A <button> centres its text by default, which was centring the gradient
+		   placeholder's title. FilmGrid and the review cards both reset this. */
+		text-align: left;
 		cursor: pointer;
 	}
 	.run-card-main:disabled {
@@ -825,6 +821,45 @@
 		border-radius: var(--radius-sm);
 		box-shadow: 0 0 0 2px var(--gold);
 	}
+	/* Revealed on hover or focus. Kept at opacity 0 rather than display:none so it stays
+	   in the tab order; focusing it fires :focus-within, which reveals it before it is
+	   ever used. pointer-events is load-bearing — an invisible button would otherwise
+	   swallow clicks meant for the poster. */
+	/* Centred, not on the bottom edge: the gradient placeholder writes its title there. */
+	.run-card-run {
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		z-index: 2;
+		transform: translate(-50%, calc(-50% + 4px));
+		padding: 6px 16px;
+		font-size: 12px;
+		font-weight: 600;
+		box-shadow: 0 6px 18px var(--shadow);
+		opacity: 0;
+		pointer-events: none;
+		transition:
+			opacity 0.14s ease,
+			transform 0.14s ease;
+	}
+	/* Never reveal a control that cannot act. */
+	.run-card-run:disabled {
+		display: none;
+	}
+	.run-poster-wrap:hover .run-card-run,
+	.run-poster-wrap:focus-within .run-card-run {
+		opacity: 1;
+		transform: translate(-50%, -50%);
+		pointer-events: auto;
+	}
+	/* Coarse pointers have no hover state to reveal it with. */
+	@media (hover: none) {
+		.run-card-run {
+			opacity: 1;
+			transform: translate(-50%, -50%);
+			pointer-events: auto;
+		}
+	}
 	.run-card-meta {
 		display: flex;
 		flex-direction: column;
@@ -833,11 +868,6 @@
 	.run-hint {
 		font-size: 11px;
 		color: var(--low);
-	}
-	.run-card-action {
-		align-self: flex-start;
-		margin-top: 2px;
-		padding: 6px 14px;
 	}
 	.loadmore {
 		display: flex;
@@ -939,65 +969,6 @@
 		color: var(--text);
 	}
 
-	/* ── Buttons ── */
-	.btn-gold {
-		padding: 9px 18px;
-		border-radius: 8px;
-		border: 1px solid var(--gold-deep);
-		background: linear-gradient(180deg, var(--gold), var(--gold-deep));
-		color: var(--on-gold);
-		font-size: 13px;
-		font-weight: 600;
-	}
-	.btn-gold:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-	.btn-danger {
-		padding: 9px 18px;
-		border-radius: 8px;
-		border: 1px solid var(--line2);
-		background: transparent;
-		color: var(--muted);
-		font-size: 13px;
-		font-weight: 600;
-	}
-	.btn-danger:hover:not(:disabled) {
-		color: var(--bad);
-		border-color: color-mix(in srgb, var(--bad) 40%, transparent);
-	}
-	.btn-danger:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-	.btn-sec {
-		padding: 8px 14px;
-		border-radius: 8px;
-		border: 1px solid var(--line2);
-		background: var(--panel2);
-		color: var(--text);
-		font-size: 13px;
-	}
-	.btn-sec:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.btn-ghost {
-		padding: 8px 14px;
-		border-radius: 8px;
-		border: 1px solid transparent;
-		background: transparent;
-		color: var(--muted);
-		font-size: 13px;
-	}
-	.btn-ghost:hover:not(:disabled) {
-		color: var(--text);
-		background: var(--panel2);
-	}
-	.btn-ghost:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
 	.mono {
 		font-family: var(--font-mono);
 	}

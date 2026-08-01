@@ -1,48 +1,62 @@
 import { expect, test, type Page } from '@playwright/test';
 
-async function expectDefaultChunkControl(page: Page) {
-	const control = page.locator('[aria-label="Poster batch processing"]');
-	await expect(control).toBeVisible();
-	await expect(control.getByRole('button', { name: 'Chunks' })).toHaveAttribute(
-		'aria-pressed',
-		'true'
-	);
-	await expect(control.getByRole('spinbutton', { name: 'Chunk size' })).toHaveValue('8');
-	return control;
+const trigger = (page: Page) => page.getByTestId('batch-trigger');
+const control = (page: Page) => page.locator('[aria-label="Poster batch processing"]');
+
+function stubBatchEndpoints(page: Page) {
+	return Promise.all([
+		page.route('**/api/pipeline/batch', (route) =>
+			route.fulfill({
+				json: {
+					job_id: 'moviebatch0000000000000000000001',
+					disposition: 'created',
+					phase: 'queued',
+					snapshot_url: '/api/jobs/moviebatch0000000000000000000001/snapshot',
+					detail_url: '/projection-room/jobs/moviebatch0000000000000000000001'
+				}
+			})
+		),
+		page.route('**/api/pipeline/tv/batch', (route) =>
+			route.fulfill({
+				json: {
+					job_id: 'tvbatch000000000000000000000004',
+					disposition: 'created',
+					phase: 'queued',
+					snapshot_url: '/api/jobs/tvbatch000000000000000000000004/snapshot',
+					detail_url: '/projection-room/jobs/tvbatch000000000000000000000004'
+				}
+			})
+		)
+	]);
 }
 
 test('movie and TV Run pages expose per-run batching controls', async ({ page }) => {
-	await page.route('**/api/pipeline/batch', (route) =>
-		route.fulfill({
-			json: {
-				job_id: 'moviebatch0000000000000000000001',
-				disposition: 'created',
-				phase: 'queued',
-				snapshot_url: '/api/jobs/moviebatch0000000000000000000001/snapshot',
-				detail_url: '/projection-room/jobs/moviebatch0000000000000000000001'
-			}
-		})
-	);
-	await page.route('**/api/pipeline/tv/batch', (route) =>
-		route.fulfill({
-			json: {
-				job_id: 'tvbatch000000000000000000000004',
-				disposition: 'created',
-				phase: 'queued',
-				snapshot_url: '/api/jobs/tvbatch000000000000000000000004/snapshot',
-				detail_url: '/projection-room/jobs/tvbatch000000000000000000000004'
-			}
-		})
-	);
+	await stubBatchEndpoints(page);
 	await page.goto('/pipeline/movies');
 
-	const movieControl = await expectDefaultChunkControl(page);
-	await movieControl.getByRole('spinbutton', { name: 'Chunk size' }).fill('12');
-	await expect(movieControl.getByRole('spinbutton', { name: 'Chunk size' })).toHaveValue('12');
+	// The trigger reports the current setting without being opened.
+	await expect(trigger(page)).toHaveText(/Batching · Chunks of 8/);
+	await expect(control(page)).toBeHidden();
+
+	await trigger(page).click();
+	const movieControl = control(page);
+	await expect(movieControl).toBeVisible();
+	await expect(movieControl.getByRole('button', { name: 'Chunks' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	const movieChunkSize = movieControl.getByRole('spinbutton', { name: 'Chunk size' });
+	await expect(movieChunkSize).toHaveValue('8');
+
+	await movieChunkSize.fill('12');
+	await movieChunkSize.blur();
+	await expect(trigger(page)).toHaveText(/Batching · Chunks of 12/);
+
 	const movieRequest = page.waitForRequest(
 		(request) =>
 			request.method() === 'POST' && new URL(request.url()).pathname === '/api/pipeline/batch'
 	);
+	// One click both light-dismisses the popover and fires the button underneath.
 	await page.getByRole('button', { name: 'Re-run whole library' }).click();
 	expect((await movieRequest).postDataJSON()).toMatchObject({
 		scope: 'all',
@@ -50,11 +64,18 @@ test('movie and TV Run pages expose per-run batching controls', async ({ page })
 		chunk_size: 12
 	});
 
+	// Batching is one standing preference, not a per-library one: the size chosen on
+	// Films is the size Television runs with.
 	await page.goto('/pipeline/tv');
-	const tvControl = await expectDefaultChunkControl(page);
+	await expect(trigger(page)).toHaveText(/Batching · Chunks of 12/);
+
+	await trigger(page).click();
+	const tvControl = control(page);
 	await tvControl.getByRole('button', { name: 'Unified' }).click();
 	await expect(tvControl.getByRole('spinbutton', { name: 'Chunk size' })).toHaveCount(0);
 	await expect(tvControl).toContainText('cancelling stops the complete run');
+	await expect(trigger(page)).toHaveText(/Batching · Unified/);
+
 	const tvRequest = page.waitForRequest(
 		(request) =>
 			request.method() === 'POST' && new URL(request.url()).pathname === '/api/pipeline/tv/batch'
@@ -66,4 +87,29 @@ test('movie and TV Run pages expose per-run batching controls', async ({ page })
 		batch_mode: 'all_at_once'
 	});
 	expect(tvBody).not.toHaveProperty('chunk_size');
+});
+
+test('batching mode survives a reload and follows you between libraries', async ({ page }) => {
+	await stubBatchEndpoints(page);
+	await page.goto('/pipeline/tv');
+
+	await trigger(page).click();
+	await control(page).getByRole('button', { name: 'Unified' }).click();
+	await expect(trigger(page)).toHaveText(/Batching · Unified/);
+
+	await page.reload();
+	await expect(trigger(page)).toHaveText(/Batching · Unified/);
+
+	await page.goto('/pipeline/movies');
+	await expect(trigger(page)).toHaveText(/Batching · Unified/);
+});
+
+test('Escape closes the batching popover', async ({ page }) => {
+	await stubBatchEndpoints(page);
+	await page.goto('/pipeline/movies');
+
+	await trigger(page).click();
+	await expect(control(page)).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(control(page)).toBeHidden();
 });
