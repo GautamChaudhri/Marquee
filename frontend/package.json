@@ -26,9 +26,9 @@
 	"devDependencies": {
 		"@axe-core/playwright": "4.12.1",
 		"@eslint/js": "^10.0.1",
-		"@playwright/test": "1.61.1",
+		"@playwright/test": "1.62.0",
 		"@sveltejs/adapter-node": "^5.5.4",
-		"@sveltejs/kit": "^2.63.0",
+		"@sveltejs/kit": "^2.70.2",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@testing-library/jest-dom": "6.9.1",
 		"@testing-library/svelte": "5.4.2",
@@ -51,7 +51,7 @@
 	},
 	"dependencies": {
 		"plotly.js-dist-min": "^3.6.0",
-		"svelte-dnd-action": "^0.9.70"
+		"svelte-dnd-action": "^0.9.75"
 	},
 	"overrides": {
 		"cookie": "0.7.2"
