@@ -447,4 +447,20 @@ describe('settled jobs stop advertising work in flight', () => {
 		expect(screen.getByText(`Now: ${subjects.season.display_name}`)).toBeVisible();
 		expect(document.querySelector('.track.indeterminate')).toBeInTheDocument();
 	});
+
+	it('does not repeat the heading as the current subject', () => {
+		// The server stamps every observation with the job's own subject, so a job
+		// working on one thing used to print its own name twice, once smaller.
+		const base = makeRow();
+		const row = makeRow({
+			progress: {
+				...base.progress!,
+				current_subject: base.subject,
+				current: { scope_id: 'group-1', mode: 'indeterminate', label: 'Filtering' }
+			}
+		});
+		render(JobProgressCard, { props: { row } });
+		expect(screen.getByRole('heading', { name: row.subject.display_name })).toBeVisible();
+		expect(screen.queryByText(/^Now:/)).not.toBeInTheDocument();
+	});
 });

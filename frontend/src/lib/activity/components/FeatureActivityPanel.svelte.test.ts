@@ -1,14 +1,42 @@
 import { render, screen, waitFor } from '@testing-library/svelte';
+import userEvent from '@testing-library/user-event';
 import { SvelteMap } from 'svelte/reactivity';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { JobRecord } from '../store.svelte';
-import type { JobRow, JobSnapshotResponse, ListJobsQuery } from '../types';
+import type { ContainedWorkSummary, JobRow, JobSnapshotResponse, ListJobsQuery } from '../types';
 import FeatureActivityPanel from './FeatureActivityPanel.svelte';
 import { makeRow, makeSnapshot, subjects } from './fixtures';
 
 const { getStore } = vi.hoisted(() => ({ getStore: vi.fn() }));
+const { listContainedWork } = vi.hoisted(() => ({ listContainedWork: vi.fn() }));
 
 vi.mock('../context', () => ({ getJobProgressStore: getStore }));
+vi.mock('../client', () => ({ cancelJob: vi.fn(), listContainedWork }));
+
+function containedWork(): ContainedWorkSummary {
+	return {
+		version: 1,
+		source: 'work_items',
+		label: 'Posters in this run',
+		item_label_singular: 'subject',
+		item_label_plural: 'subjects',
+		total: 2,
+		completed: 0,
+		counts: {
+			pending: 0,
+			running: 2,
+			retrying: 0,
+			succeeded: 0,
+			no_change: 0,
+			review_required: 0,
+			failed: 0,
+			cancelled: 0
+		},
+		sequence: 3,
+		updated_at: '2026-07-31T12:00:00Z',
+		href: '/api/jobs/group/contained-work'
+	};
+}
 
 function row(jobId: string, label: string, subject: JobRow['subject'], terminal = false): JobRow {
 	return makeRow({
@@ -148,5 +176,62 @@ describe('FeatureActivityPanel TV batches', () => {
 		expect(onUpdated).toHaveBeenLastCalledWith(
 			expect.objectContaining({ job_id: 'parent', phase: 'running' })
 		);
+	});
+});
+
+describe('FeatureActivityPanel contained work', () => {
+	beforeEach(() => {
+		getStore.mockReset();
+		listContainedWork.mockReset();
+	});
+
+	it('offers the same roster the Activity page does', async () => {
+		const user = userEvent.setup();
+		const groupRow = row('group', 'Get Film Posters · 2 Subjects', subjects.posterCandidates);
+		groupRow.job_type = 'poster_pipeline_group';
+		groupRow.contained_work = containedWork();
+		const store = fakeStore([record(groupRow)]);
+		getStore.mockReturnValue(store);
+		listContainedWork.mockResolvedValue({
+			version: 1,
+			job_id: 'group',
+			items: [
+				{
+					version: 1,
+					key: 'movie:1',
+					ordinal: 0,
+					subject: { display_name: 'Deadpool' },
+					status: 'running',
+					status_label: 'Running',
+					status_tone: 'active',
+					stage_key: 'filtering',
+					stage_name: 'Filtering',
+					stage_number: 7,
+					stage_total: 11,
+					progress: { completed: 31, total: 38, unit: 'candidates' },
+					source_count: 47,
+					message: null,
+					sequence: 3,
+					updated_at: '2026-07-31T12:00:00Z',
+					detail_href: null
+				}
+			],
+			next_cursor: null,
+			limit: 50,
+			summary: containedWork(),
+			historical_fallback: false
+		});
+
+		render(FeatureActivityPanel, {
+			props: { scopeKey: 'films', query: { type: 'poster_pipeline_group' }, jobIds: ['group'] }
+		});
+
+		const toggle = await screen.findByRole('button', { name: /Posters in this run/ });
+		expect(toggle).toHaveAttribute('aria-expanded', 'false');
+		expect(listContainedWork).not.toHaveBeenCalled();
+
+		await user.click(toggle);
+		expect(await screen.findByText('Deadpool')).toBeVisible();
+		expect(screen.getByText(/Stage 7 of 11 · Filtering · 47 posters found/)).toBeVisible();
 	});
 });

@@ -46,15 +46,21 @@ if TYPE_CHECKING:
     from marquee.core.jobs.delivery import ExecutionContext
 
 # Runner pipeline stage -> the definition's declared poster progress vocabulary.
+# Listed in execution order, and the mapped positions must never decrease down
+# this table: the job card's bar reports the furthest declared stage reached
+# while the per-subject roster reports the stage each subject is in, so any
+# backwards step here makes the two disagree by construction. ``filtering``
+# collects the three gates that narrow the candidate set; ``analyzing`` is the
+# detail feature pass, which necessarily runs after them.
 _STAGE_MAP = {
     "fetch": "downloading",
     "sha256": "deduplicating",
     "gate-resolution": "validating",
     "style-features": "extracting",
-    "gate-style": "validating",
-    "ocr": "validating",
-    "phash": "deduplicating",
-    "detail-features": "extracting",
+    "gate-style": "filtering",
+    "ocr": "filtering",
+    "phash": "filtering",
+    "detail-features": "analyzing",
     "neutral-order": "scoring",
     "rank": "scoring",
     "output": "rendering",

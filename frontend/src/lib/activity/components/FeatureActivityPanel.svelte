@@ -4,7 +4,9 @@
 	import { cancelJob } from '../client';
 	import { getJobProgressStore } from '../context';
 	import type { JobRecord } from '../store.svelte';
-	import type { JobSnapshotResponse, ListJobsQuery } from '../types';
+	import type { ContainedWorkSummary, JobSnapshotResponse, ListJobsQuery } from '../types';
+	import ContainedWorkDisclosure from './ContainedWorkDisclosure.svelte';
+	import ContainedWorkToggle from './ContainedWorkToggle.svelte';
 	import JobProgressCard from './JobProgressCard.svelte';
 
 	let {
@@ -163,6 +165,18 @@
 		}
 	});
 
+	// Rosters are per card, and a workspace can show several at once.
+	const openRosters = new SvelteSet<string>();
+
+	function containedWorkOf(record: (typeof records)[number]): ContainedWorkSummary | null {
+		return record.snapshot?.contained_work ?? record.row.contained_work ?? null;
+	}
+
+	function toggleRoster(jobId: string, open: boolean): void {
+		if (open) openRosters.add(jobId);
+		else openRosters.delete(jobId);
+	}
+
 	async function requestCancel(jobId: string, expectedFenceToken: number) {
 		const response = await cancelJob(fetch, jobId, expectedFenceToken);
 		store.track(response.snapshot.job_id);
@@ -182,13 +196,36 @@
 		</header>
 		<div class="cards">
 			{#each records as record (record.jobId)}
-				<JobProgressCard
-					row={record.row}
-					snapshot={record.snapshot}
-					connection={store.connection}
-					recordFreshness={record.freshness}
-					onCancel={requestCancel}
-				/>
+				{@const containedWork = containedWorkOf(record)}
+				{@const rosterId = `feature-roster-${record.jobId}`}
+				<div class="card-shell">
+					<JobProgressCard
+						row={record.row}
+						snapshot={record.snapshot}
+						connection={store.connection}
+						recordFreshness={record.freshness}
+						{containedWork}
+						onCancel={requestCancel}
+					/>
+					{#if containedWork}
+						<!-- The same roster the Activity page offers. A workspace showing the
+						     card but not the subjects inside it is the odd one out. -->
+						<div class="rowbar">
+							<ContainedWorkToggle
+								label={containedWork.label}
+								controls={rosterId}
+								open={openRosters.has(record.jobId)}
+								onToggle={(open) => toggleRoster(record.jobId, open)}
+							/>
+						</div>
+						<ContainedWorkDisclosure
+							id={rosterId}
+							jobId={record.jobId}
+							summary={containedWork}
+							open={openRosters.has(record.jobId)}
+						/>
+					{/if}
+				</div>
 			{/each}
 		</div>
 	</section>
@@ -199,6 +236,18 @@
 	.cards {
 		display: grid;
 		gap: 10px;
+	}
+	.card-shell {
+		display: grid;
+		min-width: 0;
+		gap: 8px;
+	}
+	.rowbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+		padding: 0 8px;
 	}
 	.feature-activity {
 		margin-block-end: 16px;

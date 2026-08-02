@@ -319,6 +319,26 @@
 		justify-self: center;
 		margin: 4px;
 	}
+	/* Both of these were bare UA buttons, which in this panel render as an
+	   unreadable white slab. Same chrome as the roster toggle that opened it. */
+	.load-more,
+	.load-error button {
+		min-height: 32px;
+		padding: 6px 12px;
+		border: 1px solid var(--line2);
+		border-radius: 7px;
+		background: var(--panel2);
+		color: var(--text);
+		font-size: 11px;
+	}
+	.load-more:hover:not(:disabled),
+	.load-error button:hover {
+		border-color: var(--gold);
+	}
+	.load-more:disabled {
+		cursor: wait;
+		opacity: 0.65;
+	}
 	@media (max-width: 560px) {
 		.items {
 			grid-template-columns: 1fr;

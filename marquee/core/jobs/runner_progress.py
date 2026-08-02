@@ -177,6 +177,7 @@ class RunnerProgressBridge:
         self._stage_map = dict(stage_map)
         self._overall_from_stages = overall_from_stages
         stage_order = [key for key, _label in progress.definition.progress_policy.stages]
+        self._stage_order = tuple(stage_order)
         self._stage_ordinal = {key: index + 1 for index, key in enumerate(stage_order)}
         self._stage_total = len(stage_order)
         self._furthest_ordinal = 0
@@ -215,6 +216,7 @@ class RunnerProgressBridge:
                 )
 
         overall: ScopeObservation | None = None
+        observed_stage = mapped_stage
         if self._overall_from_stages:
             ordinal = self._stage_ordinal[mapped_stage]
             if ordinal > self._furthest_ordinal:
@@ -224,6 +226,11 @@ class RunnerProgressBridge:
                 total=float(self._stage_total),
                 unit=self._progress.definition.progress_policy.overall_unit,
             )
+            # The overall bar counts the furthest stage reached, and the headline
+            # is written from whichever stage the observation names. Publishing
+            # under anything but the furthest stage would print one stage's name
+            # beside another stage's number on the same card.
+            observed_stage = self._stage_order[self._furthest_ordinal - 1]
 
         # ``member_*`` is intentionally absent from everything below. The current
         # scope is keyed on the frame's own scope, so folding a member's numbers
@@ -249,7 +256,7 @@ class RunnerProgressBridge:
         # Stage boundaries are durable; intra-stage samples coalesce on cadence.
         durable = parsed.state in {"start", "end"}
         await self._progress.observe(
-            mapped_stage,
+            observed_stage,
             overall=overall,
             current=current,
             survivors=parsed.survivors,

@@ -98,6 +98,15 @@
 	const barLabel = $derived(
 		!settled ? stageName : HALTED_OUTCOMES.has(status.outcome ?? '') ? 'Stopped' : 'Complete'
 	);
+	// The server stamps every observation with the job's own subject, so on a job
+	// that works on one thing — a group chunk included — "Now: …" is the heading
+	// above it repeated a size smaller. It only earns its line when the work has
+	// moved on to something the heading does not already name.
+	const currentSubjectName = $derived(
+		progress?.current_subject && progress.current_subject.display_name !== subject.display_name
+			? progress.current_subject.display_name
+			: null
+	);
 	const metrics = $derived(metricCards(presentation));
 	const ioSummary = $derived.by(() => {
 		const values = progress?.metrics;
@@ -174,8 +183,8 @@
 		<!-- "Now" is present tense; once the job is over there is no current work,
 		     and the outcome callout already carries what happened. -->
 		<div class="current-work">
-			{#if progress.current_subject}
-				<span class="current-subject">Now: {progress.current_subject.display_name}</span>
+			{#if currentSubjectName}
+				<span class="current-subject">Now: {currentSubjectName}</span>
 			{/if}
 			<ProgressMeasure measurement={progress.current} fallbackLabel="Current work" />
 		</div>

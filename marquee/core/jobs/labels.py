@@ -42,6 +42,16 @@ def poster_group_display_name(*, library: str, member_count: int) -> str:
     return f"{prefix} · {member_count} {noun}"
 
 
+def poster_group_disclosure_label(batch_mode: str) -> str:
+    """Name what the roster button opens for this group's batch shape.
+
+    A unified run puts every selected subject in one execution card, so the
+    roster below it is the run. A chunked run splits them across several, and
+    each card owns only its own group.
+    """
+    return "Posters in this run" if batch_mode == "all_at_once" else "Posters in this group"
+
+
 def poster_group_batch_context(
     *,
     parent_job_id: str | None,
@@ -53,7 +63,7 @@ def poster_group_batch_context(
     if batch_mode == "all_at_once":
         # One execution card owns the selected poster set, so do not expose the
         # structural coordinator's batch identifier or a meaningless group number.
-        return ("Unified run",)
+        return ("Unified Run",)
     context: list[str] = []
     if parent_job_id:
         context.append(f"Batch {parent_job_id[-4:].upper()}")

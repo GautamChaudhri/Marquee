@@ -192,7 +192,7 @@ async def test_tracker_advances_stage_major_and_scoped_members_with_coalescing(d
             ).all()
         )
     assert [row.status for row in scoped] == ["pending", "running", "pending"]
-    assert scoped[1].stage_number == 4
+    assert scoped[1].stage_number == 5
     assert (scoped[1].completed, scoped[1].total) == (2, 10)
 
     # A union stage measures one pooled workload. Its stage advance is shared,
@@ -230,7 +230,7 @@ async def test_union_sample_measures_only_the_member_it_names(db):
     for ordinal, share in enumerate((10, 20, 30)):
         await tracker.observe(
             _frame(scope=f"m{ordinal:02d}", state="start", stage="ocr", total=share),
-            "validating",
+            "filtering",
         )
     # One pooled sample: 21 of 60 images done overall, of which 7 were m01's.
     await tracker.observe(
@@ -243,7 +243,7 @@ async def test_union_sample_measures_only_the_member_it_names(db):
             member_done=7,
             member_total=20,
         ),
-        "validating",
+        "filtering",
     )
     await tracker.flush()
     await tracker.close()
@@ -327,6 +327,13 @@ async def test_pipeline_events_survive_the_control_channel_into_roster_rows(db):
     assert (rows[1].completed, rows[1].total, rows[1].unit) == (7, 38, "candidates")
     # The pooled 21/60 belongs to the job, never to the subject beside it.
     assert (rows[0].completed, rows[0].total) == (None, None)
+    # The card and the roster underneath it count stages the same way: the
+    # position the job bar published for this frame is the position every row
+    # reports, out of the same declared total.
+    published = observed[-1][1]["overall"]
+    assert {row.stage_number for row in rows} == {int(published.completed)}
+    assert {row.stage_total for row in rows} == {int(published.total)}
+    assert int(published.total) == len(definition.progress_policy.stages)
 
 
 async def _noop() -> None:
@@ -351,11 +358,11 @@ async def test_tracker_records_stage_totals_and_the_work_each_subject_brought_in
     # A later gate narrows the per-stage total; the source count must not follow.
     await tracker.observe(
         _frame(scope="m00", state="start", stage="gate-style", total=38),
-        "validating",
+        "filtering",
     )
     await tracker.observe(
         _frame(scope="m00", state="end", stage="gate-style", survivors=12),
-        "validating",
+        "filtering",
     )
     await tracker.flush()
     await tracker.close()
@@ -375,7 +382,7 @@ async def test_tracker_records_stage_totals_and_the_work_each_subject_brought_in
     assert (rows[0].completed, rows[0].total) == (38, 38)
     assert rows[1].source_count is None
     # The declared stage catalogue owns the denominator, not the column default.
-    assert {row.stage_total for row in rows} == {9}
+    assert {row.stage_total for row in rows} == {11}
 
 
 @pytest.mark.asyncio
@@ -510,7 +517,7 @@ async def test_tracker_reconciles_exact_terminal_member_states(db):
         )
     assert [row.status for row in rows] == ["succeeded", "review_required", "failed"]
     assert rows[2].message == "TMDB returned no usable response."
-    assert {row.stage_number for row in rows} == {9}
+    assert {row.stage_number for row in rows} == {11}
 
 
 @pytest.mark.asyncio

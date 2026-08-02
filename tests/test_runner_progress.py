@@ -21,6 +21,7 @@ from marquee.core.jobs.execution_progress import ExecutionProgress, ScopeObserva
 from marquee.core.jobs.handlers_ml import execute_taste_rebuild
 from marquee.core.jobs.handlers_posters import execute_poster_analysis
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
+from marquee.core.jobs.poster_pipeline import _STAGE_MAP as _POSTER_STAGE_MAP
 from marquee.core.jobs.presenters.base import load_context, present_compact_progress
 from marquee.core.jobs.progress import JobProgress, MeasurementMode, ProgressFreshness
 from marquee.core.jobs.progress_service import progress_writer
@@ -837,3 +838,66 @@ async def test_terminal_failure_retains_last_measured_values(db, data_dir) -> No
     )
     assert stored.current.mode == MeasurementMode.DETERMINATE
     assert stored.current.completed == 3 and stored.current.total == 3
+
+
+# The poster runner's own stage names, in the order one member crosses them.
+_POSTER_RUNNER_ORDER = (
+    "fetch",
+    "sha256",
+    "gate-resolution",
+    "style-features",
+    "gate-style",
+    "ocr",
+    "phash",
+    "detail-features",
+    "rank",
+    "output",
+)
+
+
+async def _noop() -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_poster_stage_positions_never_go_backwards_and_always_name_themselves() -> None:
+    """The declared stage order must match the order the pipeline runs.
+
+    The card's bar counts the furthest declared stage reached; the roster counts
+    the stage each subject is in. Those are the same number only while the map
+    from runner stages to declared stages never steps backwards — when it did,
+    a card read "Validating" beside "6 / 9", where stage 6 is Extracting, and
+    every roster row underneath it said 4.
+    """
+    definition = JOB_DEFINITION_REGISTRY.get("poster_pipeline_group")
+    stage_order = [key for key, _label in definition.progress_policy.stages]
+    observed: list[tuple[tuple, dict]] = []
+    bridge = RunnerProgressBridge(
+        SimpleNamespace(
+            job_id="poster-group-ordering",
+            definition=definition,
+            observe=lambda *args, **kwargs: observed.append((args, kwargs)) or _noop(),
+        ),
+        stage_map=_POSTER_STAGE_MAP,
+    )
+
+    for cursor, stage in enumerate(_POSTER_RUNNER_ORDER, start=1):
+        await bridge.on_frame(
+            {"v": 1, "type": "progress", "stage": stage, "state": "start", "cursor": cursor}
+        )
+
+    assert bridge.degraded_frames == 0
+    # The published position must land on the stage that is genuinely running.
+    # The bar reports the furthest position reached, so this holds only while
+    # the map's positions never step backwards down the runner's own order.
+    for (args, kwargs), runner_stage in zip(observed, _POSTER_RUNNER_ORDER, strict=True):
+        position = int(kwargs["overall"].completed)
+        running = _POSTER_STAGE_MAP[runner_stage]
+        assert stage_order[position - 1] == running == args[0], (
+            f"{runner_stage} is {running!r} but the card reported "
+            f"{stage_order[position - 1]!r} at position {position}"
+        )
+    positions = [kwargs["overall"].completed for _args, kwargs in observed]
+    # The last runner stage is the last measured one; the handler owns finalizing.
+    assert positions[-1] == stage_order.index("rendering") + 1
+    assert observed[-1][1]["overall"].total == len(stage_order)

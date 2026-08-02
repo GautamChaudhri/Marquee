@@ -136,7 +136,8 @@ def _activity_policy(spec: _DefinitionSpec) -> ActivityPolicy:
             hidden_child_types=frozenset({"poster_pipeline"}),
             item_label_singular="subject",
             item_label_plural="subjects",
-            disclosure_label="Posters in This Group",
+            # A batch owns every chunk of one run, so its roster is the run.
+            disclosure_label="Posters in this run",
             monogram="FP" if spec.job_type == "poster_pipeline_batch" else "TVP",
             **common,
         )
@@ -146,7 +147,10 @@ def _activity_policy(spec: _DefinitionSpec) -> ActivityPolicy:
             hidden_child_types=frozenset({"poster_pipeline"}),
             item_label_singular="subject",
             item_label_plural="subjects",
-            disclosure_label="Posters in This Group",
+            # A unified run has one group, and calling it a group there is
+            # misleading; ``poster_group_disclosure_label`` overrides this per
+            # job once the batch mode is known.
+            disclosure_label="Posters in this group",
             monogram="P",
             stage_catalog_key="poster_pipeline",
             **common,
@@ -458,13 +462,21 @@ _POSTER_PIPELINE_PROGRESS = ProgressPolicy(
     denominator_source="declared_candidate_sources",
     current_unit="candidates",
     aggregation_strategy="current_scope",
+    # Declared in the order the pipeline actually runs them, so a stage's
+    # position never goes backwards as the run advances. ``_STAGE_MAP`` in
+    # marquee.core.jobs.poster_pipeline folds the runner's own stage names onto
+    # these, and its ordinals must stay non-decreasing: the overall bar reports
+    # the furthest position reached while the roster reports the position each
+    # subject is at, and only a monotonic vocabulary makes those the same number.
     stages=(
         ("resolving", "jobs.poster_pipeline.progress.resolving"),
         ("enumerating", "jobs.poster_pipeline.progress.enumerating"),
         ("downloading", "jobs.poster_pipeline.progress.downloading"),
-        ("validating", "jobs.poster_pipeline.progress.validating"),
         ("deduplicating", "jobs.poster_pipeline.progress.deduplicating"),
+        ("validating", "jobs.poster_pipeline.progress.validating"),
         ("extracting", "jobs.poster_pipeline.progress.extracting"),
+        ("filtering", "jobs.poster_pipeline.progress.filtering"),
+        ("analyzing", "jobs.poster_pipeline.progress.analyzing"),
         ("scoring", "jobs.poster_pipeline.progress.scoring"),
         ("rendering", "jobs.poster_pipeline.progress.rendering"),
         ("finalizing", "jobs.poster_pipeline.progress.finalizing"),

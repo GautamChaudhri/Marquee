@@ -485,7 +485,17 @@ def test_all_at_once_group_is_presented_as_a_unified_run():
         )
     )
     assert presentation.subject.display_name == "Get Television Posters · 3 Subjects"
-    assert presentation.subject.context == ("Unified run",)
+    assert presentation.subject.context == ("Unified Run",)
+    # One card owns every subject in the run, so its roster is the run's.
+    assert presentation.contained_work is not None
+    assert presentation.contained_work.label == "Posters in this run"
+
+
+def test_chunked_group_roster_is_named_after_its_group():
+    """A chunked run splits its subjects, and each card owns only its share."""
+    presentation = _group_presentation(_group_job())
+    assert presentation.contained_work is not None
+    assert presentation.contained_work.label == "Posters in this group"
 
 
 def test_ordinary_subjects_have_no_monogram():

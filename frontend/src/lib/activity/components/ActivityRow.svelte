@@ -4,6 +4,7 @@
 	import type { CommandResponse, JobRow } from '../types';
 	import ActivityActions from './ActivityActions.svelte';
 	import ContainedWorkDisclosure from './ContainedWorkDisclosure.svelte';
+	import ContainedWorkToggle from './ContainedWorkToggle.svelte';
 	import JobProgressCard from './JobProgressCard.svelte';
 
 	type LifecycleAction = 'cancel' | 'pause' | 'resume' | 'change_priority' | 'retry';
@@ -84,17 +85,12 @@
 		     these used to occupy a line of its own, three deep. -->
 		<div class="rowbar">
 			{#if containedWork}
-				<button
-					type="button"
-					class="roster-toggle"
-					class:open={rosterOpen}
-					aria-expanded={rosterOpen}
-					aria-controls={rosterId}
-					onclick={() => (rosterOpen = !rosterOpen)}
-				>
-					<span class="chevron" aria-hidden="true"></span>
-					{containedWork.label}
-				</button>
+				<ContainedWorkToggle
+					label={containedWork.label}
+					controls={rosterId}
+					open={rosterOpen}
+					onToggle={(open) => (rosterOpen = open)}
+				/>
 			{/if}
 			<ActivityActions {row} {onCommand} />
 			{#if visible('time') && time}
@@ -172,32 +168,6 @@
 	/* A command that failed has to say so on its own line, not squeeze between buttons. */
 	.rowbar :global(.error) {
 		flex-basis: 100%;
-	}
-	.roster-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		min-height: 32px;
-		padding: 6px 9px;
-		border: 1px solid var(--line2);
-		border-radius: 7px;
-		background: var(--panel2);
-		color: var(--text);
-		font-size: 11px;
-	}
-	/* An explicit chevron: the default disclosure triangle was easy to miss and gave no
-	   hover affordance. It points down once the panel below is showing. */
-	.chevron {
-		width: 0;
-		height: 0;
-		flex: none;
-		border-top: 4px solid transparent;
-		border-bottom: 4px solid transparent;
-		border-left: 6px solid var(--muted);
-		transition: transform 0.15s ease;
-	}
-	.roster-toggle.open .chevron {
-		transform: rotate(90deg);
 	}
 	/* Pushed right whatever else shares the bar. */
 	time {

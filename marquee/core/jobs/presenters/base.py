@@ -32,6 +32,7 @@ from marquee.core.jobs.documents import (
 from marquee.core.jobs.labels import (
     humanize_job_type,
     poster_group_batch_context,
+    poster_group_disclosure_label,
     poster_group_display_name,
 )
 from marquee.core.jobs.mutation_documents import MutationEvidenceV1
@@ -635,7 +636,13 @@ def present_contained_work(ctx: PresenterContext) -> ContainedWorkSummary | None
         )
         return ContainedWorkSummary(
             source="work_items",
-            label=policy.disclosure_label,
+            # "run" or "group" is a property of this job's batch shape, not of
+            # its type, so the definition's label is only the fallback.
+            label=(
+                poster_group_disclosure_label(ctx.subject.batch_mode)
+                if isinstance(ctx.subject, PosterSubjectGroupSnapshot)
+                else policy.disclosure_label
+            ),
             item_label_singular=policy.item_label_singular,
             item_label_plural=policy.item_label_plural,
             total=summary.total,
