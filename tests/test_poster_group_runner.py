@@ -109,9 +109,7 @@ def test_group_subject_accepts_host_serialized_season_identity() -> None:
     assert subject.ocr_title == "Andor"
 
 
-def test_single_season_collecting_keeps_display_title_outside_ocr(
-    tmp_path, monkeypatch
-) -> None:
+def test_single_season_collecting_keeps_display_title_outside_ocr(tmp_path, monkeypatch) -> None:
     from marquee.pipeline import runner
 
     paths = []
@@ -194,9 +192,7 @@ def test_single_season_collecting_keeps_display_title_outside_ocr(
     assert len(result.ranked) == 2
 
 
-def test_union_ocr_keeps_colliding_series_and_season_ids_isolated(
-    tmp_path, monkeypatch
-) -> None:
+def test_union_ocr_keeps_colliding_series_and_season_ids_isolated(tmp_path, monkeypatch) -> None:
     from marquee.pipeline.orchestrator import PosterSubjectInput
 
     contexts = []
@@ -478,9 +474,7 @@ def test_internal_poster_feature_runtime_disables_disk_cache(monkeypatch) -> Non
 
     assert isinstance(extractor, Extractor)
     assert residual is None
-    assert constructed == [
-        {"personalization_mode": "collecting", "embedding_cache_enabled": False}
-    ]
+    assert constructed == [{"personalization_mode": "collecting", "embedding_cache_enabled": False}]
 
 
 def test_group_outputs_are_flat_and_group_report_is_authoritative(tmp_path) -> None:
@@ -500,9 +494,7 @@ def test_group_outputs_are_flat_and_group_report_is_authoritative(tmp_path) -> N
         personalization_mode="personalized",
         payload={
             "diagnostic_ledger": {
-                "candidates": [
-                    {"orig_filename": "poster.jpg", "image_path": str(image_path)}
-                ]
+                "candidates": [{"orig_filename": "poster.jpg", "image_path": str(image_path)}]
             },
             "review": {"survivors": [{"reference": "poster.jpg"}]},
         },
@@ -521,9 +513,7 @@ def test_group_outputs_are_flat_and_group_report_is_authoritative(tmp_path) -> N
     assert all("/" not in key for key in produced)
     report = json.loads((tmp_path / "group-result.json").read_text())
     assert report["members"][0]["archive_file"] == "run-000.json"
-    assert report["members"][0]["candidate_files"] == {
-        "poster.jpg": "s000-candidate-000.jpg"
-    }
+    assert report["members"][0]["candidate_files"] == {"poster.jpg": "s000-candidate-000.jpg"}
     assert report["members"][0]["member_index"] == 0
     assert report["members"][0]["title"] == "Movie"
     assert report["members"][0]["timings"] == {}
@@ -552,9 +542,7 @@ def test_missing_member_survivor_artifact_uses_group_fallback_without_stopping_s
             personalization_mode="personalized",
             payload={
                 "diagnostic_ledger": {
-                    "candidates": [
-                        {"orig_filename": reference, "image_path": str(image_path)}
-                    ]
+                    "candidates": [{"orig_filename": reference, "image_path": str(image_path)}]
                 },
                 "review": {"survivors": [{"reference": reference}]},
             },
@@ -758,10 +746,7 @@ async def test_one_member_group_matches_single_fixture_modes(
             return records
 
     def ocr_results(paths):
-        return [
-            OCRCandidateResult(path, True, "EXAMPLE", None, None)
-            for path in paths
-        ]
+        return [OCRCandidateResult(path, True, "EXAMPLE", None, None) for path in paths]
 
     def fake_filter(self, paths, **_kwargs):
         del self
@@ -879,9 +864,9 @@ async def test_one_member_group_matches_single_fixture_modes(
     assert grouped.counts == single.counts
     assert grouped.recommendation == single.recommendation
     assert grouped.scorer_name == single.scorer_name
-    assert grouped.payload["review"]["order_algorithm"] == single.payload["review"][
-        "order_algorithm"
-    ]
+    assert (
+        grouped.payload["review"]["order_algorithm"] == single.payload["review"]["order_algorithm"]
+    )
 
 
 def test_shared_ocr_failure_is_systemic(tmp_path, monkeypatch) -> None:
@@ -1104,9 +1089,7 @@ def test_max_group_member_summary_stays_below_result_frame_bound() -> None:
         "review_required_count": 0,
         "failed_count": MAX_POSTER_GROUP_MEMBERS,
         "run_ids": [f"run-{index}" for index in range(MAX_POSTER_GROUP_MEMBERS)],
-        "failed_subject_keys": [
-            f"movie:{index}" for index in range(MAX_POSTER_GROUP_MEMBERS)
-        ],
+        "failed_subject_keys": [f"movie:{index}" for index in range(MAX_POSTER_GROUP_MEMBERS)],
         "group_result_file": "group-result.json",
     }
     result = {"outcome": "succeeded", "summary": summary, "files": []}

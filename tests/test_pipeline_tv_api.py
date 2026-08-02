@@ -397,9 +397,10 @@ async def test_grouped_concurrent_series_runs_reuse_the_same_active_parent(
     assert child is not None
     assert child.type == "poster_pipeline_group"
     assert child.subject_kind == "poster_subject_group"
-    assert {
-        member["subject_key"] for member in child.subject_snapshot["members"]
-    } == {f"series:{series.id}", f"season:{seasons[0].id}"}
+    assert {member["subject_key"] for member in child.subject_snapshot["members"]} == {
+        f"series:{series.id}",
+        f"season:{seasons[0].id}",
+    }
 
 
 @pytest.mark.asyncio
@@ -830,7 +831,9 @@ async def test_series_reset_seals_a_child_per_subject_and_expires_run_evidence(
     children = (
         (
             await db.execute(
-                select(Job).where(Job.parent_id == response.json()["job_id"], Job.type == "poster_reset")
+                select(Job).where(
+                    Job.parent_id == response.json()["job_id"], Job.type == "poster_reset"
+                )
             )
         )
         .scalars()
@@ -901,6 +904,27 @@ async def test_review_queue_reset_covers_every_show_awaiting_a_decision(
         ("series", str(waiting.id)),
         ("season", str(waiting_seasons[0].id)),
     }
+
+    replay = await client.post(
+        "/api/pipeline/tv/review-queue/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:queue-1"},
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["job_id"] == response.json()["job_id"]
+    assert replay.json()["disposition"] == "reused"
+    assert replay.json()["idempotent"] is True
+    replay_children = (
+        (
+            await db.execute(
+                select(Job).where(
+                    Job.parent_id == response.json()["job_id"], Job.type == "poster_reset"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [job.id for job in replay_children] == [job.id for job in children]
 
 
 @pytest.mark.asyncio
@@ -994,7 +1018,8 @@ async def test_series_reset_rejects_an_unknown_series(
     client: AsyncClient, installed_pgqueuer: Queries
 ) -> None:
     response = await client.post(
-        "/api/pipeline/tv/series/999999/reset", headers={"Idempotency-Key": "poster_deploy_reset:missing"}
+        "/api/pipeline/tv/series/999999/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:missing"},
     )
     assert response.status_code == 404
 

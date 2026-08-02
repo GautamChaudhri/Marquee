@@ -1,13 +1,6 @@
 export type ActivityDensity = 'comfortable' | 'compact';
 export type ActivityColumn =
-	| 'subject'
-	| 'action'
-	| 'status'
-	| 'progress'
-	| 'feature'
-	| 'trigger'
-	| 'impact'
-	| 'time';
+	'subject' | 'action' | 'status' | 'progress' | 'feature' | 'trigger' | 'impact' | 'time';
 
 export interface ActivityPreferences {
 	version: 1;

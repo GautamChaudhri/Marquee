@@ -1416,7 +1416,6 @@ def test_gate_detail_fan_junk_combo():
     assert gate.evaluate_detail(good).passed
 
 
-
 class _LifecycleQueue:
     def __init__(self, messages=None):
         self.messages = list(messages or [])
@@ -1508,7 +1507,6 @@ def test_filter_batch_warm_pool_matches_inline(monkeypatch, tmp_path):
     assert [call[0] for call in calls] == ["inline", "warm"]
 
 
-
 def test_inline_ocr_teardown_preserves_processing_failure(monkeypatch):
     pool = ocr_filter.OcrPool([], _LifecycleQueue(), _LifecycleQueue())
     monkeypatch.setattr(
@@ -1528,15 +1526,11 @@ def test_inline_ocr_teardown_preserves_processing_failure(monkeypatch):
     monkeypatch.setattr(
         ocr_filter.PosterTextFilter,
         "stop_ocr_pool",
-        staticmethod(
-            lambda _pool: (_ for _ in ()).throw(RuntimeError("teardown failed"))
-        ),
+        staticmethod(lambda _pool: (_ for _ in ()).throw(RuntimeError("teardown failed"))),
     )
 
     with pytest.raises(ValueError, match="ocr failed"):
-        ocr_filter.PosterTextFilter.run_ocr_batch(
-            [(Path("poster.jpg"), {"poster"}, set())]
-        )
+        ocr_filter.PosterTextFilter.run_ocr_batch([(Path("poster.jpg"), {"poster"}, set())])
 
 
 def test_ocr_pool_startup_cleanup_is_atomic_on_base_exception(monkeypatch):
@@ -1610,9 +1604,7 @@ def test_completed_ocr_pool_can_be_torn_down_twice():
     result = _ocr_result("poster.jpg", accepted=True, reason=None)
     worker = _FakeWorker("poster-ocr-1", 987654, alive=False, exitcode=0)
     task_queue = _LifecycleQueue()
-    result_queue = _LifecycleQueue(
-        [(ocr_filter._WORKER_RESULT, 0, result)]
-    )
+    result_queue = _LifecycleQueue([(ocr_filter._WORKER_RESULT, 0, result)])
     pool = ocr_filter.OcrPool([worker], task_queue, result_queue)
     ocr_filter._register_worker(worker)
 

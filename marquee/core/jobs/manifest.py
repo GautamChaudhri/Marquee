@@ -174,6 +174,7 @@ def _activity_policy(spec: _DefinitionSpec) -> ActivityPolicy:
         )
     return ActivityPolicy(**common)
 
+
 _SPECS = (
     _spec(
         "system_noop",

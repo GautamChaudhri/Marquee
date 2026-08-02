@@ -243,9 +243,7 @@ async def test_a_retried_attempt_takes_over_progress_instead_of_wedging(db) -> N
     db.add(second)
     await db.flush()
     await db.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(current_attempt_id=second.id, fence_token=2)
+        update(Job).where(Job.id == job_id).values(current_attempt_id=second.id, fence_token=2)
     )
     await db.commit()
 
@@ -299,9 +297,7 @@ async def test_a_superseded_attempt_still_cannot_write_progress(db) -> None:
     db.add(second)
     await db.flush()
     await db.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(current_attempt_id=second.id, fence_token=2)
+        update(Job).where(Job.id == job_id).values(current_attempt_id=second.id, fence_token=2)
     )
     await db.commit()
 

@@ -435,9 +435,7 @@ class FeatureExtractor:
             for start in range(0, len(items), batch_size):
                 chunk_indices: list[int] = []
                 chunk_pixels: list[np.ndarray] = []
-                for offset, (_features, ocr_result) in enumerate(
-                    items[start : start + batch_size]
-                ):
+                for offset, (_features, ocr_result) in enumerate(items[start : start + batch_size]):
                     index = start + offset
                     try:
                         with Image.open(ocr_result.image_path) as image:

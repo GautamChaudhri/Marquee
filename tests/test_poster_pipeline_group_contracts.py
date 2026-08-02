@@ -57,9 +57,7 @@ def test_group_request_is_bounded_unique_and_library_homogeneous() -> None:
             {
                 "library": "movies",
                 "chunk_index": 0,
-                "members": [
-                    _movie(index) for index in range(1, MAX_POSTER_GROUP_MEMBERS + 2)
-                ],
+                "members": [_movie(index) for index in range(1, MAX_POSTER_GROUP_MEMBERS + 2)],
             }
         )
 
@@ -156,6 +154,4 @@ def test_runner_baseline_uses_the_sealed_execution_configuration() -> None:
     context = SimpleNamespace(configuration={"WEIGHT_KNN_SIM": 0.123})
     effective = pipeline_settings.model_copy(update=context.configuration)
 
-    assert _pipeline_baseline_signature(context) == baseline_signature(
-        effective.scorer_weights
-    )
+    assert _pipeline_baseline_signature(context) == baseline_signature(effective.scorer_weights)

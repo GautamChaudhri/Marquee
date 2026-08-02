@@ -62,9 +62,7 @@ async def retryable_group_members(
         failed_keys = {row.subject_key for row in projections if row.status == "failed"}
         if not failed_keys:
             raise SubmissionValidationError("poster group has no failed members to retry")
-        return tuple(
-            member for key, member in members_by_key.items() if key in failed_keys
-        )
+        return tuple(member for key, member in members_by_key.items() if key in failed_keys)
 
     if group_job.outcome not in {"failed", "cancelled"}:
         raise SubmissionValidationError("poster group outcome is not retryable")

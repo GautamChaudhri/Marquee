@@ -501,7 +501,9 @@
 							>
 						</div>
 						<div class="metric-strip">
-							<div><span>Exemplars</span><b class="mono">{profileDetail.summary.exemplars ?? 0}</b></div>
+							<div>
+								<span>Exemplars</span><b class="mono">{profileDetail.summary.exemplars ?? 0}</b>
+							</div>
 							<div>
 								<span>{subjectNounTitle(library)}</span>
 								<b class="mono"

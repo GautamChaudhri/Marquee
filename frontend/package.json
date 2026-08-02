@@ -21,6 +21,7 @@
 		"test:unit": "vitest run",
 		"test:unit:watch": "vitest",
 		"test:e2e": "playwright test",
+		"test:visual": "playwright test --config=playwright.visual.config.ts",
 		"test": "npm run test:unit && npm run test:e2e"
 	},
 	"devDependencies": {

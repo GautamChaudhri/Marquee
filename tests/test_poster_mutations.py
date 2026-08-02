@@ -131,9 +131,7 @@ def test_only_original_size_candidates_deploy_from_stored_bytes() -> None:
         _archived_candidate(original_download=False),  # download failed
         _archived_candidate(),  # never attempted (rejected, or ranked past top-N)
     ):
-        upgraded = pipeline_candidate_selection(
-            run, candidate, allow_provider_original=True
-        )
+        upgraded = pipeline_candidate_selection(run, candidate, allow_provider_original=True)
         assert upgraded.source == "provider_original"
         assert upgraded.candidate_reference == "poster_a.jpg"
 
@@ -143,9 +141,7 @@ def test_onboarding_keeps_the_exact_artifact_contract() -> None:
     it must never be silently switched to freshly re-fetched bytes."""
     from marquee.core.jobs.poster_submission import pipeline_candidate_selection
 
-    selection = pipeline_candidate_selection(
-        SimpleNamespace(run_id="run-1"), _archived_candidate()
-    )
+    selection = pipeline_candidate_selection(SimpleNamespace(run_id="run-1"), _archived_candidate())
 
     assert selection.source == "pipeline_run"
     assert selection.expected_checksum == "a" * 64

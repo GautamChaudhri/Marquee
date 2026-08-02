@@ -313,7 +313,7 @@ async def test_missing_scope_skips_the_review_queue(client, db) -> None:
 
 @pytest.mark.asyncio
 async def test_all_scope_still_covers_the_review_queue(client, db) -> None:
-    """"Re-run whole library" is an explicit re-run, so review is in scope."""
+    """ "Re-run whole library" is an explicit re-run, so review is in scope."""
     await _movie(db, "Arrival", 329865)
     await _put_in_review(db, await _movie(db, "Heat", 949))
 

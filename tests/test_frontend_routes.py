@@ -147,7 +147,9 @@ async def test_review_preview_and_results_require_a_persisted_auto_pick(
 
     queue = await client.get("/api/pipeline/review-queue")
     assert queue.status_code == 200
-    previews = {item["movie"]["title"]: item["auto_pick_poster_url"] for item in queue.json()["items"]}
+    previews = {
+        item["movie"]["title"]: item["auto_pick_poster_url"] for item in queue.json()["items"]
+    }
     assert previews["Collecting"] is None
     assert previews["Personalized"].endswith("/persisted-auto.jpg")
 
@@ -321,6 +323,20 @@ async def test_movie_run_queue_withholds_active_and_review_work(
     ]
     assert next(item for item in body["items"] if item["title"] == "No TMDB")["tmdb_id"] is None
 
+    first_page = (
+        await client.get("/api/pipeline/run-queue", params={"page": 1, "page_size": 2})
+    ).json()
+    second_page = (
+        await client.get("/api/pipeline/run-queue", params={"page": 2, "page_size": 2})
+    ).json()
+    third_page = (
+        await client.get("/api/pipeline/run-queue", params={"page": 3, "page_size": 2})
+    ).json()
+    assert first_page["total"] == second_page["total"] == third_page["total"] == body["total"]
+    assert [item["title"] for item in first_page["items"]] == ["Cancelled Run", "Failed Run"]
+    assert [item["title"] for item in second_page["items"]] == ["No TMDB", "Runnable"]
+    assert third_page["items"] == []
+
     summary = await client.get("/api/pipeline/summary")
     assert summary.status_code == 200
     assert summary.json()["movies_awaiting_run"] == body["total"]
@@ -403,6 +419,30 @@ async def test_review_queue_reset_requeues_movies_and_expires_review_evidence(
     assert by_run[awaiting_run.run_id].expires_at <= datetime.now(UTC)
     untouched = by_run[decided_run.run_id].expires_at
     assert untouched is None or untouched > datetime.now(UTC)
+
+    replay = await client.post(
+        "/api/pipeline/review-queue/reset",
+        headers={"Idempotency-Key": "poster_deploy_reset:movie-review-queue"},
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["job_id"] == response.json()["job_id"]
+    assert replay.json()["disposition"] == "reused"
+    assert replay.json()["idempotent"] is True
+    replay_children = (
+        (
+            await db.execute(
+                select(Job).where(
+                    Job.parent_id == response.json()["job_id"], Job.type == "poster_reset"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [job.id for job in replay_children] == [job.id for job in children]
+    await db.refresh(by_run[awaiting_run.run_id])
+    assert by_run[awaiting_run.run_id].expires_at is not None
+    assert by_run[awaiting_run.run_id].expires_at <= datetime.now(UTC)
 
 
 @pytest.mark.asyncio

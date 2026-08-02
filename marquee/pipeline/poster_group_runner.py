@@ -60,9 +60,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_MEMBERS = MAX_POSTER_GROUP_MEMBERS
 _MAX_REVIEW_FILES = 100
-_COLLECTING_MESSAGE = (
-    "Marquee filtered unusable posters, but has not learned your preferences yet."
-)
+_COLLECTING_MESSAGE = "Marquee filtered unusable posters, but has not learned your preferences yet."
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,13 +338,17 @@ async def _fetch_all(contexts: list[_MemberState], progress: GroupProgress | Non
             if not ctx.fetch.all_files and ctx.fetch.counts.get("errors", 0):
                 raise RuntimeError("every candidate download failed")
 
-        results = await asyncio.gather(*(fetch_one(ctx) for ctx in contexts), return_exceptions=True)
+        results = await asyncio.gather(
+            *(fetch_one(ctx) for ctx in contexts), return_exceptions=True
+        )
     for ctx, result in zip(contexts, results, strict=True):
         if isinstance(result, BaseException):
             _mark_failed(ctx, result)
 
 
-def _prelude(ctx: _MemberState, extractor: FeatureExtractor, progress: GroupProgress | None) -> None:
+def _prelude(
+    ctx: _MemberState, extractor: FeatureExtractor, progress: GroupProgress | None
+) -> None:
     if ctx.status == "failed" or ctx.fetch is None:
         return
     records = ctx.records
@@ -841,16 +843,12 @@ async def run_poster_group(
     if library not in {"movies", "tv"}:
         raise ValueError("poster group library must be movies or tv")
     if not 1 <= len(members) <= _MAX_MEMBERS:
-        raise ValueError(
-            f"poster groups require between 1 and {MAX_POSTER_GROUP_MEMBERS} members"
-        )
+        raise ValueError(f"poster groups require between 1 and {MAX_POSTER_GROUP_MEMBERS} members")
     if personalization_mode not in {"collecting", "personalized"}:
         raise ValueError("invalid poster group personalization mode")
     if len({member.subject_key for member in members}) != len(members):
         raise ValueError("poster group subject keys must be unique")
-    if any(
-        (member.subject.media_type == "movie") != (library == "movies") for member in members
-    ):
+    if any((member.subject.media_type == "movie") != (library == "movies") for member in members):
         raise ValueError("poster group members do not match the declared library")
     if not settings.TMDB_READ_ACCESS_TOKEN:
         raise RuntimeError(
@@ -989,9 +987,7 @@ def materialize_group_output(output: PosterGroupOutput, out_dir: Path) -> list[s
                     raise ValueError(f"member review survivor {reference!r} has no diagnostic path")
                 source = Path(image_path).resolve()
                 if not source.is_file() or not source.is_relative_to(root):
-                    raise ValueError(
-                        f"member review survivor {reference!r} escapes or is missing"
-                    )
+                    raise ValueError(f"member review survivor {reference!r} escapes or is missing")
                 key = f"s{member.member_index:03d}-candidate-{position:03d}.jpg"
                 shutil.copyfile(source, out_dir / key)
                 candidate_keys.append(key)

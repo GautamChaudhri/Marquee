@@ -38,6 +38,7 @@ from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.core.jobs.workspaces import AttemptWorkspaceManager
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.taste_preferences import append_preference_event
 from marquee.database import _get_session_factory
 from marquee.main import app
 from marquee.ml.residual import ResidualArtifact, ResidualEvaluation
@@ -50,6 +51,7 @@ from marquee.models import (
     RuntimeInstance,
     Season,
     Series,
+    TasteExemplar,
 )
 from marquee.models.job import JobAttempt
 from marquee.models.ml_publication import MlActivePublication
@@ -431,7 +433,7 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
     assert unknown_response.status_code == 404
 
 
-def _write_valid_taste_profile(path) -> None:
+def _write_valid_taste_profile(path, *, poster_names: list[str] | None = None) -> None:
     """A minimal profile the production loader (NumpyTasteStore) accepts."""
     embeddings = np.zeros((2, 512), dtype=np.float32)
     embeddings[0, 0] = 0.1
@@ -442,7 +444,7 @@ def _write_valid_taste_profile(path) -> None:
         dino_model_name="dinov2-vits14",
         embeddings=embeddings,
         centroid_emb=embeddings.mean(axis=0),
-        poster_names=np.array(["a.jpg", "b.jpg"]),
+        poster_names=np.array(poster_names or ["a.jpg", "b.jpg"]),
         asset_kinds=np.array(["movie", "movie"]),
     )
 
@@ -500,6 +502,56 @@ async def test_taste_rebuild_publishes_native_loadable_profile_artifact(db, data
         subject_kind="model",
         subject_reference="taste_profile:movies",
     )
+    movie_exemplar_id = "a1" * 16
+    tv_exemplar_id = "b2" * 16
+    for exemplar_id, namespace, subject_kind, reference, snapshot in (
+        (
+            movie_exemplar_id,
+            "movies",
+            "movie",
+            "movie:3",
+            {"title": "Heat", "year": 1995, "tmdb_id": 949, "id": 3},
+        ),
+        (
+            tv_exemplar_id,
+            "tv",
+            "series",
+            "series:7",
+            {"title": "TV Namespace Must Not Leak", "year": 2024, "tmdb_id": 7, "id": 7},
+        ),
+    ):
+        event = await append_preference_event(
+            db,
+            idempotency_key=f"publication-route-resolver:{namespace}",
+            namespace=namespace,
+            subject_kind=subject_kind,
+            subject_reference=reference,
+            subject_snapshot=snapshot,
+            action="hate",
+            exposed_candidates=[],
+            presentation_order=[],
+            training_context={},
+            confidence="explicit",
+            initiator={"kind": "user"},
+        )
+        db.add(
+            TasteExemplar(
+                id=exemplar_id,
+                version=1,
+                namespace=namespace,
+                polarity="negative",
+                evidence_weight=1.0,
+                evidence_source="explicit_rejection",
+                subject_kind=subject_kind,
+                subject_reference=reference,
+                subject_snapshot=snapshot,
+                preference_event_id=event.id,
+                initiator={"kind": "user"},
+                status="invalid",
+                reason="route resolver fixture",
+            )
+        )
+    await db.flush()
     workspace_dir = (
         context.workspace.directory.root.resolved() / context.workspace.directory.key.value
     )
@@ -513,7 +565,10 @@ async def test_taste_rebuild_publishes_native_loadable_profile_artifact(db, data
     )
 
     async def fake_run(launcher, *, operation, manifest, **kwargs):
-        _write_valid_taste_profile(workspace_dir / "profile.npz")
+        _write_valid_taste_profile(
+            workspace_dir / "profile.npz",
+            poster_names=[f"{movie_exemplar_id}.jpg", f"{tv_exemplar_id}.jpg"],
+        )
         return outcome
 
     monkeypatch.setattr("marquee.core.jobs.internal_runner_host.run_internal_operation", fake_run)
@@ -548,13 +603,27 @@ async def test_taste_rebuild_publishes_native_loadable_profile_artifact(db, data
         assert profiles[0]["summary"]["exemplars"] == 2
         detail = await client.get(f"/api/taste/profiles/{artifact.id}")
         assert detail.status_code == 200, detail.text
-        assert [movie["title"] for movie in detail.json()["movies"]] == ["a", "b"]
+        assert [movie["title"] for movie in detail.json()["movies"]] == [
+            tv_exemplar_id,
+            "Heat",
+        ]
+        assert "TV Namespace Must Not Leak" not in {
+            movie["title"] for movie in detail.json()["movies"]
+        }
         exemplars = await client.get(f"/api/taste/profiles/{artifact.id}/exemplars")
         assert exemplars.status_code == 200, exemplars.text
-        assert [row["name"] for row in exemplars.json()["exemplars"]] == ["a.jpg", "b.jpg"]
-        neighbors = await client.get("/api/taste/exemplars/a.jpg/neighbors")
+        exemplar_rows = {row["name"]: row for row in exemplars.json()["exemplars"]}
+        assert exemplar_rows[f"{movie_exemplar_id}.jpg"]["title"] == "Heat"
+        assert exemplar_rows[f"{tv_exemplar_id}.jpg"]["title"] == tv_exemplar_id
+        neighbors = await client.get(f"/api/taste/exemplars/{movie_exemplar_id}.jpg/neighbors")
         assert neighbors.status_code == 200, neighbors.text
-        assert neighbors.json()["neighbors"][0]["name"] == "b.jpg"
+        assert neighbors.json()["neighbors"][0]["name"] == f"{tv_exemplar_id}.jpg"
+
+        tv_listing = await client.get("/api/taste/profiles", params={"library": "tv"})
+        assert tv_listing.status_code == 200, tv_listing.text
+        assert tv_listing.json()["profiles"] == []
+        tv_detail = await client.get(f"/api/taste/profiles/{artifact.id}", params={"library": "tv"})
+        assert tv_detail.status_code == 404
 
 
 @pytest.mark.asyncio

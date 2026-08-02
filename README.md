@@ -509,9 +509,10 @@ npm run check      # svelte-check, zero errors and zero warnings
 npm run lint       # prettier + eslint
 npm run test:unit  # vitest
 npm run test:e2e   # playwright + axe, against a hermetic synthetic backend
+npm run test:visual # deterministic Chromium screenshots + axe certification
 ```
 
-**900+ backend tests, 110+ frontend unit tests, and 14 end-to-end scenarios.** The backend suite runs against
+**1,100+ backend tests, 240+ frontend unit tests, and 40+ browser scenarios.** The backend suite runs against
 **PostgreSQL, not SQLite** — `tests/conftest.py` provisions an isolated `test_<uuid>` schema inside
 the configured database for the session and drops it afterwards, so point `DB_URL` at a disposable
 database before running it. A handful of migration and backup tests create and drop their own
@@ -529,7 +530,8 @@ branches inexpensive while making the merge gate visible:
 | Job                     | Steps                                                                                                                                                                 |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Backend (3.12 and 3.13) | dependency check → Ruff lint/format → fresh schema migration + PgQueuer install → `alembic check` → full pytest suite with a 70% coverage floor → OpenAPI drift check |
-| Frontend                | generated-client drift → svelte-check (zero warnings) → ESLint + Prettier → Vitest → production build + bundle budget → Playwright, axe, and visual regression        |
+| Frontend                | generated-client drift → svelte-check (zero warnings) → ESLint + Prettier → Vitest → production build + bundle budget → semantic Playwright + axe                     |
+| UI Certification        | actionlint → deterministic desktop/mobile Chromium snapshots → axe accessibility checks → failure evidence upload                                                     |
 | CodeQL                  | static security analysis for Python and TypeScript, weekly, on `main`, and on pull requests                                                                           |
 
 ## Privacy

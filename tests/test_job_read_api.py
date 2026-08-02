@@ -430,9 +430,7 @@ async def test_collection_operations_consolidate_children_and_expose_contained_w
     db.add_all([parent, succeeded, pending, standalone, batch])
     await db.commit()
 
-    response = await client.get(
-        "/api/jobs", params={"view": "queue", "hierarchy": "activity"}
-    )
+    response = await client.get("/api/jobs", params={"view": "queue", "hierarchy": "activity"})
     assert response.status_code == 200
     rows = {item["job_id"]: item for item in response.json()["items"]}
     assert set(rows) == {parent.id, standalone.id}
@@ -460,9 +458,7 @@ async def test_collection_operations_consolidate_children_and_expose_contained_w
         "href": f"/api/jobs/{parent.id}/contained-work",
     }
 
-    contained = await client.get(
-        f"/api/jobs/{parent.id}/contained-work", params={"limit": 1}
-    )
+    contained = await client.get(f"/api/jobs/{parent.id}/contained-work", params={"limit": 1})
     assert contained.status_code == 200
     body = contained.json()
     assert body["summary"]["label"] == disclosure
@@ -490,9 +486,7 @@ async def test_collection_operation_historical_fallback_aggregates_children(db, 
     db.add_all([parent, child])
     await db.commit()
 
-    response = await client.get(
-        "/api/jobs", params={"view": "queue", "hierarchy": "activity"}
-    )
+    response = await client.get("/api/jobs", params={"view": "queue", "hierarchy": "activity"})
     assert response.status_code == 200
     row = response.json()["items"][0]
     assert row["job_id"] == parent.id
@@ -598,9 +592,7 @@ async def test_promoted_group_evidence_scope_includes_only_declared_atomic_child
     assert direct.status_code == 200
     assert {item["origin_job_id"] for item in direct.json()["items"]} == {group.id}
 
-    contained = await client.get(
-        f"/api/jobs/{group.id}/attempts", params={"scope": "contained"}
-    )
+    contained = await client.get(f"/api/jobs/{group.id}/attempts", params={"scope": "contained"})
     assert contained.status_code == 200
     assert {item["origin_job_id"] for item in contained.json()["items"]} == {
         group.id,

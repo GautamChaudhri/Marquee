@@ -235,7 +235,9 @@ def _asset_rows(
                 "label": _asset_label(title, year, asset_kind, season),
             }
         )
-    asset_counts = Counter((row["subject_key"], row["asset_kind"], row["season_number"]) for row in rows)
+    asset_counts = Counter(
+        (row["subject_key"], row["asset_kind"], row["season_number"]) for row in rows
+    )
     for row in rows:
         count = asset_counts[(row["subject_key"], row["asset_kind"], row["season_number"])]
         row["is_duplicate"] = count > 1
@@ -256,7 +258,9 @@ def _profile_payload(
     kind_counts: Counter[str] = Counter()
     for row in rows:
         kind_counts[row["asset_kind"]] += 1
-        duplicates[(row["subject_key"], row["asset_kind"], row["season_number"])].append(row["name"])
+        duplicates[(row["subject_key"], row["asset_kind"], row["season_number"])].append(
+            row["name"]
+        )
         subject = subjects.setdefault(
             row["subject_key"],
             {

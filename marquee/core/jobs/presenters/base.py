@@ -472,7 +472,10 @@ def present_attention(ctx: PresenterContext) -> PresentationAttention:
                     review=review,
                 ),
             )
-    if ctx.batch is not None and ctx.definition.activity_policy.contained_work.value == "child_jobs":
+    if (
+        ctx.batch is not None
+        and ctx.definition.activity_policy.contained_work.value == "child_jobs"
+    ):
         batch = ctx.batch
         total = batch.created_total
         failed = batch.failed_total + batch.dead_letter_total + batch.unsafe_total

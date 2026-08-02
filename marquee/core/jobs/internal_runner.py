@@ -593,13 +593,9 @@ def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[
     raw_members = document.get("members")
     if library not in {"movies", "tv"} or not isinstance(chunk_index, int) or chunk_index < 0:
         raise ProtocolError("poster_group group.json has invalid group identity")
-    if (
-        not isinstance(raw_members, list)
-        or not 1 <= len(raw_members) <= MAX_POSTER_GROUP_MEMBERS
-    ):
+    if not isinstance(raw_members, list) or not 1 <= len(raw_members) <= MAX_POSTER_GROUP_MEMBERS:
         raise ProtocolError(
-            "poster_group group.json must contain 1-"
-            f"{MAX_POSTER_GROUP_MEMBERS} members"
+            f"poster_group group.json must contain 1-{MAX_POSTER_GROUP_MEMBERS} members"
         )
 
     members = []
@@ -627,9 +623,7 @@ def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[
         raise ProtocolError("poster_group manifest has an invalid personalization mode")
     profile = params.get("taste_profile") if isinstance(params.get("taste_profile"), dict) else {}
     residual = (
-        params.get("ranking_residual")
-        if isinstance(params.get("ranking_residual"), dict)
-        else {}
+        params.get("ranking_residual") if isinstance(params.get("ranking_residual"), dict) else {}
     )
     runtime_context = None
     if personalization_mode == "personalized" and residual:

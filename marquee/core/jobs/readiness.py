@@ -112,9 +112,7 @@ def inference_runtime_report() -> dict[str, Any]:
     try:
         from marquee.ml import hardware
 
-        requested = hardware.resolve_provider_request(
-            hardware.pipeline_settings.EXECUTION_PROVIDER
-        )
+        requested = hardware.resolve_provider_request(hardware.pipeline_settings.EXECUTION_PROVIDER)
         available = list(hardware.ort.get_available_providers())
         report["requested_provider"] = requested or "auto"
         report["available_providers"] = available

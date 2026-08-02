@@ -22,7 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
-from marquee.api.job_submission import JobSubmissionResponse, submission_response
+from marquee.api.job_submission import (
+    JobSubmissionResponse,
+    reused_submission_response,
+    submission_response,
+)
 from marquee.api.results import poster_url
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.pipeline import (
@@ -1321,6 +1325,12 @@ async def reset_tv_review_queue_posters(
     Scoped to the shows on the review queue, so a show that was already decided
     keeps the poster its decision deployed.
     """
+    existing = await db.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
+    if existing is not None:
+        if existing.type != "poster_deploy_reset":
+            raise HTTPException(status_code=422, detail="poster_reset_scope_invalid")
+        return reused_submission_response(existing)
+
     candidates = await _tv_review_queue_candidates(db)
     series_ids = sorted(
         {

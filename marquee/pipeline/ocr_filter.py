@@ -1840,12 +1840,8 @@ class PosterTextFilter:
             except BaseException as exc:
                 failures.append((label, exc))
         if failures:
-            details = "; ".join(
-                f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures
-            )
-            raise OcrPoolTeardownError(
-                f"OCR pool teardown failed ({details})"
-            ) from failures[0][1]
+            details = "; ".join(f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures)
+            raise OcrPoolTeardownError(f"OCR pool teardown failed ({details})") from failures[0][1]
         logger.info("OCR pool stopped: %d worker(s)", pool.worker_count)
 
     @staticmethod
@@ -1960,9 +1956,7 @@ class PosterTextFilter:
                     )
                     worker.terminate()
             except BaseException as exc:
-                failures.append(
-                    f"{worker.name} terminate: {type(exc).__name__}: {exc}"
-                )
+                failures.append(f"{worker.name} terminate: {type(exc).__name__}: {exc}")
 
         deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
         for worker in workers:
@@ -1981,9 +1975,7 @@ class PosterTextFilter:
                 if worker.is_alive():
                     hung.append(worker)
             except BaseException as exc:
-                failures.append(
-                    f"{worker.name} liveness check: {type(exc).__name__}: {exc}"
-                )
+                failures.append(f"{worker.name} liveness check: {type(exc).__name__}: {exc}")
                 hung.append(worker)
 
         if hung:
@@ -1996,17 +1988,13 @@ class PosterTextFilter:
                     killer = getattr(worker, "kill", worker.terminate)
                     killer()
                 except BaseException as exc:
-                    failures.append(
-                        f"{worker.name} kill: {type(exc).__name__}: {exc}"
-                    )
+                    failures.append(f"{worker.name} kill: {type(exc).__name__}: {exc}")
             deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
             for worker in hung:
                 try:
                     worker.join(max(0.0, deadline - time.monotonic()))
                 except BaseException as exc:
-                    failures.append(
-                        f"{worker.name} post-kill join: {type(exc).__name__}: {exc}"
-                    )
+                    failures.append(f"{worker.name} post-kill join: {type(exc).__name__}: {exc}")
 
         for worker in workers:
             if worker.pid is None:
@@ -2014,9 +2002,7 @@ class PosterTextFilter:
             try:
                 survived = worker.is_alive() or _pid_alive(worker.pid)
             except BaseException as exc:
-                failures.append(
-                    f"{worker.name} final liveness check: {type(exc).__name__}: {exc}"
-                )
+                failures.append(f"{worker.name} final liveness check: {type(exc).__name__}: {exc}")
                 survived = True
             if survived:
                 failures.append(f"{worker.name} survived cleanup (pid:{worker.pid})")

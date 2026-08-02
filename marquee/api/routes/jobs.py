@@ -135,6 +135,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 QUEUE_RANK_LIMIT = 1000
+
+
 def _activity_visibility_predicate():
     child = aliased(Job)
     parent = aliased(Job)
@@ -180,17 +182,13 @@ async def _batch_projections_for_jobs(
 
     stored = list(
         (
-            await db.scalars(
-                select(JobBatch).where(JobBatch.parent_job_id.in_(tuple(candidates)))
-            )
+            await db.scalars(select(JobBatch).where(JobBatch.parent_job_id.in_(tuple(candidates))))
         ).all()
     )
     projections: dict[str, JobBatch | BatchProgressProjection] = {
         batch.parent_job_id: batch for batch in stored
     }
-    missing = {
-        job_id: value for job_id, value in candidates.items() if job_id not in projections
-    }
+    missing = {job_id: value for job_id, value in candidates.items() if job_id not in projections}
     if not missing:
         return projections
 
@@ -273,10 +271,7 @@ async def _origin_subjects(db: AsyncSession, job_ids: set[str]) -> dict[str, dic
     if not job_ids:
         return {}
     rows = (await db.execute(select(Job.id, Job.subject_snapshot).where(Job.id.in_(job_ids)))).all()
-    return {
-        job_id: snapshot if isinstance(snapshot, dict) else {}
-        for job_id, snapshot in rows
-    }
+    return {job_id: snapshot if isinstance(snapshot, dict) else {} for job_id, snapshot in rows}
 
 
 def _member_subject_contains(model, fragment: dict[str, Any]):
@@ -817,12 +812,10 @@ async def activity_attention(
         False,
     )
     active = Job.phase.in_(_QUEUE_PHASES)
-    review_required = func.coalesce(
-        Job.work_item_summary["counts"]["review_required"].as_integer(), 0
-    ) > 0
-    failed_work_item = (
-        func.coalesce(Job.work_item_summary["counts"]["failed"].as_integer(), 0) > 0
+    review_required = (
+        func.coalesce(Job.work_item_summary["counts"]["review_required"].as_integer(), 0) > 0
     )
+    failed_work_item = func.coalesce(Job.work_item_summary["counts"]["failed"].as_integer(), 0) > 0
     error_attention = or_(error, failed_work_item)
     needs_attention = or_(warning, error_attention, review_required)
     row = (
@@ -1263,7 +1256,9 @@ def _child_contained_state(job: Job, row: JobRow) -> tuple[ContainedWorkState, s
     if job.phase != "terminal":
         if row.progress is not None and row.progress.wait is not None:
             return _CONTAINED_STATUS_COPY["retrying"]
-        return _CONTAINED_STATUS_COPY["running" if job.phase in {"running", "stopping"} else "pending"]
+        return _CONTAINED_STATUS_COPY[
+            "running" if job.phase in {"running", "stopping"} else "pending"
+        ]
     state = {
         "succeeded": "succeeded",
         "no_change": "no_change",
@@ -1301,7 +1296,9 @@ def _child_contained_item(*, job: Job, row: JobRow, ordinal: int) -> ContainedWo
         stage_name=compact.stage_label if compact is not None else None,
         progress=measurement,
         message=row.attention.message if row.attention.message else None,
-        sequence=(compact.sequence or job.progress_sequence) if compact is not None else job.progress_sequence,
+        sequence=(compact.sequence or job.progress_sequence)
+        if compact is not None
+        else job.progress_sequence,
         updated_at=(compact.updated_at if compact is not None else None) or job.updated_at,
         detail_href=row.links.detail,
     )
@@ -1383,9 +1380,7 @@ async def list_contained_work(
         )
     rows = list(
         (
-            await db.scalars(
-                query.order_by(Job.created_at.asc(), Job.id.asc()).limit(limit + 1)
-            )
+            await db.scalars(query.order_by(Job.created_at.asc(), Job.id.asc()).limit(limit + 1))
         ).all()
     )
     has_more = len(rows) > limit
@@ -1396,9 +1391,7 @@ async def list_contained_work(
         presented = _presenter_for(child_definition).present_row(
             load_context(child_job, child_definition)
         )
-        items.append(
-            _child_contained_item(job=child_job, row=presented, ordinal=offset + index)
-        )
+        items.append(_child_contained_item(job=child_job, row=presented, ordinal=offset + index))
     next_cursor = None
     if has_more and rows:
         last = rows[-1]
@@ -1870,12 +1863,16 @@ async def list_job_events(
 ):
     job = await _load_job(db, job_id)
     definition = _definition_for(job.type)
-    contract = cursor_contract(
-        view="events", filters={"job_id": job_id, "scope": scope}, sort="id"
+    contract = cursor_contract(view="events", filters={"job_id": job_id, "scope": scope}, sort="id")
+    query = (
+        select(JobEvent)
+        .where(
+            _evidence_job_predicate(
+                job=job, definition=definition, scope=scope, column=JobEvent.job_id
+            )
+        )
+        .order_by(JobEvent.id.asc())
     )
-    query = select(JobEvent).where(
-        _evidence_job_predicate(job=job, definition=definition, scope=scope, column=JobEvent.job_id)
-    ).order_by(JobEvent.id.asc())
     if cursor:
         try:
             (after_id,) = decode_cursor(cursor, contract=contract)
@@ -1952,11 +1949,15 @@ async def list_job_artifacts(
     contract = cursor_contract(
         view="artifacts", filters={"job_id": job_id, "scope": scope}, sort="id"
     )
-    query = select(JobArtifact).where(
-        _evidence_job_predicate(
-            job=job, definition=definition, scope=scope, column=JobArtifact.job_id
+    query = (
+        select(JobArtifact)
+        .where(
+            _evidence_job_predicate(
+                job=job, definition=definition, scope=scope, column=JobArtifact.job_id
+            )
         )
-    ).order_by(JobArtifact.id.asc())
+        .order_by(JobArtifact.id.asc())
+    )
     if cursor:
         try:
             (after_id,) = decode_cursor(cursor, contract=contract)

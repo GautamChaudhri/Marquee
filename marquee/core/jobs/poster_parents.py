@@ -178,11 +178,14 @@ async def create_poster_parent(
                 priority=priority,
             )
         )
-    scope_name = scope_name or {
-        "reset": "Reset deployed posters",
-        "backup": "Back up deployed posters",
-        "heal": "Heal missing posters",
-    }[operation]
+    scope_name = (
+        scope_name
+        or {
+            "reset": "Reset deployed posters",
+            "backup": "Back up deployed posters",
+            "heal": "Heal missing posters",
+        }[operation]
+    )
     return await create_fixed_batch(
         session,
         parent_job_type=parent_job_type,

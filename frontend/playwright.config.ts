@@ -21,7 +21,7 @@ const API_PORT = Number(process.env.MARQUEE_E2E_API_PORT ?? 3199);
 
 export default defineConfig({
 	testDir: 'e2e',
-	testIgnore: 'real-activity-lifecycle.spec.ts',
+	testIgnore: ['real-activity-lifecycle.spec.ts', '**/*.visual.spec.ts'],
 	fullyParallel: false,
 	forbidOnly: !!process.env.CI,
 	retries: 0,

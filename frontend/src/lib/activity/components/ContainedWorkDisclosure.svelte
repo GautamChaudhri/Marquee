@@ -202,7 +202,7 @@
 					<strong>{subjectName(item)}</strong>
 					<span class="item-status">{statusLabel(item)}</span>
 				</div>
-					{#if stage}<span class="stage">{stage}</span>{/if}
+				{#if stage}<span class="stage">{stage}</span>{/if}
 				{#if currentMeasurement?.completed != null && currentMeasurement?.total != null}
 					<progress max={currentMeasurement.total} value={currentMeasurement.completed}></progress>
 					<span class="measure"

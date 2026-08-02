@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from marquee.core.jobs.submission import SubmissionResult
+from marquee.models import Job
 
 
 class ActiveJobConflict(BaseModel):
@@ -51,5 +52,25 @@ def submission_response(result: SubmissionResult) -> JobSubmissionResponse:
             "activity_link",
             f"/projection-room?view=queue&job={result.job_id}",
         ),
+        active_conflict=None,
+    )
+
+
+def reused_submission_response(job: Job) -> JobSubmissionResponse:
+    """Return the canonical bounded handle for an already accepted job.
+
+    Some mutation routes have to check idempotency before rediscovering their
+    current scope: the first accepted request can intentionally make that scope
+    empty.  Replays still return the original durable job instead of reporting
+    that there is no longer anything to mutate.
+    """
+    return JobSubmissionResponse(
+        job_id=job.id,
+        disposition="reused",
+        idempotent=True,
+        phase=job.phase,
+        snapshot_url=f"/api/jobs/{job.id}/snapshot",
+        detail_url=f"/projection-room/jobs/{job.id}",
+        activity_url=f"/projection-room?view=queue&job={job.id}",
         active_conflict=None,
     )

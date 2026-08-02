@@ -101,12 +101,14 @@ async def test_movie_rollout_preserves_singles_or_builds_stable_group_chunks(
     monkeypatch.setattr(
         movie_pipeline_routes.configuration_provider,
         "effective",
-        lambda owner: {
-            "POSTER_GROUP_ENABLED": enabled,
-            "POSTER_GROUP_CHUNK_SIZE": 2,
-        }
-        if owner == "pipeline"
-        else {},
+        lambda owner: (
+            {
+                "POSTER_GROUP_ENABLED": enabled,
+                "POSTER_GROUP_CHUNK_SIZE": 2,
+            }
+            if owner == "pipeline"
+            else {}
+        ),
     )
     monkeypatch.setattr(movie_pipeline_routes, "create_fixed_batch", capture_batch)
     monkeypatch.setattr(movie_pipeline_routes, "submission_response", lambda parent: parent)
@@ -131,10 +133,11 @@ async def test_movie_rollout_preserves_singles_or_builds_stable_group_chunks(
         return
 
     assert [child.request["chunk_index"] for child in children] == [0, 1, 2]
-    assert [
-        [member["movie_id"] for member in child.request["members"]]
-        for child in children
-    ] == [[1, 2], [3, 4], [5]]
+    assert [[member["movie_id"] for member in child.request["members"]] for child in children] == [
+        [1, 2],
+        [3, 4],
+        [5],
+    ]
     assert [child.subject.kind for child in children] == ["poster_subject_group"] * 3
 
 
@@ -151,13 +154,15 @@ async def test_movie_all_at_once_builds_one_group_and_audits_parent_mode(
     monkeypatch.setattr(
         movie_pipeline_routes.configuration_provider,
         "effective",
-        lambda owner: {
-            "POSTER_GROUP_ENABLED": False,
-            "POSTER_GROUP_BATCH_MODE": "chunked",
-            "POSTER_GROUP_CHUNK_SIZE": 2,
-        }
-        if owner == "pipeline"
-        else {},
+        lambda owner: (
+            {
+                "POSTER_GROUP_ENABLED": False,
+                "POSTER_GROUP_BATCH_MODE": "chunked",
+                "POSTER_GROUP_CHUNK_SIZE": 2,
+            }
+            if owner == "pipeline"
+            else {}
+        ),
     )
     monkeypatch.setattr(movie_pipeline_routes, "create_fixed_batch", capture_batch)
     monkeypatch.setattr(movie_pipeline_routes, "submission_response", lambda parent: parent)
@@ -204,10 +209,7 @@ def _season_asset(series_id: int, season_id: int) -> dict[str, int | str]:
 
 
 def test_tv_group_chunks_keep_a_nine_to_sixteen_member_show_intact() -> None:
-    seasons = {
-        season_id: SimpleNamespace(season_number=season_id)
-        for season_id in range(1, 9)
-    }
+    seasons = {season_id: SimpleNamespace(season_number=season_id) for season_id in range(1, 9)}
     assets = [_series_asset(1), *[_season_asset(1, season_id) for season_id in seasons]]
 
     chunks = _tv_group_chunks(assets, season_by_id=seasons, target_size=8)
@@ -245,9 +247,7 @@ def test_tv_group_chunks_greedily_pack_small_whole_show_groups() -> None:
 
 
 def test_tv_group_chunks_split_show_plus_seventeen_seasons_as_sixteen_plus_two() -> None:
-    seasons = {
-        100 + number: SimpleNamespace(season_number=number) for number in range(1, 18)
-    }
+    seasons = {100 + number: SimpleNamespace(season_number=number) for number in range(1, 18)}
     assets = [
         *[_season_asset(9, 100 + number) for number in range(17, 8, -1)],
         _series_asset(9),
@@ -549,9 +549,7 @@ async def test_direct_group_retry_creates_fixed_parent_of_single_leaves(
         captured.update(kwargs)
         return SimpleNamespace(
             parent=SimpleNamespace(job_id=replacement.id),
-            children=tuple(
-                SimpleNamespace(job_id=successor.id) for successor in successors
-            ),
+            children=tuple(SimpleNamespace(job_id=successor.id) for successor in successors),
         )
 
     async def append_event(*_args: object, **_kwargs: object) -> None:
@@ -620,9 +618,7 @@ async def test_fixed_parent_retry_flattens_group_and_preserves_group_lineage(
         captured.update(kwargs)
         return SimpleNamespace(
             parent=SimpleNamespace(job_id=replacement.id),
-            children=tuple(
-                SimpleNamespace(job_id=successor.id) for successor in successors
-            ),
+            children=tuple(SimpleNamespace(job_id=successor.id) for successor in successors),
         )
 
     async def append_event(*_args: object, **_kwargs: object) -> None:

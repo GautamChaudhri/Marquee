@@ -184,6 +184,48 @@ function activeMovieJobRow() {
 	};
 }
 
+function activeMovieSnapshot(desiredState: 'run' | 'cancel' = 'run') {
+	const stopping = desiredState === 'cancel';
+	return {
+		version: 1,
+		job_id: 'movieactivity00000000000000000001',
+		type: 'poster_pipeline',
+		label: 'Synthetic Feature One',
+		phase: stopping ? 'stopping' : 'running',
+		outcome: null,
+		desired_state: desiredState,
+		fence_token: 1,
+		execution_class: 'gpu',
+		progress_sequence: stopping ? 2 : 1,
+		progress: null,
+		status: {
+			label: stopping ? 'Cancelling' : 'Running',
+			label_key: stopping ? 'jobs.status.stopping' : 'jobs.status.running',
+			phase: stopping ? 'stopping' : 'running',
+			outcome: null,
+			tone: 'active'
+		},
+		attention: { level: 'normal', reason: 'none', message: null, remediation: null },
+		priority: 0,
+		allowed_actions: stopping ? [] : ['cancel', 'open_detail'],
+		links: {
+			detail: '/projection-room/jobs/movieactivity00000000000000000001',
+			presentation: '/api/jobs/movieactivity00000000000000000001/presentation',
+			snapshot: '/api/jobs/movieactivity00000000000000000001/snapshot'
+		},
+		configuration_version: 1,
+		eligible_at: null,
+		created_at: now,
+		started_at: now,
+		terminal_at: null,
+		parent_id: null,
+		root_id: 'movieactivity00000000000000000001',
+		retry_of_job_id: null,
+		updated_at: now,
+		last_event_id: stopping ? 2 : 1
+	};
+}
+
 test('individual Film Run stays in the workspace and refreshes both queues when it settles', async ({
 	page
 }) => {
@@ -294,4 +336,46 @@ test('movie activity has visible separation from the run grid', async ({ page })
 	expect(panelBox).not.toBeNull();
 	expect(gridBox).not.toBeNull();
 	expect(gridBox!.y).toBeGreaterThanOrEqual(panelBox!.y + panelBox!.height + 12);
+});
+
+test('workspace cancellation uses the current fence and never leaves Films', async ({ page }) => {
+	await installStableEventSource(page);
+	let row = activeMovieJobRow();
+	let cancelBody: unknown = null;
+	await page.route('**/api/jobs?*', (route) =>
+		route.fulfill({ json: { view: 'queue', items: [row], next_cursor: null, limit: 50 } })
+	);
+	await page.route('**/api/jobs/movieactivity00000000000000000001/snapshot', (route) =>
+		route.fulfill({ json: activeMovieSnapshot(row.phase === 'stopping' ? 'cancel' : 'run') })
+	);
+	await page.route('**/api/jobs/movieactivity00000000000000000001/cancel', (route) => {
+		cancelBody = route.request().postDataJSON();
+		row = {
+			...row,
+			phase: 'stopping',
+			desired_state: 'cancel',
+			status: {
+				label: 'Cancelling',
+				label_key: 'jobs.status.stopping',
+				phase: 'stopping',
+				outcome: null,
+				tone: 'active'
+			},
+			allowed_actions: ['open_detail']
+		};
+		return route.fulfill({
+			json: { snapshot: activeMovieSnapshot('cancel'), replacement_job_id: null }
+		});
+	});
+
+	await page.goto('/pipeline/movies');
+	const activity = page
+		.locator('article.activity-row')
+		.filter({ hasText: 'Synthetic Feature One' });
+	await activity.getByRole('button', { name: 'Cancel' }).click();
+
+	await expect(activity).toContainText('Cancelling');
+	await expect(activity.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+	expect(cancelBody).toEqual({ expected_fence_token: 1 });
+	expect(new URL(page.url()).pathname).toBe('/pipeline/movies');
 });

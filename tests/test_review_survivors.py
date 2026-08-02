@@ -335,9 +335,7 @@ def test_evidence_attachment_leaves_the_survivor_checksum_alone(tmp_path: Path) 
         },
         "review_evidence": {
             "version": 1,
-            "candidates": [
-                {"reference": "tossed.jpg", "position": 0, "objective_eligible": False}
-            ],
+            "candidates": [{"reference": "tossed.jpg", "position": 0, "objective_eligible": False}],
             "archived_count": 0,
             "truncated_count": 0,
         },

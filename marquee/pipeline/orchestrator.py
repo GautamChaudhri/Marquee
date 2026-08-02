@@ -61,9 +61,7 @@ async def _preloaded_ocr_pool(
     logged and resolve to ``None``, preserving the existing inline OCR path.
     """
     task: asyncio.Task[OcrPool] | None = (
-        asyncio.create_task(asyncio.to_thread(PosterTextFilter.start_ocr_pool))
-        if enabled
-        else None
+        asyncio.create_task(asyncio.to_thread(PosterTextFilter.start_ocr_pool)) if enabled else None
     )
     pool: OcrPool | None = None
     resolved = task is None
@@ -269,8 +267,7 @@ async def run_poster_pipeline(
     tmdb_token = settings.TMDB_READ_ACCESS_TOKEN
     if source.mode != "fixture" and not tmdb_token:
         raise RuntimeError(
-            "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline "
-            "cannot fetch candidates"
+            "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline cannot fetch candidates"
         )
 
     # Only worth preloading when there is slow work to hide it behind: the

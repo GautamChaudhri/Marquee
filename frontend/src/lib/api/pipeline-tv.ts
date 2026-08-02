@@ -61,9 +61,7 @@ export function approveTvAuto(
 		'POST',
 		'/pipeline/tv/review-queue/approve-auto',
 		body,
-		body.deploy === false
-			? undefined
-			: { 'Idempotency-Key': `poster_deploy:${randomUuid()}` }
+		body.deploy === false ? undefined : { 'Idempotency-Key': `poster_deploy:${randomUuid()}` }
 	);
 }
 

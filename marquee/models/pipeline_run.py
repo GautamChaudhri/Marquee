@@ -39,9 +39,7 @@ def _default_subject_key(context: Any) -> str:
             return display_id
     media_type = values.get("media_type")
     identifier = (
-        values.get(f"{media_type}_id")
-        if media_type in {"movie", "series", "season"}
-        else None
+        values.get(f"{media_type}_id") if media_type in {"movie", "series", "season"} else None
     )
     if isinstance(identifier, int) and identifier > 0:
         return f"{media_type}:{identifier}"

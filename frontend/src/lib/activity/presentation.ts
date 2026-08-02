@@ -82,8 +82,7 @@ export function activityCallout(
 			label: ATTENTION_LABELS[attention.reason],
 			message: attention.message ?? attention.remediation ?? null,
 			tone:
-				ATTENTION_TONES[attention.reason] ??
-				(attention.level === 'error' ? 'negative' : 'warning')
+				ATTENTION_TONES[attention.reason] ?? (attention.level === 'error' ? 'negative' : 'warning')
 		};
 	}
 	if (progress?.wait) {

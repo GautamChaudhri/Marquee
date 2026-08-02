@@ -536,10 +536,15 @@ def test_profile_payload_groups_tv_posters_by_series_not_by_filename(tmp_path) -
 
 
 def test_profile_payload_collapses_the_legacy_copy_counter(tmp_path) -> None:
-    """"Title (Year) - 2.jpg" is a second copy of one film, not a second film."""
+    """ "Title (Year) - 2.jpg" is a second copy of one film, not a second film."""
     path = _write_profile(
         tmp_path / "profile.npz",
-        names=["Alien (1979).jpg", "Alien (1979) - 2.jpg", "Alien (1979) - 3.jpg", "Dune (2021).jpg"],
+        names=[
+            "Alien (1979).jpg",
+            "Alien (1979) - 2.jpg",
+            "Alien (1979) - 3.jpg",
+            "Dune (2021).jpg",
+        ],
     )
 
     summary, subjects, duplicates = publication_catalog._profile_payload(path)
@@ -605,9 +610,7 @@ async def test_taste_status_omits_genres_for_tv_and_reads_gates_from_settings(
 
 
 @pytest.mark.asyncio
-async def test_seeding_bundle_retrain_bypasses_the_coordinator_for_movies_only(
-    client, db
-) -> None:
+async def test_seeding_bundle_retrain_bypasses_the_coordinator_for_movies_only(client, db) -> None:
     """TEMPORARY (seeding bundle): the one caller-chosen training source."""
     blocked = await client.post(
         "/api/taste/retrain", json={"library": "tv", "source": "seeding_bundle"}

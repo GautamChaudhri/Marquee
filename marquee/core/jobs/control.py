@@ -292,9 +292,7 @@ async def _retry_poster_group(
         key_prefix=f"retry-{original.id[:16]}-{expected_fence_token}",
     )
     parent_type = (
-        "poster_pipeline_batch"
-        if request.library == "movies"
-        else "poster_pipeline_tv_batch"
+        "poster_pipeline_batch" if request.library == "movies" else "poster_pipeline_tv_batch"
     )
     preserves_all_at_once = (
         len(intents) == 1
@@ -316,9 +314,7 @@ async def _retry_poster_group(
         ),
         trigger=TriggerKind.BATCH,
         initiator=initiator,
-        idempotency_key=(
-            f"{parent_type}:retry-group-{original.id}-{expected_fence_token}"
-        ),
+        idempotency_key=(f"{parent_type}:retry-group-{original.id}-{expected_fence_token}"),
         children=intents,
         priority=original.priority,
     )
@@ -382,9 +378,7 @@ async def retry(
                     expected_fence_token=expected_fence_token,
                 )
             except (TypeError, ValueError, RuntimeError) as exc:
-                raise _conflict(
-                    original, "action_not_allowed", str(exc), action="retry"
-                ) from exc
+                raise _conflict(original, "action_not_allowed", str(exc), action="retry") from exc
             original.fence_token += 1
             batch_result = JobControlResult(
                 JobAction.RETRY,
