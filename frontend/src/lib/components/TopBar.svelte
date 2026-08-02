@@ -8,22 +8,39 @@
 
 	const TITLES: Record<string, { title: string; sub: string }> = {
 		dashboard: { title: 'Dashboard', sub: 'Library health & system status' },
-		films: { title: 'Films', sub: 'Movie library' },
-		television: { title: 'Television', sub: 'Series library' },
-		shows: { title: 'Television', sub: 'Series library' },
+		films: { title: 'Film Library', sub: '' },
+		television: { title: 'Television Library', sub: '' },
+		shows: { title: 'Television Library', sub: '' },
 		pipeline: { title: 'Poster Pipeline', sub: '' },
 		taste: { title: 'Key Art Engine', sub: 'Taste profile & bounded residual' },
 		'projection-room': { title: 'Activity', sub: '' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }
 	};
 	const seg = $derived(page.url.pathname.split('/').filter(Boolean)[0] ?? 'dashboard');
-	const meta = $derived(TITLES[seg] ?? { title: 'Marquee', sub: '' });
+	const routeMeta = $derived(TITLES[seg] ?? { title: 'Marquee', sub: '' });
+	const meta = $derived(
+		page.data.libraryHeader
+			? {
+					title: page.data.libraryHeader.title,
+					sub: page.data.libraryHeader.countLabel ?? '',
+					isPageHeading: true
+				}
+			: { ...routeMeta, isPageHeading: false }
+	);
 </script>
+
+<svelte:head>
+	<title>{meta.title} · Marquee</title>
+</svelte:head>
 
 <header>
 	<div class="crumb">
-		<span class="title">{meta.title}</span>
-		{#if meta.sub}<span class="sub">{meta.sub}</span>{/if}
+		{#if meta.isPageHeading}
+			<h1 class="title">{meta.title}</h1>
+		{:else}
+			<span class="title">{meta.title}</span>
+		{/if}
+		{#if meta.sub}<span class="sub" aria-label={meta.sub}>· {meta.sub}</span>{/if}
 	</div>
 	<div class="actions">
 		{#if action}{@render action()}{/if}
@@ -58,8 +75,10 @@
 		gap: 10px;
 	}
 	.title {
+		margin: 0;
 		font-weight: 650;
 		font-size: 15px;
+		line-height: 1.2;
 	}
 	.sub {
 		color: var(--muted);

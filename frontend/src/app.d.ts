@@ -4,7 +4,13 @@ declare global {
 	namespace App {
 		// interface Error {}
 		// interface Locals {}
-		// interface PageData {}
+		interface LibraryHeader {
+			title: string;
+			countLabel?: string;
+		}
+		interface PageData {
+			libraryHeader?: LibraryHeader;
+		}
 		// interface PageState {}
 		// interface Platform {}
 	}

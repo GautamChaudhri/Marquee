@@ -358,6 +358,12 @@ class SyncService:
                 series.year = data.get("year", 0)
                 series.tvdb_id = data.get("tvdbId") or None
                 series.imdb_id = data.get("imdbId")
+                genres = data.get("genres")
+                series.genres = (
+                    genres
+                    if isinstance(genres, list) and all(isinstance(genre, str) for genre in genres)
+                    else None
+                )
                 if data.get("tmdbId"):
                     series.tmdb_id = data.get("tmdbId")
 

@@ -117,18 +117,6 @@ export interface PosterSummary {
 
 export type SeasonPosterStatus = 'complete' | 'partial' | 'missing';
 
-export interface SeriesListItem {
-	id: number;
-	title: string;
-	year: number | null;
-	tmdb_id: number | null;
-	poster: PosterSummary;
-	downloaded_seasons: number;
-	seasons_with_poster: number;
-	season_poster_status: SeasonPosterStatus;
-	season_count: number | null;
-}
-
 export interface SeasonSummary {
 	id: number;
 	season_number: number;
@@ -137,11 +125,25 @@ export interface SeasonSummary {
 	poster: PosterSummary;
 }
 
+export interface SeriesListItem {
+	id: number;
+	title: string;
+	year: number | null;
+	tmdb_id: number | null;
+	genres: string[] | null;
+	poster: PosterSummary;
+	downloaded_seasons: number;
+	seasons_with_poster: number;
+	season_poster_status: SeasonPosterStatus;
+	season_count: number | null;
+	/** Downloaded seasons only, sorted numerically by season number. */
+	seasons: SeasonSummary[];
+}
+
 export interface SeriesDetail extends SeriesListItem {
 	tvdb_id: number | null;
 	show_text_profile_id: string | null;
 	season_text_profile_id: string | null;
-	seasons: SeasonSummary[];
 }
 
 export interface MovieQuery {

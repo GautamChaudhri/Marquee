@@ -42,6 +42,10 @@ class Series(Base, TimestampMixin, ArtworkMixin):
     )
     imdb_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # JSON array synced from Sonarr (for example, ["Crime", "Drama"]).
+    # This stays nullable so existing rows remain valid until their next sync.
+    genres: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
     # ── Filesystem ───────────────────────────────────────────────────
     series_path: Mapped[str] = mapped_column(
         Text, nullable=False, comment="Root folder path from Sonarr"

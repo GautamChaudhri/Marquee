@@ -37,6 +37,7 @@ def _sonarr_series_data(**overrides) -> dict:
         "year": 2002,
         "tvdbId": 79126,
         "imdbId": "tt0306414",
+        "genres": ["Crime", "Drama"],
         "path": "/tv/The Wire",
         "qualityProfileId": 2,
         "seasons": [
@@ -69,6 +70,7 @@ async def test_sync_tv_statistics_and_specials(db: AsyncSession):
 
     series = (await db.execute(select(Series).where(Series.sonarr_id == 101))).scalar_one()
     assert series.title == "The Wire"
+    assert series.genres == ["Crime", "Drama"]
 
     seasons = (
         (
@@ -93,6 +95,21 @@ async def test_sync_tv_statistics_and_specials(db: AsyncSession):
     assert seasons[2].season_number == 2
     assert seasons[2].episode_count == 12
     assert seasons[2].episode_file_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("genres", [None, "Crime", [42]])
+async def test_sync_tv_invalid_genres_are_stored_as_null(db: AsyncSession, genres):
+    sonarr = AsyncMock()
+    sonarr.get_series.return_value = [_sonarr_series_data(genres=genres)]
+    sonarr.get_episodes.return_value = []
+    sonarr.get_episode_files.return_value = []
+
+    svc = SyncService(db, sonarr=sonarr)
+    await svc.sync_all()
+
+    series = (await db.execute(select(Series).where(Series.sonarr_id == 101))).scalar_one()
+    assert series.genres is None
 
 
 @pytest.mark.asyncio

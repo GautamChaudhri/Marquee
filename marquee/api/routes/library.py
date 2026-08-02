@@ -53,6 +53,16 @@ def _season_poster_status(downloaded_seasons: int, seasons_with_poster: int) -> 
     return "partial"
 
 
+def _season_summary(season: Season) -> dict:
+    return {
+        "id": season.id,
+        "season_number": season.season_number,
+        "episode_count": season.episode_count,
+        "episode_file_count": season.episode_file_count,
+        "poster": _poster_summary(season),
+    }
+
+
 def _serve_subject_poster(subject, *, media_type: str):
     from marquee.core.filesystem import (  # noqa: PLC0415
         FilesystemBoundaryError,
@@ -219,7 +229,9 @@ async def list_series(
     season_rows = (
         (
             await db.execute(
-                select(Season).where(Season.series_id.in_(series_ids), season_downloaded())
+                select(Season)
+                .where(Season.series_id.in_(series_ids), season_downloaded())
+                .order_by(Season.series_id, Season.season_number)
             )
         )
         .scalars()
@@ -229,10 +241,12 @@ async def list_series(
     )
     downloaded_counts: dict[int, int] = dict.fromkeys(series_ids, 0)
     poster_counts: dict[int, int] = dict.fromkeys(series_ids, 0)
+    seasons_by_series: dict[int, list[dict]] = {series_id: [] for series_id in series_ids}
     for season in season_rows:
         downloaded_counts[season.series_id] = downloaded_counts.get(season.series_id, 0) + 1
         if season.poster_path is not None:
             poster_counts[season.series_id] = poster_counts.get(season.series_id, 0) + 1
+        seasons_by_series.setdefault(season.series_id, []).append(_season_summary(season))
     return {
         "total": total,
         "page": page,
@@ -243,6 +257,7 @@ async def list_series(
                 "title": s.title,
                 "year": s.year,
                 "tmdb_id": s.tmdb_id,
+                "genres": s.genres,
                 "poster": _poster_summary(s),
                 "downloaded_seasons": downloaded_counts.get(s.id, 0),
                 "seasons_with_poster": poster_counts.get(s.id, 0),
@@ -250,6 +265,7 @@ async def list_series(
                     downloaded_counts.get(s.id, 0), poster_counts.get(s.id, 0)
                 ),
                 "season_count": s.season_count,
+                "seasons": seasons_by_series.get(s.id, []),
             }
             for s in rows
         ],
@@ -282,6 +298,7 @@ async def get_series(series_id: int, db: Annotated[AsyncSession, Depends(get_db)
         "year": series.year,
         "tmdb_id": series.tmdb_id,
         "tvdb_id": series.tvdb_id,
+        "genres": series.genres,
         "poster": _poster_summary(series),
         "downloaded_seasons": downloaded_seasons,
         "seasons_with_poster": seasons_with_poster,
@@ -289,16 +306,7 @@ async def get_series(series_id: int, db: Annotated[AsyncSession, Depends(get_db)
         "season_count": series.season_count,
         "show_text_profile_id": series.show_text_profile_id,
         "season_text_profile_id": series.season_text_profile_id,
-        "seasons": [
-            {
-                "id": season.id,
-                "season_number": season.season_number,
-                "episode_count": season.episode_count,
-                "episode_file_count": season.episode_file_count,
-                "poster": _poster_summary(season),
-            }
-            for season in seasons
-        ],
+        "seasons": [_season_summary(season) for season in seasons],
     }
 
 

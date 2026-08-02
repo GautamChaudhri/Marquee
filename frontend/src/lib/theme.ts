@@ -15,3 +15,4 @@ export function toggleTheme() {
 
 export const sidebarCollapsed = persisted<boolean>('marquee:sidebarCollapsed', false);
 export const filmMode = persisted<'list' | 'grid'>('marquee:filmMode', 'list');
+export const televisionMode = persisted<'list' | 'grid'>('marquee:televisionMode', 'grid');

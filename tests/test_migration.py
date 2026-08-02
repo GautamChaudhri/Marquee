@@ -115,6 +115,62 @@ def test_clean_baseline_is_one_root_and_excludes_other_schema_owners() -> None:
 
 
 @pytest.mark.asyncio
+async def test_series_genres_migration_preserves_existing_rows(
+    owned_database: _OwnedDatabase,
+) -> None:
+    root = Path(__file__).resolve().parent.parent
+    config = Config(str(root / "alembic.ini"))
+    await asyncio.to_thread(command.upgrade, config, "0021_generic_work_item_stages")
+
+    connection = await owned_database.connect()
+    try:
+        series_id = await connection.fetchval(
+            """
+            INSERT INTO series (
+                title, year, series_path, season_count, poster_ai_selected
+            ) VALUES ('Legacy Show', 2001, '/tv/legacy', 1, false)
+            RETURNING id
+            """
+        )
+    finally:
+        await connection.close()
+
+    await asyncio.to_thread(command.upgrade, config, ALEMBIC_HEAD)
+    connection = await owned_database.connect()
+    try:
+        assert (
+            await connection.fetchval("SELECT genres FROM series WHERE id = $1", series_id) is None
+        )
+        await connection.execute(
+            "UPDATE series SET genres = $1::json WHERE id = $2",
+            '["Drama", "Mystery"]',
+            series_id,
+        )
+        assert (
+            await connection.fetchval("SELECT genres FROM series WHERE id = $1", series_id)
+            == '["Drama", "Mystery"]'
+        )
+    finally:
+        await connection.close()
+
+    await asyncio.to_thread(command.downgrade, config, "0021_generic_work_item_stages")
+    connection = await owned_database.connect()
+    try:
+        assert not await connection.fetchval(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'series'
+                  AND column_name = 'genres'
+            )
+            """
+        )
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
 async def test_work_item_migration_upgrades_existing_jobs_and_downgrades_cleanly(
     owned_database: _OwnedDatabase,
 ) -> None:

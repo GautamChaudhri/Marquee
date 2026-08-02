@@ -10,6 +10,19 @@ const DETAIL_JOB_ID = 'detail00000000000000000000000001';
 const ONBOARDING_JOB_ID = 'onboarding00000000000000000001';
 const ONBOARDING_RUN_ID = 'onboardingreview000000000000001';
 const now = '2026-07-16T12:00:00Z';
+const posterSummary = (hasPoster) => ({
+	has_poster: hasPoster,
+	ai_selected: false,
+	user_approved: hasPoster,
+	deployed_at: hasPoster ? now : null
+});
+const seasonSummary = (seriesId, seasonNumber, hasPoster) => ({
+	id: seriesId * 100 + seasonNumber,
+	season_number: seasonNumber,
+	episode_count: seasonNumber === 0 ? 2 : 10,
+	episode_file_count: seasonNumber === 0 ? 1 : 8,
+	poster: posterSummary(hasPoster)
+});
 const emptyPipelineMetrics = {
 	window_runs: 0,
 	by_status: {},
@@ -51,6 +64,136 @@ const missingMovies = [
 		poster_status: 'missing',
 		poster_url: null,
 		media_file_id: null
+	}
+];
+const libraryMovies = [
+	{
+		id: 8301,
+		title: 'Midnight Archive',
+		year: 1987,
+		tmdb_id: 8301,
+		genres: ['Thriller', 'Mystery'],
+		container: 'mkv',
+		video_width: 1920,
+		video_height: 1080,
+		resolution: '1080p',
+		poster_status: 'deployed',
+		poster_url: '/api/library/movies/8301/poster',
+		media_file_id: 8301
+	},
+	{
+		id: 8302,
+		title: 'Paper Moons',
+		year: 2004,
+		tmdb_id: 8302,
+		genres: ['Drama'],
+		container: 'mp4',
+		video_width: 3840,
+		video_height: 2160,
+		resolution: '2160p',
+		poster_status: 'review',
+		poster_url: null,
+		media_file_id: 8302
+	},
+	{
+		id: 8303,
+		title: 'Signal House',
+		year: 2025,
+		tmdb_id: 8303,
+		genres: ['Science Fiction'],
+		container: 'mkv',
+		video_width: 1280,
+		video_height: 720,
+		resolution: '720p',
+		poster_status: 'missing',
+		poster_url: null,
+		media_file_id: 8303
+	},
+	{
+		id: 8304,
+		title: 'Glass Harbor',
+		year: 2012,
+		tmdb_id: 8304,
+		genres: ['Adventure', 'Drama'],
+		container: 'mkv',
+		video_width: 1920,
+		video_height: 1080,
+		resolution: '1080p',
+		poster_status: 'approved',
+		poster_url: '/api/library/movies/8304/poster',
+		media_file_id: 8304
+	}
+];
+const librarySeries = [
+	{
+		id: 9301,
+		title: 'Complete Edition',
+		year: 2018,
+		tmdb_id: 9301,
+		genres: ['Drama', 'Mystery'],
+		poster: posterSummary(true),
+		downloaded_seasons: 3,
+		seasons_with_poster: 3,
+		season_poster_status: 'complete',
+		season_count: 3,
+		seasons: [
+			seasonSummary(9301, 0, true),
+			seasonSummary(9301, 1, true),
+			seasonSummary(9301, 2, true)
+		]
+	},
+	{
+		id: 9302,
+		title: 'Season Gap',
+		year: 2020,
+		tmdb_id: 9302,
+		genres: ['Science Fiction', 'Drama'],
+		poster: posterSummary(true),
+		downloaded_seasons: 8,
+		seasons_with_poster: 3,
+		season_poster_status: 'partial',
+		season_count: 8,
+		seasons: [
+			seasonSummary(9302, 1, true),
+			seasonSummary(9302, 2, false),
+			seasonSummary(9302, 3, true),
+			seasonSummary(9302, 4, false),
+			seasonSummary(9302, 5, true),
+			seasonSummary(9302, 6, false),
+			seasonSummary(9302, 7, false),
+			seasonSummary(9302, 8, false)
+		]
+	},
+	{
+		id: 9303,
+		title: 'Series Gap',
+		year: 2022,
+		tmdb_id: 9303,
+		genres: ['Documentary'],
+		poster: posterSummary(false),
+		downloaded_seasons: 2,
+		seasons_with_poster: 2,
+		season_poster_status: 'complete',
+		season_count: 2,
+		seasons: [seasonSummary(9303, 1, true), seasonSummary(9303, 2, true)]
+	},
+	{
+		id: 9304,
+		title: 'The Long Combined Gap Case',
+		year: 2024,
+		tmdb_id: 9304,
+		genres: null,
+		poster: posterSummary(false),
+		downloaded_seasons: 4,
+		seasons_with_poster: 0,
+		season_poster_status: 'missing',
+		season_count: 4,
+		seasons: [
+			seasonSummary(9304, 1, false),
+			seasonSummary(9304, 2, false),
+			seasonSummary(9304, 3, false),
+			seasonSummary(9304, 4, false)
+		]
 	}
 ];
 const tvRunQueueItems = [
@@ -377,6 +520,17 @@ const server = createServer((req, res) => {
 		);
 		return;
 	}
+	const libraryPoster = path.match(/^\/api\/library\/(movies|series|seasons)\/(\d+)\/poster$/);
+	if (libraryPoster) {
+		const [, kind, id] = libraryPoster;
+		const label = kind === 'movies' ? 'FILM' : kind === 'series' ? 'SHOW' : `S${id.slice(-2)}`;
+		const accent = kind === 'series' ? '#5eead4' : '#fbbf24';
+		res.writeHead(200, { 'content-type': 'image/svg+xml' });
+		res.end(
+			`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="960"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#17243d"/><stop offset="1" stop-color="#080d16"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><circle cx="320" cy="390" r="150" fill="none" stroke="${accent}" stroke-width="10" opacity=".72"/><text x="320" y="420" text-anchor="middle" fill="${accent}" font-family="system-ui" font-size="72" font-weight="700">${label}</text><text x="320" y="850" text-anchor="middle" fill="#f5f5f4" font-family="system-ui" font-size="28">Marquee fixture</text></svg>`
+		);
+		return;
+	}
 	if (path === '/api/pipeline/run-queue') {
 		json(res, 200, {
 			total: missingMovies.length,
@@ -387,17 +541,36 @@ const server = createServer((req, res) => {
 		return;
 	}
 	if (path === '/api/library/movies') {
-		// Keep legacy callers such as older library views deterministic as well.
-		if (url.searchParams.get('poster_status') === 'missing') {
-			json(res, 200, {
-				total: missingMovies.length,
-				page: 1,
-				page_size: 60,
-				items: missingMovies
-			});
-			return;
-		}
-		json(res, 200, { total: 0, page: 1, page_size: 60, items: [] });
+		const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+		const posterStatus = url.searchParams.get('poster_status');
+		const sort = url.searchParams.get('sort') ?? 'title';
+		const page = Math.max(1, Number(url.searchParams.get('page') ?? 1));
+		const pageSize = Math.max(1, Number(url.searchParams.get('page_size') ?? 60));
+		// Preserve the two-item missing-poster queue fixture while exercising the
+		// same search, filter, sort, and pagination contract as the real endpoint.
+		const sourceMovies = posterStatus === 'missing' ? missingMovies : libraryMovies;
+		let items = sourceMovies.filter(
+			(movie) =>
+				(!query || movie.title.toLowerCase().includes(query)) &&
+				(!posterStatus || movie.poster_status === posterStatus)
+		);
+		items = items.toSorted((left, right) =>
+			sort === 'year'
+				? (right.year ?? 0) - (left.year ?? 0) || left.title.localeCompare(right.title)
+				: left.title.localeCompare(right.title)
+		);
+		const total = items.length;
+		items = items.slice((page - 1) * pageSize, page * pageSize);
+		json(res, 200, { total, page, page_size: pageSize, items });
+		return;
+	}
+	if (path === '/api/library/series') {
+		json(res, 200, {
+			total: librarySeries.length,
+			page: 1,
+			page_size: Number(url.searchParams.get('page_size') ?? 200),
+			items: librarySeries
+		});
 		return;
 	}
 	if (path === '/api/pipeline/review-queue') {

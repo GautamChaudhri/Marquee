@@ -2,7 +2,6 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { filmMode } from '$lib/theme';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
 	import FilmList from '$lib/components/FilmList.svelte';
 	import FilmGrid from '$lib/components/FilmGrid.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -42,23 +41,15 @@
 	}
 </script>
 
-<SectionHeader title="Films" subtitle={data.data ? `${data.data.total} movies` : 'Movie library'}>
-	{#snippet action()}
-		<div class="modes">
-			<button class:on={$filmMode === 'list'} onclick={() => ($filmMode = 'list')} title="List">
-				<Icon name="list" size={16} />
-			</button>
-			<button class:on={$filmMode === 'grid'} onclick={() => ($filmMode = 'grid')} title="Grid">
-				<Icon name="grid" size={16} />
-			</button>
-		</div>
-	{/snippet}
-</SectionHeader>
+<svelte:head>
+	<title>Film Library · Marquee</title>
+</svelte:head>
 
 <div class="filters">
 	<label class="search">
 		<Icon name="search" size={15} />
 		<input
+			aria-label="Search film titles"
 			placeholder="Search titles…"
 			value={q}
 			oninput={(e) => onSearch((e.currentTarget as HTMLInputElement).value)}
@@ -66,6 +57,7 @@
 	</label>
 
 	<select
+		aria-label="Filter films by artwork status"
 		value={data.query.poster_status ?? ''}
 		onchange={(e) => apply({ poster_status: selectVal(e) })}
 	>
@@ -76,11 +68,38 @@
 		<option value="missing">No poster</option>
 	</select>
 
-	<select value={data.query.sort ?? 'title'} onchange={(e) => apply({ sort: selectVal(e) }, false)}>
+	<select
+		aria-label="Sort films"
+		value={data.query.sort ?? 'title'}
+		onchange={(e) => apply({ sort: selectVal(e) }, false)}
+	>
 		<option value="title">Sort: Title</option>
 		<option value="year">Sort: Year</option>
 		<option value="added">Sort: Added</option>
 	</select>
+
+	<div class="modes" role="group" aria-label="Film library view">
+		<button
+			type="button"
+			class:on={$filmMode === 'list'}
+			onclick={() => ($filmMode = 'list')}
+			title="Table view"
+			aria-label="Table view"
+			aria-pressed={$filmMode === 'list'}
+		>
+			<Icon name="list" size={16} />
+		</button>
+		<button
+			type="button"
+			class:on={$filmMode === 'grid'}
+			onclick={() => ($filmMode = 'grid')}
+			title="Grid view"
+			aria-label="Grid view"
+			aria-pressed={$filmMode === 'grid'}
+		>
+			<Icon name="grid" size={16} />
+		</button>
+	</div>
 </div>
 
 <div class="quick-filters">
@@ -133,6 +152,7 @@
 <style>
 	.modes {
 		display: flex;
+		flex: none;
 		gap: 2px;
 		background: var(--panel);
 		border: 1px solid var(--line2);
@@ -149,12 +169,17 @@
 		background: transparent;
 		color: var(--muted);
 	}
+	.modes button:hover {
+		color: var(--text);
+		background: var(--panel2);
+	}
 	.modes button.on {
 		background: var(--gold);
 		color: var(--on-gold);
 	}
 	.filters {
 		display: flex;
+		align-items: center;
 		flex-wrap: wrap;
 		gap: 10px;
 		margin-bottom: 16px;
