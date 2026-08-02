@@ -163,12 +163,50 @@ async def _stage_tv_library_scan(
     return asset_identity, negative_weights
 
 
+async def _stage_seeding_bundle(
+    context: ExecutionContext, workspace_dir: Path, *, library: str
+) -> int:
+    """TEMPORARY (seeding bundle): stage curated posters on disk as the training set.
+
+    The canonical movies path needs a frozen revision with enough positive subjects,
+    which a fresh install does not have. This trains on a bundled directory instead so
+    the engine has something to rank with on day one. It stages positives only — the
+    resulting profile has no negative exemplars, unlike every canonical build.
+
+    Runs in the handler rather than the runner for the same reason the TV library scan
+    does: the runner is confined to the attempt workspace and cannot reach data roots.
+    """
+    bundle = pipeline_settings.TASTE_SEEDING_DIR / library
+    if not bundle.is_dir():
+        raise RuntimeError(f"taste seeding bundle not found at {bundle}")
+    # Dotfiles are load-bearing to exclude: the bundle ships a .actors.jpg sidecar that
+    # scan_images would otherwise happily embed as an exemplar named ".actors".
+    posters = sorted(
+        path
+        for path in bundle.iterdir()
+        if path.is_file()
+        and not path.name.startswith(".")
+        and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+    )
+    floor = pipeline_settings.TASTE_SEEDING_MIN_POSTERS
+    if len(posters) < floor:
+        raise RuntimeError(
+            f"taste seeding bundle needs at least {floor} posters, found {len(posters)} in {bundle}"
+        )
+    training_dir = workspace_dir / "training"
+    training_dir.mkdir(parents=True, exist_ok=True)
+    for poster in posters:
+        await context.io.copy(poster, training_dir / poster.name)
+    return len(posters)
+
+
 async def _publish_native_taste_profile(
     context: ExecutionContext,
     *,
     library: str,
     expected_generation: int,
     seed: int,
+    source: str = "canonical",
     revision_digest: str | None = None,
     profile_build_id: str | None = None,
 ) -> dict[str, object]:
@@ -261,6 +299,9 @@ async def _publish_native_taste_profile(
             else:
                 negative_weights[filename] = float(exemplar.evidence_weight)
         source_mode = "fixture"
+    elif source == "seeding_bundle":  # TEMPORARY (seeding bundle)
+        await _stage_seeding_bundle(context, workspace_dir, library=library)
+        source_mode = "seeding_bundle"
     elif library == "tv":
         asset_identity, negative_weights = await _stage_tv_library_scan(context, workspace_dir)
         source_mode = "library_scan"
@@ -888,6 +929,7 @@ async def execute_taste_rebuild(context: ExecutionContext) -> dict[str, object]:
             library=request.library,
             expected_generation=request.expected_generation,
             seed=request.seed,
+            source=request.source,
             revision_digest=request.revision,
             profile_build_id=request.profile_build_id,
         )

@@ -689,7 +689,9 @@ def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[
 # Source modes where the handler has already staged every training image under
 # ./training in the attempt workspace. Anything else leaves the trainer without a
 # training directory, which it rejects rather than guessing at a source.
-_STAGED_SOURCE_MODES = frozenset({"fixture", "library_scan"})
+_STAGED_SOURCE_MODES = frozenset(
+    {"fixture", "library_scan", "seeding_bundle"}  # TEMPORARY (seeding bundle)
+)
 
 
 def _run_taste_profile(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any]:

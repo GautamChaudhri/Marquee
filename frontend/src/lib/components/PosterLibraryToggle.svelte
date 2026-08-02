@@ -1,17 +1,29 @@
 <script lang="ts">
-	let { active }: { active: 'films' | 'television' } = $props();
+	// The poster workspaces switch library by path; /taste switches by query param.
+	// Same control either way, so the destinations are props rather than a second copy.
+	let {
+		active,
+		films = '/pipeline/movies',
+		television = '/pipeline/tv',
+		label = 'Poster library'
+	}: {
+		active: 'films' | 'television';
+		films?: string;
+		television?: string;
+		label?: string;
+	} = $props();
 </script>
 
-<nav class="library-switch" aria-label="Poster library">
+<nav class="library-switch" aria-label={label}>
 	<a
-		href="/pipeline/movies"
+		href={films}
 		class:active={active === 'films'}
 		aria-current={active === 'films' ? 'page' : undefined}
 	>
 		Films
 	</a>
 	<a
-		href="/pipeline/tv"
+		href={television}
 		class:active={active === 'television'}
 		aria-current={active === 'television' ? 'page' : undefined}
 	>

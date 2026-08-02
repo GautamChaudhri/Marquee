@@ -27,12 +27,21 @@ export function getTasteStatus(
 /**
  * Request a taste-profile rebuild. Movies rebuild from approved evidence; TV
  * rebuilds by scanning the show and season artwork already deployed in the library.
+ *
+ * TEMPORARY (seeding bundle): `source` also accepts 'seeding_bundle', which trains the
+ * movies profile from the curated posters on disk. Remove with the API enum value.
  */
 export function retrainTaste(
 	fetchFn: Fetch,
-	library: TasteLibrary = 'movies'
+	library: TasteLibrary = 'movies',
+	source: 'canonical' | 'seeding_bundle' = 'canonical'
 ): Promise<JobSubmissionResponse> {
-	const request = { library } satisfies TasteRetrainRequest;
+	// Partial, because the generated type marks server-defaulted fields as present:
+	// omitting `source` on the wire is what lets the server keep owning the default.
+	const request = {
+		library,
+		...(source === 'seeding_bundle' ? { source } : {})
+	} satisfies Partial<TasteRetrainRequest>;
 	return apiSend<JobSubmissionResponse>(fetchFn, 'POST', '/taste/retrain', request);
 }
 
