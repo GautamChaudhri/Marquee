@@ -541,10 +541,68 @@ def test_parse_rejects_malformed_frames() -> None:
         {"v": 1, "type": "progress", "stage": "ocr", "survivors": True},
         {"v": 1, "type": "progress", "stage": "x" * 500},
         {"v": 1, "type": "progress", "stage": "ocr", "payload": "not-allowlisted"},
+        # Member measurements are meaningless without the member they name.
+        {"v": 1, "type": "progress", "stage": "ocr", "member_done": 3, "member_total": 8},
+        {
+            "v": 1,
+            "type": "progress",
+            "stage": "ocr",
+            "member_scope": "m01",
+            "member_done": 9,
+            "member_total": 8,
+        },
+        {"v": 1, "type": "progress", "stage": "ocr", "member_scope": "m01", "member_done": -1},
+        {"v": 1, "type": "progress", "stage": "ocr", "member_scope": "m01", "member_done": True},
     ]
     for frame in bad_frames:
         with pytest.raises(RunnerFrameError):
             parse_runner_progress_frame(frame)
+
+    with_member = parse_runner_progress_frame(
+        {**good, "member_scope": "m01", "member_done": 3, "member_total": 8}
+    )
+    assert (with_member.member_scope, with_member.member_done, with_member.member_total) == (
+        "m01",
+        3,
+        8,
+    )
+
+
+async def test_member_measurements_never_reach_the_job_measurement(db, data_dir, monkeypatch):
+    """A subject's share may ride a union frame, but the job card stays aggregate.
+
+    The current scope is keyed on the frame's own scope, so folding a member's
+    numbers into it would make the job alternate between one subject's count and
+    the pooled count on every sample.
+    """
+    pooled = {
+        "v": 1,
+        "type": "progress",
+        "stage": "clip",
+        "state": "progress",
+        "done": 21,
+        "total": 60,
+    }
+
+    async def _observe(frame: dict) -> JobProgress:
+        context = await _ml_context(db, data_dir)
+        accepted = _spy_durable_writes(monkeypatch)
+        bridge = RunnerProgressBridge(context.progress, stage_map={"clip": "features"})
+        await bridge.on_frame({**frame, "state": "start", "cursor": 1})
+        await bridge.on_frame({**frame, "cursor": 2})
+        await bridge.on_frame({**frame, "state": "end", "cursor": 3})
+        return accepted[-1]
+
+    plain = await _observe(pooled)
+    with_member = await _observe(
+        {**pooled, "member_scope": "m01", "member_done": 7, "member_total": 20}
+    )
+    for name in ("overall", "current"):
+        before = getattr(plain, name).model_dump(exclude={"scope_id"})
+        after = getattr(with_member, name).model_dump(exclude={"scope_id"})
+        assert before == after
+    assert with_member.current.completed == 21
+    assert with_member.current.total == 60
 
 
 async def test_bridge_maps_counts_and_rejects_unknown_and_stale(db, data_dir, monkeypatch) -> None:

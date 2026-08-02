@@ -42,6 +42,13 @@ _ALLOWED_FIELDS = frozenset(
         "survivors",
         "message",
         "cursor",
+        # A union stage measures one pooled workload; these name the single
+        # member that advanced with this sample. Contained-work observation
+        # reads them; the job-level measurement deliberately does not, so a
+        # per-member number can never displace the aggregate on the job card.
+        "member_scope",
+        "member_done",
+        "member_total",
     }
 )
 _MAX_TEXT = 200
@@ -68,6 +75,9 @@ class RunnerProgressFrame:
     survivors: int | None
     message: str | None
     cursor: int | None
+    member_scope: str | None = None
+    member_done: int | None = None
+    member_total: int | None = None
 
 
 def _bounded_text(value: Any, name: str) -> str | None:
@@ -116,6 +126,13 @@ def parse_runner_progress_frame(frame: dict[str, Any]) -> RunnerProgressFrame:
     total = _bounded_number(frame.get("total"), "total")
     if done is not None and total is not None and done > total:
         raise RunnerFrameError("frame claims more completed work than its total")
+    member_scope = _bounded_text(frame.get("member_scope"), "member_scope")
+    member_done = _bounded_int(frame.get("member_done"), "member_done")
+    member_total = _bounded_int(frame.get("member_total"), "member_total")
+    if (member_done is not None or member_total is not None) and member_scope is None:
+        raise RunnerFrameError("member measurements require the member they belong to")
+    if member_done is not None and member_total is not None and member_done > member_total:
+        raise RunnerFrameError("member claims more completed work than its total")
     return RunnerProgressFrame(
         stage=stage,
         state=state,
@@ -127,6 +144,9 @@ def parse_runner_progress_frame(frame: dict[str, Any]) -> RunnerProgressFrame:
         survivors=_bounded_int(frame.get("survivors"), "survivors"),
         message=_bounded_text(frame.get("message"), "message"),
         cursor=_bounded_int(frame.get("cursor"), "cursor"),
+        member_scope=member_scope,
+        member_done=member_done,
+        member_total=member_total,
     )
 
 
@@ -205,6 +225,11 @@ class RunnerProgressBridge:
                 unit=self._progress.definition.progress_policy.overall_unit,
             )
 
+        # ``member_*`` is intentionally absent from everything below. The current
+        # scope is keyed on the frame's own scope, so folding a member's numbers
+        # in here would make the job card alternate between one subject's count
+        # and the pooled count on every sample. Contained-work observation above
+        # is the only consumer.
         scope_key = mapped_stage if parsed.scope is None else f"{mapped_stage}:{parsed.scope}"
         if parsed.done is not None and parsed.total is not None and parsed.total > 0:
             current = ScopeObservation.determinate(

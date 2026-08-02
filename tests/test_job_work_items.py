@@ -7,12 +7,15 @@ from sqlalchemy import func, select
 
 from marquee.core.jobs.artifact_service import artifact_boundary
 from marquee.core.jobs.fenced_writer import AttemptOwnership, FencedWriter
+from marquee.core.jobs.internal_runner import group_progress_frame
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.poster_cancellation import cleanup_cancelled_poster_attempt
-from marquee.core.jobs.runner_progress import RunnerProgressFrame
+from marquee.core.jobs.poster_pipeline import _STAGE_MAP
+from marquee.core.jobs.runner_progress import RunnerProgressBridge, RunnerProgressFrame
 from marquee.core.jobs.work_items import PosterWorkItemTracker
 from marquee.database import _get_session_factory
 from marquee.models import Job, JobArtifact, JobAttempt, JobWorkItem, Movie, PipelineRun
+from marquee.pipeline.poster_group_runner import GroupProgressEvent
 
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
 
@@ -104,18 +107,33 @@ async def _running_context(db, *, job_id: str, members: list[tuple[str, dict]]):
     )
 
 
-def _frame(*, scope: str | None, done: int | None = None, total: int | None = None):
+def _frame(
+    *,
+    scope: str | None,
+    done: int | None = None,
+    total: int | None = None,
+    state: str = "progress",
+    stage: str = "gate-resolution",
+    unit: str | None = "candidates",
+    survivors: int | None = None,
+    member_scope: str | None = None,
+    member_done: int | None = None,
+    member_total: int | None = None,
+):
     return RunnerProgressFrame(
-        stage="gate-resolution",
-        state="progress",
+        stage=stage,
+        state=state,
         scope=scope,
         subject=None,
         done=float(done) if done is not None else None,
         total=float(total) if total is not None else None,
-        unit="candidates",
-        survivors=None,
+        unit=unit,
+        survivors=survivors,
         message=None,
         cursor=1,
+        member_scope=member_scope,
+        member_done=member_done,
+        member_total=member_total,
     )
 
 
@@ -177,6 +195,9 @@ async def test_tracker_advances_stage_major_and_scoped_members_with_coalescing(d
     assert scoped[1].stage_number == 4
     assert (scoped[1].completed, scoped[1].total) == (2, 10)
 
+    # A union stage measures one pooled workload. Its stage advance is shared,
+    # but its numbers belong to nobody in particular: copying them onto every
+    # row is what made all eight subjects in a group report the group's count.
     await tracker.observe(_frame(scope=None, done=4, total=12), "extracting")
     await tracker.flush()
     await tracker.close()
@@ -192,7 +213,169 @@ async def test_tracker_advances_stage_major_and_scoped_members_with_coalescing(d
         )
     assert {row.status for row in collective} == {"running"}
     assert {row.stage_number for row in collective} == {6}
-    assert {(row.completed, row.total) for row in collective} == {(4, 12)}
+    assert {(row.completed, row.total) for row in collective} == {(None, None)}
+
+
+@pytest.mark.asyncio
+async def test_union_sample_measures_only_the_member_it_names(db):
+    members = [_member(0), _member(1), _member(2)]
+    context = await _running_context(
+        db,
+        job_id="work-items-member-00000000001",
+        members=members,
+    )
+    tracker = await PosterWorkItemTracker.create(context, members)
+
+    # Each subject learns its own share of the pooled OCR workload up front.
+    for ordinal, share in enumerate((10, 20, 30)):
+        await tracker.observe(
+            _frame(scope=f"m{ordinal:02d}", state="start", stage="ocr", total=share),
+            "validating",
+        )
+    # One pooled sample: 21 of 60 images done overall, of which 7 were m01's.
+    await tracker.observe(
+        _frame(
+            scope=None,
+            stage="ocr",
+            done=21,
+            total=60,
+            member_scope="m01",
+            member_done=7,
+            member_total=20,
+        ),
+        "validating",
+    )
+    await tracker.flush()
+    await tracker.close()
+
+    factory = _get_session_factory()
+    async with factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(JobWorkItem)
+                    .where(JobWorkItem.job_id == context.delivery.canonical_job_id)
+                    .order_by(JobWorkItem.ordinal)
+                )
+            ).all()
+        )
+    assert [(row.completed, row.total) for row in rows] == [(0, 10), (7, 20), (0, 30)]
+    # The denominators partition the group's pooled total rather than repeating it.
+    assert sum(row.total for row in rows) == 60
+    # Runner frames carry no unit; the definition's own vocabulary supplies it.
+    assert {row.unit for row in rows} == {"candidates"}
+
+
+@pytest.mark.asyncio
+async def test_pipeline_events_survive_the_control_channel_into_roster_rows(db):
+    """Walk one real measurement end to end: pipeline event → frame → row.
+
+    The three layers name their fields independently, so a rename in any one of
+    them would silently stop attributing work without failing anything. This
+    holds all three against a single sample.
+    """
+    members = [_member(0), _member(1)]
+    context = await _running_context(
+        db,
+        job_id="work-items-seam-000000000001",
+        members=members,
+    )
+    tracker = await PosterWorkItemTracker.create(context, members)
+    definition = JOB_DEFINITION_REGISTRY.get("poster_pipeline_group")
+    observed: list = []
+    bridge = RunnerProgressBridge(
+        SimpleNamespace(
+            job_id=context.delivery.canonical_job_id,
+            definition=definition,
+            observe=lambda *args, **kwargs: observed.append((args, kwargs)) or _noop(),
+        ),
+        stage_map=_STAGE_MAP,
+        work_item_observer=tracker.observe,
+    )
+
+    events = [
+        GroupProgressEvent(stage="fetch", state="end", scope="m01", survivors=47),
+        GroupProgressEvent(stage="ocr", state="start", scope="m01", total=38),
+        GroupProgressEvent(
+            stage="ocr",
+            state="progress",
+            done=21,
+            total=60,
+            member_scope="m01",
+            member_done=7,
+            member_total=38,
+        ),
+    ]
+    for cursor, event in enumerate(events, start=1):
+        await bridge.on_frame(group_progress_frame(event, cursor=cursor))
+    await tracker.flush()
+    await tracker.close()
+
+    assert bridge.degraded_frames == 0
+    factory = _get_session_factory()
+    async with factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(JobWorkItem)
+                    .where(JobWorkItem.job_id == context.delivery.canonical_job_id)
+                    .order_by(JobWorkItem.ordinal)
+                )
+            ).all()
+        )
+    assert rows[1].source_count == 47
+    assert (rows[1].completed, rows[1].total, rows[1].unit) == (7, 38, "candidates")
+    # The pooled 21/60 belongs to the job, never to the subject beside it.
+    assert (rows[0].completed, rows[0].total) == (None, None)
+
+
+async def _noop() -> None:
+    return None
+
+
+@pytest.mark.asyncio
+async def test_tracker_records_stage_totals_and_the_work_each_subject_brought_in(db):
+    members = [_member(0), _member(1)]
+    context = await _running_context(
+        db,
+        job_id="work-items-source-00000000001",
+        members=members,
+    )
+    tracker = await PosterWorkItemTracker.create(context, members)
+
+    # The download stage closes with the candidate count this subject pulled.
+    await tracker.observe(
+        _frame(scope="m00", state="end", stage="fetch", survivors=47),
+        "downloading",
+    )
+    # A later gate narrows the per-stage total; the source count must not follow.
+    await tracker.observe(
+        _frame(scope="m00", state="start", stage="gate-style", total=38),
+        "validating",
+    )
+    await tracker.observe(
+        _frame(scope="m00", state="end", stage="gate-style", survivors=12),
+        "validating",
+    )
+    await tracker.flush()
+    await tracker.close()
+
+    factory = _get_session_factory()
+    async with factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(JobWorkItem)
+                    .where(JobWorkItem.job_id == context.delivery.canonical_job_id)
+                    .order_by(JobWorkItem.ordinal)
+                )
+            ).all()
+        )
+    assert rows[0].source_count == 47
+    assert (rows[0].completed, rows[0].total) == (38, 38)
+    assert rows[1].source_count is None
+    # The declared stage catalogue owns the denominator, not the column default.
+    assert {row.stage_total for row in rows} == {9}
 
 
 @pytest.mark.asyncio

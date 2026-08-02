@@ -1767,6 +1767,7 @@ class PosterTextFilter:
         items: Sequence[_OcrTask],
         *,
         progress: Callable[[int, int], None] | None = None,
+        on_item: Callable[[int], None] | None = None,
     ) -> list[OCRCandidateResult]:
         """Feed *items* to a ready pool and collect per-item results in order.
 
@@ -1774,6 +1775,11 @@ class PosterTextFilter:
         must still be alive. This **consumes** the pool: a shutdown sentinel is
         queued per worker and the workers are joined before returning, so it can
         be called once. Release the queues afterwards with ``stop_ocr_pool``.
+
+        ``on_item`` receives the *index* of each item as it completes, which is
+        what lets a grouped caller attribute a pooled batch back to the subject
+        that contributed the image. It fires before ``progress`` so the counter
+        it maintains is already current when the aggregate sample is taken.
         """
         if not items:
             return []
@@ -1802,6 +1808,8 @@ class PosterTextFilter:
             if message_type == _WORKER_RESULT:
                 ordered_results[key] = payload
                 remaining -= 1
+                if on_item is not None:
+                    on_item(key)
                 if progress is not None:
                     progress(len(items) - remaining, len(items))
             elif message_type == _WORKER_INIT_ERROR:
@@ -1846,6 +1854,7 @@ class PosterTextFilter:
         *,
         num_workers: int | None = None,
         progress: Callable[[int, int], None] | None = None,
+        on_item: Callable[[int], None] | None = None,
     ) -> list[OCRCandidateResult]:
         """Run OCR over many OCR task items in one private worker pool.
 
@@ -1861,7 +1870,9 @@ class PosterTextFilter:
 
         pool = PosterTextFilter.start_ocr_pool(num_workers)
         try:
-            results = PosterTextFilter.run_ocr_tasks(pool, items, progress=progress)
+            results = PosterTextFilter.run_ocr_tasks(
+                pool, items, progress=progress, on_item=on_item
+            )
         except BaseException:
             try:
                 PosterTextFilter.stop_ocr_pool(pool)

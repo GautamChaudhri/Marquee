@@ -109,6 +109,21 @@
 		return liveSnapshot(item)?.attention.message ?? item.message ?? null;
 	}
 
+	/** Position, stage, and how much work this subject brought in, as one line.
+	 *  Assembled here rather than in markup because the separators only read
+	 *  correctly when the surrounding whitespace is not at the mercy of block
+	 *  boundaries. */
+	function stageLine(item: ContainedWorkItem): string | null {
+		const stage = stageName(item);
+		if (!stage) return null;
+		const parts: string[] = [];
+		if (item.stage_number && item.stage_total)
+			parts.push(`Stage ${item.stage_number} of ${item.stage_total}`);
+		parts.push(stage);
+		if (item.source_count != null) parts.push(`${item.source_count} posters found`);
+		return parts.join(' · ');
+	}
+
 	function measurement(item: ContainedWorkItem) {
 		const progress = liveSnapshot(item)?.progress;
 		return progress?.current ?? progress?.overall ?? item.progress ?? null;
@@ -181,18 +196,13 @@
 		{#each items as item (item.key)}
 			{@const state = liveState(item)}
 			{@const currentMeasurement = measurement(item)}
+			{@const stage = stageLine(item)}
 			<div class="item" data-status={state}>
 				<div class="item-heading">
 					<strong>{subjectName(item)}</strong>
 					<span class="item-status">{statusLabel(item)}</span>
 				</div>
-				{#if stageName(item)}
-					<span class="stage">
-						{#if item.stage_number && item.stage_total}Stage {item.stage_number} of {item.stage_total}
-							·
-						{/if}{stageName(item)}
-					</span>
-				{/if}
+					{#if stage}<span class="stage">{stage}</span>{/if}
 				{#if currentMeasurement?.completed != null && currentMeasurement?.total != null}
 					<progress max={currentMeasurement.total} value={currentMeasurement.completed}></progress>
 					<span class="measure"

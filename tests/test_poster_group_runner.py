@@ -268,6 +268,86 @@ def test_union_ocr_keeps_colliding_series_and_season_ids_isolated(
     assert [len(context.ocr_survivors) for context in contexts] == [1, 1]
 
 
+def test_union_ocr_attributes_pooled_progress_to_each_member(tmp_path, monkeypatch) -> None:
+    """The pooled OCR pass is one workload, but the roster needs eight answers.
+
+    Every subject's images go through a single shared pool, so the sample the
+    job card shows is unavoidably the union. Each frame additionally names the
+    one member that advanced, which is what lets a subject's own card count its
+    own posters instead of repeating the group's number.
+    """
+    from marquee.pipeline.orchestrator import PosterSubjectInput
+
+    shares = (3, 2)
+    contexts = []
+    for index, share in enumerate(shares):
+        out_dir = tmp_path / f"s{index:03d}"
+        out_dir.mkdir()
+        (out_dir / "errored").mkdir()
+        records = {}
+        survivors = []
+        for offset in range(share):
+            image_path = out_dir / f"poster-{index}-{offset}.jpg"
+            image_path.write_bytes(b"not-read-by-fake-ocr")
+            records[image_path.name] = CandidateScore(
+                image_path=image_path, orig_filename=image_path.name
+            )
+            survivors.append(image_path)
+        member = PosterGroupMemberInput(
+            subject_key=f"member:{index}",
+            subject=PosterSubjectInput(title=f"Movie {index}", media_type="movie", tmdb_id=index),
+            ocr_gate=OcrGateContext(),
+            run_id=f"run-{index}",
+        )
+        context = _MemberState(member=member, index=index, out_dir=out_dir)
+        context.fetch = FetchOutcome({}, records, {}, list(survivors), None, {})
+        context.style_survivors = survivors
+        contexts.append(context)
+
+    pool = object()
+
+    def fake_ocr(actual_pool, items, *, progress=None, on_item=None):
+        for index, _item in enumerate(items):
+            if on_item is not None:
+                on_item(index)
+            if progress is not None:
+                progress(index + 1, len(items))
+        return [
+            OCRCandidateResult(
+                image_path=item[0],
+                accepted=True,
+                detected_text="TITLE",
+                reason=None,
+                title_bbox=None,
+            )
+            for item in items
+        ]
+
+    monkeypatch.setattr(
+        "marquee.pipeline.poster_group_runner.PosterTextFilter.run_ocr_tasks", fake_ocr
+    )
+    events: list = []
+    _ocr_union(contexts, events.append, pool=pool)
+
+    pooled = sum(shares)
+    starts = [event for event in events if event.state == "start" and event.scope is not None]
+    assert [(event.scope, event.total) for event in starts] == [("m00", 3), ("m01", 2)]
+
+    samples = [event for event in events if event.state == "progress"]
+    assert len(samples) == pooled
+    # The job-level numbers stay pooled on every sample.
+    assert [(event.done, event.total) for event in samples] == [
+        (index + 1, pooled) for index in range(pooled)
+    ]
+    # Each sample names exactly one member, counting only that member's images.
+    assert [event.member_scope for event in samples] == ["m00", "m00", "m00", "m01", "m01"]
+    assert [event.member_done for event in samples] == [1, 2, 3, 1, 2]
+    assert {event.member_total for event in samples} == {3, 2}
+    final = {event.member_scope: event.member_done for event in samples}
+    assert final == {"m00": 3, "m01": 2}
+    assert sum(final.values()) == pooled
+
+
 def test_ocr_postprocessing_failure_is_member_local(tmp_path, monkeypatch) -> None:
     from marquee.pipeline import poster_group_runner
     from marquee.pipeline.orchestrator import PosterSubjectInput

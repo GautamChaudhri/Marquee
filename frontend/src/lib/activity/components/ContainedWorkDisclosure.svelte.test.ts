@@ -72,6 +72,16 @@ function page(items: ContainedWorkItem[], nextCursor: string | null): ContainedW
 	};
 }
 
+/** The stage line is assembled from several text nodes; read it as one string. */
+function textOf(selector: string): string[] {
+	return [...document.querySelectorAll(selector)].map((node) =>
+		(node.textContent ?? '').replace(/\s+/g, ' ').trim()
+	);
+}
+
+const stageLines = () => textOf('.stage');
+const measures = () => textOf('.measure');
+
 describe('ContainedWorkDisclosure', () => {
 	beforeEach(() => listContainedWork.mockReset());
 
@@ -94,6 +104,63 @@ describe('ContainedWorkDisclosure', () => {
 			'href',
 			'/projection-room/jobs/heal-child-2'
 		);
+	});
+
+	it('counts each subject against its own workload, not the group it was pooled with', async () => {
+		// Two subjects part-way through the same pooled stage. The whole point of
+		// the per-subject roster is that these two rows disagree.
+		const rows: ContainedWorkItem[] = [
+			{
+				...item('group-member-0', 0),
+				subject: { display_name: 'Deadpool' },
+				stage_name: 'Validating',
+				stage_number: 4,
+				stage_total: 9,
+				progress: { completed: 31, total: 38, unit: 'candidates' },
+				source_count: 47,
+				detail_href: null
+			},
+			{
+				...item('group-member-1', 1),
+				subject: { display_name: 'Black Widow' },
+				status: 'running',
+				status_label: 'Running',
+				status_tone: 'active',
+				stage_name: 'Validating',
+				stage_number: 4,
+				stage_total: 9,
+				progress: { completed: 9, total: 22, unit: 'candidates' },
+				source_count: 26,
+				message: null,
+				detail_href: null
+			}
+		];
+		listContainedWork.mockResolvedValue(page(rows, null));
+
+		render(ContainedWorkDisclosure, {
+			props: { jobId: 'poster-group', summary: summary(), open: true }
+		});
+
+		await screen.findByText('Deadpool');
+		expect(stageLines()).toEqual([
+			'Stage 4 of 9 · Validating · 47 posters found',
+			'Stage 4 of 9 · Validating · 26 posters found'
+		]);
+		expect(measures()).toEqual(['31 / 38 candidates', '9 / 22 candidates']);
+		const bars = screen.getAllByRole('progressbar');
+		expect(bars.map((bar) => bar.getAttribute('value'))).toEqual(['31', '9']);
+		expect(bars.map((bar) => bar.getAttribute('max'))).toEqual(['38', '22']);
+	});
+
+	it('omits the source count until the download stage has reported one', async () => {
+		listContainedWork.mockResolvedValue(
+			page([{ ...item('group-member-0', 0), detail_href: null }], null)
+		);
+		render(ContainedWorkDisclosure, {
+			props: { jobId: 'poster-group', summary: summary(), open: true }
+		});
+		await screen.findByText('Alpha Movie');
+		expect(stageLines()).toEqual(['Stage 2 of 4 · Restoring poster']);
 	});
 
 	it('uses an opaque cursor when loading the next stable page', async () => {

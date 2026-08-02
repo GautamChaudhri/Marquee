@@ -1520,7 +1520,7 @@ def test_inline_ocr_teardown_preserves_processing_failure(monkeypatch):
         ocr_filter.PosterTextFilter,
         "run_ocr_tasks",
         staticmethod(
-            lambda _pool, _items, progress=None: (_ for _ in ()).throw(
+            lambda _pool, _items, progress=None, on_item=None: (_ for _ in ()).throw(
                 ValueError("ocr failed")
             )
         ),

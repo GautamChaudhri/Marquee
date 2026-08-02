@@ -130,6 +130,39 @@ def _run_noop(manifest: dict[str, Any], control: ControlWriter) -> dict[str, Any
     return result
 
 
+# Every measurement a grouped poster run can report, in the transport's own
+# field names. Keeping the list here rather than inline in the runner is what
+# lets a test hold it against both ends of the channel at once: the event the
+# pipeline emits and the frame the host is willing to parse.
+GROUP_PROGRESS_FIELDS = (
+    "scope",
+    "subject",
+    "done",
+    "total",
+    "unit",
+    "survivors",
+    "member_scope",
+    "member_done",
+    "member_total",
+)
+
+
+def group_progress_frame(event: Any, *, cursor: int) -> dict[str, Any]:
+    """Render one pipeline progress event as a bounded control-channel frame."""
+    frame: dict[str, Any] = {
+        "v": PROTOCOL_VERSION,
+        "type": "progress",
+        "stage": event.stage,
+        "state": event.state,
+        "cursor": cursor,
+    }
+    for field in GROUP_PROGRESS_FIELDS:
+        value = getattr(event, field, None)
+        if value is not None:
+            frame[field] = value
+    return frame
+
+
 def _trainer_progress_forwarder(control: ControlWriter):
     """Forward real trainer callback payloads as bounded typed progress frames.
 
@@ -628,19 +661,8 @@ def _run_poster_group(manifest: dict[str, Any], control: ControlWriter) -> dict[
     def emit_progress(event: Any) -> None:
         nonlocal cursor
         cursor += 1
-        frame: dict[str, Any] = {
-            "v": PROTOCOL_VERSION,
-            "type": "progress",
-            "stage": event.stage,
-            "state": event.state,
-            "cursor": cursor,
-        }
-        for field in ("scope", "subject", "done", "total", "survivors"):
-            value = getattr(event, field, None)
-            if value is not None:
-                frame[field] = value
         with contextlib.suppress(Exception):
-            control.emit(frame)
+            control.emit(group_progress_frame(event, cursor=cursor))
 
     extractor, residual_path = _poster_feature_runtime(personalization_mode)
     extractor.preflight()

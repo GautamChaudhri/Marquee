@@ -12,7 +12,7 @@ import asyncio
 import logging
 import shutil
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -84,6 +84,13 @@ class GroupProgressEvent:
     done: int | None = None
     total: int | None = None
     survivors: int | None = None
+    # Union stages measure one pooled workload, so ``done``/``total`` belong to
+    # the group and cannot be split per subject. These three carry the one
+    # member that advanced with this sample, so the roster can show each subject
+    # its own numbers without the group card losing its aggregate.
+    member_scope: str | None = None
+    member_done: int | None = None
+    member_total: int | None = None
 
 
 GroupProgress = Callable[[GroupProgressEvent], None]
@@ -210,7 +217,7 @@ class _MemberState:
 
     @property
     def scope(self) -> str:
-        return f"m{self.index:02d}"
+        return _member_scope(self.index)
 
     @property
     def records(self) -> dict[str, CandidateScore]:
@@ -259,8 +266,10 @@ def _emit_union(
     done: int | None = None,
     total: int | None = None,
     survivors: int | None = None,
+    member: tuple[str, int, int] | None = None,
 ) -> None:
     if progress is not None:
+        member_scope, member_done, member_total = member or (None, None, None)
         progress(
             GroupProgressEvent(
                 stage=stage,
@@ -268,8 +277,15 @@ def _emit_union(
                 done=done,
                 total=total,
                 survivors=survivors,
+                member_scope=member_scope,
+                member_done=member_done,
+                member_total=member_total,
             )
         )
+
+
+def _member_scope(index: int) -> str:
+    return f"m{index:02d}"
 
 
 def _mark_failed(ctx: _MemberState, exc: BaseException | str) -> None:
@@ -451,17 +467,39 @@ def _ocr_union(
         _emit_union(progress, "ocr", "end", survivors=0)
         return
 
+    member_totals = Counter(owners)
+    # Give every subject its denominator before the first image lands, so the
+    # roster bars are scaled from the outset instead of inheriting the previous
+    # stage's numbers. No ``done`` here keeps these honestly indeterminate for
+    # the job-level bar, which the union samples below own.
+    for ctx in active:
+        _emit(progress, ctx, "ocr", "start", total=member_totals.get(ctx.index, 0) or None)
+
     started = time.perf_counter()
+    member_done: Counter[int] = Counter()
+    # ``on_item`` runs immediately before ``tick`` for the same image, so this
+    # holds the one subject that the next union sample should also report.
+    advanced: list[int] = []
+
+    def on_item(index: int) -> None:
+        owner = owners[index]
+        member_done[owner] += 1
+        advanced[:] = [owner]
 
     def tick(done: int, total: int) -> None:
-        _emit_union(progress, "ocr", "progress", done=done, total=total)
+        member = (
+            (_member_scope(advanced[0]), member_done[advanced[0]], member_totals[advanced[0]])
+            if advanced
+            else None
+        )
+        _emit_union(progress, "ocr", "progress", done=done, total=total, member=member)
 
     # This is the sole OCR pool/pass for the group. Initialization or worker
     # failure intentionally escapes as a systemic operation failure.
     results = (
-        PosterTextFilter.run_ocr_tasks(pool, items, progress=tick)
+        PosterTextFilter.run_ocr_tasks(pool, items, progress=tick, on_item=on_item)
         if pool is not None
-        else PosterTextFilter.run_ocr_batch(items, progress=tick)
+        else PosterTextFilter.run_ocr_batch(items, progress=tick, on_item=on_item)
     )
     elapsed = time.perf_counter() - started
     by_owner: dict[int, list[OCRCandidateResult]] = defaultdict(list)
@@ -493,6 +531,7 @@ def _ocr_union(
                 ctx.ocr_survivors.append(replace(result, image_path=result.image_path))
             ctx.counts["ocr_survivors"] = len(ctx.ocr_survivors)
             survivors_total += len(ctx.ocr_survivors)
+            _emit(progress, ctx, "ocr", "end", survivors=len(ctx.ocr_survivors))
         except Exception as exc:
             _mark_failed(ctx, exc)
     _emit_union(progress, "ocr", "end", survivors=survivors_total)
@@ -571,6 +610,11 @@ def _detail_union(
             owners.append((ctx, result))
 
     _emit_union(progress, "detail-features", "start", total=len(items))
+    # ``complete_batch`` below is one blocking call with no sub-progress, so the
+    # roster can only be told each subject's share at the stage boundaries.
+    for ctx in contexts:
+        if ctx.status != "failed" and ctx.ocr_survivors:
+            _emit(progress, ctx, "detail-features", "start", total=len(ctx.ocr_survivors))
     if not items:
         for ctx in contexts:
             if ctx.status != "failed":
@@ -646,6 +690,7 @@ def _detail_union(
         ctx.timings["detail-features"] = elapsed
         ctx.counts["feature_survivors"] = len(ctx.passed)
         survivors += len(ctx.passed)
+        _emit(progress, ctx, "detail-features", "end", survivors=len(ctx.passed))
     _emit_union(progress, "detail-features", "end", survivors=survivors)
     return diagnostic_scorer
 

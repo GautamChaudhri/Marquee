@@ -25,7 +25,7 @@ from marquee import __version__
 from marquee.config import settings
 from marquee.models.deployment import EXCLUDED_DEPLOYMENT_TABLES, get_deployment_metadata
 
-ALEMBIC_HEAD = "0021_generic_work_item_stages"
+ALEMBIC_HEAD = "0022_work_item_source_count"
 PGQUEUER_VERSION = "1.1.1"
 PGQUEUER_DURABILITY = "durable"
 MIGRATION_ADVISORY_LOCK_ID = 0x4D4152514A4D4331

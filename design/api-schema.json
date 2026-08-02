@@ -1916,6 +1916,18 @@
             "title": "Sequence",
             "type": "integer"
           },
+          "source_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Count"
+          },
           "stage_key": {
             "anyOf": [
               {
@@ -7944,6 +7956,18 @@
             "minimum": 0.0,
             "title": "Sequence",
             "type": "integer"
+          },
+          "source_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Count"
           },
           "stage_key": {
             "anyOf": [

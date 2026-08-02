@@ -251,6 +251,10 @@ class JobWorkItem(Base):
             "(completed >= 0 AND total > 0 AND completed <= total)",
             name="ck_job_work_items_progress",
         ),
+        CheckConstraint(
+            "source_count IS NULL OR source_count >= 0",
+            name="ck_job_work_items_source_count",
+        ),
         UniqueConstraint("job_id", "ordinal", name="uq_job_work_items_job_ordinal"),
     )
 
@@ -273,6 +277,8 @@ class JobWorkItem(Base):
     completed: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # ``total`` narrows behind every gate; this is what the subject brought in.
+    source_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     update_sequence: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False

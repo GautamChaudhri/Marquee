@@ -120,6 +120,10 @@ class _ObservedItem:
     total: int | None = None
     unit: str | None = None
     message: str | None = None
+    # How many candidates this subject brought into the run, observed once when
+    # its download stage closes. Stable for the rest of the run, unlike the
+    # per-stage totals above, which narrow as each gate rejects work.
+    source_count: int | None = None
 
 
 class JobWorkItemTracker:
@@ -139,6 +143,10 @@ class JobWorkItemTracker:
         declared_stages = getattr(policy, "stages", ())
         self._stages = tuple(key for key, _label in declared_stages) or ("working",)
         self._stage_numbers = {key: index + 1 for index, key in enumerate(self._stages)}
+        # Runner frames carry no unit, so fall back to the unit the definition
+        # already declares for its current measurement ("candidates" for
+        # posters). Without this the roster bars read "31 / 38" with no noun.
+        self._unit = getattr(policy, "current_unit", None)
         self._items = [
             _ObservedItem(
                 subject_key=key,
@@ -188,6 +196,7 @@ class JobWorkItemTracker:
                             subject_kind=item.subject_kind,
                             subject_reference=item.subject_reference,
                             subject_snapshot=item.subject_snapshot,
+                            stage_total=len(self._stages),
                             attempt_id=self._attempt_id,
                             fence_token=self._fence_token,
                         )
@@ -215,17 +224,51 @@ class JobWorkItemTracker:
             self._enabled = False
             logger.exception("contained work-item initialization could not be persisted")
 
+    def _resolve(self, scope: str | None) -> _ObservedItem | None:
+        if scope is None:
+            return None
+        match = _SCOPE.fullmatch(scope)
+        if match is None:
+            return None
+        ordinal = int(match.group("ordinal"))
+        return self._items[ordinal] if 0 <= ordinal < len(self._items) else None
+
+    def _measure(self, item: _ObservedItem, completed: float, total: float) -> None:
+        bounded = max(1, int(total))
+        item.completed = min(bounded, max(0, int(completed)))
+        item.total = bounded
+        item.unit = item.unit or self._unit
+
+    def _observe_scoped(
+        self, item: _ObservedItem, frame: RunnerProgressFrame, mapped_stage: str
+    ) -> None:
+        """Fold one frame that already names the member it belongs to."""
+        if frame.state == "start":
+            # A stage boundary knows this member's share up front but has no work
+            # behind it yet, so the bar is scaled and empty rather than absent.
+            if frame.total is not None and frame.total > 0:
+                self._measure(item, 0, frame.total)
+        elif frame.state == "end":
+            if item.stage_key == mapped_stage and item.total is not None:
+                self._measure(item, item.total, item.total)
+            # The first stage that closes with a survivor count is the one that
+            # brought this subject's work into the run; that figure stays true
+            # for the rest of the run, unlike the per-stage totals that narrow
+            # behind every gate.
+            if frame.survivors is not None and item.source_count is None:
+                item.source_count = int(frame.survivors)
+        elif frame.done is not None and frame.total is not None and frame.total > 0:
+            self._measure(item, frame.done, frame.total)
+
     async def observe(self, frame: RunnerProgressFrame, mapped_stage: str) -> None:
         if not self._enabled or mapped_stage not in self._stage_numbers:
             return
         async with self._lock:
-            targets: list[_ObservedItem]
+            scoped = self._resolve(frame.scope)
             if frame.scope is None:
                 targets = [item for item in self._items if item.status not in _TERMINAL]
             else:
-                match = _SCOPE.fullmatch(frame.scope)
-                ordinal = int(match.group("ordinal")) if match is not None else -1
-                targets = [self._items[ordinal]] if 0 <= ordinal < len(self._items) else []
+                targets = [scoped] if scoped is not None else []
             for item in targets:
                 if item.status in _TERMINAL:
                     continue
@@ -236,13 +279,24 @@ class JobWorkItemTracker:
                 item.status = "running"
                 item.stage_key = mapped_stage
                 item.stage_number = self._stage_numbers[mapped_stage]
-                if frame.done is not None and frame.total is not None and frame.total > 0:
-                    total = max(1, int(frame.total))
-                    item.completed = min(total, max(0, int(frame.done)))
-                    item.total = total
-                    item.unit = frame.unit
                 item.message = frame.message
+                # A frame with no scope measures the whole group's pooled
+                # workload. Stage and status are genuinely shared; the numbers
+                # are not, and copying them here is what made every subject in a
+                # group report the group's own count.
+                if item is scoped:
+                    self._observe_scoped(item, frame, mapped_stage)
                 self._dirty.add(item.subject_key)
+            member = self._resolve(frame.member_scope)
+            if (
+                member is not None
+                and member.status not in _TERMINAL
+                and frame.member_done is not None
+                and frame.member_total is not None
+                and frame.member_total > 0
+            ):
+                self._measure(member, frame.member_done, frame.member_total)
+                self._dirty.add(member.subject_key)
             self._ensure_flush_task()
 
     async def stage(self, stage_key: str) -> None:
@@ -354,6 +408,7 @@ class JobWorkItemTracker:
                     row.completed = item.completed
                     row.total = item.total
                     row.unit = item.unit
+                    row.source_count = item.source_count
                     row.message = item.message
                     row.update_sequence = sequence
                     row.updated_at = now

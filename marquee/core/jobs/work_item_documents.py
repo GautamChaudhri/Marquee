@@ -105,6 +105,9 @@ class WorkItemRow(StrictDocument):
     stage_number: int | None = Field(default=None, ge=1, le=100)
     stage_total: int = Field(default=9, ge=1, le=100)
     progress: WorkItemProgress | None = None
+    # Work this subject brought into the run. ``progress.total`` is the current
+    # stage's share of it and shrinks behind each gate; this does not.
+    source_count: int | None = Field(default=None, ge=0)
     message: str | None = Field(default=None, max_length=2_000)
     sequence: int = Field(ge=0)
     updated_at: datetime

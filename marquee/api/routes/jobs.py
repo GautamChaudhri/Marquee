@@ -962,6 +962,7 @@ class ContainedWorkItem(BaseModel):
     stage_number: int | None = Field(default=None, ge=1, le=100)
     stage_total: int | None = Field(default=None, ge=1, le=100)
     progress: WorkItemProgress | None = None
+    source_count: int | None = Field(default=None, ge=0)
     message: str | None = Field(default=None, max_length=2_000)
     sequence: int = Field(ge=0)
     updated_at: datetime
@@ -1093,6 +1094,7 @@ def _stored_work_item(row: JobWorkItem) -> WorkItemRow:
         stage_number=row.stage_number,
         stage_total=row.stage_total,
         progress=progress,
+        source_count=row.source_count,
         message=row.message,
         sequence=row.update_sequence,
         updated_at=row.updated_at,
@@ -1250,6 +1252,7 @@ def _contained_work_item(row: WorkItemRow) -> ContainedWorkItem:
         stage_number=row.stage_number,
         stage_total=row.stage_total,
         progress=row.progress,
+        source_count=row.source_count,
         message=row.message,
         sequence=row.sequence,
         updated_at=row.updated_at,

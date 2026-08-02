@@ -2721,6 +2721,8 @@ export interface components {
 			progress?: components['schemas']['WorkItemProgress'] | null;
 			/** Sequence */
 			sequence: number;
+			/** Source Count */
+			source_count?: number | null;
 			/** Stage Key */
 			stage_key?: string | null;
 			/** Stage Name */
@@ -4601,6 +4603,8 @@ export interface components {
 			progress?: components['schemas']['WorkItemProgress'] | null;
 			/** Sequence */
 			sequence: number;
+			/** Source Count */
+			source_count?: number | null;
 			/** Stage Key */
 			stage_key?: string | null;
 			/** Stage Name */
