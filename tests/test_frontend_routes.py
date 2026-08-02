@@ -91,6 +91,80 @@ async def test_review_queue_latest_unreviewed_run_per_movie(
 
 
 @pytest.mark.asyncio
+async def test_review_preview_and_results_require_a_persisted_auto_pick(
+    db: AsyncSession,
+    client: AsyncClient,
+):
+    collecting = Movie(
+        title="Collecting",
+        year=2020,
+        folder_path="/m/collecting",
+        movie_file_path="collecting.mkv",
+        tmdb_id=31,
+    )
+    personalized = Movie(
+        title="Personalized",
+        year=2021,
+        folder_path="/m/personalized",
+        movie_file_path="personalized.mkv",
+        tmdb_id=32,
+    )
+    db.add_all([collecting, personalized])
+    await db.flush()
+
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="collecting-run",
+        movie_id=collecting.id,
+        scorer_name="weighted",
+        archive={
+            "run_id": "collecting-run",
+            "movie_id": collecting.id,
+            "title": collecting.title,
+            "personalization_mode": "collecting",
+            "candidates": [{"orig_filename": "neutral.jpg", "rank": 1}],
+        },
+        auto_pick_filename=None,
+    )
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="personalized-run",
+        movie_id=personalized.id,
+        scorer_name="weighted",
+        archive={
+            "run_id": "personalized-run",
+            "movie_id": personalized.id,
+            "title": personalized.title,
+            "personalization_mode": "personalized",
+            "candidates": [
+                {"orig_filename": "rank-one.jpg", "rank": 1},
+                {"orig_filename": "persisted-auto.jpg", "rank": 2},
+            ],
+        },
+        auto_pick_filename="persisted-auto.jpg",
+    )
+    await db.commit()
+
+    queue = await client.get("/api/pipeline/review-queue")
+    assert queue.status_code == 200
+    previews = {item["movie"]["title"]: item["auto_pick_poster_url"] for item in queue.json()["items"]}
+    assert previews["Collecting"] is None
+    assert previews["Personalized"].endswith("/persisted-auto.jpg")
+
+    results = await client.get("/api/pipeline/runs/collecting-run")
+    assert results.status_code == 200
+    body = results.json()
+    assert body["review_mode"] == "collecting"
+    assert body["auto_pick"] is None
+    assert body["scorer"] is None
+
+    personalized_results = await client.get("/api/pipeline/runs/personalized-run")
+    assert personalized_results.status_code == 200
+    assert personalized_results.json()["review_mode"] == "personalized"
+    assert personalized_results.json()["auto_pick"]["orig_filename"] == "persisted-auto.jpg"
+
+
+@pytest.mark.asyncio
 async def test_library_missing_filter_can_exclude_review_queue_movies(
     db: AsyncSession,
     client: AsyncClient,

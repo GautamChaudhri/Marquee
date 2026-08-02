@@ -24,6 +24,7 @@
 	import { ApiError } from '$lib/api/client';
 	import { batchOptionsFor } from '$lib/pipeline/batch-options';
 	import { posterBatchChunkSize, posterBatchMode } from '$lib/pipeline/batch-prefs';
+	import { relativeAge, reviewCandidateSummary } from '$lib/pipeline/review-copy';
 	import { toast } from '$lib/toast';
 	import type { BatchScope, MovieListItem, PipelineMetrics, ReviewQueue } from '$lib/api/types';
 	import type { PageData } from './$types';
@@ -326,17 +327,6 @@
 		}
 	}
 
-	// ── Helpers ─────────────────────────────────────────────────────────────────
-	function ago(iso: string | null): string {
-		if (!iso) return '—';
-		const t = new Date(iso).getTime();
-		if (Number.isNaN(t)) return '—';
-		const s = Math.max(0, (Date.now() - t) / 1000);
-		if (s < 60) return 'just now';
-		if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-		if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-		return `${Math.floor(s / 86400)}d ago`;
-	}
 	function fmtSecs(s: number | null | undefined): string {
 		if (s == null) return '—';
 		if (s < 1) return `${(s * 1000).toFixed(0)}ms`;
@@ -455,24 +445,31 @@
 		<div class="rev-grid">
 			{#each queue.items as item (item.run.run_id)}
 				{@const c = item.run.counts ?? {}}
+				{@const candidateSummary = reviewCandidateSummary(
+					c.ranked,
+					Boolean(item.auto_pick_poster_url)
+				)}
 				<button class="rev-card" onclick={() => goto(`/pipeline/runs/${item.run.run_id}`)}>
 					<div class="rev-poster">
 						<PosterThumb
 							title={item.movie.title}
 							year={item.movie.year}
-							posterStatus={item.movie.poster_status}
-							posterUrl={item.auto_pick_poster_url ?? item.movie.poster_url}
+							posterUrl={item.auto_pick_poster_url ?? null}
 						/>
 					</div>
 					<div class="rev-meta">
 						<div class="rev-title">{item.movie.title}</div>
 						<div class="rev-sub">{item.movie.year ?? '—'}</div>
-						<div class="rev-stats mono">
-							{c.ranked ?? '?'} ranked · {c.total_candidates ?? '?'} cand.
-						</div>
-						<div class="rev-foot">
-							<span class="rev-scorer">{item.run.scorer_name ?? 'scored'}</span>
-							<span class="rev-age">{ago(item.run.started_at)}</span>
+						<div class="rev-stats-row">
+							<div
+								class="rev-stats mono"
+								class:good={candidateSummary.tone === 'good'}
+								class:warn={candidateSummary.tone === 'warn'}
+								class:bad={candidateSummary.tone === 'bad'}
+							>
+								{candidateSummary.label}
+							</div>
+							<span class="rev-age">{relativeAge(item.run.started_at)}</span>
 						</div>
 					</div>
 				</button>
@@ -515,8 +512,8 @@
 								<PosterThumb
 									title={m.title}
 									year={m.year}
-									posterStatus={m.poster_status}
 									posterUrl={m.poster_url}
+									centerTitle={false}
 								/>
 							</div>
 						</button>
@@ -726,18 +723,34 @@
 		font-size: 11px;
 		color: var(--muted);
 	}
-	.rev-stats {
-		font-size: 11px;
-		color: var(--gold);
-		margin-top: 2px;
-	}
-	.rev-foot {
+	.rev-stats-row {
 		display: flex;
+		align-items: baseline;
 		justify-content: space-between;
-		gap: 6px;
+		gap: 8px;
+		margin-top: 2px;
+		min-width: 0;
+	}
+	.rev-stats {
+		min-width: 0;
+		font-size: 11px;
+		color: var(--faint);
+		white-space: nowrap;
+	}
+	.rev-stats.good {
+		color: var(--good);
+	}
+	.rev-stats.warn {
+		color: var(--warn);
+	}
+	.rev-stats.bad {
+		color: var(--bad);
+	}
+	.rev-age {
+		flex: none;
 		font-size: 10.5px;
 		color: var(--faint);
-		margin-top: 2px;
+		white-space: nowrap;
 	}
 
 	/* ── Run: missing-poster grid ── */

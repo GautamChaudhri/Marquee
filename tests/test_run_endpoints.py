@@ -39,7 +39,14 @@ async def client():
         yield ac
 
 
-async def _canonical_run(db, *, run_id: str, movie_id: int, archive: dict) -> PipelineRun:
+async def _canonical_run(
+    db,
+    *,
+    run_id: str,
+    movie_id: int,
+    archive: dict,
+    auto_pick_filename: str | None = None,
+) -> PipelineRun:
     job_id = uuid4().hex
     now = datetime.now(UTC)
     job = Job(
@@ -102,6 +109,7 @@ async def _canonical_run(db, *, run_id: str, movie_id: int, archive: dict) -> Pi
         attempt_id=attempt.id,
         fence_token=attempt.fence_token,
         archive_artifact_id=artifact.id,
+        auto_pick_filename=auto_pick_filename,
     )
     db.add(run)
     return run
@@ -204,19 +212,45 @@ def test_categorize_rejection_buckets():
 
 def test_build_results_payload_shape():
     payload = build_results_payload(
-        _fake_archive(), run_id="run1", status="completed", reviewed=False, scorer="weighted"
+        _fake_archive(),
+        run_id="run1",
+        status="completed",
+        reviewed=False,
+        scorer="weighted",
+        auto_pick_filename="a.jpg",
     )
     assert payload["auto_pick"]["orig_filename"] == "a.jpg"
     assert payload["auto_pick"]["explanations"][0] == "Style match to your taste profile"
     assert payload["auto_pick"]["poster_url"] == "/api/pipeline/runs/run1/posters/a.jpg"
+    assert payload["review_mode"] == "personalized"
     assert len(payload["ranked"]) == 2
     assert len(payload["rejected"]["ocr"]) == 1
     assert len(payload["rejected"]["dedup"]) == 1
     assert payload["rejected"]["dedup"][0]["dedup_kept"] == "a.jpg"
     assert payload["rejection_summary"] == {"ocr_text_heavy": 1, "dedup_phash": 1}
     assert "OCR_MAX_RESIDUAL_BOXES" in payload["suggestion"]
-    # No stack metadata in the fixture → flat fallback (no stacks, auto = rank 1).
+    # No stack metadata in the fixture → flat fallback (no stacks).
     assert payload["stacks"] == []
+
+
+def test_collecting_results_do_not_promote_neutral_order_to_an_auto_pick():
+    archive = _fake_archive()
+    archive["personalization_mode"] = "collecting"
+
+    payload = build_results_payload(
+        archive,
+        run_id="cold-run",
+        status="completed",
+        reviewed=False,
+        scorer="weighted",
+        auto_pick_filename=None,
+    )
+
+    assert payload["review_mode"] == "collecting"
+    assert payload["scorer"] is None
+    assert payload["auto_pick"] is None
+    # The ordinal remains a stable display position, not a recommendation.
+    assert payload["ranked"][0]["orig_filename"] == "a.jpg"
 
 
 def test_build_results_payload_exposes_compact_ocr_evidence_and_error_details():
@@ -269,7 +303,12 @@ def test_build_results_payload_exposes_compact_ocr_evidence_and_error_details():
     )
 
     payload = build_results_payload(
-        archive, run_id="run1", status="completed", reviewed=False, scorer="weighted"
+        archive,
+        run_id="run1",
+        status="completed",
+        reviewed=False,
+        scorer="weighted",
+        auto_pick_filename="a.jpg",
     )
     text_heavy = next(
         candidate
@@ -314,7 +353,12 @@ def test_build_results_payload_uses_legacy_ocr_residuals_when_compact_regions_ar
     )
 
     payload = build_results_payload(
-        archive, run_id="run1", status="completed", reviewed=False, scorer="weighted"
+        archive,
+        run_id="run1",
+        status="completed",
+        reviewed=False,
+        scorer="weighted",
+        auto_pick_filename="a.jpg",
     )
     evidence = payload["rejected"]["ocr"][0]["ocr_evidence"]
     assert evidence["has_text"] is True
@@ -399,7 +443,12 @@ def test_build_results_payload_with_stacks():
         stack_id=1, stack_rank=2, stack_pos=1, stack_label="A", stack_size=1, stack_score=0.90
     )
     payload = build_results_payload(
-        archive, run_id="r", status="completed", reviewed=False, scorer="weighted"
+        archive,
+        run_id="r",
+        status="completed",
+        reviewed=False,
+        scorer="weighted",
+        auto_pick_filename="b.jpg",
     )
     assert [s["stack_rank"] for s in payload["stacks"]] == [1, 2]
     assert payload["stacks"][0]["representative"]["orig_filename"] == "b.jpg"
@@ -457,7 +506,13 @@ async def test_get_run_results_from_archive(client, db, tmp_path):
 
     archive = _fake_archive()
     archive["movie_id"] = movie.id
-    await _canonical_run(db, run_id="run-xyz", movie_id=movie.id, archive=archive)
+    await _canonical_run(
+        db,
+        run_id="run-xyz",
+        movie_id=movie.id,
+        archive=archive,
+        auto_pick_filename="a.jpg",
+    )
     await db.commit()
 
     resp = await client.get("/api/pipeline/runs/run-xyz")

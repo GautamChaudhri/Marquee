@@ -161,32 +161,3 @@ class CandidateScore:
             "stack_size": self.stack_size,
             "stack_score": self.stack_score,
         }
-
-
-def find_auto_pick_candidate(candidates: list[dict]) -> dict | None:
-    """The run's auto-pick from a list of archived candidate dicts.
-
-    The auto-pick is "1A" — the representative of the top stack
-    (``stack_rank == 1 and stack_pos == 1``). With the robust top-K-mean stack
-    score this can differ from the single globally highest-ranked poster, so we
-    fall back to ``rank == 1`` when the run has no stack metadata (stacking off
-    or an archive predating the stack layer).
-
-    Operates on plain dicts (``CandidateScore.to_dict()`` / archive JSON) so it
-    is shared by the results payload (`marquee.api.results`) and the persisted
-    ``pipeline_runs.auto_pick_filename`` — both must agree on which poster won.
-    """
-    ranked = sorted(
-        (c for c in candidates if c.get("rank") is not None),
-        key=lambda c: c["rank"],
-    )
-    if not ranked:
-        return None
-    if ranked[0].get("stack_rank") is not None:
-        rep = next(
-            (c for c in ranked if c.get("stack_rank") == 1 and c.get("stack_pos") == 1),
-            None,
-        )
-        if rep is not None:
-            return rep
-    return ranked[0]

@@ -103,7 +103,12 @@ def test_rejected_by_stage_groups_each_reason():
         ],
     }
     payload = build_results_payload(
-        archive, run_id="rid", status="completed", reviewed=False, scorer="weighted"
+        archive,
+        run_id="rid",
+        status="completed",
+        reviewed=False,
+        scorer="weighted",
+        auto_pick_filename="r1.jpg",
     )
     by_stage = {group["stage"]: group for group in payload["rejected_by_stage"]}
 

@@ -195,7 +195,7 @@ test('individual Film Run stays in the workspace and refreshes both queues when 
 	await page.route(`**/api/jobs/${jobId}/snapshot`, (route) => {
 		reviewItems = [
 			{
-				movie: movies[0],
+				movie: { ...movies[0], poster_url: '/stale-movie-poster.svg' },
 				run: {
 					run_id: 'synthetic-review-run-8101',
 					counts: { ranked: 4, total_candidates: 8 },
@@ -207,6 +207,12 @@ test('individual Film Run stays in the workspace and refreshes both queues when 
 		];
 		return route.fulfill({ json: terminalSnapshot() });
 	});
+	await page.route('**/stale-movie-poster.svg', (route) =>
+		route.fulfill({
+			contentType: 'image/svg+xml',
+			body: '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" />'
+		})
+	);
 
 	await page.goto('/pipeline/movies');
 	await expect(page.getByRole('tab', { name: /Run\s*2/ })).toBeVisible();
@@ -227,9 +233,15 @@ test('individual Film Run stays in the workspace and refreshes both queues when 
 	await expect(page.getByRole('tab', { name: /Run\s*1/ })).toHaveAttribute('aria-selected', 'true');
 
 	await page.getByRole('tab', { name: /Review\s*1/ }).click();
-	await expect(
-		page.locator('.rev-card').filter({ hasText: 'Synthetic Feature One' })
-	).toBeVisible();
+	const reviewCard = page.locator('.rev-card').filter({ hasText: 'Synthetic Feature One' });
+	await expect(reviewCard).toBeVisible();
+	await expect(reviewCard).not.toContainText('Awaiting your choice');
+	const statsRow = reviewCard.locator('.rev-stats-row');
+	await expect(statsRow.locator('.rev-stats')).toHaveText('4 candidates');
+	await expect(statsRow.locator('.rev-age')).toHaveText(/just now|\d+[mhd] ago|—/);
+	await expect(reviewCard.locator('.rev-stats')).toHaveClass(/warn/);
+	await expect(reviewCard.locator('.rev-poster img')).toHaveCount(0);
+	await expect(reviewCard.locator('.rev-poster .dot')).toHaveCount(0);
 });
 
 test('movie activity has visible separation from the run grid', async ({ page }) => {

@@ -81,6 +81,40 @@ const tvRunQueueItems = [
 		no_tmdb: false
 	}
 ];
+const tvReviewQueueItems = [
+	{
+		series: { id: 9301, title: 'Synthetic Review Series', year: 2020, tmdb_id: 9301 },
+		show_run: {
+			run_id: 'synthetic-tv-show-review',
+			status: 'completed',
+			started_at: now,
+			completed_at: now,
+			scorer_name: null,
+			counts: { ranked: 5 },
+			reviewed: false,
+			auto_pick_poster_url: null
+		},
+		season_runs: [
+			{
+				season_number: 1,
+				season_id: 93011,
+				run: {
+					run_id: 'synthetic-tv-season-review',
+					status: 'flagged_manual',
+					started_at: now,
+					completed_at: now,
+					scorer_name: null,
+					counts: { ranked: 0 },
+					reviewed: false
+				},
+				auto_pick_poster_url: null,
+				flagged_no_candidates: true
+			}
+		],
+		seasons_only: false,
+		display_poster_url: null
+	}
+];
 const emptyTvSummary = {
 	shows_total: 0,
 	shows_with_show_poster: 0,
@@ -425,7 +459,12 @@ const server = createServer((req, res) => {
 		return;
 	}
 	if (path === '/api/pipeline/tv/review-queue') {
-		json(res, 200, { total_series: 0, page: 1, page_size: 200, items: [] });
+		json(res, 200, {
+			total_series: tvReviewQueueItems.length,
+			page: 1,
+			page_size: 200,
+			items: tvReviewQueueItems
+		});
 		return;
 	}
 

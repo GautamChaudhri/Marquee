@@ -10,6 +10,7 @@ test('the Films Run tab hides its checkboxes until you ask to select', async ({ 
 	// Nothing is armed until selection is explicit.
 	await expect(page.getByRole('checkbox')).toHaveCount(0);
 	await expect(runSelected(page)).toHaveCount(0);
+	await expect(page.locator('.run-poster .dot')).toHaveCount(0);
 
 	await selectButton(page).click();
 	await expect(page.getByRole('checkbox', { name: 'Select Synthetic Feature One' })).toBeVisible();
@@ -47,6 +48,7 @@ test('the Television Run tab gates its checkboxes the same way', async ({ page }
 
 	await expect(page.getByRole('checkbox')).toHaveCount(0);
 	await expect(runSelected(page)).toHaveCount(0);
+	await expect(page.locator('.preview-strip .dot')).toHaveCount(0);
 
 	await selectButton(page).click();
 	await expect(page.getByRole('checkbox', { name: 'Select Synthetic Series One' })).toBeVisible();

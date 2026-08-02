@@ -266,6 +266,7 @@ async def get_run_results(
         status=run.status,
         reviewed=run.feedback_event_id is not None,
         scorer=run.scorer_name,
+        auto_pick_filename=run.auto_pick_filename,
     )
 
 

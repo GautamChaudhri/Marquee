@@ -358,10 +358,8 @@
 								title={placeholder.title}
 								year={placeholder.year}
 								gradientKey={placeholder.gradientKey}
-								centerTitle={placeholder.centerTitle}
-								posterStatus="missing"
 							/>
-							<span>{placeholder.label}</span>
+							<span class="preview-label">{placeholder.label}</span>
 						</div>
 					{/each}
 				</div>
@@ -397,15 +395,20 @@
 									<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
 								{:else}
 									<div class="preview-placeholder">
-										<PosterThumb
-											title="No pick"
-											gradientKey={item.series.title}
-											centerTitle
-											posterStatus="missing"
-										/>
+										<PosterThumb title="No pick" gradientKey={item.series.title} />
 									</div>
 								{/if}
-								<span>{preview.label}</span>
+								<span class="preview-label">{preview.label}</span>
+								<div class="preview-stats mono">
+									<span
+										class:good={preview.candidateSummary.tone === 'good'}
+										class:warn={preview.candidateSummary.tone === 'warn'}
+										class:bad={preview.candidateSummary.tone === 'bad'}
+									>
+										{preview.candidateSummary.label}
+									</span>
+									<span class="preview-age">{preview.age}</span>
+								</div>
 							</div>
 						{/each}
 					</div>
@@ -414,7 +417,6 @@
 						<PosterThumb
 							title={item.series.title}
 							year={item.series.year}
-							posterStatus={item.display_poster_url ? 'deployed' : 'missing'}
 							posterUrl={item.display_poster_url}
 						/>
 					</div>
@@ -531,30 +533,56 @@
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
-		width: 96px;
-		flex: 0 0 96px;
+		width: 126px;
+		flex: 0 0 126px;
 	}
 	.preview-tile img {
 		width: 100%;
 		aspect-ratio: 2 / 3;
-		height: 144px;
+		height: 189px;
 		object-fit: cover;
 		border-radius: 10px;
 		border: 1px solid var(--line2);
 		background: var(--panel2);
 	}
-	.preview-tile span {
+	.preview-label {
 		font-size: 11px;
 		color: var(--muted);
 		text-align: center;
 		white-space: nowrap;
+	}
+	.preview-stats {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 5px;
+		font-size: 10px;
+		line-height: 1.2;
+		white-space: nowrap;
+	}
+	.preview-stats > span:first-child {
+		min-width: 0;
+		color: var(--faint);
+	}
+	.preview-stats > span:first-child.good {
+		color: var(--good);
+	}
+	.preview-stats > span:first-child.warn {
+		color: var(--warn);
+	}
+	.preview-stats > span:first-child.bad {
+		color: var(--bad);
+	}
+	.preview-age {
+		flex: none;
+		color: var(--faint);
 	}
 	.preview-placeholder :global(.poster),
 	.preview-fallback :global(.poster) {
 		width: 100%;
 	}
 	.preview-fallback {
-		width: 96px;
+		width: 126px;
 	}
 	.series-meta {
 		display: flex;

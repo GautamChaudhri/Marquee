@@ -41,12 +41,22 @@ test('movie and TV Run pages expose per-run batching controls', async ({ page })
 	await trigger(page).click();
 	const movieControl = control(page);
 	await expect(movieControl).toBeVisible();
+	await expect(movieControl.locator('.mode-switch button')).toHaveText(['Unified', 'Chunks']);
 	await expect(movieControl.getByRole('button', { name: 'Chunks' })).toHaveAttribute(
 		'aria-pressed',
 		'true'
 	);
 	const movieChunkSize = movieControl.getByRole('spinbutton', { name: 'Chunk size' });
 	await expect(movieChunkSize).toHaveValue('8');
+	await expect(movieControl).toContainText('Partially cancel individual chunks.');
+	await expect(movieControl).toContainText('Slightly longer processing times.');
+	const modeSwitchBox = await movieControl.locator('.mode-switch').boundingBox();
+	const stepperBox = await movieControl.locator('.chunk-stepper').boundingBox();
+	expect(modeSwitchBox).not.toBeNull();
+	expect(stepperBox).not.toBeNull();
+	expect(stepperBox!.x).toBeGreaterThanOrEqual(modeSwitchBox!.x + modeSwitchBox!.width);
+	await movieControl.getByRole('button', { name: 'Increase chunk size' }).click();
+	await expect(movieChunkSize).toHaveValue('9');
 
 	await movieChunkSize.fill('12');
 	await movieChunkSize.blur();
@@ -71,9 +81,11 @@ test('movie and TV Run pages expose per-run batching controls', async ({ page })
 
 	await trigger(page).click();
 	const tvControl = control(page);
+	await expect(tvControl.getByRole('button', { name: 'Increase chunk size' })).toBeVisible();
 	await tvControl.getByRole('button', { name: 'Unified' }).click();
 	await expect(tvControl.getByRole('spinbutton', { name: 'Chunk size' })).toHaveCount(0);
-	await expect(tvControl).toContainText('cancelling stops the complete run');
+	await expect(tvControl).toContainText('Fastest overall processing time.');
+	await expect(tvControl).toContainText('Cancelling stops everything.');
 	await expect(trigger(page)).toHaveText(/Batching · Unified/);
 
 	const tvRequest = page.waitForRequest(

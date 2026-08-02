@@ -162,8 +162,10 @@
 							<div class="manual-status">
 								<StatusDot tone="bad" size={7} />
 								<div>
-									<span class="manual-title">Needs attention</span>
-									<span class="manual-copy">No qualifying poster found</span>
+									<span class="manual-title">No survivors</span>
+									<span class="manual-copy"
+										>No candidates survived the objective checks. Re-run this title to try again.</span
+									>
 								</div>
 							</div>
 						{:else}

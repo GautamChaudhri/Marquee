@@ -2,7 +2,7 @@ import type { PipelineRunSummary, TvReviewGroup, TvRunQueueItem } from '$lib/api
 import { describe, expect, it } from 'vitest';
 import { reviewPosterPreviews, resolveTvPosterTab, runPosterPlaceholders } from './tv-display';
 
-function run(runId: string): PipelineRunSummary {
+function run(runId: string, overrides: Partial<PipelineRunSummary> = {}): PipelineRunSummary {
 	return {
 		run_id: runId,
 		status: 'completed',
@@ -10,7 +10,8 @@ function run(runId: string): PipelineRunSummary {
 		completed_at: null,
 		scorer_name: null,
 		counts: null,
-		reviewed: false
+		reviewed: false,
+		...overrides
 	};
 }
 
@@ -30,28 +31,35 @@ describe('resolveTvPosterTab', () => {
 
 describe('TV poster tile display data', () => {
 	it('returns the show followed by every season run in season order', () => {
+		const now = Date.parse('2026-08-01T12:00:00Z');
 		const item: TvReviewGroup = {
 			series: { id: 1, title: 'Example', year: 2024, tmdb_id: 123 },
-			show_run: { ...run('show'), auto_pick_poster_url: '/show.jpg' },
+			show_run: {
+				...run('show', {
+					started_at: '2026-08-01T11:58:00Z',
+					counts: { ranked: 6 }
+				}),
+				auto_pick_poster_url: '/show.jpg'
+			},
 			season_runs: [
 				{
 					season_number: 2,
 					season_id: 12,
-					run: run('season-two'),
+					run: run('season-two', { counts: { ranked: 2 } }),
 					auto_pick_poster_url: '/season-two.jpg',
 					flagged_no_candidates: false
 				},
 				{
 					season_number: 1,
 					season_id: 11,
-					run: run('season-one'),
+					run: run('season-one', { counts: { ranked: 4 } }),
 					auto_pick_poster_url: '/season-one.jpg',
 					flagged_no_candidates: false
 				},
 				{
 					season_number: 3,
 					season_id: 13,
-					run: run('season-three'),
+					run: run('season-three', { counts: { ranked: 0 } }),
 					auto_pick_poster_url: null,
 					flagged_no_candidates: true
 				}
@@ -60,11 +68,31 @@ describe('TV poster tile display data', () => {
 			display_poster_url: '/show.jpg'
 		};
 
-		expect(reviewPosterPreviews(item)).toEqual([
-			{ label: 'Show', url: '/show.jpg' },
-			{ label: 'S01', url: '/season-one.jpg' },
-			{ label: 'S02', url: '/season-two.jpg' },
-			{ label: 'S03', url: null }
+		expect(reviewPosterPreviews(item, now)).toEqual([
+			{
+				label: 'Show',
+				url: '/show.jpg',
+				candidateSummary: { label: '6 candidates', tone: 'good' },
+				age: '2m ago'
+			},
+			{
+				label: 'S01',
+				url: '/season-one.jpg',
+				candidateSummary: { label: '4 candidates', tone: 'good' },
+				age: '—'
+			},
+			{
+				label: 'S02',
+				url: '/season-two.jpg',
+				candidateSummary: { label: '2 candidates', tone: 'good' },
+				age: '—'
+			},
+			{
+				label: 'S03',
+				url: null,
+				candidateSummary: { label: '0 candidates', tone: 'bad' },
+				age: '—'
+			}
 		]);
 	});
 
@@ -85,7 +113,14 @@ describe('TV poster tile display data', () => {
 			display_poster_url: '/api/library/series/2/poster'
 		};
 
-		expect(reviewPosterPreviews(item)).toEqual([{ label: 'S01', url: null }]);
+		expect(reviewPosterPreviews(item)).toEqual([
+			{
+				label: 'S01',
+				url: null,
+				candidateSummary: { label: '0 candidates', tone: 'bad' },
+				age: '—'
+			}
+		]);
 	});
 
 	it('uses the series title only for the show placeholder', () => {
@@ -105,22 +140,19 @@ describe('TV poster tile display data', () => {
 				label: 'Show',
 				title: 'Example',
 				year: 2024,
-				gradientKey: 'Example',
-				centerTitle: false
+				gradientKey: 'Example'
 			},
 			{
 				label: 'S01',
 				title: 'S01',
 				year: null,
-				gradientKey: 'Example',
-				centerTitle: true
+				gradientKey: 'Example'
 			},
 			{
 				label: 'S02',
 				title: 'S02',
 				year: null,
-				gradientKey: 'Example',
-				centerTitle: true
+				gradientKey: 'Example'
 			}
 		]);
 	});

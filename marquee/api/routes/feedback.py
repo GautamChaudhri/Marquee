@@ -68,7 +68,6 @@ from marquee.models import (
     Series,
     TasteExemplar,
 )
-from marquee.pipeline.types import find_auto_pick_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -417,9 +416,11 @@ async def _load_feedback_run(
         for candidate in candidates
         if isinstance(candidate, dict) and isinstance(candidate.get("orig_filename"), str)
     }
+    # The persisted projection, not archive order, is the authority for an
+    # auto-pick.  Cold-start candidates may carry neutral ordinals for stable
+    # review display, but that is not a model recommendation to approve,
+    # reject, or learn a comparison against.
     auto = by_name.get(run.auto_pick_filename) if run.auto_pick_filename else None
-    if auto is None:
-        auto = find_auto_pick_candidate(list(by_name.values()))
     return run, archive, subject, by_name, auto
 
 

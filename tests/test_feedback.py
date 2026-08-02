@@ -221,13 +221,22 @@ async def _register_archive(db, document: dict, *, run_id: str, subject_kind: st
     return job, attempt, artifact, selected_artifact
 
 
-async def _seed(db, tmp_path, run_id="r1") -> Movie:
+async def _seed(
+    db,
+    tmp_path,
+    run_id="r1",
+    *,
+    auto_pick_filename: str | None = "auto.jpg",
+    collecting: bool = False,
+) -> Movie:
     movie = Movie(title="Die Hard", year=1988, folder_path="/m/Die Hard", tmdb_id=562)
     db.add(movie)
     await db.commit()
     await db.refresh(movie)
 
     archive = _archive(movie.id)
+    if collecting:
+        archive["personalization_mode"] = "collecting"
     job, attempt, artifact, selected = await _register_archive(
         db, archive, run_id=run_id, subject_kind="movie"
     )
@@ -237,12 +246,15 @@ async def _seed(db, tmp_path, run_id="r1") -> Movie:
             run_id=run_id,
             movie_id=movie.id,
             status="completed",
-            scorer_name="weighted",
+            scorer_name=None if collecting else "weighted",
             job_id=job.id,
             attempt_id=attempt.id,
             fence_token=attempt.fence_token,
             archive_artifact_id=artifact.id,
-            selected_artifact_id=selected.id if selected is not None else None,
+            selected_artifact_id=(
+                selected.id if selected is not None and auto_pick_filename is not None else None
+            ),
+            auto_pick_filename=auto_pick_filename,
         )
     )
     await db.commit()
@@ -358,6 +370,37 @@ async def test_scenario_a_approve(client, db, tmp_path):
     assert event is not None
     assert event.action == "approval"
     assert event.training_context["selected_candidate"] == "auto.jpg"
+
+
+@pytest.mark.asyncio
+async def test_collecting_run_requires_an_explicit_choice_without_a_false_auto_pick(
+    client, db, tmp_path
+):
+    await _seed(db, tmp_path, auto_pick_filename=None, collecting=True)
+
+    approve = await client.post("/api/feedback", json={"run_id": "r1", "action": "approve"})
+    reject = await client.post("/api/feedback", json={"run_id": "r1", "action": "reject_all"})
+
+    assert approve.status_code == 400
+    assert approve.json()["detail"] == "No auto-pick available to approve"
+    assert reject.status_code == 400
+    assert reject.json()["detail"] == "No auto-pick to reject"
+
+    choose = await client.post(
+        "/api/feedback",
+        json={
+            "run_id": "r1",
+            "action": "override",
+            "selected_filename": "alt.jpg",
+            "deploy": False,
+        },
+    )
+
+    assert choose.status_code == 200
+    assert choose.json()["labels_written"] == 1
+    event = await db.get(PosterPreferenceEvent, choose.json()["event_id"])
+    assert event is not None
+    assert event.training_context["selected_candidate"] == "alt.jpg"
 
 
 @pytest.mark.asyncio

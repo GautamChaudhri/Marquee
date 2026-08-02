@@ -357,6 +357,8 @@ export interface RunResults {
 	movie: { id: number | null; title: string | null; tmdb_id: number | null };
 	status: string;
 	scorer: string | null;
+	/** Whether the survivors are neutral cold-start choices or profile-backed rankings. */
+	review_mode: 'collecting' | 'personalized';
 	reviewed: boolean;
 	auto_pick: CandidateView | null;
 	ranked: CandidateView[];
@@ -443,7 +445,7 @@ export interface PipelineRunSummary {
 export interface ReviewQueueItem {
 	movie: MovieListItem;
 	run: PipelineRunSummary;
-	/** Image URL of the run's auto-pick ("1A"); null for runs predating the field. */
+	/** Image URL of the persisted model auto-pick; null means manual review. */
 	auto_pick_poster_url?: string | null;
 	results_url: string;
 }

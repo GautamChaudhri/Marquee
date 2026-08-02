@@ -20,7 +20,7 @@
 		rejectionTag
 	} from '$lib/pipeline/ocr-display';
 	import { flatDisplayRanks } from '$lib/pipeline/rank-display';
-	import { rejectAllCopy } from '$lib/pipeline/review-copy';
+	import { rejectAllCopy, reviewModeCopy, reviewResultsNotice } from '$lib/pipeline/review-copy';
 	import { toast } from '$lib/toast';
 	import { gradientFor } from '$lib/display';
 	import type {
@@ -62,6 +62,14 @@
 	const results = $derived(run && 'ranked' in run ? (run as RunResults) : null);
 	const running = $derived(run != null && !('ranked' in run));
 	const autoPick = $derived(results?.auto_pick ?? null);
+	const isCollecting = $derived(results?.review_mode === 'collecting');
+	const modeCopy = $derived(reviewModeCopy(results?.review_mode, results?.media_type));
+	const hasNoSurvivors = $derived(results != null && results.ranked.length === 0);
+	const resultsNotice = $derived(
+		results
+			? reviewResultsNotice(results.review_mode, results.ranked.length, results.media_type)
+			: null
+	);
 	const rejectCopy = $derived(
 		rejectAllCopy({
 			mediaType: results?.media_type,
@@ -122,7 +130,7 @@
 
 	const stageTabs = $derived.by(() => {
 		if (!results) return [];
-		const t = [{ id: 'ranked', label: 'Ranked', count: rankedByMethod.length }];
+		const t = [{ id: 'ranked', label: modeCopy.tabLabel, count: rankedByMethod.length }];
 		for (const g of results.rejected_by_stage) {
 			if (g.count > 0) t.push({ id: g.stage, label: SHORT[g.stage] ?? g.label, count: g.count });
 		}
@@ -140,7 +148,7 @@
 	const rankedByMethod = $derived.by<CandidateView[]>(() => {
 		const r = results?.ranked;
 		const s = results?.stacks;
-		if (!r?.length || !s?.length) return r ?? [];
+		if (isCollecting || !r?.length || !s?.length) return r ?? [];
 		if (stackMethod === 'robust') return r; // default — no change needed
 
 		// Build groups keyed by stack_id.
@@ -185,7 +193,7 @@
 	/** Re-rank stacks for the stacks sidebar (same method). */
 	const stacksByMethod = $derived.by<StackView[]>(() => {
 		const s = results?.stacks;
-		if (!s?.length) return [];
+		if (isCollecting || !s?.length) return [];
 		if (stackMethod === 'robust') return s;
 
 		const ranked = rankedByMethod;
@@ -328,7 +336,7 @@
 	 *  become visual stacks; singles stay as individual tiles. */
 	const groupedRanked = $derived.by<Array<CandidateView | CandidateView[]>>(() => {
 		const r = rankedByMethod;
-		const hasStacks = !!results?.stacks?.length;
+		const hasStacks = !isCollecting && !!results?.stacks?.length;
 		if (!hasStacks) return r;
 
 		// Collect every stack's members into a map, preserving rank order.
@@ -418,7 +426,7 @@
 	);
 	const inspectedOcrPanel = $derived(inspected ? ocrInspectorPanel(inspected) : null);
 	const inspectDebugLabelKind = $derived.by<'false_rejection' | 'false_acceptance' | null>(() => {
-		if (!inspected || !debugMode) return null;
+		if (!inspected || !debugMode || isCollecting) return null;
 		if (inspected.rank != null) return 'false_acceptance';
 		return activeStage === 'ocr' ? 'false_rejection' : null;
 	});
@@ -629,11 +637,14 @@
 
 	// ── Feedback buckets (Favorites/Hate/Neutral → canonical residual evidence) ──
 	let rankMode = $state(false);
+	$effect(() => {
+		if (isCollecting && rankMode) rankMode = false;
+	});
 
 	/** Rankable units: one per design stack (members move together) when stacks
 	 *  exist, else one per ranked poster. Mirrors the active stack method. */
 	const rankItems = $derived.by<RankItem[]>(() => {
-		if (!results) return [];
+		if (!results || isCollecting) return [];
 		if (stacksByMethod.length) {
 			return stacksByMethod.map((st) => ({
 				key: String(st.stack_id),
@@ -713,7 +724,13 @@
 					<Icon name="maximize" size={16} />
 				</button>
 			{:else}
-				<div class="no-pick">No rankable candidate</div>
+				<div class="no-pick">
+					{hasNoSurvivors
+						? 'No candidates survived'
+						: isCollecting
+							? 'Choose a candidate below'
+							: 'No rankable candidate'}
+				</div>
 			{/if}
 		</div>
 		<div class="hero-body">
@@ -721,7 +738,9 @@
 				<div>
 					<div class="hero-title">{results.movie.title ?? 'Unknown'}</div>
 					<div class="hero-sub">
-						<span class="scorer-tag">{results.scorer ?? 'scored'}</span>
+						<span class="scorer-tag"
+							>{isCollecting ? 'Cold start' : (results.scorer ?? 'scored')}</span
+						>
 						{#if results.reviewed}
 							<span class="reviewed"><StatusDot tone="good" size={6} /> Reviewed</span>
 							{#if lastEventId}<button class="undo" onclick={undoLast}>Undo</button>{/if}
@@ -729,24 +748,25 @@
 					</div>
 				</div>
 			</div>
-
 			{#if inspected}
-				<div class="auto-line">
-					{#if inspectIsAuto}
-						<span class="auto-badge">AUTO-PICK</span>
-					{:else}
-						<span class="auto-badge inspect">INSPECTING</span>
-					{/if}
-					{#if inspected.final_score != null}<span class="mono score"
-							>{inspected.final_score.toFixed(3)}</span
-						>{/if}
-				</div>
+				{#if !isCollecting}
+					<div class="auto-line">
+						{#if inspectIsAuto}
+							<span class="auto-badge">AUTO-PICK</span>
+						{:else}
+							<span class="auto-badge inspect">INSPECTING</span>
+						{/if}
+						{#if inspected.final_score != null}<span class="mono score"
+								>{inspected.final_score.toFixed(3)}</span
+							>{/if}
+					</div>
+				{/if}
 
 				<div class="hero-meta">
-					{#if inspected.rank != null}
+					{#if !isCollecting && inspected.rank != null}
 						<span class="meta-chip">Rank {inspected.rank}</span>
 					{/if}
-					{#if inspected.stack_rank != null}
+					{#if !isCollecting && inspected.stack_rank != null}
 						<span class="meta-chip"
 							>Design {inspected.stack_rank}{#if inspected.stack_label}
 								· {inspected.stack_label}{/if}{#if inspected.stack_size && inspected.stack_size > 1}
@@ -759,12 +779,12 @@
 						</span>
 					{/if}
 				</div>
-				{#if inspected.explanations?.length}
+				{#if !isCollecting && inspected.explanations?.length}
 					<ul class="explain">
 						{#each inspected.explanations.slice(0, 5) as line, i (i)}<li>{line}</li>{/each}
 					</ul>
 				{/if}
-				{#if inspected.contributions}
+				{#if !isCollecting && inspected.contributions}
 					<div class="contrib">
 						<ScoreBar showLabels segments={contribSegments(inspected.contributions)} />
 					</div>
@@ -814,24 +834,30 @@
 			<div class="hero-actions">
 				{#if confirmingApprove}
 					<button class="btn-gold" onclick={confirmPick} disabled={busy}>
-						{busy ? 'Working…' : 'Confirm'}
+						{busy ? 'Working…' : isCollecting ? 'Confirm choice' : 'Confirm'}
 					</button>
 					<button class="btn-ghost" onclick={cancelConfirm} disabled={busy}>Cancel</button>
 				{:else}
 					<button class="btn-gold" onclick={startConfirm} disabled={!inspected || results.reviewed}>
-						{inspectIsAuto ? 'Approve auto-pick' : 'Override with this pick'}
+						{isCollecting
+							? 'Choose this poster'
+							: inspectIsAuto
+								? 'Approve auto-pick'
+								: 'Override with this pick'}
 					</button>
 				{/if}
-				<button class="btn-ghost" onclick={() => (rejectOpen = true)} disabled={results.reviewed}>
-					Reject all
-				</button>
-				<button
-					class="btn-ghost"
-					onclick={() => (rankMode = !rankMode)}
-					disabled={results.reviewed || !results.ranked.length}
-				>
-					{rankMode ? 'Exit ranking' : 'Rank by taste'}
-				</button>
+				{#if !isCollecting}
+					<button class="btn-ghost" onclick={() => (rejectOpen = true)} disabled={results.reviewed}>
+						Reject all
+					</button>
+					<button
+						class="btn-ghost"
+						onclick={() => (rankMode = !rankMode)}
+						disabled={results.reviewed || !results.ranked.length}
+					>
+						{rankMode ? 'Exit ranking' : 'Rank by taste'}
+					</button>
+				{/if}
 			</div>
 		</div>
 		{#if inspectedOcrPanel?.kind === 'text'}
@@ -892,7 +918,7 @@
 		{/if}
 	</div>
 
-	{#if rankMode}
+	{#if rankMode && !isCollecting}
 		<PosterRankPanel
 			runId={results.run_id}
 			items={rankItems}
@@ -906,84 +932,40 @@
 			<TabBar tabs={stageTabs} active={activeStage} onSelect={(id) => (activeStage = id)} />
 		</div>
 
-		<p class="grid-hint">
-			{#if activeStage === 'ranked'}
-				{#if stacksByMethod.length}
-					<span class="hint-left">
-						{#if viewMode === 'flat'}
-							Stacked posters share a design — click the stack to fan out all variants. Click any
-							poster to choose it.
-						{:else}
-							Posters are grouped into <strong>stacks</strong> of the same design — variants differ only
-							in title position, text, or crop. Designs are ranked by their best few variants, so the
-							auto-pick (1A) may not be the single highest-scored poster. Click any poster to choose it.
-						{/if}
-					</span>
-					<span class="hint-toggle">
-						<select class="method-select" bind:value={stackMethod} title="Stack ranking method">
-							<option value="robust">Robust (top-3 mean)</option>
-							<option value="max">Max (best variant)</option>
-							<option value="mean">Mean (all variants)</option>
-						</select>
-						<button
-							class="view-btn"
-							class:active={viewMode === 'flat'}
-							onclick={() => (viewMode = 'flat')}
-							title="Flat grid with visual card stacks"
-						>
-							<svg
-								width="14"
-								height="14"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								><rect x="3" y="3" width="7" height="7" /><rect
-									x="14"
-									y="3"
-									width="7"
-									height="7"
-								/><rect x="3" y="14" width="7" height="7" /><rect
-									x="14"
-									y="14"
-									width="7"
-									height="7"
-								/></svg
-							>
-							Flat
-						</button>
-						<button
-							class="view-btn"
-							class:active={viewMode === 'sectioned'}
-							onclick={() => (viewMode = 'sectioned')}
-							title="Sectioned stacks with Design headers"
-						>
-							<svg
-								width="14"
-								height="14"
-								viewBox="0 0 24 24"
-								fill="none"
-								stroke="currentColor"
-								stroke-width="2"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								><rect x="3" y="3" width="18" height="8" rx="1" /><rect
-									x="3"
-									y="13"
-									width="18"
-									height="8"
-									rx="1"
-								/></svg
-							>
-							Sectioned
-						</button>
-						{#if viewMode === 'flat'}
+		{#if activeStage === 'ranked' && resultsNotice}
+			<aside class="review-notice" data-tone={resultsNotice.tone} aria-live="polite">
+				<span class="notice-marker" aria-hidden="true"></span>
+				<div>
+					<strong>{resultsNotice.title}</strong>
+					<span>{resultsNotice.message}</span>
+				</div>
+			</aside>
+		{:else}
+			<p class="grid-hint">
+				{#if activeStage === 'ranked'}
+					{#if stacksByMethod.length}
+						<span class="hint-left">
+							{#if viewMode === 'flat'}
+								Stacked posters share a design — click the stack to fan out all variants. Click any
+								poster to choose it.
+							{:else}
+								Posters are grouped into <strong>stacks</strong> of the same design — variants differ
+								only in title position, text, or crop. Designs are ranked by their best few variants,
+								so the auto-pick (1A) may not be the single highest-scored poster. Click any poster to
+								choose it.
+							{/if}
+						</span>
+						<span class="hint-toggle">
+							<select class="method-select" bind:value={stackMethod} title="Stack ranking method">
+								<option value="robust">Robust (top-3 mean)</option>
+								<option value="max">Max (best variant)</option>
+								<option value="mean">Mean (all variants)</option>
+							</select>
 							<button
 								class="view-btn"
-								onclick={() => (anyExpanded ? collapseAll() : expandAll())}
-								title={anyExpanded ? 'Collapse all stacks' : 'Expand all stacks'}
+								class:active={viewMode === 'flat'}
+								onclick={() => (viewMode = 'flat')}
+								title="Flat grid with visual card stacks"
 							>
 								<svg
 									width="14"
@@ -994,25 +976,80 @@
 									stroke-width="2"
 									stroke-linecap="round"
 									stroke-linejoin="round"
+									><rect x="3" y="3" width="7" height="7" /><rect
+										x="14"
+										y="3"
+										width="7"
+										height="7"
+									/><rect x="3" y="14" width="7" height="7" /><rect
+										x="14"
+										y="14"
+										width="7"
+										height="7"
+									/></svg
 								>
-									{#if anyExpanded}
-										<polyline points="15 18 9 12 15 6" />
-									{:else}
-										<polyline points="9 18 15 12 9 6" />
-									{/if}
-								</svg>
-								{anyExpanded ? 'Collapse all' : 'Expand all'}
+								Flat
 							</button>
-						{/if}
-					</span>
+							<button
+								class="view-btn"
+								class:active={viewMode === 'sectioned'}
+								onclick={() => (viewMode = 'sectioned')}
+								title="Sectioned stacks with Design headers"
+							>
+								<svg
+									width="14"
+									height="14"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									><rect x="3" y="3" width="18" height="8" rx="1" /><rect
+										x="3"
+										y="13"
+										width="18"
+										height="8"
+										rx="1"
+									/></svg
+								>
+								Sectioned
+							</button>
+							{#if viewMode === 'flat'}
+								<button
+									class="view-btn"
+									onclick={() => (anyExpanded ? collapseAll() : expandAll())}
+									title={anyExpanded ? 'Collapse all stacks' : 'Expand all stacks'}
+								>
+									<svg
+										width="14"
+										height="14"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+									>
+										{#if anyExpanded}
+											<polyline points="15 18 9 12 15 6" />
+										{:else}
+											<polyline points="9 18 15 12 9 6" />
+										{/if}
+									</svg>
+									{anyExpanded ? 'Collapse all' : 'Expand all'}
+								</button>
+							{/if}
+						</span>
+					{:else}
+						Click any poster to set it as the chosen one — it deploys to the movie folder and trains
+						the Key Art Engine.
+					{/if}
 				{:else}
-					Click any poster to set it as the chosen one — it deploys to the movie folder and trains
-					the Key Art Engine.
+					Rejected at this stage. Click to override and choose it anyway.
 				{/if}
-			{:else}
-				Rejected at this stage. Click to override and choose it anyway.
-			{/if}
-		</p>
+			</p>
+		{/if}
 		{#if debugMode && !hasFullOcrSnapshot}
 			<div class="dev-hint">
 				Debug OCR labeling is disabled for this run because its archived OCR snapshot is incomplete.
@@ -1064,7 +1101,9 @@
 			</div>
 		{/if}
 
-		{#if activeStage === 'ranked' && results.stacks?.length}
+		{#if activeStage === 'ranked' && hasNoSurvivors}
+			<!-- The red review notice above is the complete zero-survivor state. -->
+		{:else if activeStage === 'ranked' && !isCollecting && results.stacks?.length}
 			{#if viewMode === 'flat'}
 				<div class="poster-grid">
 					{#each groupedRanked as item (Array.isArray(item) ? (item as CandidateView[])[0].orig_filename : (item as CandidateView).orig_filename)}
@@ -1076,6 +1115,7 @@
 									<PosterCandidateTile
 										candidate={c}
 										kind="ranked"
+										isPersistedAutoPick={autoPick?.orig_filename === c.orig_filename}
 										displayRank={flatDisplayRankByFilename.get(c.orig_filename)?.rank ?? null}
 										rankSuffix={flatDisplayRankByFilename.get(c.orig_filename)?.suffix ?? null}
 										selectable={tileSelectable}
@@ -1099,6 +1139,8 @@
 							<PosterCandidateTile
 								candidate={item as CandidateView}
 								kind="ranked"
+								isPersistedAutoPick={autoPick?.orig_filename ===
+									(item as CandidateView).orig_filename}
 								displayRank={flatDisplayRankByFilename.get((item as CandidateView).orig_filename)
 									?.rank ?? null}
 								rankSuffix={flatDisplayRankByFilename.get((item as CandidateView).orig_filename)
@@ -1126,6 +1168,7 @@
 									<PosterCandidateTile
 										candidate={c}
 										kind="ranked"
+										isPersistedAutoPick={autoPick?.orig_filename === c.orig_filename}
 										selectable={tileSelectable}
 										inspected={inspected?.orig_filename === c.orig_filename}
 										onSelect={handlePosterSelect}
@@ -1143,12 +1186,17 @@
 				{#each currentPosters as c (c.orig_filename)}
 					<PosterCandidateTile
 						candidate={c}
-						kind={activeStage === 'ranked' ? 'ranked' : 'rejected'}
+						kind={activeStage === 'ranked' ? (isCollecting ? 'candidate' : 'ranked') : 'rejected'}
+						isPersistedAutoPick={autoPick?.orig_filename === c.orig_filename}
 						displayRank={activeStage === 'ranked'
-							? (flatDisplayRankByFilename.get(c.orig_filename)?.rank ?? null)
+							? isCollecting
+								? null
+								: (flatDisplayRankByFilename.get(c.orig_filename)?.rank ?? null)
 							: null}
 						rankSuffix={activeStage === 'ranked'
-							? (flatDisplayRankByFilename.get(c.orig_filename)?.suffix ?? null)
+							? isCollecting
+								? null
+								: (flatDisplayRankByFilename.get(c.orig_filename)?.suffix ?? null)
 							: null}
 						selectable={tileSelectable}
 						inspected={inspected?.orig_filename === c.orig_filename}
@@ -1179,16 +1227,18 @@
 {/if}
 
 <!-- ── Reject-all confirm ── -->
-<ConfirmDialog
-	open={rejectOpen}
-	title={rejectCopy.title}
-	message={rejectCopy.message}
-	confirmLabel="Reject all"
-	tone="bad"
-	{busy}
-	onConfirm={confirmReject}
-	onCancel={() => (rejectOpen = false)}
-/>
+{#if !isCollecting}
+	<ConfirmDialog
+		open={rejectOpen}
+		title={rejectCopy.title}
+		message={rejectCopy.message}
+		confirmLabel="Reject all"
+		tone="bad"
+		{busy}
+		onConfirm={confirmReject}
+		onCancel={() => (rejectOpen = false)}
+	/>
+{/if}
 
 <style>
 	.crumb {
@@ -1584,6 +1634,45 @@
 		align-items: center;
 		gap: 12px;
 		flex-wrap: wrap;
+	}
+	.review-notice {
+		--notice-color: var(--warn);
+		display: flex;
+		align-items: flex-start;
+		gap: 10px;
+		margin: 0 0 14px;
+		padding: 11px 12px;
+		border: 1px solid color-mix(in srgb, var(--notice-color) 42%, var(--line2));
+		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--notice-color) 8%, var(--panel));
+		box-shadow: inset 3px 0 0 color-mix(in srgb, var(--notice-color) 72%, transparent);
+	}
+	.review-notice[data-tone='bad'] {
+		--notice-color: var(--bad);
+	}
+	.notice-marker {
+		width: 8px;
+		height: 8px;
+		flex: none;
+		margin-top: 5px;
+		border-radius: 50%;
+		background: var(--notice-color);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--notice-color) 16%, transparent);
+	}
+	.review-notice > div {
+		display: grid;
+		gap: 2px;
+		min-width: 0;
+	}
+	.review-notice strong {
+		font-size: 12px;
+		font-weight: 700;
+		color: var(--text);
+	}
+	.review-notice div span {
+		color: var(--muted);
+		font-size: 12px;
+		line-height: 1.45;
 	}
 	.hint-left {
 		flex: 1;

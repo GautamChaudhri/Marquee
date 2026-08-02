@@ -14,8 +14,10 @@ import { defineConfig, devices } from '@playwright/test';
  * Failure artifacts (trace + screenshot) are retained under `test-results/`,
  * which is git-ignored.
  */
-const APP_PORT = 4173;
-const API_PORT = 3199;
+// Override these in a focused local run to avoid reusing an unrelated server
+// that is already bound to the default development ports.
+const APP_PORT = Number(process.env.MARQUEE_E2E_APP_PORT ?? 4173);
+const API_PORT = Number(process.env.MARQUEE_E2E_API_PORT ?? 3199);
 
 export default defineConfig({
 	testDir: 'e2e',

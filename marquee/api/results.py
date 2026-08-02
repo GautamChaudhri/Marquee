@@ -19,7 +19,6 @@ from marquee.api.explanations import (
     rejection_label,
     suggest_for_summary,
 )
-from marquee.pipeline.types import find_auto_pick_candidate
 
 
 @dataclass(frozen=True)
@@ -277,6 +276,19 @@ def _build_stacks(run_id: str, ranked: list[dict]) -> list[dict]:
     return entries
 
 
+def _review_mode(archive: dict, *, auto_pick_available: bool) -> str:
+    """Return the presentation mode supported by the canonical run projection.
+
+    A neutral cold-start order carries ordinals solely to keep the review list
+    stable.  It must never become a recommendation just because its first
+    candidate has ``rank == 1``.  Likewise, historical runs without a
+    persisted auto-pick fail closed into manual review.
+    """
+    if archive.get("personalization_mode") == "collecting":
+        return "collecting"
+    return "personalized" if auto_pick_available else "collecting"
+
+
 def build_results_payload(
     archive: dict,
     *,
@@ -284,6 +296,7 @@ def build_results_payload(
     status: str,
     reviewed: bool,
     scorer: str | None,
+    auto_pick_filename: str | None,
 ) -> dict:
     """Assemble the §17.3 run-results payload from an archived run."""
     candidates = diagnostic_candidates(archive)
@@ -298,10 +311,24 @@ def build_results_payload(
     # stack, members ordered by stack_pos (A,B,C…), stacks by stack_rank.
     stacks = _build_stacks(run_id, ranked)
 
-    # Auto-pick is "1A" — the representative of the top stack (shared with the
-    # persisted pipeline_runs.auto_pick_filename so the Review thumbnail and
-    # this payload always agree on which poster won).
-    auto_src = find_auto_pick_candidate(candidates)
+    # The persisted filename is the only source of an auto-pick.  Candidate
+    # ordinals can describe neutral cold-start display order, not a model
+    # recommendation, so never infer an auto-pick from rank 1.
+    auto_src = (
+        next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.get("orig_filename") == auto_pick_filename
+            ),
+            None,
+        )
+        if auto_pick_filename is not None
+        else None
+    )
+    review_mode = _review_mode(archive, auto_pick_available=auto_src is not None)
+    if review_mode == "collecting":
+        auto_src = None
 
     auto_pick = None
     if auto_src is not None:
@@ -335,7 +362,8 @@ def build_results_payload(
             "tmdb_id": archive.get("tmdb_id"),
         },
         "status": status,
-        "scorer": scorer,
+        "scorer": scorer if review_mode == "personalized" else None,
+        "review_mode": review_mode,
         "reviewed": reviewed,
         "auto_pick": auto_pick,
         "ranked": ranked_views,

@@ -10,6 +10,7 @@
 		selectable = true,
 		selected = false,
 		inspected = false,
+		isPersistedAutoPick = false,
 		badgeText = null,
 		displayRank = null,
 		rankSuffix = null,
@@ -18,11 +19,13 @@
 		onCollapse
 	}: {
 		candidate: CandidateView;
-		kind?: 'ranked' | 'rejected';
+		kind?: 'ranked' | 'candidate' | 'rejected';
 		selectable?: boolean;
 		selected?: boolean;
 		/** Ring highlight when this tile is the one the hero inspector is showing. */
 		inspected?: boolean;
+		/** True only when this filename matches the run's persisted auto-pick. */
+		isPersistedAutoPick?: boolean;
 		badgeText?: string | null;
 		/** Position in the current flat grid, when it differs from the archived candidate rank. */
 		displayRank?: number | null;
@@ -36,8 +39,8 @@
 	} = $props();
 
 	const g = $derived(gradientFor(candidate.orig_filename));
-	// "1A" when stacked, else "#rank". Auto-pick is the top stack's A (which,
-	// under the robust stack score, may not be global rank 1).
+	// "1A" when stacked, else "#rank". The parent supplies auto-pick state
+	// from the canonical persisted run projection; a display rank is never enough.
 	const stacked = $derived(candidate.stack_rank != null && candidate.stack_label != null);
 	const tag = $derived(
 		stacked
@@ -49,10 +52,8 @@
 	const visibleRank = $derived(displayRank ?? candidate.rank);
 	const visibleRankCaption = $derived(rankCaption(visibleRank, rankSuffix));
 	const designLabel = $derived(stacked ? `Design ${tag}` : null);
-	const isAutoPick = $derived(
-		kind === 'ranked' &&
-			(stacked ? candidate.stack_rank === 1 && candidate.stack_pos === 1 : candidate.rank === 1)
-	);
+	const isRanked = $derived(kind === 'ranked');
+	const isAutoPick = $derived(isRanked && isPersistedAutoPick);
 	let imgFailed = $state(false);
 
 	const reason = $derived(rejectionTag(candidate));
@@ -60,9 +61,11 @@
 	const tileTitle = $derived(
 		kind === 'rejected'
 			? reasonDetail
-			: designLabel
-				? `${visibleRankCaption} · ${designLabel}`
-				: visibleRankCaption
+			: kind === 'candidate'
+				? 'Review candidate'
+				: designLabel
+					? `${visibleRankCaption} · ${designLabel}`
+					: visibleRankCaption
 	);
 </script>
 
@@ -87,7 +90,7 @@
 				onerror={() => (imgFailed = true)}
 			/>
 		{/if}
-		{#if kind === 'ranked' && candidate.final_score != null}
+		{#if isRanked && candidate.final_score != null}
 			<div class="score mono">{candidate.final_score.toFixed(3)}</div>
 		{/if}
 		{#if selected}
@@ -98,8 +101,10 @@
 		{/if}
 	</div>
 	<div class="cap" class:has-collapse={onCollapse != null}>
-		{#if kind === 'ranked'}
+		{#if isRanked}
 			<span class="cap-main">{visibleRankCaption}</span>
+		{:else if kind === 'candidate'}
+			<span class="cap-main">Candidate</span>
 		{:else}
 			<span class="cap-main bad-text" title={reasonDetail}>{reason}</span>
 		{/if}
