@@ -7,6 +7,10 @@ export interface Paginated<T> {
 	items: T[];
 }
 
+export interface LibraryPage<T> extends Paginated<T> {
+	review_pending_total: number;
+}
+
 export interface ConfigurationHealth {
 	status: string;
 	version?: number;
@@ -100,6 +104,7 @@ export interface MovieListItem {
 	video_height: number | null;
 	resolution: string | null;
 	poster_status: PosterStatus;
+	review_pending: boolean;
 	poster_url: string | null;
 	media_file_id: number | null;
 }
@@ -117,18 +122,6 @@ export interface PosterSummary {
 
 export type SeasonPosterStatus = 'complete' | 'partial' | 'missing';
 
-export interface SeriesListItem {
-	id: number;
-	title: string;
-	year: number | null;
-	tmdb_id: number | null;
-	poster: PosterSummary;
-	downloaded_seasons: number;
-	seasons_with_poster: number;
-	season_poster_status: SeasonPosterStatus;
-	season_count: number | null;
-}
-
 export interface SeasonSummary {
 	id: number;
 	season_number: number;
@@ -137,11 +130,26 @@ export interface SeasonSummary {
 	poster: PosterSummary;
 }
 
+export interface SeriesListItem {
+	id: number;
+	title: string;
+	year: number | null;
+	tmdb_id: number | null;
+	genres: string[] | null;
+	poster: PosterSummary;
+	review_pending: boolean;
+	downloaded_seasons: number;
+	seasons_with_poster: number;
+	season_poster_status: SeasonPosterStatus;
+	season_count: number | null;
+	/** Downloaded seasons only, sorted numerically by season number. */
+	seasons: SeasonSummary[];
+}
+
 export interface SeriesDetail extends SeriesListItem {
 	tvdb_id: number | null;
 	show_text_profile_id: string | null;
 	season_text_profile_id: string | null;
-	seasons: SeasonSummary[];
 }
 
 export interface MovieQuery {
@@ -149,6 +157,7 @@ export interface MovieQuery {
 	page_size?: number;
 	q?: string;
 	poster_status?: PosterStatus;
+	artwork_status?: 'missing' | 'deployed' | 'review';
 	exclude_in_review?: boolean;
 	include_unavailable?: boolean;
 	sort?: 'title' | 'year' | 'added';

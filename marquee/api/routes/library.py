@@ -22,7 +22,7 @@ from marquee.core.jobs.submission import IdempotencyConflictError, SubmissionErr
 from marquee.core.movie_queries import movie_downloaded, movie_review_pending
 from marquee.core.poster_subjects import PosterSubject
 from marquee.core.sort_title import title_sort_expr
-from marquee.core.tv_queries import season_downloaded, series_visible
+from marquee.core.tv_queries import season_downloaded, series_review_pending, series_visible
 from marquee.database import get_db
 from marquee.models import (
     Episode,
@@ -51,6 +51,16 @@ def _season_poster_status(downloaded_seasons: int, seasons_with_poster: int) -> 
     if seasons_with_poster >= downloaded_seasons:
         return "complete"
     return "partial"
+
+
+def _season_summary(season: Season) -> dict:
+    return {
+        "id": season.id,
+        "season_number": season.season_number,
+        "episode_count": season.episode_count,
+        "episode_file_count": season.episode_file_count,
+        "poster": _poster_summary(season),
+    }
 
 
 def _serve_subject_poster(subject, *, media_type: str):
@@ -103,6 +113,10 @@ async def list_movies(
     poster_status: str | None = Query(
         None, description="Filter: missing | review | approved | deployed"
     ),
+    artwork_status: str | None = Query(
+        None,
+        description="Simplified library filter: missing | deployed | review",
+    ),
     exclude_in_review: bool = Query(
         False,
         description="Exclude movies whose latest unreviewed pipeline result is already in review.",
@@ -116,21 +130,31 @@ async def list_movies(
 
     Optional filters map to real columns.
     """
-    base = select(Movie)
-
-    conditions = [Movie.is_present.is_(True)]
+    review_pending = movie_review_pending()
+    library_conditions = [Movie.is_present.is_(True)]
     if not include_unavailable:
-        conditions.append(movie_downloaded())
+        library_conditions.append(movie_downloaded())
+    conditions = list(library_conditions)
     if q:
         conditions.append(Movie.title.ilike(f"%{q}%"))
     if poster_status and (pred := poster_status_filter(poster_status)) is not None:
         conditions.append(pred)
+    if artwork_status == "review":
+        conditions.append(review_pending)
+    elif artwork_status == "deployed":
+        conditions.extend((~review_pending, Movie.poster_path.is_not(None)))
+    elif artwork_status == "missing":
+        conditions.extend((~review_pending, Movie.poster_path.is_(None)))
     if exclude_in_review:
-        conditions.append(~movie_review_pending())
-    if conditions:
-        base = base.where(*conditions)
+        conditions.append(~review_pending)
+    base = select(Movie, review_pending.label("review_pending")).where(*conditions)
 
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+    review_pending_total = (
+        await db.execute(
+            select(func.count()).select_from(Movie).where(*library_conditions, review_pending)
+        )
+    ).scalar_one()
 
     if sort == "year":
         order_col = Movie.year.desc()
@@ -142,7 +166,7 @@ async def list_movies(
         await db.execute(base.order_by(order_col).limit(page_size).offset((page - 1) * page_size))
     ).all()
 
-    movies = [m for (m,) in rows]
+    movies = [movie for movie, _ in rows]
     movie_ids = [m.id for m in movies]
     media_rows = (
         (
@@ -161,8 +185,17 @@ async def list_movies(
     )
     mf_by_movie = {mf.movie_id: mf for mf in media_rows}
 
-    items = [enrich_movie(movie, mf_by_movie.get(movie.id)) for movie in movies]
-    return {"total": total, "page": page, "page_size": page_size, "items": items}
+    items = [
+        enrich_movie(movie, mf_by_movie.get(movie.id), review_pending=bool(pending))
+        for movie, pending in rows
+    ]
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "review_pending_total": review_pending_total,
+        "items": items,
+    }
 
 
 @router.get("/movies/{movie_id}/poster")
@@ -177,11 +210,16 @@ async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(ge
 
 @router.get("/movies/{movie_id}")
 async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    movie = (
-        await db.execute(select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True)))
-    ).scalar_one_or_none()
-    if movie is None:
+    row = (
+        await db.execute(
+            select(Movie, movie_review_pending().label("review_pending")).where(
+                Movie.id == movie_id, Movie.is_present.is_(True)
+            )
+        )
+    ).one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Movie id={movie_id} not found")
+    movie, review_pending = row
     mf = (
         await db.execute(
             select(MediaFile).where(
@@ -191,7 +229,7 @@ async def get_movie(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)])
             )
         )
     ).scalar_one_or_none()
-    item = enrich_movie(movie, mf)
+    item = enrich_movie(movie, mf, review_pending=bool(review_pending))
     item["media_file_path"] = mf.path if mf else None
     return item
 
@@ -202,24 +240,28 @@ async def list_series(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ):
-    base = select(Series).where(series_visible())
+    review_pending = series_review_pending()
+    base = select(Series, review_pending.label("review_pending")).where(series_visible())
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (
-        (
-            await db.execute(
-                base.order_by(title_sort_expr(Series.title))
-                .limit(page_size)
-                .offset((page - 1) * page_size)
-            )
+    review_pending_total = (
+        await db.execute(
+            select(func.count()).select_from(Series).where(series_visible(), review_pending)
         )
-        .scalars()
-        .all()
-    )
-    series_ids = [series.id for series in rows]
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(title_sort_expr(Series.title))
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+    ).all()
+    series_ids = [series.id for series, _ in rows]
     season_rows = (
         (
             await db.execute(
-                select(Season).where(Season.series_id.in_(series_ids), season_downloaded())
+                select(Season)
+                .where(Season.series_id.in_(series_ids), season_downloaded())
+                .order_by(Season.series_id, Season.season_number)
             )
         )
         .scalars()
@@ -229,40 +271,51 @@ async def list_series(
     )
     downloaded_counts: dict[int, int] = dict.fromkeys(series_ids, 0)
     poster_counts: dict[int, int] = dict.fromkeys(series_ids, 0)
+    seasons_by_series: dict[int, list[dict]] = {series_id: [] for series_id in series_ids}
     for season in season_rows:
         downloaded_counts[season.series_id] = downloaded_counts.get(season.series_id, 0) + 1
         if season.poster_path is not None:
             poster_counts[season.series_id] = poster_counts.get(season.series_id, 0) + 1
+        seasons_by_series.setdefault(season.series_id, []).append(_season_summary(season))
     return {
         "total": total,
         "page": page,
         "page_size": page_size,
+        "review_pending_total": review_pending_total,
         "items": [
             {
                 "id": s.id,
                 "title": s.title,
                 "year": s.year,
                 "tmdb_id": s.tmdb_id,
+                "genres": s.genres,
                 "poster": _poster_summary(s),
+                "review_pending": bool(pending),
                 "downloaded_seasons": downloaded_counts.get(s.id, 0),
                 "seasons_with_poster": poster_counts.get(s.id, 0),
                 "season_poster_status": _season_poster_status(
                     downloaded_counts.get(s.id, 0), poster_counts.get(s.id, 0)
                 ),
                 "season_count": s.season_count,
+                "seasons": seasons_by_series.get(s.id, []),
             }
-            for s in rows
+            for s, pending in rows
         ],
     }
 
 
 @router.get("/series/{series_id}")
 async def get_series(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
-    series = (
-        await db.execute(select(Series).where(Series.id == series_id, series_visible()))
-    ).scalar_one_or_none()
-    if series is None:
+    row = (
+        await db.execute(
+            select(Series, series_review_pending().label("review_pending")).where(
+                Series.id == series_id, series_visible()
+            )
+        )
+    ).one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Series id={series_id} not found")
+    series, review_pending = row
     seasons = (
         (
             await db.execute(
@@ -282,23 +335,16 @@ async def get_series(series_id: int, db: Annotated[AsyncSession, Depends(get_db)
         "year": series.year,
         "tmdb_id": series.tmdb_id,
         "tvdb_id": series.tvdb_id,
+        "genres": series.genres,
         "poster": _poster_summary(series),
+        "review_pending": bool(review_pending),
         "downloaded_seasons": downloaded_seasons,
         "seasons_with_poster": seasons_with_poster,
         "season_poster_status": _season_poster_status(downloaded_seasons, seasons_with_poster),
         "season_count": series.season_count,
         "show_text_profile_id": series.show_text_profile_id,
         "season_text_profile_id": series.season_text_profile_id,
-        "seasons": [
-            {
-                "id": season.id,
-                "season_number": season.season_number,
-                "episode_count": season.episode_count,
-                "episode_file_count": season.episode_file_count,
-                "poster": _poster_summary(season),
-            }
-            for season in seasons
-        ],
+        "seasons": [_season_summary(season) for season in seasons],
     }
 
 

@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { filmMode } from '$lib/theme';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import { filmMode, libraryPosterSize } from '$lib/theme';
 	import FilmList from '$lib/components/FilmList.svelte';
 	import FilmGrid from '$lib/components/FilmGrid.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -40,25 +39,27 @@
 	function selectVal(e: Event): string | undefined {
 		return (e.currentTarget as HTMLSelectElement).value || undefined;
 	}
+
+	function toggleReview() {
+		clearTimeout(debounce);
+		if (data.query.artwork_status === 'review') {
+			apply({ artwork_status: undefined });
+			return;
+		}
+		q = '';
+		apply({ q: undefined, artwork_status: 'review', poster_status: undefined });
+	}
 </script>
 
-<SectionHeader title="Films" subtitle={data.data ? `${data.data.total} movies` : 'Movie library'}>
-	{#snippet action()}
-		<div class="modes">
-			<button class:on={$filmMode === 'list'} onclick={() => ($filmMode = 'list')} title="List">
-				<Icon name="list" size={16} />
-			</button>
-			<button class:on={$filmMode === 'grid'} onclick={() => ($filmMode = 'grid')} title="Grid">
-				<Icon name="grid" size={16} />
-			</button>
-		</div>
-	{/snippet}
-</SectionHeader>
+<svelte:head>
+	<title>Film Library · Marquee</title>
+</svelte:head>
 
 <div class="filters">
 	<label class="search">
 		<Icon name="search" size={15} />
 		<input
+			aria-label="Search film titles"
 			placeholder="Search titles…"
 			value={q}
 			oninput={(e) => onSearch((e.currentTarget as HTMLInputElement).value)}
@@ -66,38 +67,70 @@
 	</label>
 
 	<select
-		value={data.query.poster_status ?? ''}
-		onchange={(e) => apply({ poster_status: selectVal(e) })}
+		aria-label="Filter films by artwork status"
+		value={data.query.artwork_status === 'review' ? '' : (data.query.artwork_status ?? '')}
+		onchange={(e) => apply({ artwork_status: selectVal(e), poster_status: undefined })}
 	>
 		<option value="">Poster: any</option>
 		<option value="deployed">Deployed</option>
-		<option value="approved">Approved</option>
-		<option value="review">Review</option>
-		<option value="missing">No poster</option>
+		<option value="missing">Missing</option>
 	</select>
 
-	<select value={data.query.sort ?? 'title'} onchange={(e) => apply({ sort: selectVal(e) }, false)}>
+	<select
+		aria-label="Sort films"
+		value={data.query.sort ?? 'title'}
+		onchange={(e) => apply({ sort: selectVal(e) }, false)}
+	>
 		<option value="title">Sort: Title</option>
 		<option value="year">Sort: Year</option>
 		<option value="added">Sort: Added</option>
 	</select>
+
+	{#if $filmMode === 'grid'}
+		<select aria-label="Poster size" bind:value={$libraryPosterSize}>
+			<option value="small">Size: Small</option>
+			<option value="medium">Size: Medium</option>
+			<option value="large">Size: Large</option>
+		</select>
+	{/if}
+
+	<div class="modes" role="group" aria-label="Film library view">
+		<button
+			type="button"
+			class:on={$filmMode === 'list'}
+			onclick={() => ($filmMode = 'list')}
+			title="Table view"
+			aria-label="Table view"
+			aria-pressed={$filmMode === 'list'}
+		>
+			<Icon name="list" size={16} />
+		</button>
+		<button
+			type="button"
+			class:on={$filmMode === 'grid'}
+			onclick={() => ($filmMode = 'grid')}
+			title="Grid view"
+			aria-label="Grid view"
+			aria-pressed={$filmMode === 'grid'}
+		>
+			<Icon name="grid" size={16} />
+		</button>
+	</div>
 </div>
 
-<div class="quick-filters">
-	<button
-		class="qf-pill"
-		class:on={data.query.poster_status === 'review'}
-		onclick={() =>
-			apply({
-				poster_status: data.query.poster_status === 'review' ? undefined : 'review'
-			})}
-	>
-		Needs review
-		{#if data.query.poster_status === 'review' && data.data}
-			<span class="qf-count">{data.data.total}</span>
-		{/if}
-	</button>
-</div>
+{#if data.data && data.data.review_pending_total > 0}
+	<div class="quick-filters">
+		<button
+			class="qf-pill"
+			class:on={data.query.artwork_status === 'review'}
+			aria-pressed={data.query.artwork_status === 'review'}
+			onclick={toggleReview}
+		>
+			Needs review
+			<span class="qf-count">{data.data.review_pending_total}</span>
+		</button>
+	</div>
+{/if}
 
 {#if data.error}
 	<div class="state error">
@@ -133,6 +166,7 @@
 <style>
 	.modes {
 		display: flex;
+		flex: none;
 		gap: 2px;
 		background: var(--panel);
 		border: 1px solid var(--line2);
@@ -149,12 +183,17 @@
 		background: transparent;
 		color: var(--muted);
 	}
+	.modes button:hover {
+		color: var(--text);
+		background: var(--panel2);
+	}
 	.modes button.on {
 		background: var(--gold);
 		color: var(--on-gold);
 	}
 	.filters {
 		display: flex;
+		align-items: center;
 		flex-wrap: wrap;
 		gap: 10px;
 		margin-bottom: 16px;
@@ -256,9 +295,9 @@
 		background: var(--panel2);
 	}
 	.qf-pill.on {
-		background: var(--gold);
-		border-color: var(--gold-deep);
-		color: var(--on-gold);
+		border-color: color-mix(in srgb, var(--review) 45%, var(--line2));
+		background: color-mix(in srgb, var(--review) 14%, var(--panel));
+		color: var(--review);
 	}
 	.qf-count {
 		font-family: var(--font-mono);

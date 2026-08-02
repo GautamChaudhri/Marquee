@@ -14,6 +14,7 @@
 		columns,
 		density,
 		connection,
+		activityHref = null,
 		selectable = false,
 		selected,
 		onSelected,
@@ -23,6 +24,8 @@
 		columns: ActivityColumn[];
 		density: ActivityDensity;
 		connection: ConnectionState;
+		/** Workspace-only shortcut; the Activity page itself leaves this empty. */
+		activityHref?: string | null;
 		/** Checkboxes stay out of the way until the page enters selection mode. */
 		selectable?: boolean;
 		selected: boolean;
@@ -92,6 +95,7 @@
 					onToggle={(open) => (rosterOpen = open)}
 				/>
 			{/if}
+			{#if activityHref}<a class="activity-link" href={activityHref}>Activity</a>{/if}
 			<ActivityActions {row} {onCommand} />
 			{#if visible('time') && time}
 				<time datetime={time}>{new Date(time).toLocaleString()}</time>
@@ -164,6 +168,20 @@
 	/* The actions bar carries its own padding for the contexts where it stands alone. */
 	.rowbar :global(.actions) {
 		padding: 0;
+	}
+	.activity-link {
+		display: inline-flex;
+		align-items: center;
+		min-height: 32px;
+		padding: 6px 9px;
+		border: 1px solid var(--line2);
+		border-radius: 7px;
+		background: var(--panel2);
+		color: var(--text);
+		font-size: 11px;
+	}
+	.activity-link:hover {
+		border-color: var(--gold);
 	}
 	/* A command that failed has to say so on its own line, not squeeze between buttons. */
 	.rowbar :global(.error) {

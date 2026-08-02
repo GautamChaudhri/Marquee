@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/svelte';
+import { render, screen, waitFor, within } from '@testing-library/svelte';
 import userEvent from '@testing-library/user-event';
 import { SvelteMap } from 'svelte/reactivity';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,10 +8,26 @@ import FeatureActivityPanel from './FeatureActivityPanel.svelte';
 import { makeRow, makeSnapshot, subjects } from './fixtures';
 
 const { getStore } = vi.hoisted(() => ({ getStore: vi.fn() }));
-const { listContainedWork } = vi.hoisted(() => ({ listContainedWork: vi.fn() }));
+const { cancelJob, listContainedWork, pauseJob, resumeJob, retryJob, setJobPriority } = vi.hoisted(
+	() => ({
+		cancelJob: vi.fn(),
+		listContainedWork: vi.fn(),
+		pauseJob: vi.fn(),
+		resumeJob: vi.fn(),
+		retryJob: vi.fn(),
+		setJobPriority: vi.fn()
+	})
+);
 
 vi.mock('../context', () => ({ getJobProgressStore: getStore }));
-vi.mock('../client', () => ({ cancelJob: vi.fn(), listContainedWork }));
+vi.mock('../client', () => ({
+	cancelJob,
+	listContainedWork,
+	pauseJob,
+	resumeJob,
+	retryJob,
+	setJobPriority
+}));
 
 function containedWork(): ContainedWorkSummary {
 	return {
@@ -233,5 +249,29 @@ describe('FeatureActivityPanel contained work', () => {
 		await user.click(toggle);
 		expect(await screen.findByText('Deadpool')).toBeVisible();
 		expect(screen.getByText(/Stage 7 of 11 · Filtering · 47 posters found/)).toBeVisible();
+	});
+
+	it('uses the Activity row shell and adds only the workspace Activity shortcut', async () => {
+		const groupRow = row('group', 'Get Film Posters · 2 Subjects', subjects.posterCandidates);
+		groupRow.job_type = 'poster_pipeline_group';
+		groupRow.contained_work = containedWork();
+		const store = fakeStore([record(groupRow)]);
+		getStore.mockReturnValue(store);
+
+		render(FeatureActivityPanel, {
+			props: { scopeKey: 'films', query: { type: 'poster_pipeline_group' }, jobIds: ['group'] }
+		});
+
+		await screen.findByText('Get Film Posters · 2 Subjects');
+		const activityRow = document.querySelector<HTMLElement>('article.activity-row');
+		expect(activityRow).not.toBeNull();
+		expect(within(activityRow!).getByRole('button', { name: /Posters in this run/ })).toBeVisible();
+		expect(within(activityRow!).getByRole('link', { name: 'Activity' })).toHaveAttribute(
+			'href',
+			'/projection-room'
+		);
+		expect(within(activityRow!).getByRole('link', { name: 'Details' })).toBeVisible();
+		expect(within(activityRow!).getByRole('button', { name: 'Cancel' })).toBeVisible();
+		expect(within(activityRow!).getByText(/2026/)).toBeVisible();
 	});
 });

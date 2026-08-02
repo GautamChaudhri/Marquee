@@ -8,44 +8,67 @@
 		year,
 		posterStatus,
 		posterUrl = null,
+		imageAlt = title,
 		gradientKey = title,
 		centerTitle = false,
-		rounded = true
+		rounded = true,
+		fallbackStyle = 'gradient',
+		fallbackPlacement
 	}: {
 		title: string;
 		year?: number | null;
 		posterStatus?: PosterStatus;
 		posterUrl?: string | null;
+		/** Accessible description for a deployed image; fallback copy remains `title`. */
+		imageAlt?: string;
 		/** Stable seed for the fallback gradient when the visible title is abbreviated. */
 		gradientKey?: string;
-		/** Center fallback metadata without changing the layout of regular thumbnails. */
+		/** Backwards-compatible alias for a centered fallback. */
 		centerTitle?: boolean;
 		rounded?: boolean;
+		/** Use a quiet solid placeholder where a decorative gradient would compete with nearby art. */
+		fallbackStyle?: 'gradient' | 'plain';
+		/** Position fallback copy independently from deployed-image alt text. */
+		fallbackPlacement?: 'bottom-left' | 'center' | 'hidden';
 	} = $props();
 
 	const g = $derived(gradientFor(gradientKey));
 	const status = $derived(posterStatus ? posterStatusMeta[posterStatus] : null);
+	const placement = $derived(fallbackPlacement ?? (centerTitle ? 'center' : 'bottom-left'));
 
 	let imgFailed = $state(false);
+	let attemptedPosterUrl = $state<string | null | undefined>(undefined);
 	const showImg = $derived(!!posterUrl && !imgFailed);
+
+	$effect(() => {
+		// A component can be reused for another record after filtering or navigation.
+		// Give a new URL a fresh load attempt instead of retaining a previous failure.
+		if (posterUrl !== attemptedPosterUrl) {
+			attemptedPosterUrl = posterUrl;
+			imgFailed = false;
+		}
+	});
 </script>
 
 <div
 	class="poster"
 	class:flat={!rounded}
-	class:centered-title={centerTitle}
+	class:centered-title={placement === 'center'}
+	class:bottom-left-title={placement === 'bottom-left'}
+	class:plain-fallback={fallbackStyle === 'plain' && !showImg}
 	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}"
 >
 	{#if showImg}
-		<img src={posterUrl} alt={title} class="cover" onerror={() => (imgFailed = true)} />
+		<img src={posterUrl} alt={imageAlt} class="cover" onerror={() => (imgFailed = true)} />
 	{/if}
-	<div class="badges">
-		{#if status}<StatusDot tone={status.tone} title={status.label} />{/if}
-		<span class="spacer"></span>
-	</div>
-	{#if !showImg}
+	{#if status}
+		<div class="badges"><StatusDot tone={status.tone} title={status.label} /></div>
+	{/if}
+	{#if !showImg && placement !== 'hidden'}
 		<div class="meta">
-			<div class="title" style="color:{g[2]}">{title}</div>
+			<div class="title" style:color={fallbackStyle === 'plain' ? 'var(--muted)' : g[2]}>
+				{title}
+			</div>
 			{#if year}<div class="year">{year}</div>{/if}
 		</div>
 	{/if}
@@ -67,6 +90,9 @@
 	.poster.flat {
 		border-radius: 0;
 	}
+	.poster.plain-fallback {
+		background: var(--ink2);
+	}
 	.cover {
 		position: absolute;
 		inset: 0;
@@ -81,10 +107,8 @@
 		position: relative;
 		z-index: 1;
 	}
-	.spacer {
-		flex: 1;
-	}
 	.meta {
+		margin-top: auto;
 		text-shadow: 0 1px 6px var(--poster-shade);
 		position: relative;
 		z-index: 1;
@@ -96,6 +120,12 @@
 		place-content: center;
 		padding: 8px;
 		text-align: center;
+	}
+	.poster.plain-fallback .meta {
+		text-shadow: none;
+	}
+	.poster.plain-fallback .year {
+		color: var(--muted);
 	}
 	.title {
 		font-size: 12px;

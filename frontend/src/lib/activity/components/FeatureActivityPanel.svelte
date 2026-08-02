@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { onMount, untrack } from 'svelte';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
-	import { cancelJob } from '../client';
+	import { cancelJob, pauseJob, resumeJob, retryJob, setJobPriority } from '../client';
 	import { getJobProgressStore } from '../context';
 	import type { JobRecord } from '../store.svelte';
-	import type { ContainedWorkSummary, JobSnapshotResponse, ListJobsQuery } from '../types';
-	import ContainedWorkDisclosure from './ContainedWorkDisclosure.svelte';
-	import ContainedWorkToggle from './ContainedWorkToggle.svelte';
-	import JobProgressCard from './JobProgressCard.svelte';
+	import type { CommandResponse, JobRow, JobSnapshotResponse, ListJobsQuery } from '../types';
+	import ActivityRow from './ActivityRow.svelte';
+
+	type LifecycleAction = 'cancel' | 'pause' | 'resume' | 'change_priority' | 'retry';
 
 	let {
 		scopeKey,
@@ -56,18 +56,7 @@
 			const record = store.records.get(jobId);
 			if (record) byId.set(jobId, record);
 		}
-		return [...byId.values()].flatMap((record) =>
-			record.row
-				? [
-						{
-							jobId: record.jobId,
-							row: record.row,
-							snapshot: record.snapshot,
-							freshness: record.freshness
-						}
-					]
-				: []
-		);
+		return [...byId.values()].filter((record) => record.row !== null);
 	});
 	const activityState = $derived.by(() => {
 		const activeJobIds = new SvelteSet<string>();
@@ -165,21 +154,28 @@
 		}
 	});
 
-	// Rosters are per card, and a workspace can show several at once.
-	const openRosters = new SvelteSet<string>();
-
-	function containedWorkOf(record: (typeof records)[number]): ContainedWorkSummary | null {
-		return record.snapshot?.contained_work ?? record.row.contained_work ?? null;
-	}
-
-	function toggleRoster(jobId: string, open: boolean): void {
-		if (open) openRosters.add(jobId);
-		else openRosters.delete(jobId);
-	}
-
-	async function requestCancel(jobId: string, expectedFenceToken: number) {
-		const response = await cancelJob(fetch, jobId, expectedFenceToken);
+	async function command(
+		row: JobRow,
+		action: LifecycleAction,
+		priority?: number
+	): Promise<CommandResponse> {
+		const response =
+			action === 'cancel'
+				? await cancelJob(fetch, row.job_id, row.fence_token)
+				: action === 'pause'
+					? await pauseJob(fetch, row.job_id, row.fence_token)
+					: action === 'resume'
+						? await resumeJob(fetch, row.job_id, row.fence_token)
+						: action === 'retry'
+							? await retryJob(fetch, row.job_id, row.fence_token)
+							: await setJobPriority(fetch, row.job_id, priority ?? row.priority, row.fence_token);
 		store.track(response.snapshot.job_id);
+		if (response.replacement_job_id) store.track(response.replacement_job_id);
+		for (const key of queueScopeKeys) store.refreshScope(key);
+		if (includeHistory) {
+			for (const key of historyScopeKeys) store.refreshScope(key);
+		}
+		return response;
 	}
 </script>
 
@@ -196,36 +192,16 @@
 		</header>
 		<div class="cards">
 			{#each records as record (record.jobId)}
-				{@const containedWork = containedWorkOf(record)}
-				{@const rosterId = `feature-roster-${record.jobId}`}
-				<div class="card-shell">
-					<JobProgressCard
-						row={record.row}
-						snapshot={record.snapshot}
-						connection={store.connection}
-						recordFreshness={record.freshness}
-						{containedWork}
-						onCancel={requestCancel}
-					/>
-					{#if containedWork}
-						<!-- The same roster the Activity page offers. A workspace showing the
-						     card but not the subjects inside it is the odd one out. -->
-						<div class="rowbar">
-							<ContainedWorkToggle
-								label={containedWork.label}
-								controls={rosterId}
-								open={openRosters.has(record.jobId)}
-								onToggle={(open) => toggleRoster(record.jobId, open)}
-							/>
-						</div>
-						<ContainedWorkDisclosure
-							id={rosterId}
-							jobId={record.jobId}
-							summary={containedWork}
-							open={openRosters.has(record.jobId)}
-						/>
-					{/if}
-				</div>
+				<ActivityRow
+					{record}
+					columns={['time']}
+					density="comfortable"
+					connection={store.connection}
+					activityHref="/projection-room"
+					selected={false}
+					onSelected={() => undefined}
+					onCommand={command}
+				/>
 			{/each}
 		</div>
 	</section>
@@ -236,18 +212,6 @@
 	.cards {
 		display: grid;
 		gap: 10px;
-	}
-	.card-shell {
-		display: grid;
-		min-width: 0;
-		gap: 8px;
-	}
-	.rowbar {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 6px;
-		padding: 0 8px;
 	}
 	.feature-activity {
 		margin-block-end: 16px;

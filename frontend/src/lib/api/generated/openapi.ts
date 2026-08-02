@@ -5796,6 +5796,8 @@ export interface operations {
 				q?: string | null;
 				/** @description Filter: missing | review | approved | deployed */
 				poster_status?: string | null;
+				/** @description Simplified library filter: missing | deployed | review */
+				artwork_status?: string | null;
 				/** @description Exclude movies whose latest unreviewed pipeline result is already in review. */
 				exclude_in_review?: boolean;
 				/** @description Include Radarr movies that do not have a downloaded file yet. */

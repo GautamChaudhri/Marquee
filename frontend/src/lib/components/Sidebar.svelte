@@ -56,6 +56,7 @@
 
 	const isActive = (href: string) =>
 		page.url.pathname === href || page.url.pathname.startsWith(href + '/');
+	const isExact = (href: string) => page.url.pathname === href;
 </script>
 
 <aside class:collapsed={$sidebarCollapsed}>
@@ -71,31 +72,41 @@
 			<div class="group">
 				{#if !$sidebarCollapsed}<div class="gname">{g.name}</div>{/if}
 				{#each g.links as l (l.href)}
-					<a
-						href={l.href}
-						class="link"
-						class:on={isActive(l.href)}
-						class:has-kids={l.children}
-						title={l.label}
-					>
-						<Icon name={l.icon} size={18} />
-						{#if !$sidebarCollapsed}<span>{l.label}</span>{/if}
-						{#if l.activityBadge}<ActivityNavBadge />{/if}
-					</a>
 					{#if l.children}
-						<div class="sublinks">
-							{#each l.children as child (child.href)}
-								<a
-									href={child.href}
-									class="sublink"
-									class:on={isActive(child.href)}
-									title={`${l.label} · ${child.label}`}
-								>
-									<Icon name={child.icon} size={14} />
-									{#if !$sidebarCollapsed}<span>{child.label}</span>{/if}
-								</a>
-							{/each}
+						<div class="split-row">
+							<a
+								href={l.href}
+								class="link split-main"
+								class:on={isExact(l.href)}
+								class:section-on={isActive(l.href) && !isExact(l.href)}
+								title={l.label}
+								aria-label={l.label}
+								aria-current={isExact(l.href) ? 'page' : undefined}
+							>
+								<Icon name={l.icon} size={18} />
+								{#if !$sidebarCollapsed}<span>{l.label}</span>{/if}
+							</a>
+							<div class="workspace-links">
+								{#each l.children as child (child.href)}
+									<a
+										href={child.href}
+										class="workspace-link"
+										class:on={isActive(child.href)}
+										title={`${l.label} · ${child.label}`}
+										aria-label={`${l.label}: ${child.label}`}
+										aria-current={isActive(child.href) ? 'page' : undefined}
+									>
+										<Icon name={child.icon} size={16} />
+									</a>
+								{/each}
+							</div>
 						</div>
+					{:else}
+						<a href={l.href} class="link" class:on={isActive(l.href)} title={l.label}>
+							<Icon name={l.icon} size={18} />
+							{#if !$sidebarCollapsed}<span>{l.label}</span>{/if}
+							{#if l.activityBadge}<ActivityNavBadge />{/if}
+						</a>
 					{/if}
 				{/each}
 			</div>
@@ -194,45 +205,65 @@
 		background: var(--gold-soft);
 		color: var(--gold);
 	}
-	.link.has-kids {
-		border-bottom-left-radius: 3px;
-		border-bottom-right-radius: 3px;
+	:global([data-theme='light']) .link.on {
+		color: color-mix(in srgb, var(--gold) 50%, var(--text));
 	}
-	/* Two half-width shortcuts, visually welded to the parent link above them. */
-	.sublinks {
+	.link:focus-visible,
+	.workspace-link:focus-visible {
+		outline: 2px solid var(--gold);
+		outline-offset: 2px;
+	}
+	/* Pipeline and its two media workspaces read as one compact navigation control. */
+	.split-row {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 2px;
-		margin-top: 2px;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: stretch;
+		gap: 4px;
 	}
-	.sublink {
+	.split-main {
+		min-width: 0;
+	}
+	.split-main.section-on {
+		background: color-mix(in srgb, var(--gold) 6%, var(--panel));
+		color: var(--text);
+	}
+	.workspace-links {
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		gap: 6px;
-		padding: 6px 8px;
-		border-radius: 3px 3px 8px 8px;
+		gap: 2px;
+		padding: 2px;
+		border: 1px solid var(--line);
+		border-radius: 8px;
 		background: var(--panel);
-		color: var(--muted);
-		font-size: 12px;
-		font-weight: 500;
-		white-space: nowrap;
-		overflow: hidden;
 	}
-	.sublink:hover {
+	.workspace-link {
+		display: flex;
+		width: 30px;
+		min-height: 30px;
+		align-items: center;
+		justify-content: center;
+		border-radius: 6px;
+		color: var(--muted);
+	}
+	.workspace-link:hover {
 		background: var(--panel2);
 		color: var(--text);
 	}
-	.sublink.on {
-		background: color-mix(in srgb, var(--gold) 12%, var(--panel));
-		color: var(--gold);
+	.workspace-link.on {
+		background: var(--gold);
+		color: var(--on-gold);
 	}
-	.collapsed .sublinks {
-		grid-template-columns: 1fr;
+	.collapsed .split-row {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
 	}
-	.collapsed .sublink {
-		border-radius: 6px;
-		padding: 5px 0;
+	.collapsed .workspace-links {
+		flex-direction: column;
+	}
+	.collapsed .workspace-link {
+		width: 30px;
+		min-height: 28px;
 	}
 	.collapsed .link,
 	.collapsed .brand {

@@ -57,13 +57,10 @@ from marquee.core.jobs.submission import (
     SubmissionIntent,
     submit_job,
 )
-from marquee.core.movie_queries import (
-    REVIEW_QUEUE_STATUSES,
-    movie_downloaded,
-    movie_review_pending,
-)
+from marquee.core.movie_queries import movie_downloaded, movie_review_pending
 from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
 from marquee.core.rate_limit import RateLimiter
+from marquee.core.review_queries import REVIEW_QUEUE_STATUSES, terminal_review_conditions
 from marquee.core.sort_title import title_sort_expr
 from marquee.database import get_db
 from marquee.models import (
@@ -102,12 +99,8 @@ def _review_queue_latest():
         .outerjoin(Job, Job.id == PipelineRun.job_id)
         .where(
             PipelineRun.media_type == "movie",
-            PipelineRun.feedback_event_id.is_(None),
-            PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
             movie_downloaded(),
-            # Canonical runs publish when their producing leaf terminalizes. A
-            # ticketless batch parent may continue running later chunks.
-            or_(PipelineRun.job_id.is_(None), Job.phase == "terminal"),
+            *terminal_review_conditions(),
         )
         .group_by(PipelineRun.movie_id)
         .subquery()
@@ -1061,7 +1054,7 @@ async def review_queue(
         mf = mf_by_movie.get(movie.id)
         items.append(
             {
-                "movie": enrich_movie(movie, mf),
+                "movie": enrich_movie(movie, mf, review_pending=True),
                 "run": {
                     "run_id": run.run_id,
                     "status": run.status,

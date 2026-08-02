@@ -138,7 +138,28 @@ function activeMovieJobRow() {
 			wait: null
 		},
 		work_items: null,
-		contained_work: null,
+		contained_work: {
+			version: 1,
+			source: 'work_items',
+			label: 'Posters in this run',
+			item_label_singular: 'subject',
+			item_label_plural: 'subjects',
+			total: 1,
+			completed: 0,
+			counts: {
+				pending: 0,
+				running: 1,
+				retrying: 0,
+				succeeded: 0,
+				no_change: 0,
+				review_required: 0,
+				failed: 0,
+				cancelled: 0
+			},
+			sequence: 1,
+			updated_at: now,
+			href: '/api/jobs/movieactivity00000000000000000001/contained-work'
+		},
 		priority: 0,
 		fence_token: 1,
 		execution_class: 'gpu',
@@ -257,6 +278,16 @@ test('movie activity has visible separation from the run grid', async ({ page })
 	const grid = page.locator('.rev-grid');
 	await expect(panel).toBeVisible();
 	await expect(grid).toBeVisible();
+	const activityRow = panel.locator('article.activity-row');
+	await expect(activityRow).toHaveCount(1);
+	await expect(activityRow.getByRole('button', { name: /Posters in this run/ })).toBeVisible();
+	await expect(activityRow.getByRole('link', { name: 'Activity' })).toHaveAttribute(
+		'href',
+		'/projection-room'
+	);
+	await expect(activityRow.getByRole('link', { name: 'Details' })).toBeVisible();
+	await expect(activityRow.getByRole('button', { name: 'Cancel' })).toBeVisible();
+	await expect(activityRow.locator('time')).toBeVisible();
 
 	const panelBox = await panel.boundingBox();
 	const gridBox = await grid.boundingBox();
