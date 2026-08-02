@@ -1,9 +1,8 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
-	import { page } from '$app/state';
+	import { SvelteSet } from 'svelte/reactivity';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
 	import StatCard from '$lib/components/StatCard.svelte';
 	import ProgressBar from '$lib/components/ProgressBar.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
@@ -15,16 +14,15 @@
 		getTasteMap,
 		rebuildTasteMap,
 		getTasteProfileDetail,
-		getTasteProfileExemplars,
 		getTasteProfiles,
 		getTasteStatus,
 		retrainResidual,
 		retrainTaste
 	} from '$lib/api/taste';
+	import { assetBreakdown, countOfSubjects, subjectNounTitle } from '$lib/taste/library-copy';
 	import { toast } from '$lib/toast';
 	import type {
 		ManagedArtifactSummary,
-		ManagedExemplarRow,
 		ManagedResidualDetail,
 		ManagedProfileDetail,
 		TasteMapData,
@@ -33,22 +31,15 @@
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
-	// svelte-ignore state_referenced_locally
-	const initialStatus = data.status;
-	// svelte-ignore state_referenced_locally
-	const initialMapData = data.mapData ?? null;
-	// svelte-ignore state_referenced_locally
-	const initialProfiles = data.profiles ?? [];
-	// svelte-ignore state_referenced_locally
-	const initialResiduals = data.residuals ?? [];
-	// svelte-ignore state_referenced_locally
-	let library = $state<'movies' | 'tv'>(data.library ?? 'movies');
 
-	let status = $state<TasteStatus | null>(initialStatus);
-	let mapData = $state<TasteMapData | null>(initialMapData);
-	let profiles = $state<ManagedArtifactSummary[]>(initialProfiles);
-	let residuals = $state<ManagedArtifactSummary[]>(initialResiduals);
-	let mapVisible = $state(false);
+	// The library switch is a link now, so the URL is the single source of truth and
+	// every panel below is seeded from a fresh `load`.
+	const library = $derived<'movies' | 'tv'>(data.library ?? 'movies');
+
+	let status = $state<TasteStatus | null>(null);
+	let profiles = $state<ManagedArtifactSummary[]>([]);
+	let residuals = $state<ManagedArtifactSummary[]>([]);
+	let mapData = $state<TasteMapData | null>(null);
 	let mapLoading = $state(false);
 	let mapError = $state<string | null>(null);
 	let detailLoading = $state(false);
@@ -57,7 +48,25 @@
 	let selectedResidualId = $state<string | null>(null);
 	let profileDetail = $state<ManagedProfileDetail | null>(null);
 	let residualDetail = $state<ManagedResidualDetail | null>(null);
-	let profileExemplars = $state<ManagedExemplarRow[]>([]);
+	// SvelteSet is reactive on its own; it is cleared rather than replaced.
+	const expandedSubjects = new SvelteSet<string>();
+
+	// Navigating between libraries re-runs `load`; without this every panel would keep
+	// rendering the previous library's numbers under the new tab.
+	$effect(() => {
+		const next = data;
+		status = next.status;
+		profiles = next.profiles ?? [];
+		residuals = next.residuals ?? [];
+		mapData = null;
+		mapError = null;
+		mapRequestedFor = null;
+		selectedProfileId = null;
+		selectedResidualId = null;
+		profileDetail = null;
+		residualDetail = null;
+		expandedSubjects.clear();
+	});
 
 	function preferredArtifactId(
 		rows: ManagedArtifactSummary[],
@@ -66,6 +75,20 @@
 		if (currentId && rows.some((row) => row.id === currentId)) return currentId;
 		return rows.find((row) => row.status === 'active')?.id ?? rows[0]?.id ?? null;
 	}
+
+	// ── Taste map ────────────────────────────────────────────────────────────────
+	// Open by default, but fetched client-side rather than in `load`: the projection is
+	// a large per-exemplar payload that SSR would serialise twice, and /taste/map 404s
+	// whenever a namespace has no published map — which must not take the page down.
+	let mapVisible = $state(true);
+	let mapRequestedFor = $state<string | null>(null);
+
+	$effect(() => {
+		if (!mapVisible) return;
+		if (mapRequestedFor === library) return;
+		mapRequestedFor = library;
+		void loadMap();
+	});
 
 	async function loadMap() {
 		if (mapLoading) return;
@@ -80,9 +103,8 @@
 		}
 	}
 
-	async function toggleMap() {
+	function toggleMap() {
 		mapVisible = !mapVisible;
-		if (mapVisible && !mapData) await loadMap();
 	}
 
 	async function refresh() {
@@ -102,7 +124,6 @@
 			} else {
 				selectedProfileId = null;
 				profileDetail = null;
-				profileExemplars = [];
 			}
 			if (nextResidualId) {
 				await loadResidualDetail(nextResidualId);
@@ -121,11 +142,11 @@
 	let residualJobId = $state<string | null>(null);
 	let initiatedJobIds = $state<string[]>([]);
 
-	async function startRebuild() {
+	async function startRebuild(source: 'canonical' | 'seeding_bundle' = 'canonical') {
 		if (rebuilding) return;
 		rebuilding = true;
 		try {
-			const job = await retrainTaste(fetch, library);
+			const job = await retrainTaste(fetch, library, source);
 			rebuildJobId = job.job_id;
 			initiatedJobIds = [...new Set([...initiatedJobIds, job.job_id])];
 			toast('Taste rebuild queued', 'info');
@@ -199,12 +220,10 @@
 		selectedProfileId = artifactId;
 		detailLoading = true;
 		try {
-			const [detail, exemplars] = await Promise.all([
-				getTasteProfileDetail(fetch, artifactId, library),
-				getTasteProfileExemplars(fetch, artifactId, library).then((value) => value.exemplars)
-			]);
-			profileDetail = detail;
-			profileExemplars = exemplars;
+			// The detail payload carries every poster per subject, so the flat
+			// /exemplars endpoint is no longer a second round trip the page needs.
+			profileDetail = await getTasteProfileDetail(fetch, artifactId, library);
+			expandedSubjects.clear();
 		} catch (e) {
 			toast(e instanceof Error ? e.message : 'Could not load profile details', 'bad');
 		} finally {
@@ -224,19 +243,13 @@
 		}
 	}
 
-	function pct(have: number, need: number): number {
-		return need > 0 ? Math.min(100, (have / need) * 100) : 100;
+	function toggleSubject(key: string) {
+		if (expandedSubjects.has(key)) expandedSubjects.delete(key);
+		else expandedSubjects.add(key);
 	}
 
-	function setLibrary(next: 'movies' | 'tv') {
-		if (next === library) return;
-		library = next;
-		mapData = null;
-		mapError = null;
-		const url = new URL(page.url);
-		const sp = url.searchParams;
-		sp.set('library', next);
-		goto(`/taste?${sp.toString()}`);
+	function pct(have: number, need: number): number {
+		return need > 0 ? Math.min(100, (have / need) * 100) : 100;
 	}
 
 	function fmtDate(iso: string | null | undefined): string {
@@ -245,8 +258,8 @@
 		return Number.isNaN(t.getTime()) ? 'never' : t.toLocaleString();
 	}
 
-	function metric(row: ManagedArtifactSummary, key: string): number | string {
-		return (row.summary?.[key] as number | string | undefined) ?? 0;
+	function titleOf(title: string, year: number | null | undefined): string {
+		return year ? `${title} (${year})` : title;
 	}
 
 	async function handleJobSettled(snapshot: JobSnapshotResponse) {
@@ -272,14 +285,29 @@
 			void loadResidualDetail(preferredArtifactId(residuals, null) ?? residuals[0].id);
 		}
 	});
+
+	const genreEntries = $derived(Object.entries(status?.labels.genres ?? {}).slice(0, 12));
+	const subjectCount = $derived(status?.labels.subjects ?? status?.labels.movies ?? 0);
 </script>
 
-<SectionHeader title="Key Art Engine" subtitle="Taste profile & bounded preference residual" />
-
-<div class="library-switch">
-	<button class:active={library === 'movies'} onclick={() => setLibrary('movies')}>Films</button>
-	<button class:active={library === 'tv'} onclick={() => setLibrary('tv')}>Television</button>
-</div>
+<header class="workspace-head">
+	<div class="head-top">
+		<div class="titles">
+			<!-- The visible title lives in the app top bar; this keeps the page from being
+			     headless and the heading order from jumping straight to h3. -->
+			<h1 class="sr-only">Key Art Engine</h1>
+			<p>Taste profile &amp; bounded preference residual</p>
+		</div>
+		<div class="scope">
+			<PosterLibraryToggle
+				active={library === 'tv' ? 'television' : 'films'}
+				films="/taste?library=movies"
+				television="/taste?library=tv"
+				label="Taste library"
+			/>
+		</div>
+	</div>
+</header>
 
 {#if data.error || !status}
 	<div class="empty">
@@ -292,13 +320,15 @@
 		<StatCard
 			label="Labels"
 			value={status.labels.total}
-			sub={`${status.labels.positives} pos · ${status.labels.negatives} neg · ${status.labels.movies} movies`}
+			sub={`${status.labels.positives} positive · ${status.labels.negatives} negative · ${countOfSubjects(library, subjectCount)}`}
+			note="Preference events you have recorded. Approvals, selections, overrides and rank changes count positive; hates count negative."
 			tone="gold"
 		/>
 		<StatCard
 			label="Exemplars"
 			value={status.exemplars.count}
-			sub={`${status.exemplars.unique_movies ?? 0} movies · ${status.exemplars.duplicate_groups ?? 0} duplicate groups`}
+			sub={`${countOfSubjects(library, status.exemplars.unique_movies ?? 0)} · ${status.exemplars.duplicate_groups ?? 0} duplicate groups`}
+			note={`Poster images baked into the active profile's embedding matrix. ${countOfSubjects(library, status.exemplars.unique_movies ?? 0)} contributed them.`}
 			tone="info"
 		/>
 		<div class="card engine" class:on={residual?.active}>
@@ -341,15 +371,24 @@
 						/>
 					</div>
 				</div>
+				<p class="engine-note">
+					<b>Subjects</b> are distinct titles that produced at least one training pair.
+					<b>Pairs</b> are the pairwise comparisons derived from them. The engine activates at
+					{residual.activation.subjects.need} subjects and {residual.activation.pairs.need} pairs.
+				</p>
 			{/if}
 		</div>
 	</div>
 
-	{#if Object.keys(status.labels.genres).length}
-		<div class="genres">
-			<span class="chip-label">Genres</span>
-			{#each Object.entries(status.labels.genres).slice(0, 12) as [g, n] (g)}
-				<span class="g-chip">{g}<b>{n}</b></span>
+	{#if status.gate_alerts?.length}
+		<div class="alert-panel">
+			<div class="alert-head">Gate override alerts</div>
+			{#each status.gate_alerts as a (a.gate)}
+				<div class="alert-row">
+					<StatusDot tone="warn" size={6} />
+					<span class="ar-gate">{a.gate}</span>
+					<span class="ar-note">overridden {a.overrides}× at the current threshold</span>
+				</div>
 			{/each}
 		</div>
 	{/if}
@@ -366,12 +405,32 @@
 		<section class="train-card">
 			<h3>Rebuild taste profile</h3>
 			<p class="card-note">
-				Build a new immutable profile from canonical approved poster evidence for the selected
-				library.
+				{library === 'tv'
+					? 'Scans the show and season artwork already deployed in the library and builds a new immutable profile from it.'
+					: 'Builds a new immutable profile from canonical approved poster evidence.'}
 			</p>
-			<button class="btn-gold" onclick={startRebuild} disabled={rebuilding}>
-				{rebuilding ? 'Rebuilding…' : 'Rebuild profile'}
-			</button>
+			<div class="card-actions">
+				<button class="pill primary" onclick={() => startRebuild()} disabled={rebuilding}>
+					{rebuilding ? 'Rebuilding…' : 'Rebuild profile'}
+				</button>
+			</div>
+			<!-- TEMPORARY (seeding bundle): remove with the API `source` enum value. -->
+			{#if library === 'movies'}
+				<div class="temp-seed">
+					<button
+						class="pill quiet"
+						onclick={() => startRebuild('seeding_bundle')}
+						disabled={rebuilding}
+					>
+						Build from seeding bundle
+					</button>
+					<p class="temp-note">
+						Temporary. Trains on the curated posters on disk instead of recorded evidence, so the
+						profile carries no negative exemplars, and the current bounded residual stops applying
+						until it is retrained against the new generation.
+					</p>
+				</div>
+			{/if}
 		</section>
 
 		<section class="train-card">
@@ -385,268 +444,265 @@
 					Needs more data to activate. Keep approving posters to reach the thresholds above.
 				</div>
 			{/if}
-			<button class="btn-gold" onclick={startResidual} disabled={residualTraining || !ready}>
-				{residualTraining ? 'Training…' : 'Train bounded residual'}
-			</button>
+			<div class="card-actions">
+				<button class="pill primary" onclick={startResidual} disabled={residualTraining || !ready}>
+					{residualTraining ? 'Training…' : 'Train bounded residual'}
+				</button>
+			</div>
 		</section>
 	</div>
 
 	<div class="manager-grid">
 		<section class="manager-card">
 			<div class="panel-head">
-				<div>
-					<h3>Taste profiles</h3>
-					<p>Inspect immutable native profiles and their canonical producer generations.</p>
-				</div>
+				<h3>Taste profiles</h3>
+				<p>Immutable native profiles and their canonical producer generations.</p>
 			</div>
-			<div class="artifact-list">
-				{#each profiles as profile (profile.id)}
-					<div
-						class="artifact-row"
-						class:selected={selectedProfileId === profile.id}
-						onclick={() => loadProfileDetail(profile.id)}
-						onkeydown={(event) => event.key === 'Enter' && loadProfileDetail(profile.id)}
-						tabindex="0"
-						role="button"
-					>
-						<div class="artifact-main">
-							<div class="artifact-title">
+			<div class="manager-body">
+				<div class="rail" role="listbox" aria-label="Taste profile generations" tabindex="-1">
+					{#each profiles as profile (profile.id)}
+						<button
+							class="rail-row"
+							class:selected={selectedProfileId === profile.id}
+							role="option"
+							aria-selected={selectedProfileId === profile.id}
+							onclick={() => loadProfileDetail(profile.id)}
+						>
+							<span class="rail-title">
 								<strong>{profile.label}</strong>
 								<span class="badge" class:active={profile.status === 'active'}>
 									{profile.status}
 								</span>
-							</div>
-							<div class="artifact-meta">
-								<span>{metric(profile, 'exemplars')} exemplars</span>
-								<span>{metric(profile, 'unique_movies')} movies</span>
-								<span>{metric(profile, 'duplicate_groups')} duplicate groups</span>
-								<span>{profile.source_mode ?? 'unknown source'}</span>
-							</div>
-							<div class="artifact-date">Updated {fmtDate(profile.updated_at)}</div>
-						</div>
-					</div>
-				{/each}
-				{#if profiles.length === 0}
-					<div class="detail-empty">No canonical taste profiles yet.</div>
-				{/if}
-			</div>
+							</span>
+							<span class="rail-meta">{profile.summary.exemplars ?? 0} exemplars</span>
+							<span class="rail-meta">{fmtDate(profile.updated_at)}</span>
+						</button>
+					{/each}
+					{#if profiles.length === 0}
+						<div class="detail-empty">No canonical taste profiles yet.</div>
+					{/if}
+				</div>
 
-			{#if detailLoading && selectedProfileId}
-				<div class="detail-empty">Loading profile details…</div>
-			{:else if profileDetail}
-				<div class="detail-card">
-					<div class="detail-head">
-						<div>
-							<h4>{profileDetail.label}</h4>
-							<div class="artifact-date">
-								Created {fmtDate(profileDetail.created_at)} · Activated {fmtDate(
-									profileDetail.activated_at
-								)}
+				<div class="detail-pane">
+					{#if detailLoading && selectedProfileId && !profileDetail}
+						<div class="detail-empty">Loading profile details…</div>
+					{:else if profileDetail}
+						<div class="detail-head">
+							<div>
+								<h4>{profileDetail.label}</h4>
+								<div class="artifact-date">
+									Created {fmtDate(profileDetail.created_at)} · Activated {fmtDate(
+										profileDetail.activated_at
+									)} · {profileDetail.source_mode ?? 'unknown source'}
+								</div>
+							</div>
+							<span class="badge" class:active={profileDetail.status === 'active'}
+								>{profileDetail.status}</span
+							>
+						</div>
+						<div class="metric-strip">
+							<div><span>Exemplars</span><b class="mono">{profileDetail.summary.exemplars ?? 0}</b></div>
+							<div>
+								<span>{subjectNounTitle(library)}</span>
+								<b class="mono"
+									>{profileDetail.summary.unique_subjects ??
+										profileDetail.summary.unique_movies ??
+										0}</b
+								>
+							</div>
+							<div>
+								<span>Negatives</span>
+								<b class="mono">{profileDetail.summary.negative_exemplars ?? 0}</b>
+							</div>
+							<div>
+								<span>Duplicates</span>
+								<b class="mono">{profileDetail.summary.duplicate_groups ?? 0}</b>
 							</div>
 						</div>
-						<span class="badge" class:active={profileDetail.status === 'active'}
-							>{profileDetail.status}</span
-						>
-					</div>
-					<div class="detail-metrics">
-						<span>{profileDetail.summary.exemplars ?? 0} exemplars</span>
-						<span>{profileDetail.summary.unique_movies ?? 0} movies</span>
-						<span>{profileDetail.summary.negative_exemplars ?? 0} negatives</span>
-						<span>{profileDetail.summary.duplicate_groups ?? 0} duplicate groups</span>
-					</div>
-					<div class="detail-columns">
-						<div>
-							<h5>Contributing movies</h5>
-							<div class="detail-list">
-								{#each profileDetail.movies as movie (`${movie.movie_id}-${movie.title}`)}
+
+						<h5>
+							Contributing {subjectNounTitle(library).toLowerCase()}
+							<span class="h5-note">Expand a row to see the posters it contributed.</span>
+						</h5>
+						<div class="detail-list">
+							{#each profileDetail.movies as subject (subject.subject_key)}
+								<div class="subject">
+									<button
+										class="subject-row"
+										aria-expanded={expandedSubjects.has(subject.subject_key)}
+										onclick={() => toggleSubject(subject.subject_key)}
+									>
+										<span class="chev" aria-hidden="true"
+											>{expandedSubjects.has(subject.subject_key) ? '▾' : '▸'}</span
+										>
+										<span class="s-title">{titleOf(subject.title, subject.year)}</span>
+										<span class="s-assets"
+											>{subject.asset_summary || assetBreakdown(subject.asset_counts ?? {})}</span
+										>
+										<span class="mono s-count">{subject.contribution_count}</span>
+									</button>
+									{#if expandedSubjects.has(subject.subject_key)}
+										<div class="asset-list">
+											{#each subject.assets ?? [] as asset (asset.name)}
+												<div class="asset-row">
+													<span>{asset.label}</span>
+													{#if asset.is_duplicate}
+														<span class="dup">dup ×{asset.duplicate_count}</span>
+													{/if}
+												</div>
+											{/each}
+										</div>
+									{/if}
+								</div>
+							{/each}
+							{#if profileDetail.movies.length === 0}
+								<div class="detail-empty">This profile has no exemplars.</div>
+							{/if}
+						</div>
+
+						{#if profileDetail.duplicate_groups.length}
+							<h5>
+								Duplicate groups
+								<span class="h5-note">The same poster staged more than once.</span>
+							</h5>
+							<div class="detail-list short">
+								{#each profileDetail.duplicate_groups as group (`${group.label}-${group.season_number}`)}
 									<div class="detail-row">
-										<span>{movie.title}{movie.year ? ` (${movie.year})` : ''}</span>
-										<span class="mono">{movie.contribution_count}</span>
+										<span>{group.label}</span>
+										<span class="mono">×{group.count}</span>
 									</div>
 								{/each}
 							</div>
-						</div>
-						<div>
-							<h5>Duplicate groups</h5>
-							<div class="detail-list">
-								{#if profileDetail.duplicate_groups.length}
-									{#each profileDetail.duplicate_groups as group (`${group.title}-${group.year}`)}
-										<div class="detail-row">
-											<span>{group.title}{group.year ? ` (${group.year})` : ''}</span>
-											<span class="mono">{group.count}</span>
-										</div>
-									{/each}
-								{:else}
-									<div class="detail-empty">No duplicate groups in this snapshot.</div>
-								{/if}
-							</div>
-						</div>
-					</div>
-					<div>
-						<h5>Immutable exemplars</h5>
-						<div class="detail-list exemplars">
-							{#each profileExemplars as exemplar (exemplar.name)}
-								<div class="detail-row exemplar-row">
-									<span
-										>{exemplar.title}{exemplar.year
-											? ` (${exemplar.year})`
-											: ''}{exemplar.is_duplicate
-											? ` · dup x${exemplar.duplicate_count}`
-											: ''}</span
-									>
-								</div>
-							{/each}
-						</div>
-					</div>
+						{/if}
+					{:else if profiles.length}
+						<div class="detail-empty">Select a generation to inspect it.</div>
+					{/if}
 				</div>
-			{/if}
+			</div>
 		</section>
 
 		<section class="manager-card">
 			<div class="panel-head">
-				<div>
-					<h3>Ranking residuals</h3>
-					<p>View immutable bounded residuals, producer generations, and held-out gains.</p>
-				</div>
+				<h3>Ranking residuals</h3>
+				<p>Immutable bounded residuals, producer generations, and held-out gains.</p>
 			</div>
-			<div class="artifact-list">
-				{#each residuals as managedResidual (managedResidual.id)}
-					<div
-						class="artifact-row"
-						class:selected={selectedResidualId === managedResidual.id}
-						onclick={() => loadResidualDetail(managedResidual.id)}
-						onkeydown={(event) => event.key === 'Enter' && loadResidualDetail(managedResidual.id)}
-						tabindex="0"
-						role="button"
-					>
-						<div class="artifact-main">
-							<div class="artifact-title">
+			<div class="manager-body">
+				<div class="rail" role="listbox" aria-label="Ranking residual generations" tabindex="-1">
+					{#each residuals as managedResidual (managedResidual.id)}
+						<button
+							class="rail-row"
+							class:selected={selectedResidualId === managedResidual.id}
+							role="option"
+							aria-selected={selectedResidualId === managedResidual.id}
+							onclick={() => loadResidualDetail(managedResidual.id)}
+						>
+							<span class="rail-title">
 								<strong>{managedResidual.label}</strong>
 								<span class="badge" class:active={managedResidual.status === 'active'}>
 									{managedResidual.status}
 								</span>
-							</div>
-							<div class="artifact-meta">
-								<span>{managedResidual.summary.evaluation?.pair_count ?? 0} pairs</span>
-								<span>{managedResidual.summary.evaluation?.subject_count ?? 0} subjects</span>
-								<span>{managedResidual.summary.mode ?? 'unknown mode'}</span>
-							</div>
-							<div class="artifact-date">Trained {fmtDate(managedResidual.trained_at)}</div>
-						</div>
-					</div>
-				{/each}
-				{#if residuals.length === 0}
-					<div class="detail-empty">No canonical ranking residuals yet.</div>
-				{/if}
-			</div>
-
-			{#if detailLoading && selectedResidualId}
-				<div class="detail-empty">Loading residual details…</div>
-			{:else if residualDetail}
-				<div class="detail-card">
-					<div class="detail-head">
-						<div>
-							<h4>{residualDetail.label}</h4>
-							<div class="artifact-date">
-								Created {fmtDate(residualDetail.created_at)} · Trained {fmtDate(
-									residualDetail.trained_at
-								)}
-							</div>
-						</div>
-						<span class="badge" class:active={residualDetail.status === 'active'}
-							>{residualDetail.status}</span
-						>
-					</div>
-					<div class="detail-metrics">
-						<span>{residualDetail.summary.evaluation?.pair_count ?? 0} held-out pairs</span>
-						<span>{residualDetail.summary.evaluation?.subject_count ?? 0} subjects</span>
-						<span
-							>{(
-								(residualDetail.summary.evaluation?.improvement as number | undefined) ?? 0
-							).toFixed(3)} gain</span
-						>
-					</div>
-					<div class="detail-columns">
-						<div>
-							<h5>Top residual features</h5>
-							<div class="detail-list">
-								{#each (residualDetail.summary.top_features ?? []).slice(0, 10) as feature (feature.name)}
-									<div class="detail-row">
-										<span>{feature.name}</span>
-										<span class="mono">{feature.weight.toFixed(3)}</span>
-									</div>
-								{/each}
-							</div>
-						</div>
-						<div>
-							<h5>Bounded application</h5>
-							<div class="detail-list">
-								<div class="detail-row">
-									<span>Alpha</span><span class="mono">{residualDetail.summary.alpha ?? 0}</span>
-								</div>
-								<div class="detail-row">
-									<span>Maximum delta</span><span class="mono"
-										>{residualDetail.summary.delta_max ?? 0}</span
-									>
-								</div>
-							</div>
-						</div>
-					</div>
+							</span>
+							<span class="rail-meta"
+								>{managedResidual.summary.evaluation?.pair_count ?? 0} pairs</span
+							>
+							<span class="rail-meta">{fmtDate(managedResidual.trained_at)}</span>
+						</button>
+					{/each}
+					{#if residuals.length === 0}
+						<div class="detail-empty">No canonical ranking residuals yet.</div>
+					{/if}
 				</div>
-			{/if}
+
+				<div class="detail-pane">
+					{#if detailLoading && selectedResidualId && !residualDetail}
+						<div class="detail-empty">Loading residual details…</div>
+					{:else if residualDetail}
+						<div class="detail-head">
+							<div>
+								<h4>{residualDetail.label}</h4>
+								<div class="artifact-date">
+									Created {fmtDate(residualDetail.created_at)} · Trained {fmtDate(
+										residualDetail.trained_at
+									)}
+								</div>
+							</div>
+							<span class="badge" class:active={residualDetail.status === 'active'}
+								>{residualDetail.status}</span
+							>
+						</div>
+						<div class="metric-strip">
+							<div>
+								<span>Held-out pairs</span>
+								<b class="mono">{residualDetail.summary.evaluation?.pair_count ?? 0}</b>
+							</div>
+							<div>
+								<span>Subjects</span>
+								<b class="mono">{residualDetail.summary.evaluation?.subject_count ?? 0}</b>
+							</div>
+							<div>
+								<span>Gain</span>
+								<b class="mono"
+									>{(
+										(residualDetail.summary.evaluation?.improvement as number | undefined) ?? 0
+									).toFixed(3)}</b
+								>
+							</div>
+							<div>
+								<span>Alpha / max Δ</span>
+								<b class="mono"
+									>{residualDetail.summary.alpha ?? 0} / {residualDetail.summary.delta_max ?? 0}</b
+								>
+							</div>
+						</div>
+						<h5>Top residual features</h5>
+						<div class="detail-list">
+							{#each (residualDetail.summary.top_features ?? []).slice(0, 10) as feature (feature.name)}
+								<div class="detail-row">
+									<span>{feature.name}</span>
+									<span class="mono">{feature.weight.toFixed(3)}</span>
+								</div>
+							{/each}
+						</div>
+					{:else if residuals.length}
+						<div class="detail-empty">Select a generation to inspect it.</div>
+					{/if}
+				</div>
+			</div>
 		</section>
 	</div>
 
-	{#if status.gate_alerts?.length}
-		<div class="alert-panel">
-			<div class="panel-head">Gate override alerts</div>
-			{#each status.gate_alerts as a (a.gate)}
-				<div class="alert-row">
-					<StatusDot tone="warn" size={6} />
-					<span class="ar-gate">{a.gate}</span>
-					<span class="ar-note">overridden {a.overrides}× at the current threshold</span>
-				</div>
-			{/each}
-		</div>
-	{/if}
-
 	<div class="map-section">
-		<div class="map-header">
-			<div>
+		<div class="head-bar">
+			<div class="map-titles">
 				<span class="map-title">Taste map</span>
-				{#if library === 'tv'}<div class="map-subtitle">Show posters only</div>{/if}
-				{#if mapData?.summary}
-					<div class="map-stats">
-						<span>{mapData.summary.exemplars} exemplars</span>
-						<span>{mapData.summary.unique_movies} movies</span>
-						<span>{mapData.summary.duplicate_groups} duplicate groups</span>
-						<span>{mapData.summary.noise} noise</span>
-					</div>
-				{/if}
+				{#if library === 'tv'}<span class="map-subtitle">Show posters only</span>{/if}
 			</div>
-			<div class="map-actions">
-				<button
-					class="map-rebuild-btn"
-					onclick={toggleMap}
-					aria-expanded={mapVisible}
-					aria-controls="taste-map-panel"
-				>
+			<div class="head-actions">
+				<button class="pill quiet" onclick={toggleMap} aria-expanded={mapVisible}>
 					{mapVisible ? 'Hide map' : 'Show map'}
 				</button>
-				<button class="map-rebuild-btn" onclick={rebuildMap} disabled={mapLoading}>
+				<button class="pill ghost" onclick={rebuildMap} disabled={mapLoading}>
 					{mapLoading ? 'Building…' : 'Rebuild map'}
 				</button>
-				<button class="map-rebuild-btn" onclick={runEnrich} disabled={enriching || mapLoading}>
+				<button class="pill ghost" onclick={runEnrich} disabled={enriching || mapLoading}>
 					{enriching ? 'Enriching…' : 'Enrich metadata'}
 				</button>
 			</div>
 		</div>
 		{#if mapVisible}
+			{#if genreEntries.length}
+				<div class="genres">
+					<span class="chip-label">Genres</span>
+					{#each genreEntries as [g, n] (g)}
+						<span class="g-chip">{g}<b>{n}</b></span>
+					{/each}
+				</div>
+			{/if}
 			<div id="taste-map-panel">
 				{#await import('$lib/components/TasteMap.svelte') then module}
 					<module.default {mapData} {library} loading={mapLoading} error={mapError} />
 				{:catch}
-					<p class="state error">Taste map could not be loaded. Rebuild remains available.</p>
+					<p class="detail-empty">Taste map could not be loaded. Rebuild remains available.</p>
 				{/await}
 			</div>
 		{/if}
@@ -654,25 +710,8 @@
 {/if}
 
 <style>
-	.library-switch {
-		display: inline-flex;
-		gap: 4px;
-		padding: 4px;
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		background: var(--panel);
-		margin-bottom: 16px;
-	}
-	.library-switch button {
-		padding: 7px 12px;
-		border-radius: 999px;
-		border: none;
-		background: transparent;
-		color: var(--muted);
-	}
-	.library-switch button.active {
-		background: var(--gold);
-		color: var(--on-gold);
+	.workspace-head .titles p {
+		margin: 0;
 	}
 	.empty {
 		display: flex;
@@ -688,19 +727,18 @@
 	}
 	.stat-grid,
 	.manager-grid,
-	.train-cols,
-	.detail-columns {
+	.train-cols {
 		display: grid;
 		gap: 14px;
 	}
 	.stat-grid {
-		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 		margin-bottom: 16px;
+		align-items: start;
 	}
 	.train-cols,
-	.manager-grid,
-	.detail-columns {
-		grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	.manager-grid {
+		grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
 	}
 	.card,
 	.train-card,
@@ -713,18 +751,24 @@
 	.card {
 		padding: 14px 16px;
 	}
+	/* The one binary this whole page exists to answer, so it reads as lit when it is. */
 	.engine.on {
-		border-color: color-mix(in srgb, var(--good) 35%, var(--line));
+		border-color: color-mix(in srgb, var(--good) 45%, var(--line));
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--good) 12%, transparent);
 	}
 	.engine-head,
-	.panel-head,
 	.detail-head,
-	.artifact-title,
-	.map-header {
+	.map-titles {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 12px;
+	}
+	.map-titles {
+		/* Title and scope note read as one label, so they stay together on the left
+		   rather than being pushed apart by the toolbar's space-between. */
+		justify-content: flex-start;
+		gap: 10px;
 	}
 	.label,
 	.chip-label {
@@ -735,9 +779,8 @@
 		font-weight: 700;
 	}
 	.engine-state,
-	.artifact-meta,
 	.artifact-date,
-	.map-stats {
+	.map-subtitle {
 		color: var(--muted);
 		font-size: 12px;
 	}
@@ -751,16 +794,27 @@
 		font-family: var(--font-sans);
 		color: var(--muted);
 	}
+	.engine-note {
+		margin: 12px 0 0;
+		padding-top: 9px;
+		border-top: 1px solid var(--line);
+		font-size: 11.5px;
+		line-height: 1.45;
+		color: var(--faint);
+	}
+	.engine-note b {
+		color: var(--muted);
+		font-weight: 600;
+	}
 	.gauges,
-	.genres,
-	.map-stats,
-	.detail-metrics {
+	.genres {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 8px;
 	}
 	.gauges {
 		flex-direction: column;
+		flex-wrap: nowrap;
 		margin-top: 12px;
 	}
 	.gl {
@@ -770,18 +824,25 @@
 		color: var(--muted);
 		margin-bottom: 4px;
 	}
+	.genres {
+		align-items: center;
+		margin-bottom: 12px;
+	}
 	.g-chip,
-	.badge,
-	.detail-metrics span {
+	.badge {
 		display: inline-flex;
 		align-items: center;
 		padding: 4px 9px;
 		border-radius: 999px;
 		background: var(--panel2);
 		border: 1px solid var(--line);
+		font-size: 12px;
 	}
 	.g-chip {
 		gap: 6px;
+	}
+	.g-chip b {
+		color: var(--muted);
 	}
 	.badge.active {
 		background: color-mix(in srgb, var(--good) 12%, var(--panel2));
@@ -796,11 +857,30 @@
 		gap: 12px;
 	}
 	.card-note,
-	.manager-card p {
+	.panel-head p {
 		margin: 0;
 		color: var(--muted);
 		font-size: 12.5px;
 		line-height: 1.5;
+	}
+	.card-actions {
+		display: flex;
+		gap: 8px;
+		margin-top: auto;
+	}
+	.temp-seed {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 8px;
+		padding-top: 12px;
+		border-top: 1px dashed var(--line2);
+	}
+	.temp-note {
+		margin: 0;
+		font-size: 11.5px;
+		line-height: 1.45;
+		color: var(--faint);
 	}
 	.hint {
 		font-size: 12px;
@@ -810,56 +890,129 @@
 		border-radius: var(--radius-sm);
 		padding: 8px 11px;
 	}
-	.btn-gold,
-	.map-rebuild-btn {
-		border: 1px solid var(--line2);
-		background: var(--panel2);
-		color: var(--text);
-		border-radius: 8px;
-		padding: 9px 12px;
-		font-weight: 600;
+	.panel-head h3,
+	.train-card h3 {
+		margin: 0;
+		font-size: 14px;
+		font-weight: 650;
 	}
-	.btn-gold {
-		background: var(--gold-soft);
-		border-color: var(--gold-deep);
-		color: var(--gold);
-	}
-	.artifact-list,
-	.detail-list {
+	.panel-head {
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
+		gap: 4px;
 	}
-	.detail-list {
-		max-height: 360px;
-		overflow: auto;
-		padding-right: 4px;
+
+	/* The generation list is a rail beside the detail, not a stack above it — the
+	   detail is what people came for and it used to start below the fold. */
+	.manager-body {
+		display: grid;
+		grid-template-columns: 210px minmax(0, 1fr);
+		gap: 14px;
+		align-items: start;
 	}
-	.artifact-row,
-	.detail-card,
-	.map-section {
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: var(--panel2);
-	}
-	.artifact-row {
-		display: flex;
-		justify-content: space-between;
-		gap: 12px;
-		padding: 12px;
-		text-align: left;
-	}
-	.artifact-row.selected {
-		border-color: color-mix(in srgb, var(--gold) 30%, var(--line));
-	}
-	.artifact-main,
-	.detail-card {
+	.rail {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
+		max-height: 420px;
+		overflow: auto;
 	}
-	.detail-card {
-		padding: 14px;
+	.rail-row {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 4px;
+		width: 100%;
+		padding: 10px 11px;
+		text-align: left;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--panel2);
+		color: var(--text);
+	}
+	.rail-row:hover {
+		border-color: var(--line2);
+	}
+	.rail-row.selected {
+		border-color: color-mix(in srgb, var(--gold) 45%, var(--line));
+		background: color-mix(in srgb, var(--gold) 7%, var(--panel2));
+	}
+	.rail-title {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 13px;
+	}
+	.rail-meta {
+		font-size: 11px;
+		color: var(--muted);
+	}
+	.detail-pane {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		min-width: 0;
+	}
+	.detail-head h4 {
+		margin: 0;
+		font-size: 14px;
+		font-weight: 650;
+	}
+	/* Label over value, so four numbers can be compared at a glance. The 120px track
+	   is chosen so four metrics land as 4×1 or 2×2 and never leave a half-empty row
+	   showing the divider colour through it. */
+	.metric-strip {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+		gap: 1px;
+		background: var(--line);
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		overflow: hidden;
+	}
+	.metric-strip div {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 9px 11px;
+		background: var(--panel2);
+	}
+	.metric-strip span {
+		font-size: 10.5px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--faint);
+	}
+	.metric-strip b {
+		font-size: 15px;
+		font-weight: 600;
+	}
+	h5 {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin: 4px 0 0;
+		font-size: 12px;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--faint);
+	}
+	.h5-note {
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: 400;
+		font-size: 11.5px;
+	}
+	.detail-list {
+		display: flex;
+		flex-direction: column;
+		max-height: 380px;
+		overflow: auto;
+		padding-right: 4px;
+	}
+	.detail-list.short {
+		max-height: 180px;
 	}
 	.detail-row {
 		display: flex;
@@ -867,9 +1020,65 @@
 		gap: 12px;
 		padding: 8px 0;
 		border-bottom: 1px solid var(--line);
+		font-size: 13px;
 	}
 	.detail-row:last-child {
 		border-bottom: none;
+	}
+	.subject {
+		border-bottom: 1px solid var(--line);
+	}
+	.subject:last-child {
+		border-bottom: none;
+	}
+	.subject-row {
+		display: grid;
+		grid-template-columns: 14px minmax(0, 1fr) auto auto;
+		align-items: center;
+		gap: 10px;
+		width: 100%;
+		padding: 8px 0;
+		background: transparent;
+		border: none;
+		text-align: left;
+		color: var(--text);
+		font-size: 13px;
+	}
+	.subject-row:hover .s-title {
+		color: var(--gold);
+	}
+	.chev {
+		color: var(--faint);
+		font-size: 10px;
+	}
+	.s-title {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.s-assets {
+		font-size: 11.5px;
+		color: var(--muted);
+	}
+	.s-count {
+		color: var(--muted);
+	}
+	.asset-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 0 0 10px 24px;
+	}
+	.asset-row {
+		display: flex;
+		justify-content: space-between;
+		gap: 10px;
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.dup {
+		color: var(--warn);
+		font-size: 11px;
 	}
 	.detail-empty {
 		color: var(--faint);
@@ -878,32 +1087,45 @@
 	}
 	.alert-panel {
 		padding: 14px 16px;
-		margin-top: 16px;
+		margin-bottom: 16px;
+		border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+	}
+	.alert-head {
+		font-size: 12px;
+		font-weight: 650;
+		color: var(--warn);
 	}
 	.alert-row {
 		display: flex;
 		align-items: center;
 		gap: 8px;
 		padding-top: 8px;
+		font-size: 12.5px;
+	}
+	.ar-note {
+		color: var(--muted);
 	}
 	.map-section {
 		margin-top: 16px;
-		padding: 14px;
-		background: transparent;
+	}
+	.map-section .head-bar {
+		margin-bottom: 14px;
 	}
 	.map-title {
-		font-size: 18px;
+		font-size: 14px;
 		font-weight: 650;
 	}
-	.map-actions {
-		display: flex;
-		gap: 8px;
-	}
 	@media (max-width: 900px) {
-		.artifact-row,
-		.map-header {
-			flex-direction: column;
-			align-items: stretch;
+		.manager-body {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.rail {
+			flex-direction: row;
+			max-height: none;
+			overflow-x: auto;
+		}
+		.rail-row {
+			min-width: 190px;
 		}
 	}
 </style>

@@ -32,6 +32,7 @@ from marquee.core.jobs.ml_publication import MlPublicationError, activate_immuta
 from marquee.core.jobs.workspaces import AttemptWorkspaceManager
 from marquee.database import _get_engine, _get_session_factory
 from marquee.main import app
+from marquee.ml import publication_catalog
 from marquee.ml.residual import freeze_residual_evidence
 from marquee.models import Job, JobArtifact, JobAttempt, MlActivePublication, Movie
 
@@ -477,3 +478,194 @@ async def test_tv_retrain_submits_a_library_scan_without_asking_the_coordinator(
     assert job.request.get("revision") is None
     assert job.request.get("profile_build_id") is None
     assert job.subject_reference == "taste_profile:tv"
+
+
+def _write_profile(path: Path, *, names: list[str], **extra) -> Path:
+    """Minimal loadable taste profile: enough keys for NumpyTasteStore, nothing more."""
+    import numpy as np
+
+    from marquee.core.pipeline_config import pipeline_settings
+
+    count = len(names)
+    embeddings = np.zeros((count, 512), dtype=np.float32)
+    for index in range(count):
+        embeddings[index, 0] = 0.1 * (index + 1)
+    np.savez(
+        path,
+        model_name=pipeline_settings.AI_MODEL,
+        embeddings=embeddings,
+        centroid_emb=embeddings.mean(axis=0),
+        poster_names=np.array(names),
+        **extra,
+    )
+    return path
+
+
+def test_profile_payload_groups_tv_posters_by_series_not_by_filename(tmp_path) -> None:
+    """A show plus its seasons is one subject with several assets, not several movies."""
+    import numpy as np
+
+    path = _write_profile(
+        tmp_path / "profile.npz",
+        names=["show-1.jpg", "season-1-01.jpg", "season-1-02.jpg", "show-9.jpg"],
+        series_titles=np.array(
+            ["Dark Matter (2024)", "Dark Matter (2024)", "Dark Matter (2024)", "Moon Knight"]
+        ),
+        season_numbers=np.array([-1, 1, 2, -1], dtype=np.int32),
+        asset_kinds=np.array(["show", "season", "season", "show"]),
+    )
+
+    summary, subjects, duplicates = publication_catalog._profile_payload(path)
+
+    assert summary["unique_subjects"] == 2
+    assert summary["total_assets"] == 4
+    assert summary["by_kind"] == {"show": 2, "season": 2}
+    # The staged filenames carry series ids; the payload must carry titles.
+    assert [subject["title"] for subject in subjects] == ["Dark Matter", "Moon Knight"]
+    dark_matter = subjects[0]
+    assert dark_matter["year"] == 2024
+    assert dark_matter["contribution_count"] == 3
+    assert dark_matter["asset_summary"] == "1 show · 2 seasons"
+    assert [asset["label"] for asset in dark_matter["assets"]] == [
+        "Dark Matter (2024)",
+        "Dark Matter (2024) · Season 1",
+        "Dark Matter (2024) · Season 2",
+    ]
+    # A show and its seasons share a title but are different assets.
+    assert duplicates == []
+
+
+def test_profile_payload_collapses_the_legacy_copy_counter(tmp_path) -> None:
+    """"Title (Year) - 2.jpg" is a second copy of one film, not a second film."""
+    path = _write_profile(
+        tmp_path / "profile.npz",
+        names=["Alien (1979).jpg", "Alien (1979) - 2.jpg", "Alien (1979) - 3.jpg", "Dune (2021).jpg"],
+    )
+
+    summary, subjects, duplicates = publication_catalog._profile_payload(path)
+
+    assert summary["unique_subjects"] == 2
+    assert summary["duplicate_groups"] == 1
+    assert summary["duplicate_exemplars"] == 2
+    assert [(subject["title"], subject["contribution_count"]) for subject in subjects] == [
+        ("Alien", 3),
+        ("Dune", 1),
+    ]
+    assert duplicates[0]["label"] == "Alien (1979)"
+    assert duplicates[0]["count"] == 3
+
+
+def test_profile_payload_resolves_opaque_exemplar_filenames(tmp_path) -> None:
+    """Frozen-evidence builds name posters after exemplar ids; the snapshot names the film."""
+    path = _write_profile(tmp_path / "profile.npz", names=["deadbeef.jpg", "cafe1234.jpg"])
+    resolver = {
+        "deadbeef": {"title": "Heat", "year": 1995, "tmdb_id": 949, "movie_id": 3},
+        "cafe1234": {"title": "Heat", "year": 1995, "tmdb_id": 949, "movie_id": 3},
+    }
+
+    summary, subjects, duplicates = publication_catalog._profile_payload(path, resolver)
+
+    assert summary["unique_subjects"] == 1
+    assert subjects[0]["title"] == "Heat"
+    assert subjects[0]["contribution_count"] == 2
+    assert duplicates[0]["count"] == 2
+
+
+def test_profile_payload_still_falls_back_to_the_filename(tmp_path) -> None:
+    """No series title, no resolver entry: the filename is all there is, and it works."""
+    path = _write_profile(tmp_path / "profile.npz", names=["a.jpg", "b.jpg"])
+
+    summary, subjects, duplicates = publication_catalog._profile_payload(path)
+
+    assert [subject["title"] for subject in subjects] == ["a", "b"]
+    assert summary["unique_movies"] == 2
+    assert duplicates == []
+
+
+@pytest.mark.asyncio
+async def test_taste_status_omits_genres_for_tv_and_reads_gates_from_settings(
+    client, monkeypatch
+) -> None:
+    """`series` has no genres column, so TV must report none rather than movie genres."""
+    from marquee.core.pipeline_config import pipeline_settings
+
+    monkeypatch.setattr(pipeline_settings, "RESIDUAL_MIN_SUBJECTS", 7, raising=False)
+    monkeypatch.setattr(pipeline_settings, "RESIDUAL_MIN_PAIRS", 11, raising=False)
+
+    tv = (await client.get("/api/taste/status", params={"library": "tv"})).json()
+    assert tv["labels"]["genres"] == {}
+    assert tv["labels"]["genres_available"] is False
+    assert tv["labels"]["subjects"] == tv["labels"]["movies"]
+    # The gauges must quote the same thresholds the trainer gates on.
+    assert tv["ranking_residual"]["activation"]["subjects"]["need"] == 7
+    assert tv["ranking_residual"]["activation"]["pairs"]["need"] == 11
+
+    movies = (await client.get("/api/taste/status", params={"library": "movies"})).json()
+    assert movies["labels"]["genres_available"] is True
+
+
+@pytest.mark.asyncio
+async def test_seeding_bundle_retrain_bypasses_the_coordinator_for_movies_only(
+    client, db
+) -> None:
+    """TEMPORARY (seeding bundle): the one caller-chosen training source."""
+    blocked = await client.post(
+        "/api/taste/retrain", json={"library": "tv", "source": "seeding_bundle"}
+    )
+    assert blocked.status_code == 400
+    assert "movies profile" in blocked.json()["detail"]
+
+    response = await client.post(
+        "/api/taste/retrain", json={"library": "movies", "source": "seeding_bundle"}
+    )
+
+    assert response.status_code == 202, response.text
+    job = await db.get(Job, response.json()["job_id"])
+    assert job is not None
+    assert job.type == "taste_rebuild"
+    assert job.request["source"] == "seeding_bundle"
+    assert job.request["library"] == "movies"
+    assert job.subject_reference == "taste_profile:movies"
+    # No frozen evidence and no coordinator lineage, exactly like the TV button.
+    assert job.request.get("revision") is None
+    assert job.request.get("profile_build_id") is None
+    # The document the handler parses must accept what the route submitted.
+    assert TasteRebuildRequestV1.model_validate(job.request).source == "seeding_bundle"
+
+
+@pytest.mark.asyncio
+async def test_seeding_bundle_staging_skips_dotfiles_and_enforces_a_floor(
+    tmp_path, monkeypatch
+) -> None:
+    """A stray .actors.jpg sidecar must not become an exemplar named ".actors"."""
+    from marquee.core.jobs.handlers_ml import _stage_seeding_bundle
+    from marquee.core.pipeline_config import pipeline_settings
+
+    bundle = tmp_path / "seeding" / "movies"
+    bundle.mkdir(parents=True)
+    (bundle / ".actors.jpg").write_bytes(b"sidecar")
+    (bundle / ".genre_cache.json").write_text("{}")
+    for index in range(3):
+        (bundle / f"Film {index} (200{index}).jpg").write_bytes(b"poster")
+
+    monkeypatch.setattr(pipeline_settings, "TASTE_SEEDING_DIR", tmp_path / "seeding")
+    monkeypatch.setattr(pipeline_settings, "TASTE_SEEDING_MIN_POSTERS", 3)
+
+    class _Io:
+        async def copy(self, source: Path, destination: Path):
+            destination.write_bytes(source.read_bytes())
+
+    workspace_dir = tmp_path / "workspace"
+    context = SimpleNamespace(io=_Io())
+    staged = await _stage_seeding_bundle(context, workspace_dir, library="movies")
+
+    assert staged == 3
+    names = sorted(path.name for path in (workspace_dir / "training").iterdir())
+    assert names == ["Film 0 (2000).jpg", "Film 1 (2001).jpg", "Film 2 (2002).jpg"]
+
+    monkeypatch.setattr(pipeline_settings, "TASTE_SEEDING_MIN_POSTERS", 50)
+    with pytest.raises(RuntimeError, match="at least 50 posters"):
+        await _stage_seeding_bundle(context, tmp_path / "w2", library="movies")
+
+    with pytest.raises(RuntimeError, match="not found"):
+        await _stage_seeding_bundle(context, tmp_path / "w3", library="tv")

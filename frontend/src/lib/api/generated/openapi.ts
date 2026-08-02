@@ -4477,9 +4477,10 @@ export interface components {
 		 * TasteRetrainRequest
 		 * @description Manually request a profile rebuild for one library.
 		 *
-		 *     The training source is not a caller choice — it follows from the library.
-		 *     Movies rebuild from frozen preference evidence through the coordinator; TV
-		 *     rebuilds by scanning artwork already deployed in the library.
+		 *     The training source normally follows from the library rather than the caller:
+		 *     movies rebuild from frozen preference evidence through the coordinator, TV
+		 *     rebuilds by scanning artwork already deployed in the library. The seeding
+		 *     bundle is the one temporary exception.
 		 */
 		TasteRetrainRequest: {
 			/**
@@ -4488,6 +4489,12 @@ export interface components {
 			 * @enum {string}
 			 */
 			library: 'movies' | 'tv';
+			/**
+			 * Source
+			 * @default canonical
+			 * @enum {string}
+			 */
+			source: 'canonical' | 'seeding_bundle';
 		};
 		/** TextValue */
 		TextValue: {

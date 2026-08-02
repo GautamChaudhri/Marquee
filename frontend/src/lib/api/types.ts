@@ -661,10 +661,14 @@ export interface PublicationAuthorityStatus {
 export interface TasteStatus {
 	labels: {
 		total: number;
+		/** Legacy name for `subjects`; kept so older consumers keep working. */
 		movies: number;
+		subjects: number;
 		positives: number;
 		negatives: number;
 		genres: Record<string, number>;
+		/** False for TV: `series` carries no genre column, so there is nothing to count. */
+		genres_available?: boolean;
 	};
 	exemplars: {
 		count: number;
@@ -673,6 +677,7 @@ export interface TasteStatus {
 		profile_present: boolean;
 		unique_movies?: number;
 		duplicate_groups?: number;
+		by_kind?: Record<string, number>;
 	};
 	ranking_residual: {
 		active: boolean;
@@ -745,12 +750,28 @@ export interface TasteNeighbor {
 	similarity: number;
 }
 
+/** One poster inside a profile — a show poster, a season poster, or a movie poster. */
+export interface ManagedArtifactAsset {
+	name: string;
+	label: string;
+	asset_kind: string;
+	season_number: number | null;
+	is_duplicate: boolean;
+	duplicate_count: number;
+}
+
+/** One subject (a film or a series) and every poster it contributed to the profile. */
 export interface ManagedArtifactMovie {
 	movie_id: number | null;
 	title: string;
 	year: number | null;
 	tmdb_id: number | null;
 	contribution_count: number;
+	subject_key: string;
+	asset_counts: Record<string, number>;
+	/** Human breakdown, e.g. "1 show · 4 seasons". */
+	asset_summary: string;
+	assets: ManagedArtifactAsset[];
 }
 
 export interface ManagedArtifactSummary {
@@ -769,6 +790,9 @@ export interface ManagedArtifactSummary {
 	summary: Record<string, unknown> & {
 		exemplars?: number;
 		unique_movies?: number;
+		unique_subjects?: number;
+		total_assets?: number;
+		by_kind?: Record<string, number>;
 		negative_exemplars?: number;
 		duplicate_groups?: number;
 		duplicate_exemplars?: number;
@@ -794,6 +818,9 @@ export interface ManagedProfileDetail extends ManagedArtifactSummary {
 	duplicate_groups: {
 		title: string;
 		year: number | null;
+		asset_kind: string;
+		season_number: number | null;
+		label: string;
 		count: number;
 		exemplars: string[];
 	}[];
@@ -821,6 +848,9 @@ export interface ManagedExemplarRow {
 	movie_id: number | null;
 	movie_title: string;
 	tmdb_id: number | null;
+	asset_kind?: string;
+	season_number?: number | null;
+	label?: string;
 	is_duplicate: boolean;
 	duplicate_count: number;
 	exists_in_training_dir: boolean;

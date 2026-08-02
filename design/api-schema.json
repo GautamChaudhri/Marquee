@@ -7629,7 +7629,7 @@
         "type": "object"
       },
       "TasteRetrainRequest": {
-        "description": "Manually request a profile rebuild for one library.\n\nThe training source is not a caller choice — it follows from the library.\nMovies rebuild from frozen preference evidence through the coordinator; TV\nrebuilds by scanning artwork already deployed in the library.",
+        "description": "Manually request a profile rebuild for one library.\n\nThe training source normally follows from the library rather than the caller:\nmovies rebuild from frozen preference evidence through the coordinator, TV\nrebuilds by scanning artwork already deployed in the library. The seeding\nbundle is the one temporary exception.",
         "properties": {
           "library": {
             "default": "movies",
@@ -7638,6 +7638,15 @@
               "tv"
             ],
             "title": "Library",
+            "type": "string"
+          },
+          "source": {
+            "default": "canonical",
+            "enum": [
+              "canonical",
+              "seeding_bundle"
+            ],
+            "title": "Source",
             "type": "string"
           }
         },

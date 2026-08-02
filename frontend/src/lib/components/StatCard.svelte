@@ -5,9 +5,18 @@
 		label,
 		value,
 		sub,
+		note,
 		bar,
 		tone = 'gold'
-	}: { label: string; value: string | number; sub?: string; bar?: number; tone?: Tone } = $props();
+	}: {
+		label: string;
+		value: string | number;
+		sub?: string;
+		/** One line explaining what the number actually counts. */
+		note?: string;
+		bar?: number;
+		tone?: Tone;
+	} = $props();
 </script>
 
 <div class="card">
@@ -15,6 +24,7 @@
 	<div class="value" style="--c:{toneVar(tone)}">{value}</div>
 	{#if sub}<div class="sub">{sub}</div>{/if}
 	{#if bar != null}<div class="bar"><ProgressBar value={bar} {tone} /></div>{/if}
+	{#if note}<p class="note">{note}</p>{/if}
 </div>
 
 <style>
@@ -45,5 +55,13 @@
 	}
 	.bar {
 		margin-top: 10px;
+	}
+	.note {
+		margin: 10px 0 0;
+		padding-top: 9px;
+		border-top: 1px solid var(--line);
+		font-size: 11.5px;
+		line-height: 1.45;
+		color: var(--faint);
 	}
 </style>

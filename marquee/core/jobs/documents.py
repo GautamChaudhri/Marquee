@@ -244,7 +244,11 @@ class PosterPipelineGroupResultV1(StrictDocument):
 
 
 class TasteRebuildRequestV1(StrictDocument):
-    source: Literal["training_dir", "library", "canonical_revision"] = "training_dir"
+    # TEMPORARY (seeding bundle): "seeding_bundle" trains from curated posters on disk
+    # rather than recorded evidence. Remove the member with the staging branch.
+    source: Literal["training_dir", "library", "canonical_revision", "seeding_bundle"] = (
+        "training_dir"
+    )
     library: Literal["movies", "tv"] = "movies"
     revision: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     profile_build_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")

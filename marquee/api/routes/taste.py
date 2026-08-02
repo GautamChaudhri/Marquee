@@ -30,6 +30,7 @@ from marquee.core.jobs.submission import (
     SubmissionError,
     submit_job,
 )
+from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.taste_preferences import (
     TastePreferenceError,
@@ -88,14 +89,19 @@ async def _residual_status(db: AsyncSession, *, library: str, active: bool) -> d
     )
     pairs = build_residual_pairs(events)
     subjects = {pair.subject for pair in pairs}
+    # The thresholds come from the same settings the trainer gates on, so the gauges
+    # cannot drift from the gate when an operator retunes either knob.
     return {
         "active": active,
         "mode": "bounded_residual",
         "subjects": len(subjects),
         "pairs": len(pairs),
         "activation": {
-            "subjects": {"have": len(subjects), "need": 25},
-            "pairs": {"have": len(pairs), "need": 200},
+            "subjects": {
+                "have": len(subjects),
+                "need": pipeline_settings.RESIDUAL_MIN_SUBJECTS,
+            },
+            "pairs": {"have": len(pairs), "need": pipeline_settings.RESIDUAL_MIN_PAIRS},
         },
     }
 
@@ -132,11 +138,25 @@ async def _canonical_rebuild_status(db: AsyncSession, library: str) -> dict[str,
     }
 
 
+async def _subject_resolver(db: AsyncSession, *, kind: str, library: str):
+    """Exemplar-id → title index, built once per request and only where it can help.
+
+    Only taste profiles carry per-poster filenames, and only frozen-evidence builds
+    name them after exemplar ids, so a residual read never pays for this.
+    """
+    if kind != "taste_profile":
+        return None
+    return await publication_catalog.subject_name_index(db, library=library)
+
+
 async def _publication_summaries(
     db: AsyncSession, *, kind: str, library: str
 ) -> list[dict[str, object]]:
     entries = await publication_catalog.list_entries(db, kind=kind, library=library)
-    return [await publication_catalog.artifact_summary(entry) for entry in entries]
+    resolver = await _subject_resolver(db, kind=kind, library=library)
+    return [
+        await publication_catalog.artifact_summary(entry, resolver=resolver) for entry in entries
+    ]
 
 
 @router.get("/status")
@@ -166,15 +186,24 @@ async def taste_status(
     negatives = sum(event.action in {"hate", "reject", "reject_all"} for event in active_events)
 
     # Genre spread over labeled movies (v2 rows carry movie_id).
-    movie_ids = [int(key) for key in subject_references if key.lstrip("-").isdigit()]
+    #
+    # Movies only, deliberately. A TV subject_reference is a series id, and `series`
+    # has no genres column — joining it against `movies` here would silently match
+    # series ids to unrelated films and report their genres as the operator's taste.
+    # Re-adding the join is not the fix; a genre source for series would be.
     genres: Counter[str] = Counter()
-    if movie_ids:
-        rows = (
-            (await db.execute(select(Movie.genres).where(Movie.id.in_(movie_ids)))).scalars().all()
-        )
-        for movie_genres in rows:
-            for genre in movie_genres or []:
-                genres[genre] += 1
+    genres_available = library == "movies"
+    if genres_available:
+        movie_ids = [int(key) for key in subject_references if key.lstrip("-").isdigit()]
+        if movie_ids:
+            rows = (
+                (await db.execute(select(Movie.genres).where(Movie.id.in_(movie_ids))))
+                .scalars()
+                .all()
+            )
+            for movie_genres in rows:
+                for genre in movie_genres or []:
+                    genres[genre] += 1
 
     profiles = await _publication_summaries(db, kind="taste_profile", library=library)
     residuals = await _publication_summaries(db, kind="ranking_residual", library=library)
@@ -186,10 +215,15 @@ async def taste_status(
         "library": library,
         "labels": {
             "total": positives + negatives,
+            # `movies` is the legacy name for this count; it has always been distinct
+            # subjects, which for the TV namespace are series. `subjects` is the same
+            # number under the name it earned.
             "movies": len(subject_references),
+            "subjects": len(subject_references),
             "positives": positives,
             "negatives": negatives,
             "genres": dict(genres.most_common()),
+            "genres_available": genres_available,
         },
         "exemplars": exemplars,
         "ranking_residual": await _residual_status(
@@ -206,12 +240,17 @@ async def taste_status(
 class TasteRetrainRequest(BaseModel):
     """Manually request a profile rebuild for one library.
 
-    The training source is not a caller choice — it follows from the library.
-    Movies rebuild from frozen preference evidence through the coordinator; TV
-    rebuilds by scanning artwork already deployed in the library.
+    The training source normally follows from the library rather than the caller:
+    movies rebuild from frozen preference evidence through the coordinator, TV
+    rebuilds by scanning artwork already deployed in the library. The seeding
+    bundle is the one temporary exception.
     """
 
     library: Literal["movies", "tv"] = "movies"
+    # TEMPORARY (seeding bundle): the one case where the caller does pick the source —
+    # bootstrapping the movies profile from curated posters before enough canonical
+    # evidence exists. Remove with the staging branch in handlers_ml.
+    source: Literal["canonical", "seeding_bundle"] = "canonical"
 
 
 async def _submit_ml_publication(
@@ -267,6 +306,24 @@ async def retrain_taste(
     _validate_library(library)
     enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
     limiter.record("taste_retrain")
+    if body is not None and body.source == "seeding_bundle":  # TEMPORARY (seeding bundle)
+        if library != "movies":
+            raise HTTPException(
+                status_code=400,
+                detail="the seeding bundle only builds the movies profile",
+            )
+        return await _submit_ml_publication(
+            db,
+            job_type="taste_rebuild",
+            family="taste_profile",
+            library="movies",
+            request={"source": "seeding_bundle", "library": "movies"},
+            idempotency_key=(
+                f"taste_rebuild:movies:seeding:"
+                f"{int(time.time() // settings.RATE_TASTE_RETRAIN_SECONDS)}"
+            ),
+            priority=90,
+        )
     if library == "tv":
         # TV trains on artwork already deployed in the library rather than on
         # recorded preference evidence, so there is no revision to coalesce against
@@ -400,7 +457,8 @@ async def get_taste_profile(
         entry = await publication_catalog.get_entry(
             db, kind="taste_profile", library=library, artifact_id=artifact_id
         )
-        return await publication_catalog.artifact_detail(entry)
+        resolver = await _subject_resolver(db, kind="taste_profile", library=library)
+        return await publication_catalog.artifact_detail(entry, resolver=resolver)
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
 
@@ -416,7 +474,8 @@ async def list_taste_profile_exemplars(
         entry = await publication_catalog.get_entry(
             db, kind="taste_profile", library=library, artifact_id=artifact_id
         )
-        return {"exemplars": await publication_catalog.profile_exemplars(entry)}
+        resolver = await _subject_resolver(db, kind="taste_profile", library=library)
+        return {"exemplars": await publication_catalog.profile_exemplars(entry, resolver=resolver)}
     except Exception as exc:  # noqa: BLE001
         raise _artifact_error(exc) from exc
 

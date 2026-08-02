@@ -48,6 +48,14 @@ class PipelineSettings(BaseSettings):
     # Below this the k-NN corpus is too small to express taste and the build fails
     # loudly instead of publishing a profile that ranks on noise.
     TV_TASTE_MIN_POSTERS: int = 50
+
+    # TEMPORARY (seeding bundle): a flat directory of "Title (Year).jpg" posters, one
+    # subdirectory per library, used to bootstrap a taste profile before enough
+    # canonical evidence exists to clear the coordinator's positive-subject gate.
+    # Env-overridable because a git worktree's data/ is empty.
+    TASTE_SEEDING_DIR: Path = _DATA_DIR / "taste_seeding"
+    TASTE_SEEDING_MIN_POSTERS: int = 50
+
     PREFERRED_LANG: str = "en"
 
     # ── Taste map clustering ──────────────────────────────────────────
@@ -367,6 +375,7 @@ class PipelineSettings(BaseSettings):
             "TASTE_PROFILE_TV_PATH",
             "ZEROSHOT_AXES_PATH",
             "EMBEDDING_CACHE_DIR",
+            "TASTE_SEEDING_DIR",  # TEMPORARY (seeding bundle)
         ):
             path = getattr(self, field_name)
             if not path.is_absolute():

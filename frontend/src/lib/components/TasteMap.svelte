@@ -3,6 +3,7 @@
 	import { toast } from '$lib/toast';
 	import type { TasteMapData, TasteMapPoint, TasteNeighbor } from '$lib/api/types';
 	import { getExemplarNeighbors } from '$lib/api/taste';
+	import { countOfSubjects } from '$lib/taste/library-copy';
 
 	let {
 		mapData,
@@ -504,9 +505,12 @@
 		const el = plotEl;
 		if (el) {
 			resizeObs = new ResizeObserver(() => {
-				if (Plotly && el)
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					(Plotly as any).Plots.resize(el);
+				// The observer can fire once more while the node is being detached — on a
+				// library switch, or when the map is collapsed. Plotly throws on a plot div
+				// that is no longer displayed, so only resize one that is still laid out.
+				if (!Plotly || !el.isConnected || !el.offsetParent) return;
+				// eslint-disable-next-line @typescript-eslint/no-explicit-any
+				(Plotly as any).Plots.resize(el);
 			});
 			resizeObs.observe(el);
 		}
@@ -590,7 +594,7 @@
 			<div class="map-meta">
 				<span class="meta-badge">{mapData.projection.method.toUpperCase()}</span>
 				<span class="meta-count">{mapData.summary.exemplars} exemplars</span>
-				<span class="meta-count">{mapData.summary.unique_movies} movies</span>
+				<span class="meta-count">{countOfSubjects(library, mapData.summary.unique_movies)}</span>
 				<span class="meta-count">{mapData.summary.noise} noise</span>
 				{#if mapData.clusters}
 					<span class="meta-count">{mapData.clusters.length} clusters</span>

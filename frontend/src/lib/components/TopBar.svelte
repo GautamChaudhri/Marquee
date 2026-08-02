@@ -12,7 +12,7 @@
 		television: { title: 'Television', sub: 'Series library' },
 		shows: { title: 'Television', sub: 'Series library' },
 		pipeline: { title: 'Poster Pipeline', sub: '' },
-		taste: { title: 'Key Art Engine', sub: 'Taste profile & bounded residual' },
+		taste: { title: 'Key Art Engine', sub: '' },
 		'projection-room': { title: 'Activity', sub: '' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }
 	};

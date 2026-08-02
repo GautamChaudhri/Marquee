@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -15,10 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.core.jobs.artifact_service import physical_artifact_file, verify_physical_artifact
 from marquee.ml.residual import ResidualArtifact
 from marquee.ml.taste_store import NumpyTasteStore
-from marquee.models import Job, JobArtifact, MlActivePublication
+from marquee.models import Job, JobArtifact, MlActivePublication, TasteExemplar
 
 CATALOG_STATUS = {"available": True, "authority": "ml_active_publications"}
-_NAME = re.compile(r"^(?P<title>.*?)(?: \((?P<year>\d{4})\))?(?:\.[^.]+)?$")
+# "Title (Year) - 2.jpg". The trailing " - N" is a copy counter, not part of the title:
+# the retired profile updater numbered filename collisions rather than overwriting, so
+# the movies training set accumulated "Title (Year).jpg", " - 2.jpg", " - 3.jpg" for the
+# same film. Without stripping it every copy reads as a separate movie. Titles that
+# genuinely contain " - " keep it, because the counter only ever follows the year.
+_NAME = re.compile(r"^(?P<title>.*?)(?: \((?P<year>\d{4})\))?(?: - (?P<copy>\d+))?(?:\.[^.]+)?$")
 
 
 class PublicationCatalogError(RuntimeError):
@@ -146,44 +152,177 @@ def _parsed_name(name: str) -> tuple[str, int | None]:
     return match.group("title") or name, int(year) if year else None
 
 
+def _subject_identity(
+    item: dict[str, Any],
+    resolver: Mapping[str, dict[str, Any]] | None,
+) -> tuple[str, int | None]:
+    """The subject (series or movie) one exemplar row stands for.
+
+    Filenames alone are not the subject. TV profiles stage posters as ``show-12.jpg``
+    and ``season-12-03.jpg`` — the series id, not a title — while movie profiles built
+    from frozen evidence stage them as ``{exemplar_id}.jpg``. Both carry the real
+    identity elsewhere, so the filename is the last resort, not the first.
+    """
+    series_title = str(item.get("series_title") or "").strip()
+    if series_title:
+        return _parsed_name(series_title)
+    name = str(item.get("filename") or "unknown")
+    if resolver:
+        resolved = resolver.get(Path(name).stem)
+        if resolved and resolved.get("title"):
+            year = resolved.get("year")
+            return str(resolved["title"]), int(year) if year else None
+    return _parsed_name(name)
+
+
+def _asset_facets(item: dict[str, Any]) -> tuple[str, int | None]:
+    """``(asset_kind, season_number)`` for one exemplar row."""
+    kind = str(item.get("asset_kind") or "unknown")
+    season = item.get("season_number")
+    return kind, int(season) if isinstance(season, int | float) else None
+
+
+def _titled(title: str, year: int | None) -> str:
+    return f"{title} ({year})" if year else title
+
+
+def _asset_label(title: str, year: int | None, asset_kind: str, season: int | None) -> str:
+    """One poster's display name — the subject, plus the season it belongs to."""
+    if asset_kind == "season" and season is not None:
+        return f"{_titled(title, year)} · Season {season}"
+    return _titled(title, year)
+
+
+# Shows before their seasons, movies after both; anything unrecognised sorts last.
+_KIND_ORDER = {"show": 0, "season": 1, "movie": 2}
+_KIND_PLURALS = {"show": "shows", "season": "seasons", "movie": "movies", "unknown": "assets"}
+
+
+def _asset_breakdown(counts: Mapping[str, int]) -> str:
+    """``"1 show · 4 seasons"`` — what a subject actually contributed."""
+    ordered = sorted(counts.items(), key=lambda pair: (_KIND_ORDER.get(pair[0], 9), pair[0]))
+    parts = [
+        f"{count} {kind if count == 1 else _KIND_PLURALS.get(kind, f'{kind}s')}"
+        for kind, count in ordered
+        if count
+    ]
+    return " · ".join(parts)
+
+
+def _asset_rows(
+    metadata: list[dict[str, Any]],
+    resolver: Mapping[str, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Flatten the store metadata into one resolved row per embedding.
+
+    A duplicate is the same subject *and* the same asset appearing twice — a show
+    poster plus its four season posters is five distinct assets, not a five-way
+    duplicate, which is what grouping on the filename alone used to imply.
+    """
+    rows = []
+    for item in metadata:
+        name = str(item.get("filename") or "unknown")
+        title, year = _subject_identity(item, resolver)
+        asset_kind, season = _asset_facets(item)
+        rows.append(
+            {
+                "name": name,
+                "title": title,
+                "year": year,
+                "subject_key": f"{title.casefold()}|{year if year else ''}",
+                "asset_kind": asset_kind,
+                "season_number": season,
+                "label": _asset_label(title, year, asset_kind, season),
+            }
+        )
+    asset_counts = Counter((row["subject_key"], row["asset_kind"], row["season_number"]) for row in rows)
+    for row in rows:
+        count = asset_counts[(row["subject_key"], row["asset_kind"], row["season_number"])]
+        row["is_duplicate"] = count > 1
+        row["duplicate_count"] = count
+    return rows
+
+
 def _profile_payload(
     path: Path,
+    resolver: Mapping[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     store = NumpyTasteStore(path)
     metadata = [item or {} for item in store.metadata]
-    movies: dict[tuple[str, int | None], dict[str, Any]] = {}
-    grouped: dict[tuple[str, int | None], list[str]] = defaultdict(list)
+    rows = _asset_rows(metadata, resolver)
+
+    subjects: dict[str, dict[str, Any]] = {}
+    duplicates: dict[tuple[str, str, int | None], list[str]] = defaultdict(list)
     kind_counts: Counter[str] = Counter()
-    for item in metadata:
-        name = str(item.get("filename") or "unknown")
-        title, year = _parsed_name(name)
-        key = (title, year)
-        grouped[key].append(name)
-        kind_counts[str(item.get("asset_kind") or "unknown")] += 1
-        movies.setdefault(
-            key,
+    for row in rows:
+        kind_counts[row["asset_kind"]] += 1
+        duplicates[(row["subject_key"], row["asset_kind"], row["season_number"])].append(row["name"])
+        subject = subjects.setdefault(
+            row["subject_key"],
             {
                 "movie_id": None,
-                "title": title,
-                "year": year,
+                "title": row["title"],
+                "year": row["year"],
                 "tmdb_id": None,
                 "contribution_count": 0,
+                "subject_key": row["subject_key"],
+                "asset_counts": Counter(),
+                "assets": [],
             },
-        )["contribution_count"] += 1
-    duplicate_groups = [
-        {"title": title, "year": year, "count": len(names), "exemplars": names}
-        for (title, year), names in grouped.items()
-        if len(names) > 1
-    ]
+        )
+        subject["contribution_count"] += 1
+        subject["asset_counts"][row["asset_kind"]] += 1
+        subject["assets"].append(
+            {
+                "name": row["name"],
+                "label": row["label"],
+                "asset_kind": row["asset_kind"],
+                "season_number": row["season_number"],
+                "is_duplicate": row["is_duplicate"],
+                "duplicate_count": row["duplicate_count"],
+            }
+        )
+
+    for subject in subjects.values():
+        subject["assets"].sort(
+            key=lambda asset: (
+                _KIND_ORDER.get(asset["asset_kind"], 9),
+                asset["season_number"] if asset["season_number"] is not None else -1,
+                asset["name"],
+            )
+        )
+        subject["asset_summary"] = _asset_breakdown(subject["asset_counts"])
+        subject["asset_counts"] = dict(subject["asset_counts"])
+
+    duplicate_groups = []
+    by_key = {subject["subject_key"]: subject for subject in subjects.values()}
+    for (subject_key, asset_kind, season), names in duplicates.items():
+        if len(names) < 2:
+            continue
+        subject = by_key[subject_key]
+        duplicate_groups.append(
+            {
+                "title": subject["title"],
+                "year": subject["year"],
+                "asset_kind": asset_kind,
+                "season_number": season,
+                "label": _asset_label(subject["title"], subject["year"], asset_kind, season),
+                "count": len(names),
+                "exemplars": names,
+            }
+        )
+
     summary: dict[str, Any] = {
         "exemplars": store.size,
-        "unique_movies": len(movies),
+        "unique_movies": len(subjects),
+        "unique_subjects": len(subjects),
+        "total_assets": len(rows),
         "negative_exemplars": store.negative_size,
         "duplicate_groups": len(duplicate_groups),
         "duplicate_exemplars": sum(group["count"] - 1 for group in duplicate_groups),
         "by_kind": dict(kind_counts),
     }
-    return summary, list(movies.values()), duplicate_groups
+    return summary, list(subjects.values()), duplicate_groups
 
 
 def _residual_payload(path: Path) -> dict[str, Any]:
@@ -208,10 +347,51 @@ def _residual_payload(path: Path) -> dict[str, Any]:
     }
 
 
-async def artifact_summary(entry: CatalogEntry) -> dict[str, Any]:
+async def subject_name_index(
+    db: AsyncSession,
+    *,
+    library: str,
+) -> dict[str, dict[str, Any]]:
+    """Map exemplar id → subject identity, for profiles staged as ``{exemplar_id}.jpg``.
+
+    Frozen-evidence movie builds name every staged poster after the exemplar row that
+    froze it, so the artifact alone cannot say which film it came from. The snapshot
+    recorded alongside the exemplar can. Purely a display nicety: any failure here
+    degrades to filename parsing rather than failing the request.
+    """
+    try:
+        rows = (
+            await db.execute(
+                select(TasteExemplar.id, TasteExemplar.subject_snapshot)
+                .where(TasteExemplar.namespace.in_(("global", library)))
+                .limit(5000)
+            )
+        ).all()
+    except Exception:  # noqa: BLE001 - never fail a read because a name is missing
+        return {}
+    index: dict[str, dict[str, Any]] = {}
+    for exemplar_id, snapshot in rows:
+        if not isinstance(snapshot, dict) or not snapshot.get("title"):
+            continue
+        index[str(exemplar_id)] = {
+            "title": snapshot.get("title"),
+            "year": snapshot.get("year"),
+            "tmdb_id": snapshot.get("tmdb_id"),
+            "movie_id": snapshot.get("id"),
+        }
+    return index
+
+
+async def artifact_summary(
+    entry: CatalogEntry,
+    *,
+    resolver: Mapping[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     await verify_physical_artifact(entry.artifact)
     if entry.artifact.kind == "taste_profile":
-        summary, _movies, _duplicates = await asyncio.to_thread(_profile_payload, entry.path)
+        summary, _movies, _duplicates = await asyncio.to_thread(
+            _profile_payload, entry.path, resolver
+        )
     elif entry.artifact.kind == "ranking_residual":
         summary = await asyncio.to_thread(_residual_payload, entry.path)
     else:
@@ -219,10 +399,16 @@ async def artifact_summary(entry: CatalogEntry) -> dict[str, Any]:
     return _base_summary(entry, summary=summary)
 
 
-async def artifact_detail(entry: CatalogEntry) -> dict[str, Any]:
+async def artifact_detail(
+    entry: CatalogEntry,
+    *,
+    resolver: Mapping[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     await verify_physical_artifact(entry.artifact)
     if entry.artifact.kind == "taste_profile":
-        summary, movies, duplicates = await asyncio.to_thread(_profile_payload, entry.path)
+        summary, movies, duplicates = await asyncio.to_thread(
+            _profile_payload, entry.path, resolver
+        )
         return {
             **_base_summary(entry, summary=summary),
             "movies": movies,
@@ -233,29 +419,32 @@ async def artifact_detail(entry: CatalogEntry) -> dict[str, Any]:
     return {**_base_summary(entry, summary=summary), "movies": []}
 
 
-async def profile_exemplars(entry: CatalogEntry) -> list[dict[str, Any]]:
+async def profile_exemplars(
+    entry: CatalogEntry,
+    *,
+    resolver: Mapping[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     if entry.artifact.kind != "taste_profile":
         raise PublicationCatalogError("artifact is not a taste profile")
     await verify_physical_artifact(entry.artifact)
     store = await asyncio.to_thread(NumpyTasteStore, entry.path)
     metadata = await asyncio.to_thread(lambda: store.metadata)
-    counts = Counter(str((item or {}).get("filename") or "unknown") for item in metadata)
-    rows = []
-    for item in metadata:
-        name = str((item or {}).get("filename") or "unknown")
-        title, year = _parsed_name(name)
-        rows.append(
-            {
-                "name": name,
-                "title": title,
-                "year": year,
-                "movie_id": None,
-                "movie_title": title,
-                "tmdb_id": None,
-                "is_duplicate": counts[name] > 1,
-                "duplicate_count": counts[name],
-                "exists_in_training_dir": False,
-                "thumb_url": None,
-            }
-        )
-    return rows
+    rows = _asset_rows([item or {} for item in metadata], resolver)
+    return [
+        {
+            "name": row["name"],
+            "title": row["title"],
+            "year": row["year"],
+            "movie_id": None,
+            "movie_title": row["title"],
+            "tmdb_id": None,
+            "asset_kind": row["asset_kind"],
+            "season_number": row["season_number"],
+            "label": row["label"],
+            "is_duplicate": row["is_duplicate"],
+            "duplicate_count": row["duplicate_count"],
+            "exists_in_training_dir": False,
+            "thumb_url": None,
+        }
+        for row in rows
+    ]
