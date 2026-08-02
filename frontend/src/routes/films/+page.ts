@@ -1,6 +1,6 @@
 import type { PageLoad } from './$types';
 import { listMovies } from '$lib/api/library';
-import type { MovieQuery, PosterStatus } from '$lib/api/types';
+import type { MovieQuery } from '$lib/api/types';
 
 const PAGE_SIZE = 60;
 
@@ -17,7 +17,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
 		page: Math.max(1, Number(sp.get('page') ?? '1') || 1),
 		page_size: PAGE_SIZE,
 		q: sp.get('q') || undefined,
-		poster_status: (sp.get('poster_status') as PosterStatus) || undefined,
+		artwork_status: (sp.get('artwork_status') as MovieQuery['artwork_status']) || undefined,
 		sort: (sp.get('sort') as 'title' | 'year') || undefined
 	};
 	try {

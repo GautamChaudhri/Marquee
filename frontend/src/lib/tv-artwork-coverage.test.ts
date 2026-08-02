@@ -25,6 +25,7 @@ function series(overrides: Partial<SeriesListItem> = {}): SeriesListItem {
 		tmdb_id: 1001,
 		genres: ['Drama'],
 		poster: poster(true),
+		review_pending: false,
 		downloaded_seasons: 3,
 		seasons_with_poster: 3,
 		season_poster_status: 'complete',
@@ -43,6 +44,25 @@ describe('deriveArtworkCoverage', () => {
 			accessibleLabel: 'Deployed: all 4 posters present',
 			presentPosterCount: 4,
 			totalPosterCount: 4
+		});
+	});
+
+	it('lets Pipeline review override complete, partial, and missing coverage', () => {
+		const coverage = deriveArtworkCoverage(
+			series({
+				review_pending: true,
+				poster: poster(false),
+				seasons: [season(1, false)]
+			})
+		);
+
+		expect(coverage).toEqual({
+			state: 'review',
+			tone: 'review',
+			label: 'Needs review',
+			accessibleLabel: 'Needs review: one or more poster selections are waiting in the Pipeline',
+			presentPosterCount: 0,
+			totalPosterCount: 2
 		});
 	});
 

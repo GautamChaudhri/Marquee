@@ -1,9 +1,7 @@
 from sqlalchemy import exists, or_, select
 
-from marquee.models import MediaFile, Movie, PipelineRun
-
-# The run statuses that put a movie in front of a human for a decision.
-REVIEW_QUEUE_STATUSES = frozenset({"completed", "flagged_manual"})
+from marquee.core.review_queries import terminal_review_conditions
+from marquee.models import Job, MediaFile, Movie, PipelineRun
 
 
 def movie_downloaded():
@@ -34,10 +32,11 @@ def movie_review_pending():
     silently matched nothing at all as soon as one TV run existed.
     """
     return exists(
-        select(PipelineRun.run_id).where(
+        select(PipelineRun.run_id)
+        .outerjoin(Job, Job.id == PipelineRun.job_id)
+        .where(
             PipelineRun.movie_id == Movie.id,
             PipelineRun.media_type == "movie",
-            PipelineRun.feedback_event_id.is_(None),
-            PipelineRun.status.in_(tuple(REVIEW_QUEUE_STATUSES)),
+            *terminal_review_conditions(),
         )
     )

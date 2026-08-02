@@ -2,14 +2,19 @@
 	import type { SeriesListItem } from '$lib/api/types';
 	import { deriveArtworkCoverage } from '$lib/tv-artwork-coverage';
 	import ArtworkCoverage from './ArtworkCoverage.svelte';
+	import GenreSummary from './GenreSummary.svelte';
 	import SeriesPosterStrip from './SeriesPosterStrip.svelte';
 
 	let { items }: { items: SeriesListItem[] } = $props();
 </script>
 
-<div class="series-table" role="table" aria-label="Television series and poster previews">
+<div
+	class="series-table"
+	role="table"
+	aria-label="Television series with poster previews and genres"
+>
 	<div class="table-head" role="rowgroup">
-		<div role="row"><span role="columnheader">Series and posters</span></div>
+		<div role="row"><span role="columnheader">Series, posters, and genres</span></div>
 	</div>
 	<div class="table-body" role="rowgroup">
 		{#each items as series (series.id)}
@@ -26,7 +31,12 @@
 							<small>{series.year ?? 'Year unknown'}</small>
 						</a>
 					</div>
-					<SeriesPosterStrip {series} />
+					<div class="series-details">
+						<div class="poster-region">
+							<SeriesPosterStrip {series} />
+						</div>
+						<GenreSummary genres={series.genres} />
+					</div>
 				</div>
 			</div>
 		{/each}
@@ -98,8 +108,16 @@
 	.series-link:hover strong {
 		color: var(--gold);
 	}
-	.series-heading + :global(.poster-strip) {
+	.series-details {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(112px, 32%);
+		align-items: start;
+		gap: 16px;
+		min-width: 0;
 		margin-top: 10px;
+	}
+	.poster-region {
+		min-width: 0;
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.series-row {
@@ -108,6 +126,11 @@
 	}
 	@media (max-width: 820px) {
 		.table-body {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
+	@media (max-width: 560px) {
+		.series-details {
 			grid-template-columns: minmax(0, 1fr);
 		}
 	}

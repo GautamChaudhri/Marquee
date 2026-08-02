@@ -7,6 +7,10 @@ export interface Paginated<T> {
 	items: T[];
 }
 
+export interface LibraryPage<T> extends Paginated<T> {
+	review_pending_total: number;
+}
+
 export interface ConfigurationHealth {
 	status: string;
 	version?: number;
@@ -100,6 +104,7 @@ export interface MovieListItem {
 	video_height: number | null;
 	resolution: string | null;
 	poster_status: PosterStatus;
+	review_pending: boolean;
 	poster_url: string | null;
 	media_file_id: number | null;
 }
@@ -132,6 +137,7 @@ export interface SeriesListItem {
 	tmdb_id: number | null;
 	genres: string[] | null;
 	poster: PosterSummary;
+	review_pending: boolean;
 	downloaded_seasons: number;
 	seasons_with_poster: number;
 	season_poster_status: SeasonPosterStatus;
@@ -151,6 +157,7 @@ export interface MovieQuery {
 	page_size?: number;
 	q?: string;
 	poster_status?: PosterStatus;
+	artwork_status?: 'missing' | 'deployed' | 'review';
 	exclude_in_review?: boolean;
 	include_unavailable?: boolean;
 	sort?: 'title' | 'year' | 'added';

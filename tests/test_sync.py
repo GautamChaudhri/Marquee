@@ -449,6 +449,33 @@ async def test_sync_series_creates_new(db: AsyncSession):
 
 
 @pytest.mark.asyncio
+async def test_sync_series_persists_sonarr_genres_and_rejects_malformed_values(
+    db: AsyncSession,
+):
+    sonarr = AsyncMock()
+    sonarr.get_series.return_value = [_sonarr_series(genres=["Crime", "Drama"])]
+    sonarr.get_episodes.return_value = []
+    sonarr.get_episode_files.return_value = []
+
+    await SyncService(db, sonarr=sonarr).sync_all()
+
+    series = (await db.execute(select(Series).where(Series.sonarr_id == 100))).scalar_one()
+    assert series.genres == ["Crime", "Drama"]
+
+    # Sonarr omitting genres, or returning a malformed list, leaves the
+    # nullable field empty instead of persisting an invalid API payload.
+    sonarr.get_series.return_value = [_sonarr_series()]
+    await SyncService(db, sonarr=sonarr).sync_all()
+    await db.refresh(series)
+    assert series.genres is None
+
+    sonarr.get_series.return_value = [_sonarr_series(genres=["Drama", 42])]
+    await SyncService(db, sonarr=sonarr).sync_all()
+    await db.refresh(series)
+    assert series.genres is None
+
+
+@pytest.mark.asyncio
 async def test_full_series_sync_retires_and_reactivates_descendants(db: AsyncSession):
     sonarr = AsyncMock()
     sonarr.get_series.return_value = [_sonarr_series()]

@@ -57,6 +57,7 @@ from marquee.core.jobs.submission import (
 )
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
+from marquee.core.review_queries import REVIEW_QUEUE_STATUSES, terminal_review_conditions
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import ArtworkEvent, Job, JobArtifact, PipelineRun, Season, Series
@@ -66,7 +67,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/pipeline/tv", tags=["pipeline-tv"])
 series_router = APIRouter(prefix="/api/series", tags=["series"])
 
-_REVIEW_QUEUE_STATUSES = {"completed", "flagged_manual"}
+_REVIEW_QUEUE_STATUSES = set(REVIEW_QUEUE_STATUSES)
 _ACTIVE_JOB_PHASES = {"planned", "queued", "running", "stopping"}
 _MIN_DATETIME = datetime.min.replace(tzinfo=UTC)
 
@@ -131,12 +132,10 @@ async def _tv_review_queue_candidates(db: AsyncSession) -> list[PipelineRun]:
         (
             await db.execute(
                 select(PipelineRun)
-                .join(Job, Job.id == PipelineRun.job_id)
+                .outerjoin(Job, Job.id == PipelineRun.job_id)
                 .where(
                     PipelineRun.media_type.in_(("series", "season")),
-                    PipelineRun.feedback_event_id.is_(None),
-                    PipelineRun.status.in_(_REVIEW_QUEUE_STATUSES),
-                    Job.phase == "terminal",
+                    *terminal_review_conditions(),
                 )
             )
         )
@@ -597,9 +596,7 @@ def _poster_child_intents(
                     ),
                     trigger=TriggerKind.BATCH,
                     initiator=initiator,
-                    idempotency_key=(
-                        f"poster_pipeline_group:batch-{nonce}-chunk-{chunk_index}"
-                    ),
+                    idempotency_key=(f"poster_pipeline_group:batch-{nonce}-chunk-{chunk_index}"),
                     priority=priority,
                 )
             )
@@ -1326,14 +1323,16 @@ async def reset_tv_review_queue_posters(
     """
     candidates = await _tv_review_queue_candidates(db)
     series_ids = sorted(
-        {run.series_id for run in _latest_tv_review_runs(list(candidates)).values() if run.series_id}
+        {
+            run.series_id
+            for run in _latest_tv_review_runs(list(candidates)).values()
+            if run.series_id
+        }
     )
     if not series_ids:
         raise HTTPException(status_code=409, detail="No TV runs are awaiting review")
     series_list = list(
-        (
-            await db.execute(select(Series).where(Series.id.in_(series_ids)).order_by(Series.title))
-        )
+        (await db.execute(select(Series).where(Series.id.in_(series_ids)).order_by(Series.title)))
         .scalars()
         .all()
     )

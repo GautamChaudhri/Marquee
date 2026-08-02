@@ -14,7 +14,8 @@ export type Tone =
 	| 'gpu'
 	| 'sampled_widescreen'
 	| 'teal'
-	| 'magenta';
+	| 'magenta'
+	| 'review';
 
 /** Per-film deterministic gradient (handoff §1). hash(title) → palette index. */
 export const GRADS: [string, string, string][] = [

@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import ArtworkCoverage from '$lib/components/ArtworkCoverage.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import SeriesTable from '$lib/components/SeriesTable.svelte';
+	import StatusDot from '$lib/components/StatusDot.svelte';
 	import { compareBySortTitle, sortTitle } from '$lib/sort-title';
-	import { televisionMode } from '$lib/theme';
+	import { libraryPosterSize, televisionMode } from '$lib/theme';
 	import { deriveArtworkCoverage } from '$lib/tv-artwork-coverage';
 	import type { PageData } from './$types';
 
@@ -35,12 +35,23 @@
 		return (e.currentTarget as HTMLSelectElement).value || undefined;
 	}
 
+	function toggleReview() {
+		clearTimeout(debounce);
+		if (data.query.review) {
+			apply({ review: undefined });
+			return;
+		}
+		q = '';
+		apply({ q: undefined, review: '1' });
+	}
+
 	const items = $derived.by(() => {
 		const list = [...(data.data?.items ?? [])];
 		const query = q.trim().toLowerCase();
-		const filtered = query
+		const searched = query
 			? list.filter((item) => sortTitle(item.title).toLowerCase().includes(query))
 			: list;
+		const filtered = data.query.review ? searched.filter((item) => item.review_pending) : searched;
 		const sort = data.query.sort ?? 'title';
 		filtered.sort((a, b) =>
 			sort === 'year'
@@ -69,6 +80,13 @@
 		<option value="title">Sort: Title</option>
 		<option value="year">Sort: Year</option>
 	</select>
+	{#if $televisionMode === 'grid'}
+		<select aria-label="Poster size" bind:value={$libraryPosterSize}>
+			<option value="small">Size: Small</option>
+			<option value="medium">Size: Medium</option>
+			<option value="large">Size: Large</option>
+		</select>
+	{/if}
 	<div class="modes" role="group" aria-label="Television library view">
 		<button
 			type="button"
@@ -93,6 +111,20 @@
 	</div>
 </div>
 
+{#if data.data && data.data.review_pending_total > 0}
+	<div class="quick-filters">
+		<button
+			class="qf-pill"
+			class:on={data.query.review}
+			aria-pressed={data.query.review}
+			onclick={toggleReview}
+		>
+			Needs review
+			<span class="qf-count">{data.data.review_pending_total}</span>
+		</button>
+	</div>
+{/if}
+
 {#if data.error}
 	<div class="state error">
 		<strong>Couldn't reach the backend.</strong>
@@ -102,7 +134,7 @@
 {:else if items.length === 0}
 	<div class="state empty">No series match this search.</div>
 {:else if $televisionMode === 'grid'}
-	<div class="grid">
+	<div class="grid size-{$libraryPosterSize}">
 		{#each items as series (series.id)}
 			{@const coverage = deriveArtworkCoverage(series)}
 			<button
@@ -114,15 +146,13 @@
 				<div class="poster-shell">
 					<PosterThumb
 						title={series.title}
-						year={series.year}
 						imageAlt={`${series.title} show poster`}
 						posterUrl={series.poster.has_poster ? `/api/library/series/${series.id}/poster` : null}
 					/>
-					<ArtworkCoverage {coverage} mode="pin" decorative />
 				</div>
-				<div class="cap">
-					<div class="title">{series.title}</div>
-					<div class="year">{series.year ?? 'Year unknown'}</div>
+				<div class="cap" aria-hidden="true">
+					<StatusDot tone={coverage.tone} title={coverage.label} />
+					<span class="year">{series.year ?? 'Year unknown'}</span>
 				</div>
 			</button>
 		{/each}
@@ -216,9 +246,16 @@
 		color: var(--text);
 	}
 	.grid {
+		--poster-card-min: 136px;
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(var(--poster-card-min), 1fr));
 		gap: 14px;
+	}
+	.grid.size-small {
+		--poster-card-min: 104px;
+	}
+	.grid.size-large {
+		--poster-card-min: 184px;
 	}
 	.cell {
 		display: flex;
@@ -243,23 +280,60 @@
 	}
 	.cap {
 		display: flex;
+		align-items: center;
+		gap: 7px;
 		min-width: 0;
-		flex-direction: column;
-	}
-	.title {
-		display: -webkit-box;
-		overflow: hidden;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-		font-size: 12px;
-		font-weight: 600;
-		line-height: 1.2;
-		color: var(--text);
 	}
 	.year {
 		font-size: 10.5px;
 		line-height: 1.25;
 		color: var(--muted);
+	}
+	.quick-filters {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+		margin-bottom: 14px;
+	}
+	.qf-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 12px;
+		border: 1px solid var(--line2);
+		border-radius: 99px;
+		background: var(--panel);
+		color: var(--muted);
+		font-size: 12.5px;
+		font-weight: 500;
+		transition:
+			background 0.1s,
+			color 0.1s;
+	}
+	.qf-pill:hover {
+		background: var(--panel2);
+		color: var(--text);
+	}
+	.qf-pill.on {
+		border-color: color-mix(in srgb, var(--review) 45%, var(--line2));
+		background: color-mix(in srgb, var(--review) 14%, var(--panel));
+		color: var(--review);
+	}
+	.qf-count {
+		padding: 0 5px;
+		border-radius: 99px;
+		background: color-mix(in srgb, currentColor 18%, transparent);
+		font-family: var(--font-mono);
+		font-size: 11px;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.qf-pill {
+			transition: none;
+		}
+	}
+	@media (max-width: 300px) {
+		.grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 </style>

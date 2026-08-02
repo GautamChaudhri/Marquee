@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.main import app
 from marquee.models import Job, Season, Series
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 @pytest_asyncio.fixture
@@ -116,6 +117,7 @@ async def test_list_series_filters_visibility_and_computes_rollups(
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 2
+    assert body["review_pending_total"] == 0
     items = {item["title"]: item for item in body["items"]}
     assert set(items) == {"Complete Show", "Partial Show"}
     assert items["Partial Show"]["downloaded_seasons"] == 2
@@ -130,6 +132,97 @@ async def test_list_series_filters_visibility_and_computes_rollups(
     assert items["Complete Show"]["poster"]["has_poster"] is True
     assert items["Complete Show"]["genres"] is None
     assert items["Partial Show"]["id"] == partial.id
+    assert items["Partial Show"]["review_pending"] is False
+
+
+@pytest.mark.asyncio
+async def test_series_review_override_counts_each_show_once_and_requires_terminal_work(
+    db: AsyncSession, client: AsyncClient, tmp_path: Path
+):
+    pending, pending_seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Pending Show",
+        tmdb_id=20,
+        sonarr_id=120,
+        seasons=[
+            {"number": 0, "episode_file_count": 1, "poster": False},
+            {"number": 1, "episode_file_count": 8, "poster": False},
+        ],
+    )
+    resolved, resolved_seasons = await _seed_series(
+        db,
+        tmp_path,
+        title="Resolved Show",
+        tmdb_id=21,
+        sonarr_id=121,
+        seasons=[{"number": 1, "episode_file_count": 8, "poster": False}],
+    )
+
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="pending-show-run",
+        series_id=pending.id,
+        media_type="series",
+        archive={"run_id": "pending-show-run", "series_id": pending.id, "candidates": []},
+    )
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="pending-specials-run",
+        series_id=pending.id,
+        season_id=pending_seasons[0].id,
+        media_type="season",
+        archive={
+            "run_id": "pending-specials-run",
+            "series_id": pending.id,
+            "season_id": pending_seasons[0].id,
+            "candidates": [],
+        },
+    )
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="resolved-season-run",
+        series_id=resolved.id,
+        season_id=resolved_seasons[0].id,
+        media_type="season",
+        feedback_event_id="resolved-feedback",
+        archive={
+            "run_id": "resolved-season-run",
+            "series_id": resolved.id,
+            "season_id": resolved_seasons[0].id,
+            "candidates": [],
+        },
+    )
+    nonterminal = await seed_canonical_pipeline_run(
+        db,
+        run_id="nonterminal-show-run",
+        series_id=resolved.id,
+        media_type="series",
+        archive={
+            "run_id": "nonterminal-show-run",
+            "series_id": resolved.id,
+            "candidates": [],
+        },
+    )
+    nonterminal_job = await db.get(Job, nonterminal.job_id)
+    assert nonterminal_job is not None
+    nonterminal_job.phase = "running"
+    nonterminal_job.outcome = None
+    nonterminal_job.terminal_at = None
+    await db.commit()
+
+    response = await client.get("/api/library/series")
+    assert response.status_code == 200
+    body = response.json()
+    items = {item["title"]: item for item in body["items"]}
+    assert body["review_pending_total"] == 1
+    assert items["Pending Show"]["review_pending"] is True
+    assert [season["season_number"] for season in items["Pending Show"]["seasons"]] == [0, 1]
+    assert items["Resolved Show"]["review_pending"] is False
+
+    detail = await client.get(f"/api/library/series/{pending.id}")
+    assert detail.status_code == 200
+    assert detail.json()["review_pending"] is True
 
 
 @pytest.mark.asyncio

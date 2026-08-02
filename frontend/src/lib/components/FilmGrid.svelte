@@ -1,30 +1,44 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import type { MovieListItem } from '$lib/api/types';
+	import { deriveFilmArtworkStatus } from '$lib/library-artwork';
+	import { libraryPosterSize } from '$lib/theme';
 	import PosterThumb from './PosterThumb.svelte';
+	import StatusDot from './StatusDot.svelte';
 
 	let { items }: { items: MovieListItem[] } = $props();
 </script>
 
-<div class="grid">
+<div class="grid size-{$libraryPosterSize}">
 	{#each items as m (m.id)}
-		<button class="cell" onclick={() => goto(`/films/${m.id}`)} title={m.title}>
-			<PosterThumb
-				title={m.title}
-				year={m.year}
-				posterStatus={m.poster_status}
-				posterUrl={m.poster_url}
-			/>
-			<div class="cap">{m.title}</div>
+		{@const artwork = deriveFilmArtworkStatus(m)}
+		<button
+			class="cell"
+			onclick={() => goto(`/films/${m.id}`)}
+			title={m.title}
+			aria-label={`Open ${m.title}, ${m.year}. ${artwork.accessibleLabel}`}
+		>
+			<PosterThumb title={m.title} imageAlt={`${m.title} poster`} posterUrl={m.poster_url} />
+			<div class="cap" aria-hidden="true">
+				<StatusDot tone={artwork.tone} title={artwork.label} />
+				<span>{m.year}</span>
+			</div>
 		</button>
 	{/each}
 </div>
 
 <style>
 	.grid {
+		--poster-card-min: 136px;
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(var(--poster-card-min), 1fr));
 		gap: 14px;
+	}
+	.grid.size-small {
+		--poster-card-min: 104px;
+	}
+	.grid.size-large {
+		--poster-card-min: 184px;
 	}
 	.cell {
 		background: transparent;
@@ -45,10 +59,16 @@
 		border-color: var(--faint);
 	}
 	.cap {
-		font-size: 12px;
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		font-size: 10.5px;
+		line-height: 1.25;
 		color: var(--muted);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
+	}
+	@media (max-width: 300px) {
+		.grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
 </style>

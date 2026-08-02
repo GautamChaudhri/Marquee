@@ -15,6 +15,7 @@ const series: SeriesListItem = {
 		user_approved: true,
 		deployed_at: '2026-08-01T12:00:00Z'
 	},
+	review_pending: false,
 	downloaded_seasons: 1,
 	seasons_with_poster: 0,
 	season_poster_status: 'missing',
@@ -36,20 +37,31 @@ const series: SeriesListItem = {
 };
 
 describe('SeriesTable', () => {
-	it('shows one uncluttered series-and-posters column in a two-up layout', () => {
+	it('keeps poster previews scrollable beside quiet genre metadata in a two-up layout', () => {
 		const { container } = render(SeriesTable, { props: { items: [series] } });
 
 		expect(
-			screen.getByRole('table', { name: 'Television series and poster previews' })
+			screen.getByRole('table', { name: 'Television series with poster previews and genres' })
 		).toBeVisible();
-		expect(screen.getByRole('columnheader', { name: 'Series and posters' })).toBeInTheDocument();
+		expect(
+			screen.getByRole('columnheader', { name: 'Series, posters, and genres' })
+		).toBeInTheDocument();
 		expect(screen.queryByRole('columnheader', { name: 'Artwork' })).not.toBeInTheDocument();
 		expect(screen.queryByRole('columnheader', { name: 'Genres' })).not.toBeInTheDocument();
 		expect(screen.queryByText('Season art')).not.toBeInTheDocument();
 		expect(screen.queryByText('In library')).not.toBeInTheDocument();
-		expect(screen.queryByText('Drama, Science Fiction')).not.toBeInTheDocument();
+		expect(screen.getByText('Drama, Science Fiction')).toBeVisible();
 		expect(container.querySelector('.table-body')).toBeInTheDocument();
+		expect(container.querySelector('.series-details')).toBeInTheDocument();
+		expect(container.querySelector('.poster-region .poster-strip')).toBeInTheDocument();
 		expect(container.querySelector('svg')).not.toBeInTheDocument();
+	});
+
+	it('shows an em dash when Sonarr genres are not available yet', () => {
+		render(SeriesTable, { props: { items: [{ ...series, genres: null }] } });
+
+		expect(screen.getByText('Genres')).toBeVisible();
+		expect(screen.getByText('—')).toBeVisible();
 	});
 
 	it('places one accessible partial-status dot immediately before the linked title', () => {
@@ -68,5 +80,16 @@ describe('SeriesTable', () => {
 		expect(screen.queryByText('Partially deployed')).not.toBeInTheDocument();
 		expect(screen.queryByText('Missing')).not.toBeInTheDocument();
 		expect(screen.queryByText('Deployed')).not.toBeInTheDocument();
+	});
+
+	it('uses the purple review override without adding a visible status label', () => {
+		render(SeriesTable, { props: { items: [{ ...series, review_pending: true }] } });
+
+		expect(
+			screen.getByRole('img', {
+				name: 'Needs review: one or more poster selections are waiting in the Pipeline'
+			})
+		).toBeVisible();
+		expect(screen.queryByText('Needs review')).not.toBeInTheDocument();
 	});
 });

@@ -25,6 +25,7 @@ const series: SeriesListItem = {
 	tmdb_id: 142,
 	genres: ['Drama', 'Mystery'],
 	poster: poster(true),
+	review_pending: false,
 	downloaded_seasons: 2,
 	seasons_with_poster: 1,
 	season_poster_status: 'partial',

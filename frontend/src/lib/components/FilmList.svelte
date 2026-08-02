@@ -1,85 +1,60 @@
 <script lang="ts">
-	import { posterStatusMeta } from '$lib/display';
-	import type { MovieListItem, PosterStatus } from '$lib/api/types';
+	import type { MovieListItem } from '$lib/api/types';
+	import { deriveFilmArtworkStatus } from '$lib/library-artwork';
+	import GenreSummary from './GenreSummary.svelte';
 	import PosterThumb from './PosterThumb.svelte';
 	import StatusDot from './StatusDot.svelte';
 
 	let { items }: { items: MovieListItem[] } = $props();
-
-	const artworkLabels = {
-		missing: 'Missing',
-		review: 'Review',
-		approved: 'Approved',
-		deployed: 'Deployed'
-	} satisfies Record<PosterStatus, string>;
 </script>
 
-<!-- Keyboard focus exposes horizontal scrolling without a pointer. -->
-<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="table-scroll" role="region" aria-label="Films table" tabindex="0">
-	<table>
-		<caption>Films and their artwork status and genres</caption>
-		<colgroup>
-			<col class="film-col" />
-			<col class="artwork-col" />
-			<col class="genres-col" />
-		</colgroup>
-		<thead>
-			<tr>
-				<th scope="col">Film</th>
-				<th scope="col">Artwork</th>
-				<th scope="col">Genres</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each items as m (m.id)}
-				<tr>
-					<td>
-						<a class="film-link" href={`/films/${m.id}`} aria-label={`Open ${m.title}, ${m.year}`}>
-							<span class="thumb" aria-hidden="true">
-								<PosterThumb
-									title={m.title}
-									imageAlt=""
-									posterUrl={m.poster_url}
-									fallbackPlacement="hidden"
-								/>
-							</span>
-							<span class="title">
-								<strong>{m.title}</strong>
-								<small>{m.year}</small>
-							</span>
-						</a>
-					</td>
-					<td>
-						<span class="artwork">
-							<StatusDot
-								tone={posterStatusMeta[m.poster_status].tone}
-								title={artworkLabels[m.poster_status]}
-							/>
-							<span>{artworkLabels[m.poster_status]}</span>
+<div class="film-table" role="table" aria-label="Films with poster previews and genres">
+	<div class="table-head" role="rowgroup">
+		<div role="row"><span role="columnheader">Films, posters, and genres</span></div>
+	</div>
+	<div class="table-body" role="rowgroup">
+		{#each items as movie (movie.id)}
+			{@const artwork = deriveFilmArtworkStatus(movie)}
+			<div class="film-row" role="row">
+				<div class="film-cell" role="cell">
+					<div class="film-heading">
+						<span
+							class="status-marker"
+							role="img"
+							aria-label={artwork.accessibleLabel}
+							title={artwork.accessibleLabel}
+						>
+							<StatusDot tone={artwork.tone} title={artwork.accessibleLabel} />
 						</span>
-					</td>
-					<td><span class="genres">{m.genres?.length ? m.genres.join(', ') : '—'}</span></td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+						<a
+							class="film-link"
+							href={`/films/${movie.id}`}
+							aria-label={`Open ${movie.title}${movie.year ? `, ${movie.year}` : ''}`}
+						>
+							<strong>{movie.title}</strong>
+							<small>{movie.year || 'Year unknown'}</small>
+						</a>
+					</div>
+
+					<div class="film-preview">
+						<div class="poster-preview">
+							<PosterThumb
+								title={movie.title}
+								imageAlt={`${movie.title} poster`}
+								posterUrl={movie.poster_url}
+								fallbackPlacement="bottom-left"
+							/>
+						</div>
+						<GenreSummary genres={movie.genres} />
+					</div>
+				</div>
+			</div>
+		{/each}
+	</div>
 </div>
 
 <style>
-	.table-scroll {
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		overflow-x: auto;
-		background: var(--panel);
-	}
-	table {
-		width: 100%;
-		min-width: 560px;
-		border-collapse: collapse;
-		table-layout: fixed;
-	}
-	caption {
+	.table-head {
 		position: absolute;
 		width: 1px;
 		height: 1px;
@@ -90,94 +65,87 @@
 		white-space: nowrap;
 		border: 0;
 	}
-	.film-col {
-		width: 48%;
+	.table-body {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 12px;
 	}
-	.artwork-col {
-		width: 20%;
-	}
-	.genres-col {
-		width: 32%;
-	}
-	th,
-	td {
-		padding: 9px 14px;
-		text-align: left;
-		vertical-align: middle;
-		border-bottom: 1px solid var(--line);
-	}
-	th {
-		font-size: 10px;
-		font-weight: 700;
-		letter-spacing: 0.07em;
-		text-transform: uppercase;
-		color: var(--muted);
-		background: var(--ink2);
-	}
-	tbody tr:last-child td {
-		border-bottom: none;
-	}
-	tbody tr {
+	.film-row {
+		min-width: 0;
+		padding: 14px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--panel);
 		transition: background 0.1s ease;
 	}
-	tbody tr:hover,
-	tbody tr:focus-within {
+	.film-row:hover,
+	.film-row:focus-within {
 		background: var(--panel2);
 	}
-	.film-link {
-		display: grid;
-		grid-template-columns: 32px minmax(0, 1fr);
-		align-items: center;
-		gap: 11px;
+	.film-cell {
 		min-width: 0;
-		color: var(--text);
 	}
-	.thumb {
-		width: 32px;
+	.film-heading {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		min-width: 0;
+	}
+	.status-marker {
+		display: inline-flex;
+		margin-top: 5px;
 		flex: none;
 	}
-	.title {
+	.film-link {
 		display: flex;
-		flex-direction: column;
 		min-width: 0;
+		flex-direction: column;
+		border-radius: 5px;
+		color: var(--text);
 	}
-	.title strong {
-		font-size: 13.5px;
-		font-weight: 600;
-		white-space: nowrap;
+	.film-link strong {
 		overflow: hidden;
+		font-size: 14px;
+		font-weight: 600;
+		line-height: 1.25;
 		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
-	.film-link:hover .title strong {
+	.film-link small {
+		font-size: 11.5px;
+		font-weight: 400;
+		line-height: 1.25;
+		color: var(--muted);
+	}
+	.film-link:hover strong {
 		color: var(--gold);
 	}
-	.title small {
-		font-size: 11.5px;
-		color: var(--muted);
+	.film-preview {
+		display: grid;
+		grid-template-columns: 96px minmax(0, 1fr);
+		align-items: start;
+		gap: 16px;
+		min-width: 0;
+		margin-top: 10px;
+		padding: 3px;
 	}
-	.artwork {
-		display: flex;
-		align-items: center;
-		gap: 7px;
-		font-size: 12.5px;
-		color: var(--muted);
+	.poster-preview {
+		width: 96px;
 	}
-	.artwork {
-		white-space: nowrap;
-	}
-	.genres {
-		display: -webkit-box;
-		overflow: hidden;
-		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 2;
-		line-clamp: 2;
-		font-size: 12.5px;
-		line-height: 1.35;
-		color: var(--muted);
+	.poster-preview :global(.poster) {
+		box-sizing: border-box;
+		width: 96px;
+		height: 144px;
+		border-radius: 10px;
 	}
 	@media (prefers-reduced-motion: reduce) {
-		tbody tr {
+		.film-row {
 			transition: none;
+		}
+	}
+	@media (max-width: 820px) {
+		.table-body {
+			grid-template-columns: minmax(0, 1fr);
 		}
 	}
 </style>

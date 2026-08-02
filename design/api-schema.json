@@ -10302,6 +10302,24 @@
             }
           },
           {
+            "description": "Simplified library filter: missing | deployed | review",
+            "in": "query",
+            "name": "artwork_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Simplified library filter: missing | deployed | review",
+              "title": "Artwork Status"
+            }
+          },
+          {
             "description": "Exclude movies whose latest unreviewed pipeline result is already in review.",
             "in": "query",
             "name": "exclude_in_review",

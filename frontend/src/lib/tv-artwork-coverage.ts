@@ -1,13 +1,13 @@
 import type { SeriesListItem } from '$lib/api/types';
 
-export type ArtworkCoverageState = 'deployed' | 'partial' | 'missing';
+export type ArtworkCoverageState = 'deployed' | 'partial' | 'missing' | 'review';
 
-export type ArtworkCoverageTone = 'good' | 'warn' | 'bad';
+export type ArtworkCoverageTone = 'good' | 'warn' | 'bad' | 'review';
 
 export interface ArtworkCoverage {
 	state: ArtworkCoverageState;
 	tone: ArtworkCoverageTone;
-	label: 'Deployed' | 'Partially deployed' | 'Missing';
+	label: 'Deployed' | 'Partially deployed' | 'Missing' | 'Needs review';
 	accessibleLabel: string;
 	presentPosterCount: number;
 	totalPosterCount: number;
@@ -24,6 +24,17 @@ export function deriveArtworkCoverage(item: SeriesListItem): ArtworkCoverage {
 	const presentPosterCount =
 		(item.poster.has_poster ? 1 : 0) +
 		seasons.reduce((count, season) => count + (season.poster.has_poster ? 1 : 0), 0);
+
+	if (item.review_pending) {
+		return {
+			state: 'review',
+			tone: 'review',
+			label: 'Needs review',
+			accessibleLabel: 'Needs review: one or more poster selections are waiting in the Pipeline',
+			presentPosterCount,
+			totalPosterCount
+		};
+	}
 
 	if (presentPosterCount === totalPosterCount) {
 		return {

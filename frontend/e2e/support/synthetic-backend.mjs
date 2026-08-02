@@ -48,6 +48,7 @@ const missingMovies = [
 		video_height: null,
 		resolution: null,
 		poster_status: 'missing',
+		review_pending: false,
 		poster_url: null,
 		media_file_id: null
 	},
@@ -62,6 +63,7 @@ const missingMovies = [
 		video_height: null,
 		resolution: null,
 		poster_status: 'missing',
+		review_pending: false,
 		poster_url: null,
 		media_file_id: null
 	}
@@ -78,6 +80,7 @@ const libraryMovies = [
 		video_height: 1080,
 		resolution: '1080p',
 		poster_status: 'deployed',
+		review_pending: false,
 		poster_url: '/api/library/movies/8301/poster',
 		media_file_id: 8301
 	},
@@ -92,7 +95,8 @@ const libraryMovies = [
 		video_height: 2160,
 		resolution: '2160p',
 		poster_status: 'review',
-		poster_url: null,
+		review_pending: true,
+		poster_url: '/api/library/movies/8302/poster',
 		media_file_id: 8302
 	},
 	{
@@ -106,6 +110,7 @@ const libraryMovies = [
 		video_height: 720,
 		resolution: '720p',
 		poster_status: 'missing',
+		review_pending: false,
 		poster_url: null,
 		media_file_id: 8303
 	},
@@ -120,6 +125,7 @@ const libraryMovies = [
 		video_height: 1080,
 		resolution: '1080p',
 		poster_status: 'approved',
+		review_pending: false,
 		poster_url: '/api/library/movies/8304/poster',
 		media_file_id: 8304
 	}
@@ -132,6 +138,7 @@ const librarySeries = [
 		tmdb_id: 9301,
 		genres: ['Drama', 'Mystery'],
 		poster: posterSummary(true),
+		review_pending: false,
 		downloaded_seasons: 3,
 		seasons_with_poster: 3,
 		season_poster_status: 'complete',
@@ -149,6 +156,7 @@ const librarySeries = [
 		tmdb_id: 9302,
 		genres: ['Science Fiction', 'Drama'],
 		poster: posterSummary(true),
+		review_pending: true,
 		downloaded_seasons: 8,
 		seasons_with_poster: 3,
 		season_poster_status: 'partial',
@@ -171,6 +179,7 @@ const librarySeries = [
 		tmdb_id: 9303,
 		genres: ['Documentary'],
 		poster: posterSummary(false),
+		review_pending: false,
 		downloaded_seasons: 2,
 		seasons_with_poster: 2,
 		season_poster_status: 'complete',
@@ -184,6 +193,7 @@ const librarySeries = [
 		tmdb_id: 9304,
 		genres: null,
 		poster: posterSummary(false),
+		review_pending: false,
 		downloaded_seasons: 4,
 		seasons_with_poster: 0,
 		season_poster_status: 'missing',
@@ -543,6 +553,7 @@ const server = createServer((req, res) => {
 	if (path === '/api/library/movies') {
 		const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
 		const posterStatus = url.searchParams.get('poster_status');
+		const artworkStatus = url.searchParams.get('artwork_status');
 		const sort = url.searchParams.get('sort') ?? 'title';
 		const page = Math.max(1, Number(url.searchParams.get('page') ?? 1));
 		const pageSize = Math.max(1, Number(url.searchParams.get('page_size') ?? 60));
@@ -552,7 +563,15 @@ const server = createServer((req, res) => {
 		let items = sourceMovies.filter(
 			(movie) =>
 				(!query || movie.title.toLowerCase().includes(query)) &&
-				(!posterStatus || movie.poster_status === posterStatus)
+				(!posterStatus || movie.poster_status === posterStatus) &&
+				(!artworkStatus ||
+					(artworkStatus === 'review' && movie.review_pending) ||
+					(artworkStatus === 'deployed' &&
+						!movie.review_pending &&
+						movie.poster_status !== 'missing') ||
+					(artworkStatus === 'missing' &&
+						!movie.review_pending &&
+						movie.poster_status === 'missing'))
 		);
 		items = items.toSorted((left, right) =>
 			sort === 'year'
@@ -561,7 +580,13 @@ const server = createServer((req, res) => {
 		);
 		const total = items.length;
 		items = items.slice((page - 1) * pageSize, page * pageSize);
-		json(res, 200, { total, page, page_size: pageSize, items });
+		json(res, 200, {
+			total,
+			page,
+			page_size: pageSize,
+			review_pending_total: libraryMovies.filter((movie) => movie.review_pending).length,
+			items
+		});
 		return;
 	}
 	if (path === '/api/library/series') {
@@ -569,6 +594,7 @@ const server = createServer((req, res) => {
 			total: librarySeries.length,
 			page: 1,
 			page_size: Number(url.searchParams.get('page_size') ?? 200),
+			review_pending_total: librarySeries.filter((series) => series.review_pending).length,
 			items: librarySeries
 		});
 		return;

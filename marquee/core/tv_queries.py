@@ -1,6 +1,7 @@
-from sqlalchemy import exists, select
+from sqlalchemy import and_, exists, or_, select
 
-from marquee.models import Season, Series
+from marquee.core.review_queries import terminal_review_conditions
+from marquee.models import Job, PipelineRun, Season, Series
 
 
 def season_downloaded():
@@ -15,5 +16,22 @@ def series_visible():
             Season.series_id == Series.id,
             Season.is_present.is_(True),
             Season.episode_file_count > 0,
+        )
+    )
+
+
+def series_review_pending():
+    """Series has a show or season result visible in the TV Review tab."""
+
+    return exists(
+        select(PipelineRun.run_id)
+        .outerjoin(Job, Job.id == PipelineRun.job_id)
+        .outerjoin(Season, Season.id == PipelineRun.season_id)
+        .where(
+            or_(
+                and_(PipelineRun.media_type == "series", PipelineRun.series_id == Series.id),
+                and_(PipelineRun.media_type == "season", Season.series_id == Series.id),
+            ),
+            *terminal_review_conditions(),
         )
     )

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.config import settings
 from marquee.main import app
 from marquee.models import Job, MediaFile, Movie
+from tests.support.canonical_poster import seed_canonical_pipeline_run
 
 
 @pytest_asyncio.fixture
@@ -79,6 +80,7 @@ async def test_list_enrichment_fields(db: AsyncSession, client: AsyncClient):
     alpha = by_title["Alpha"]
     assert alpha["resolution"] == "4K"
     assert alpha["poster_status"] == "approved"
+    assert alpha["review_pending"] is False
     assert alpha["genres"] == ["Sci-Fi"]
 
     assert "Bravo" not in by_title
@@ -86,6 +88,8 @@ async def test_list_enrichment_fields(db: AsyncSession, client: AsyncClient):
     charlie = by_title["Charlie"]
     assert charlie["resolution"] is None
     assert charlie["poster_status"] == "missing"
+    assert charlie["review_pending"] is False
+    assert body["review_pending_total"] == 0
 
 
 @pytest.mark.asyncio
@@ -105,6 +109,7 @@ async def test_movie_library_item_snapshot_is_the_full_contract(
                 "id": item["id"],
                 "media_file_id": item["media_file_id"],
                 "poster_status": "approved",
+                "review_pending": False,
                 "poster_url": f"/api/library/movies/{item['id']}/poster",
                 "resolution": "4K",
                 "title": "Alpha",
@@ -116,6 +121,7 @@ async def test_movie_library_item_snapshot_is_the_full_contract(
         ],
         "page": 1,
         "page_size": 50,
+        "review_pending_total": 0,
         "total": 1,
     }
 
@@ -134,6 +140,94 @@ async def test_list_filters_and_sort(db: AsyncSession, client: AsyncClient):
 
     r = await client.get("/api/library/movies?sort=year")
     assert [m["title"] for m in r.json()["items"]] == ["Alpha", "Charlie"]
+
+
+@pytest.mark.asyncio
+async def test_library_review_override_and_simplified_artwork_filters(
+    db: AsyncSession, client: AsyncClient
+):
+    pending = Movie(
+        title="Awaiting Choice",
+        year=2024,
+        folder_path="/m/pending",
+        movie_file_path="pending.mkv",
+    )
+    deployed = Movie(
+        title="Already Deployed",
+        year=2023,
+        folder_path="/m/deployed",
+        movie_file_path="deployed.mkv",
+        poster_path="/m/deployed/poster.jpg",
+        poster_user_approved=True,
+    )
+    resolved = Movie(
+        title="Decision Recorded",
+        year=2022,
+        folder_path="/m/resolved",
+        movie_file_path="resolved.mkv",
+    )
+    running = Movie(
+        title="Still Running",
+        year=2021,
+        folder_path="/m/running",
+        movie_file_path="running.mkv",
+    )
+    db.add_all([pending, deployed, resolved, running])
+    await db.flush()
+
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="library-pending",
+        movie_id=pending.id,
+        archive={"run_id": "library-pending", "movie_id": pending.id, "candidates": []},
+    )
+    await seed_canonical_pipeline_run(
+        db,
+        run_id="library-resolved",
+        movie_id=resolved.id,
+        archive={"run_id": "library-resolved", "movie_id": resolved.id, "candidates": []},
+        feedback_event_id="feedback-recorded",
+    )
+    running_run = await seed_canonical_pipeline_run(
+        db,
+        run_id="library-running",
+        movie_id=running.id,
+        archive={"run_id": "library-running", "movie_id": running.id, "candidates": []},
+    )
+    running_job = await db.get(Job, running_run.job_id)
+    assert running_job is not None
+    running_job.phase = "running"
+    running_job.outcome = None
+    running_job.terminal_at = None
+    await db.commit()
+
+    listing = (await client.get("/api/library/movies?sort=title")).json()
+    by_title = {item["title"]: item for item in listing["items"]}
+    assert listing["review_pending_total"] == 1
+    assert by_title["Awaiting Choice"]["review_pending"] is True
+    assert by_title["Already Deployed"]["review_pending"] is False
+    assert by_title["Decision Recorded"]["review_pending"] is False
+    assert by_title["Still Running"]["review_pending"] is False
+
+    review = (await client.get("/api/library/movies?artwork_status=review")).json()
+    assert [item["title"] for item in review["items"]] == ["Awaiting Choice"]
+    assert review["review_pending_total"] == 1
+
+    deployed_filter = (await client.get("/api/library/movies?artwork_status=deployed")).json()
+    assert [item["title"] for item in deployed_filter["items"]] == ["Already Deployed"]
+
+    missing_filter = (await client.get("/api/library/movies?artwork_status=missing")).json()
+    assert {item["title"] for item in missing_filter["items"]} == {
+        "Decision Recorded",
+        "Still Running",
+    }
+
+    legacy_missing = (await client.get("/api/library/movies?poster_status=missing")).json()
+    assert {item["title"] for item in legacy_missing["items"]} == {
+        "Awaiting Choice",
+        "Decision Recorded",
+        "Still Running",
+    }
 
 
 @pytest.mark.asyncio
@@ -179,6 +273,7 @@ async def test_detail_has_derived_fields(db: AsyncSession, client: AsyncClient):
 
     detail = (await client.get(f"/api/library/movies/{movie_id}")).json()
     assert detail["poster_status"] == "approved"
+    assert detail["review_pending"] is False
     assert detail["resolution"] == "4K"
     assert "media_file_path" in detail
 

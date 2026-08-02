@@ -6,7 +6,7 @@ import type {
 	MovieDetail,
 	MovieListItem,
 	MovieQuery,
-	Paginated,
+	LibraryPage,
 	SeriesDetail,
 	SeriesListItem
 } from './types';
@@ -19,9 +19,9 @@ const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
 export function listMovies(
 	fetch: Fetch,
 	params: MovieQuery = {}
-): Promise<Paginated<MovieListItem>> {
+): Promise<LibraryPage<MovieListItem>> {
 	if (useMocks()) return Promise.resolve(mockMovies(params));
-	return apiGet<Paginated<MovieListItem>>(
+	return apiGet<LibraryPage<MovieListItem>>(
 		fetch,
 		'/library/movies',
 		params as Record<string, unknown>
@@ -43,8 +43,8 @@ export function deleteMoviePoster(fetch: Fetch, id: number): Promise<JobSubmissi
 export function listSeries(
 	fetch: Fetch,
 	params: { page?: number; page_size?: number } = {}
-): Promise<Paginated<SeriesListItem>> {
-	return apiGet<Paginated<SeriesListItem>>(fetch, '/library/series', params);
+): Promise<LibraryPage<SeriesListItem>> {
+	return apiGet<LibraryPage<SeriesListItem>>(fetch, '/library/series', params);
 }
 
 export function getSeries(fetch: Fetch, id: number): Promise<SeriesDetail> {

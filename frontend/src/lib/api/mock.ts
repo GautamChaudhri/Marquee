@@ -4,7 +4,7 @@ import type {
 	MovieDetail,
 	MovieListItem,
 	MovieQuery,
-	Paginated,
+	LibraryPage,
 	PosterStatus,
 	SystemMetrics,
 	SystemMetricsHistory
@@ -40,6 +40,7 @@ function makeItem(i: number): MovieListItem {
 		video_height: 1600,
 		resolution: RES[i % RES.length],
 		poster_status: POSTER[i % POSTER.length],
+		review_pending: i === 2,
 		poster_url: null,
 		media_file_id: i + 1
 	};
@@ -47,14 +48,25 @@ function makeItem(i: number): MovieListItem {
 
 const ALL: MovieListItem[] = Array.from({ length: TITLES.length }, (_, i) => makeItem(i));
 
-export function mockMovies(params: MovieQuery = {}): Paginated<MovieListItem> {
+export function mockMovies(params: MovieQuery = {}): LibraryPage<MovieListItem> {
 	let items = [...ALL];
 	if (params.q)
 		items = items.filter((m) => m.title.toLowerCase().includes(params.q!.toLowerCase()));
 	if (params.poster_status) items = items.filter((m) => m.poster_status === params.poster_status);
+	if (params.artwork_status === 'review') items = items.filter((m) => m.review_pending);
+	if (params.artwork_status === 'deployed')
+		items = items.filter((m) => !m.review_pending && m.poster_status !== 'missing');
+	if (params.artwork_status === 'missing')
+		items = items.filter((m) => !m.review_pending && m.poster_status === 'missing');
 	if (params.sort === 'year') items.sort((a, b) => b.year - a.year);
 	else items.sort((a, b) => compareBySortTitle(a.title, b.title));
-	return { total: items.length, page: params.page ?? 1, page_size: params.page_size ?? 50, items };
+	return {
+		total: items.length,
+		page: params.page ?? 1,
+		page_size: params.page_size ?? 50,
+		review_pending_total: ALL.filter((movie) => movie.review_pending).length,
+		items
+	};
 }
 
 export function mockMovieDetail(id: number): MovieDetail {

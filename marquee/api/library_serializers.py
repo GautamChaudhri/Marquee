@@ -79,7 +79,7 @@ def poster_status_filter(value: str) -> ColumnElement[bool] | None:
     return None
 
 
-def enrich_movie(movie: Movie, media_file: Any | None) -> dict:
+def enrich_movie(movie: Movie, media_file: Any | None, *, review_pending: bool = False) -> dict:
     """Assemble a list/detail item dict with derived display fields."""
     return {
         "id": movie.id,
@@ -92,6 +92,7 @@ def enrich_movie(movie: Movie, media_file: Any | None) -> dict:
         "video_height": movie.video_height,
         "resolution": resolution_label(movie.video_width, movie.video_height),
         "poster_status": poster_status(movie),
+        "review_pending": review_pending,
         "poster_url": f"/api/library/movies/{movie.id}/poster" if movie.poster_path else None,
         "media_file_id": media_file.id if media_file else None,
     }
