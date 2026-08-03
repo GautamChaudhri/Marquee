@@ -634,6 +634,7 @@ async def execute_poster_pipeline(
             context.process_launcher,
             operation=RunnerOperation.POSTER_SINGLE,
             manifest=manifest,
+            configuration=context.configuration,
             on_progress=bridge.on_frame if bridge is not None else None,
             should_stop=should_stop,
             resolve_output=resolve,

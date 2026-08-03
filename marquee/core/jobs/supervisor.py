@@ -10,7 +10,7 @@ import signal
 import sys
 import time
 
-from marquee.config import settings
+from marquee.core.runtime_settings import effective_settings as settings
 
 logger = logging.getLogger(__name__)
 

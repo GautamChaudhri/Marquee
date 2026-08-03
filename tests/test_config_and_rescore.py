@@ -115,13 +115,15 @@ async def test_put_invalid_value_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_put_restart_required_rejected(client):
+async def test_put_restart_required_value_is_revision_managed(client):
+    original = pipeline_settings.AI_MODEL
     resp = await client.put(
         "/api/config/pipeline",
         json={"expected_version": 1, "values": {"AI_MODEL": "something-else"}},
     )
-    assert resp.status_code == 400
-    assert "restart" in resp.json()["detail"].lower()
+    assert resp.status_code == 200
+    assert resp.json()["overrides"]["AI_MODEL"] == "something-else"
+    assert original == pipeline_settings.AI_MODEL
 
 
 @pytest.mark.asyncio

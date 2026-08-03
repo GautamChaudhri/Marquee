@@ -25,9 +25,9 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
 from marquee.core.poster_files import sanitize_poster_filename
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.models import Season, Series
 
 logger = logging.getLogger(__name__)

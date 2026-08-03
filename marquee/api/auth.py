@@ -1,11 +1,13 @@
 """API-key authentication dependency.
 
 A single static API key guards every route except the health probes. The key may be
-presented three ways so any caller works:
+presented through either header form:
 
   * ``Authorization: Bearer <key>``
   * ``X-Api-Key: <key>``  (the convention Radarr/Sonarr use)
-  * ``?apikey=<key>``     (lets browser navigation carry it)
+
+The legacy ``?apikey=<key>`` form is restricted to Radarr/Sonarr webhook paths
+during the compatibility window because query strings can be retained by access logs.
 
 Enforcement is wired as a global FastAPI dependency in :mod:`marquee.main`.
 Behaviour (evaluated in order):
@@ -30,7 +32,7 @@ from collections import defaultdict
 
 from fastapi import HTTPException, Request
 
-from marquee.config import settings
+from marquee.core.runtime_settings import effective_app_settings
 
 # Routes reachable without the global key:
 #   /health              — probes / load balancers can't send a key.
@@ -56,12 +58,13 @@ def _check_brute_force(ip: str) -> None:
 def _record_failure(ip: str) -> None:
     """Record one failed attempt; apply lockout when the threshold is crossed."""
     now = time.monotonic()
-    window = settings.AUTH_BRUTE_WINDOW_SECONDS
+    app_settings = effective_app_settings()
+    window = app_settings.AUTH_BRUTE_WINDOW_SECONDS
     times = [t for t in _failure_times[ip] if now - t <= window]
     times.append(now)
     _failure_times[ip] = times
-    if len(times) >= settings.AUTH_BRUTE_LOCKOUT_ATTEMPTS:
-        _lockout_until[ip] = now + settings.AUTH_BRUTE_LOCKOUT_SECONDS
+    if len(times) >= app_settings.AUTH_BRUTE_LOCKOUT_ATTEMPTS:
+        _lockout_until[ip] = now + app_settings.AUTH_BRUTE_LOCKOUT_SECONDS
         _failure_times[ip] = []
 
 
@@ -72,16 +75,17 @@ def _clear_failure(ip: str) -> None:
 
 
 def _presented_key(request: Request) -> str | None:
-    """Pull the API key from the Authorization / X-Api-Key headers or query."""
+    """Pull the API key from headers or the webhook-only compatibility query."""
     auth = request.headers.get("Authorization")
     if auth and auth.startswith("Bearer "):
         return auth[len("Bearer ") :].strip() or None
     header_key = request.headers.get("X-Api-Key")
     if header_key:
         return header_key.strip() or None
-    query_key = request.query_params.get("apikey")
-    if query_key:
-        return query_key.strip() or None
+    if request.url.path.startswith("/api/webhooks/"):
+        query_key = request.query_params.get("apikey")
+        if query_key:
+            return query_key.strip() or None
     return None
 
 
@@ -97,7 +101,8 @@ async def require_api_key(request: Request) -> None:
     or ``503`` (no key configured).
     """
     # 1. Local development: auth disabled wholesale.
-    if settings.DEBUG:
+    app_settings = effective_app_settings()
+    if app_settings.DEBUG:
         return
 
     # 2. Always-open routes (health probes).
@@ -106,7 +111,7 @@ async def require_api_key(request: Request) -> None:
 
     # 3. Same-host tooling may be exempt; tailnet/LAN never is.
     is_loopback = _is_loopback(request)
-    if settings.AUTH_ALLOW_LOCAL and is_loopback:
+    if app_settings.AUTH_ALLOW_LOCAL and is_loopback:
         return
 
     # 4. Brute-force check (skip for loopback so same-host tooling can't self-lockout).
@@ -118,7 +123,7 @@ async def require_api_key(request: Request) -> None:
     #    before falling through to the API-key check.
 
     # 6. Fail closed when the operator hasn't configured a key.
-    if not settings.API_KEY:
+    if not app_settings.API_KEY:
         raise HTTPException(
             status_code=503,
             detail="API key not configured — set API_KEY (or run with DEBUG=true).",
@@ -126,7 +131,7 @@ async def require_api_key(request: Request) -> None:
 
     # 7. Validate the presented credential (constant-time).
     presented = _presented_key(request)
-    if presented is None or not secrets.compare_digest(presented, settings.API_KEY):
+    if presented is None or not secrets.compare_digest(presented, app_settings.API_KEY):
         if ip and not is_loopback:
             _record_failure(ip)
         raise HTTPException(

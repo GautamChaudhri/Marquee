@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from marquee.config import settings
 from marquee.core.cancellation import JobCancelledError
 from marquee.core.jobs.delivery import ExecutionContext, register_execution_handler
 from marquee.core.jobs.progress import MeasurementMode, ProgressMeasurementUpdate
@@ -57,26 +56,33 @@ async def execute_library_sync(context: ExecutionContext) -> dict[str, Any]:
     """Synchronize Radarr/Sonarr/TMDB into the derived library projection."""
     from marquee.core.arr_clients.radarr_client import RadarrClient  # noqa: PLC0415
     from marquee.core.arr_clients.sonarr_client import SonarrClient  # noqa: PLC0415
+    from marquee.core.integration_settings import (  # noqa: PLC0415
+        read_integration_settings_snapshot,
+    )
+    from marquee.core.integration_urls import normalize_integration_url  # noqa: PLC0415
     from marquee.core.poster_sources.tmdb import TMDBClient  # noqa: PLC0415
     from marquee.core.sync_service import SyncService  # noqa: PLC0415
 
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
 
+    async with context.session_factory() as settings_session:
+        snapshot = await read_integration_settings_snapshot(settings_session)
+    radarr_settings = snapshot.for_provider("radarr")
+    sonarr_settings = snapshot.for_provider("sonarr")
+    tmdb_settings = snapshot.for_provider("tmdb")
     radarr = (
-        RadarrClient(settings.RADARR_URL, settings.RADARR_API_KEY)
-        if settings.radarr_configured
+        RadarrClient(normalize_integration_url(radarr_settings.url), radarr_settings.credential)
+        if radarr_settings.url and radarr_settings.credential
         else None
     )
     sonarr = (
-        SonarrClient(settings.SONARR_URL, settings.SONARR_API_KEY)
-        if settings.sonarr_configured
+        SonarrClient(normalize_integration_url(sonarr_settings.url), sonarr_settings.credential)
+        if sonarr_settings.url and sonarr_settings.credential
         else None
     )
     tmdb = (
-        TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN)
-        if settings.tmdb_configured
-        else None
+        TMDBClient(read_access_token=tmdb_settings.credential) if tmdb_settings.credential else None
     )
     sources = {
         "radarr": "configured" if radarr is not None else "skipped",

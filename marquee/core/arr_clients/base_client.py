@@ -36,6 +36,7 @@ class ArrClient:
             base_url=self.base_url,
             headers={"X-Api-Key": self.api_key, "Accept": "application/json"},
             timeout=httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0),
+            follow_redirects=False,
         )
 
     async def disconnect(self) -> None:

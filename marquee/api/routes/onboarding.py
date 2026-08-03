@@ -25,6 +25,7 @@ from marquee.core.onboarding_review import (
     bind_onboarding_decision,
     load_onboarding_review,
 )
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.taste_preferences import (
     TastePreferenceError,
     TasteReadiness,
@@ -46,7 +47,17 @@ from marquee.models import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/onboarding", tags=["onboarding"])
+
+async def _require_onboarding_enabled() -> None:
+    if not settings.ONBOARDING_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+router = APIRouter(
+    prefix="/api/onboarding",
+    tags=["onboarding"],
+    dependencies=[Depends(_require_onboarding_enabled)],
+)
 
 
 class StartRequest(BaseModel):

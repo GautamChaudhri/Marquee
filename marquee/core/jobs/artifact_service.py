@@ -17,7 +17,6 @@ from typing import Any, Literal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.filesystem import (
     ClassifiedPath,
     FilesystemBoundary,
@@ -26,6 +25,7 @@ from marquee.core.filesystem import (
 )
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.log_capture import CentralRedactor
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models import Job, JobArtifact, JobAttempt, JobEvent, JobLog
 

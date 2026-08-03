@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
+from marquee.config import Settings
 from marquee.core.path_utils import PathValidationError, safe_translate_and_validate
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ class TestRadarrTranslation:
 
     def test_passthrough_when_no_radarr_mapping(self):
         """Without mapping, radarr paths pass through untranslated."""
-        settings = _mock_settings()  # no path mapping
+        settings = _mock_settings(media_roots=["/plunder/movies"])
         with patch("marquee.core.path_utils.settings", settings):
             result = safe_translate_and_validate("/plunder/movies/Dune (2021)", source="radarr")
         assert result == Path("/plunder/movies/Dune (2021)")
@@ -57,12 +58,38 @@ class TestRadarrTranslation:
         settings = _mock_settings(
             radarr_path_prefix="/plunder/movies",
             radarr_media_path="/Volumes/PLUNDER/Media/Movies",
-            media_roots=["/"],  # allow-all for this test
+            media_roots=["/some/other/path"],
+            media_ceilings=["/some/other/path", "/Volumes/PLUNDER/Media/Movies"],
         )
         with patch("marquee.core.path_utils.settings", settings):
             result = safe_translate_and_validate("/some/other/path/Dune", source="radarr")
         # Passes through untranslated (caller is expected to log a warning)
         assert str(result) == "/some/other/path/Dune"
+
+    def test_settings_translation_requires_a_complete_prefix_component(self):
+        settings = Settings(
+            _env_file=None,
+            RADARR_PATH_PREFIX="/plunder/movies",
+            RADARR_MEDIA_PATH="/movies",
+        )
+        assert (
+            settings.translate_radarr_path("/plunder/movies-private/secret")
+            == "/plunder/movies-private/secret"
+        )
+
+    def test_settings_translation_handles_trailing_and_root_prefixes(self):
+        trailing = Settings(
+            _env_file=None,
+            RADARR_PATH_PREFIX="/plunder/movies/",
+            RADARR_MEDIA_PATH="/movies/",
+        )
+        root = Settings(
+            _env_file=None,
+            RADARR_PATH_PREFIX="/",
+            RADARR_MEDIA_PATH="/movies",
+        )
+        assert trailing.translate_radarr_path("/plunder/movies/Dune") == "/movies/Dune"
+        assert root.translate_radarr_path("/Dune") == "/movies/Dune"
 
 
 class TestSonarrTranslation:
@@ -78,7 +105,7 @@ class TestSonarrTranslation:
         assert result == Path("/Volumes/PLUNDER/Media/TV/Breaking Bad")
 
     def test_passthrough_when_no_sonarr_mapping(self):
-        settings = _mock_settings()
+        settings = _mock_settings(media_roots=["/plunder/tv"])
         with patch("marquee.core.path_utils.settings", settings):
             result = safe_translate_and_validate("/plunder/tv/Breaking Bad", source="sonarr")
         assert result == Path("/plunder/tv/Breaking Bad")
@@ -87,11 +114,22 @@ class TestSonarrTranslation:
         settings = _mock_settings(
             sonarr_path_prefix="/plunder/tv",
             sonarr_media_path="/Volumes/PLUNDER/Media/TV",
-            media_roots=["/"],  # allow-all for this test
+            media_roots=["/other/tv"],
+            media_ceilings=["/other/tv", "/Volumes/PLUNDER/Media/TV"],
         )
         with patch("marquee.core.path_utils.settings", settings):
             result = safe_translate_and_validate("/other/tv/Breaking Bad", source="sonarr")
         assert str(result) == "/other/tv/Breaking Bad"
+
+    def test_settings_translation_requires_a_complete_prefix_component(self):
+        settings = Settings(
+            _env_file=None,
+            SONARR_PATH_PREFIX="/plunder/tv",
+            SONARR_MEDIA_PATH="/tv",
+        )
+        assert settings.translate_sonarr_path("/plunder/tv-private/secret") == (
+            "/plunder/tv-private/secret"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +142,8 @@ def test_logs_warning_when_prefix_mismatches(caplog):
     settings = _mock_settings(
         radarr_path_prefix="/plunder/movies",
         radarr_media_path="/Volumes/PLUNDER/Media/Movies",
-        media_roots=["/"],  # allow-all so Layer 4 doesn't block the test
+        media_roots=["/alien/path"],
+        media_ceilings=["/alien/path", "/Volumes/PLUNDER/Media/Movies"],
     )
     with patch("marquee.core.path_utils.settings", settings):
         safe_translate_and_validate("/alien/path/Movie", source="radarr")
@@ -114,7 +153,7 @@ def test_logs_warning_when_prefix_mismatches(caplog):
 
 def test_no_warning_when_not_configured(caplog):
     """No warning when no mapping is configured (passthrough is expected)."""
-    settings = _mock_settings()  # nothing configured
+    settings = _mock_settings(media_roots=["/anything"])
     with patch("marquee.core.path_utils.settings", settings):
         safe_translate_and_validate("/anything/movie", source="radarr")
 
@@ -195,12 +234,35 @@ def test_multiple_roots_pass():
         assert "Breaking" in str(result)
 
 
-def test_no_enforcement_when_roots_empty():
-    """Empty MEDIA_ROOTS + no mapping = allow all (dev/trusted mode)."""
+def test_empty_authority_fails_closed():
+    """Empty logical and deployment roots grant no filesystem authority."""
     settings = _mock_settings(media_roots=[])  # empty
-    with patch("marquee.core.path_utils.settings", settings):
-        result = safe_translate_and_validate("/any/path/at/all", source="radarr")
-    assert result == Path("/any/path/at/all")
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        pytest.raises(PathValidationError, match="fails closed"),
+    ):
+        safe_translate_and_validate("/any/path/at/all", source="radarr")
+
+
+def test_logical_root_cannot_expand_deployment_ceiling():
+    settings = _mock_settings(
+        media_roots=["/media-library-copy"],
+        media_ceilings=["/media-library"],
+    )
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        pytest.raises(PathValidationError, match="outside every deployment"),
+    ):
+        safe_translate_and_validate("/media-library-copy/movie", source="radarr")
+
+
+def test_filesystem_root_cannot_be_a_deployment_ceiling():
+    settings = _mock_settings(media_roots=["/"], media_ceilings=["/"])
+    with (
+        patch("marquee.core.path_utils.settings", settings),
+        pytest.raises(PathValidationError, match="entire filesystem root"),
+    ):
+        safe_translate_and_validate("/etc/hosts", source="radarr")
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +372,7 @@ def _mock_settings(
     sonarr_path_prefix: str | None = None,
     sonarr_media_path: str | None = None,
     media_roots: list[str] | None = None,
+    media_ceilings: list[str] | None = None,
 ):
     """Build a mock settings object with minimal attributes used by path_utils."""
 
@@ -319,6 +382,7 @@ def _mock_settings(
         SONARR_PATH_PREFIX = sonarr_path_prefix
         SONARR_MEDIA_PATH = sonarr_media_path
         MEDIA_ROOTS = media_roots if media_roots is not None else []
+        MEDIA_PATH_CEILINGS = media_ceilings if media_ceilings is not None else []
 
         @property
         def radarr_path_configured(self):

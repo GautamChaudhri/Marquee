@@ -15,7 +15,6 @@ from pgqueuer import PgQueuer
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.submission import (
@@ -24,6 +23,7 @@ from marquee.core.jobs.submission import (
     SubmissionResult,
     submit_job,
 )
+from marquee.core.runtime_settings import effective_app_settings
 from marquee.database import _get_session_factory
 from marquee.models import Job
 
@@ -219,12 +219,13 @@ schedule_diagnostics = ScheduleDiagnostics()
 
 def load_schedule_configuration() -> ScheduleConfiguration:
     """Read the current versioned scheduler inputs and restart-owned sync interval."""
+    app_settings = effective_app_settings()
     return ScheduleConfiguration(
         revision=configuration_provider.state.version,
-        sync_interval_minutes=settings.SYNC_INTERVAL_MINUTES,
-        poster_heal_enabled=settings.HEAL_ENABLED,
-        poster_heal_interval_minutes=settings.HEAL_INTERVAL_MINUTES,
-        production_occurrences_enabled=settings.JOB_PRODUCTION_SCHEDULES_ENABLED,
+        sync_interval_minutes=app_settings.SYNC_INTERVAL_MINUTES,
+        poster_heal_enabled=app_settings.HEAL_ENABLED,
+        poster_heal_interval_minutes=app_settings.HEAL_INTERVAL_MINUTES,
+        production_occurrences_enabled=app_settings.JOB_PRODUCTION_SCHEDULES_ENABLED,
     )
 
 

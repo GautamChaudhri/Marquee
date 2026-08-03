@@ -10,7 +10,6 @@ from typing import Any
 import asyncpg
 from sqlalchemy.exc import SQLAlchemyError
 
-from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.batches import (
     MAX_BATCH_FAILURE_ITEMS,
@@ -28,6 +27,7 @@ from marquee.core.jobs.schedules import (
     load_schedule_configuration,
     schedule_effective_state,
 )
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_engine
 from marquee.db_migration import (
     MIGRATION_ADVISORY_LOCK_ID,

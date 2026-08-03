@@ -8,10 +8,10 @@ import shutil
 import stat
 import tarfile
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import BinaryIO, Literal
 from urllib.parse import quote
 
 from fastapi.responses import StreamingResponse
@@ -186,8 +186,17 @@ class FilesystemBoundary:
         *,
         media_type: str | None = None,
         filename: str | None = None,
+        validator: Callable[[BinaryIO], None] | None = None,
     ) -> StreamingResponse:
         fd = self.open_read(classified)
+        if validator is not None:
+            try:
+                with os.fdopen(os.dup(fd), "rb") as probe:
+                    validator(probe)
+                os.lseek(fd, 0, os.SEEK_SET)
+            except BaseException:
+                os.close(fd)
+                raise
 
         def chunks() -> Iterator[bytes]:
             try:

@@ -605,6 +605,7 @@ async def execute_poster_pipeline_group(
             context.process_launcher,
             operation=RunnerOperation.POSTER_GROUP,
             manifest=manifest,
+            configuration=context.configuration,
             on_progress=bridge.on_frame if bridge is not None else None,
             should_stop=should_stop,
             resolve_output=lambda key: workspace_dir / key,

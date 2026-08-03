@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from marquee.config import settings
 from marquee.main import app
 from marquee.models import (
     Job,
@@ -478,7 +479,7 @@ async def test_library_missing_filter_ignores_tv_runs_in_review(
 
     resp = await client.get("/api/library/movies?poster_status=missing&exclude_in_review=true")
 
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     assert [item["title"] for item in resp.json()["items"]] == ["Still Missing"]
 
 
@@ -563,14 +564,14 @@ async def test_put_settings_persists_poster_and_heal_overrides(
         },
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["configuration_version"] == 2
     assert "MOVIE_POSTER_FORMAT" in data["applied"]
     assert "POSTER_RESTORE_METHOD" in data["applied"]
     assert "HEAL_ENABLED" in data["applied"]
     assert "HEAL_INTERVAL_MINUTES" in data["applied"]
-    assert data["settings"]["poster_formats"]["movie"] == "{movie_basename}-poster"
+    assert data["settings"]["poster_formats"]["movie"] == "{movie_basename}-poster.jpg"
     assert data["settings"]["posters"]["restore_method"] == "local"
     assert data["settings"]["sync"]["heal_enabled"] is False
     assert data["settings"]["sync"]["heal_interval_minutes"] == 15
@@ -606,3 +607,125 @@ async def test_put_settings_validation_failure(db: AsyncSession, client: AsyncCl
     }
     resp = await client.put("/api/settings", json=payload)
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_response_redacts_secrets_and_private_bootstrap_values(
+    db: AsyncSession, client: AsyncClient
+):
+    from marquee.config import settings
+
+    response = await client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    rendered = response.text
+
+    for key in ("TMDB_READ_ACCESS_TOKEN", "RADARR_API_KEY", "SONARR_API_KEY"):
+        assert key in payload["secrets"]
+        assert set(payload["secrets"][key]) == {
+            "configured",
+            "source",
+            "generation",
+            "updated_at",
+        }
+        assert key not in payload["values"]
+        assert key not in payload["defaults"]
+        value = getattr(settings, key)
+        if value:
+            assert value not in rendered
+
+    for key in ("API_KEY", "DB_URL", "POSTGRES_PASSWORD_FILE", "MARQUEE_SETTINGS_KEYRING_FILE"):
+        assert key not in payload["values"]
+    assert "ciphertext" not in rendered
+    assert "fingerprint" not in rendered
+    assert "nonce" not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"TMDB_READ_ACCESS_TOKEN": "must-not-enter-a-revision"},
+        {"HOST": "127.0.0.1"},
+        {"UNKNOWN_SETTING": True},
+    ],
+)
+async def test_unified_settings_rejects_secret_deployment_and_unknown_fields(
+    db: AsyncSession, client: AsyncClient, values: dict[str, object]
+):
+    response = await client.put(
+        "/api/settings/config",
+        json={"expected_version": 1, "values": values},
+    )
+    assert response.status_code == 400
+    assert (await client.get("/api/settings")).json()["configuration_version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_restart_bound_public_setting_is_revision_managed(
+    db: AsyncSession, client: AsyncClient
+):
+    response = await client.put(
+        "/api/settings/config",
+        json={"expected_version": 1, "values": {"CLIP_MODEL_PATH": "/models/clip.onnx"}},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["settings"]["values"]["CLIP_MODEL_PATH"] == "/models/clip.onnx"
+    assert payload["settings"]["catalog"]["CLIP_MODEL_PATH"]["apply_mode"] == "restart"
+
+
+@pytest.mark.asyncio
+async def test_path_mapping_test_reports_access_without_mutating_filesystem(
+    db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "MEDIA_PATH_CEILINGS", [str(tmp_path)])
+    media = tmp_path / "media"
+    media.mkdir()
+    before = set(tmp_path.iterdir())
+    response = await client.post(
+        "/api/settings/paths/test",
+        json={
+            "media_roots": [str(media)],
+            "radarr_path_prefix": "/remote/movies",
+            "radarr_media_path": str(media),
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mutated"] is False
+    assert payload["media_roots"][0]["readable"] is True
+    assert payload["mappings"]["radarr"]["target"]["directory"] is True
+    assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.asyncio
+async def test_path_mapping_test_rejects_candidates_outside_deployment_ceiling(
+    db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch
+):
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    monkeypatch.setattr(settings, "MEDIA_PATH_CEILINGS", [str(approved)])
+    response = await client.post(
+        "/api/settings/paths/test",
+        json={"media_roots": [str(tmp_path / "approved-copy")]},
+    )
+    assert response.status_code == 400
+    assert "outside every deployment" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_path_mapping_test_requires_complete_absolute_pairs(
+    db: AsyncSession, client: AsyncClient
+):
+    incomplete = await client.post(
+        "/api/settings/paths/test",
+        json={"radarr_path_prefix": "/remote/movies"},
+    )
+    assert incomplete.status_code == 400
+
+    relative = await client.post(
+        "/api/settings/paths/test",
+        json={"sonarr_path_prefix": "/remote/tv", "sonarr_media_path": "relative/tv"},
+    )
+    assert relative.status_code == 400

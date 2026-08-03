@@ -57,6 +57,26 @@ def test_containment_capability_is_honest() -> None:
         assert capability.cgroup_v2_delegated is False
 
 
+def test_runner_identity_must_be_complete(tmp_path: Path) -> None:
+    with pytest.raises(ProcessLaunchError, match="configured together"):
+        _launcher(tmp_path, runner_uid=65532)
+
+
+def test_required_runner_privilege_separation_fails_closed(tmp_path: Path) -> None:
+    with pytest.raises(ProcessLaunchError, match="privilege separation is required"):
+        _launcher(tmp_path, require_privilege_separation=True)
+
+
+def test_required_runner_identity_must_differ_from_worker(tmp_path: Path) -> None:
+    with pytest.raises(ProcessLaunchError, match="must differ"):
+        _launcher(
+            tmp_path,
+            runner_uid=os.geteuid(),
+            runner_gid=os.getegid(),
+            require_privilege_separation=True,
+        )
+
+
 @pytest.mark.asyncio
 async def test_clean_canary_records_identity_before_start(tmp_path: Path) -> None:
     identities: list[ProcessIdentity] = []

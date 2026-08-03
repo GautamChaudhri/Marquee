@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import hashlib
 import struct
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -41,6 +41,25 @@ OUTCOME_PROTOCOL_ERROR = "protocol_error"
 _MAX_PRODUCED_FILES = 4096
 _MAX_WARNINGS = 1024
 _POLL_SECONDS = 0.1
+_OPERATION_SECRET_NAMES = {
+    RunnerOperation.POSTER_SINGLE: ("TMDB_READ_ACCESS_TOKEN",),
+    RunnerOperation.POSTER_GROUP: ("TMDB_READ_ACCESS_TOKEN",),
+}
+
+
+def _operation_secret_manifest(operation: RunnerOperation) -> dict[str, object]:
+    """Build the smallest operation-scoped credential capability for stdin."""
+
+    names = _OPERATION_SECRET_NAMES.get(operation, ())
+    if not names:
+        return {"values": {}, "generations": {}}
+    from marquee.core.managed_secrets import managed_secret_provider  # noqa: PLC0415
+
+    current = managed_secret_provider.values()
+    return {
+        "values": {name: current.get(name) for name in names},
+        "generations": {name: managed_secret_provider.generation(name) for name in names},
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +289,7 @@ async def run_internal_operation(
     *,
     operation: RunnerOperation,
     manifest: dict[str, Any],
+    configuration: Mapping[str, object] | None = None,
     on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     should_stop: Callable[[], bool] | None = None,
     timeout_seconds: float | None = None,
@@ -297,7 +317,15 @@ async def run_internal_operation(
     preserved for the caller; death-confirmation failure is raised as a hard
     operational failure and never reported as successful cancellation.
     """
-    manifest_bytes = encode_manifest({**manifest, "v": 1, "operation": operation.value})
+    manifest_bytes = encode_manifest(
+        {
+            **manifest,
+            "v": 1,
+            "operation": operation.value,
+            "configuration": dict(configuration or {}),
+            "secrets": _operation_secret_manifest(operation),
+        }
+    )
     tracked, reader = await launcher.launch_internal_runner(
         operation, manifest=manifest_bytes, runtime_options=runtime_options
     )

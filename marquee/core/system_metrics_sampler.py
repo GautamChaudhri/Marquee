@@ -17,8 +17,8 @@ import logging
 
 from sqlalchemy import select
 
-from marquee.config import settings
 from marquee.core import system_metrics
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models import Job, SystemMetricsSample
 

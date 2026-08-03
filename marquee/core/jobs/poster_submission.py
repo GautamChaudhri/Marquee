@@ -7,7 +7,6 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.filesystem import FilesystemBoundary, RootSpec
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import PosterCandidateSelectionV1
@@ -20,6 +19,7 @@ from marquee.core.jobs.submission import (
 )
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_subjects import PosterSubject
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.models import PipelineRun
 
 

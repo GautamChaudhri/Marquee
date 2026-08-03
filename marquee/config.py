@@ -7,9 +7,12 @@ Pydantic-settings handles type coercion, validation, and defaults.
 from __future__ import annotations
 
 import contextlib
+import os
 import socket
+import stat
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,7 +20,25 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # ---------------------------------------------------------------------------
 # Locate the .env file next to pyproject.toml (project root)
 # ---------------------------------------------------------------------------
-ENV_FILE = Path(__file__).parent.parent / ".env"
+ENV_FILE = (
+    None
+    if os.environ.get("MARQUEE_INTERNAL_RUNNER") == "1"
+    else Path(__file__).parent.parent / ".env"
+)
+
+
+def _read_bootstrap_secret(path: Path) -> str:
+    file_stat = path.stat()
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("bootstrap secret must be a regular file")
+    if file_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError("bootstrap secret must not be group- or world-writable")
+    if file_stat.st_size > 64 * 1024:
+        raise ValueError("bootstrap secret file is too large")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise ValueError("bootstrap secret file is empty")
+    return value
 
 
 class Settings(BaseSettings):
@@ -39,9 +60,8 @@ class Settings(BaseSettings):
     # Security / Authentication
     #
     # A single static API key guards every endpoint (except /health).
-    # Send it as ``Authorization: Bearer <key>``, ``X-Api-Key: <key>``,
-    # or ``?apikey=<key>`` (the query form lets Radarr/Sonarr webhook URLs
-    # and the browser carry it).
+    # Send it as ``Authorization: Bearer <key>`` or ``X-Api-Key: <key>``.
+    # The query form is retained only for Radarr/Sonarr webhook compatibility.
     #
     #   DEBUG=true                → auth is bypassed entirely (local dev).
     #   DEBUG=false + API_KEY set → key required (loopback may be exempt).
@@ -51,6 +71,17 @@ class Settings(BaseSettings):
         default=None,
         description="Static API key required on all endpoints except /health. "
         'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))".',
+    )
+    API_KEY_FILE: Path | None = Field(
+        default=None,
+        description="Docker-secret file containing the bootstrap API key.",
+    )
+    MARQUEE_SETTINGS_KEYRING_FILE: Path | None = Field(
+        default=None,
+        description=(
+            "Docker-secret keyring used to encrypt UI-managed integration credentials. "
+            "The file stays outside PostgreSQL and is never returned by the API."
+        ),
     )
     AUTH_ALLOW_LOCAL: bool = Field(
         default=True,
@@ -76,6 +107,10 @@ class Settings(BaseSettings):
     # Database
     # ------------------------------------------------------------------
     DB_URL: str = "postgresql+asyncpg://marquee:marquee@postgres:5432/marquee"
+    POSTGRES_PASSWORD_FILE: Path | None = Field(
+        default=None,
+        description="Docker-secret file containing the PostgreSQL password.",
+    )
     DB_LOCK_TIMEOUT_MS: int = Field(
         default=10_000,
         ge=0,
@@ -97,6 +132,13 @@ class Settings(BaseSettings):
     HEALTH_READY_TIMEOUT_SECONDS: float = Field(default=2.0, ge=0.1, le=30.0)
     HEALTH_STARTUP_ATTEMPTS: int = Field(default=3, ge=1, le=30)
     HEALTH_STARTUP_RETRY_SECONDS: float = Field(default=1.0, ge=0.0, le=30.0)
+    DATA_PATH_CEILING: str | None = Field(
+        default=None,
+        description=(
+            "Deployment-owned filesystem ceiling for data, cache, staging, backup, and "
+            "metrics paths. Defaults to the bootstrap DATA_DIR during migration."
+        ),
+    )
     DATA_DIR: str = "data"
     # Cold-start onboarding ("Rank Test") is built and covered but off by default:
     # it seeds the taste profile on a fresh install, which is not the flow while the
@@ -126,6 +168,18 @@ class Settings(BaseSettings):
     JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
     JOB_WORKER_NODE_ID: str = Field(
         default_factory=socket.gethostname, min_length=1, max_length=100
+    )
+    JOB_RUNNER_UID: int | None = Field(
+        default=None,
+        ge=1,
+        le=2_147_483_647,
+        description="Deployment-owned UID used only by contained runner subprocesses.",
+    )
+    JOB_RUNNER_GID: int | None = Field(
+        default=None,
+        ge=1,
+        le=2_147_483_647,
+        description="Deployment-owned GID used only by contained runner subprocesses.",
     )
     JOB_CONTROL_CONCURRENCY: int = Field(default=4, ge=1, le=32)
     JOB_NETWORK_CONCURRENCY: int = Field(default=4, ge=1, le=32)
@@ -250,7 +304,14 @@ class Settings(BaseSettings):
     @property
     def db_url_resolved(self) -> str:
         """PostgreSQL connection URL used by every Marquee runtime role."""
-        return self.DB_URL
+        if self.POSTGRES_PASSWORD_FILE is None:
+            return self.DB_URL
+        password = _read_bootstrap_secret(self.POSTGRES_PASSWORD_FILE)
+        parsed = urlsplit(self.DB_URL)
+        username = parsed.username or "marquee"
+        host_part = parsed.netloc.rsplit("@", 1)[-1]
+        netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{host_part}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
     @property
     def db_pool_budget(self) -> tuple[int, int]:
@@ -280,7 +341,15 @@ class Settings(BaseSettings):
         )
 
     @model_validator(mode="after")
+    def load_api_key_file(self) -> Settings:
+        if self.API_KEY_FILE is not None:
+            self.API_KEY = _read_bootstrap_secret(self.API_KEY_FILE)
+        return self
+
+    @model_validator(mode="after")
     def validate_connection_budget(self) -> Settings:
+        if (self.JOB_RUNNER_UID is None) != (self.JOB_RUNNER_GID is None):
+            raise ValueError("JOB_RUNNER_UID and JOB_RUNNER_GID must be configured together")
         if self.deployment_connection_budget > self.DB_DEPLOYMENT_MAX_CONNECTIONS:
             raise ValueError(
                 "configured role connection budget exceeds DB_DEPLOYMENT_MAX_CONNECTIONS"
@@ -300,12 +369,22 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _data_child_path(self, value: str) -> Path:
+        """Resolve one data-owned path, including the legacy ``data/`` prefix."""
+
+        path = Path(value)
+        if not path.is_absolute():
+            parts = path.parts[1:] if path.parts and path.parts[0] == "data" else path.parts
+            path = self.data_dir_path.joinpath(*parts)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @property
     def job_log_redaction_secrets(self) -> tuple[str, ...]:
         """Return bounded configured credential values without logging their sources."""
         values = (
             self.API_KEY,
-            self.DB_URL,
+            self.db_url_resolved,
             self.TMDB_READ_ACCESS_TOKEN,
             self.RADARR_API_KEY,
             self.SONARR_API_KEY,
@@ -316,18 +395,18 @@ class Settings(BaseSettings):
     def metrics_disk_path(self) -> Path:
         """Filesystem path the dashboard disk gauge reports on."""
         if self.METRICS_DISK_PATH:
-            return Path(self.METRICS_DISK_PATH)
+            return self._data_child_path(self.METRICS_DISK_PATH)
         return self.data_dir_path
 
     @property
     def poster_cache_path(self) -> Path:
         """Absolute path to the poster cache directory."""
-        return self.data_dir_path / "cache" / "posters"
+        return self._data_child_path(self.POSTER_CACHE_DIR)
 
     @property
     def poster_staging_path(self) -> Path:
         """Absolute path to the staging directory for downloaded candidates."""
-        return self.data_dir_path / "staging"
+        return self._data_child_path(self.POSTER_STAGING_DIR)
 
     @property
     def runs_archive_path(self) -> Path:
@@ -372,11 +451,7 @@ class Settings(BaseSettings):
     @property
     def backup_dir_path(self) -> Path:
         """Absolute path to the internal backup directory."""
-        path = Path(self.BACKUP_DIR)
-        if not path.is_absolute():
-            path = self._project_root / path
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self._data_child_path(self.BACKUP_DIR)
 
     # ------------------------------------------------------------------
     # CORS (for web UI development in Phase 6)
@@ -479,8 +554,12 @@ class Settings(BaseSettings):
         """
         if not arr_path or not self.RADARR_PATH_PREFIX:
             return arr_path
-        if arr_path.startswith(self.RADARR_PATH_PREFIX):
-            return self.RADARR_MEDIA_PATH + arr_path[len(self.RADARR_PATH_PREFIX) :]
+        prefix = self.RADARR_PATH_PREFIX.rstrip("/") or "/"
+        if arr_path == prefix:
+            return self.RADARR_MEDIA_PATH
+        if prefix == "/" or arr_path.startswith(f"{prefix}/"):
+            suffix = arr_path if prefix == "/" else arr_path[len(prefix) :]
+            return f"{self.RADARR_MEDIA_PATH.rstrip('/')}{suffix}"
         return arr_path
 
     # ------------------------------------------------------------------
@@ -516,8 +595,12 @@ class Settings(BaseSettings):
         """
         if not arr_path or not self.SONARR_PATH_PREFIX:
             return arr_path
-        if arr_path.startswith(self.SONARR_PATH_PREFIX):
-            return self.SONARR_MEDIA_PATH + arr_path[len(self.SONARR_PATH_PREFIX) :]
+        prefix = self.SONARR_PATH_PREFIX.rstrip("/") or "/"
+        if arr_path == prefix:
+            return self.SONARR_MEDIA_PATH
+        if prefix == "/" or arr_path.startswith(f"{prefix}/"):
+            suffix = arr_path if prefix == "/" else arr_path[len(prefix) :]
+            return f"{self.SONARR_MEDIA_PATH.rstrip('/')}{suffix}"
         return arr_path
 
     # ------------------------------------------------------------------
@@ -528,13 +611,19 @@ class Settings(BaseSettings):
     # MEDIA_ROOTS.  Roots are resolved to their canonical path so symlink
     # aliases don't defeat the check.
     #
-    # Default (MEDIA_ROOTS=[] + no path mapping): no enforcement.
+    # An empty logical-root set fails closed at filesystem boundaries.
     # ------------------------------------------------------------------
     MEDIA_ROOTS: list[str] = Field(
         default=[],
-        description="Additional allowed root directories.  Radarr/Sonarr "
-        "media paths are automatically included.  Empty + no path mapping "
-        "= allow all paths.",
+        description="Logical media root directories. Radarr/Sonarr media paths are "
+        "automatically included. Every root must remain below a deployment ceiling.",
+    )
+    MEDIA_PATH_CEILINGS: list[str] = Field(
+        default=[],
+        description=(
+            "Deployment-owned canonical media path ceilings. During migration, empty uses "
+            "the bootstrap MEDIA_ROOTS and Arr media paths; an empty result fails closed."
+        ),
     )
 
     @property
@@ -679,11 +768,7 @@ class Settings(BaseSettings):
     @property
     def poster_backup_path(self) -> Path:
         """Absolute path to the local poster backup directory."""
-        path = Path(self.POSTER_BACKUP_DIR)
-        if not path.is_absolute():
-            path = self._project_root / path
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self._data_child_path(self.POSTER_BACKUP_DIR)
 
     # ------------------------------------------------------------------
     # Pydantic metadata

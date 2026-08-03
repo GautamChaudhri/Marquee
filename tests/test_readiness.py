@@ -358,7 +358,11 @@ async def test_api_startup_fails_closed_before_serving(db, monkeypatch):
     async def incompatible_startup():
         raise RuntimeError("startup readiness failed: schema")
 
+    async def preserve_fixture_database():
+        return None
+
     monkeypatch.setattr(main_module, "init_db", init_database)
+    monkeypatch.setattr(main_module, "close_db", preserve_fixture_database)
     monkeypatch.setattr(readiness, "require_startup_readiness", incompatible_startup)
     monkeypatch.setattr(settings, "RADARR_URL", "")
     monkeypatch.setattr(settings, "RADARR_API_KEY", "")

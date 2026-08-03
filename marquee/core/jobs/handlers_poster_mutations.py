@@ -15,7 +15,6 @@ import httpx
 from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
 
-from marquee.config import settings
 from marquee.core.download_guard import ensure_image_response
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, RootSpec
 from marquee.core.jobs.artifact_service import (
@@ -53,6 +52,7 @@ from marquee.core.jobs.publication import (
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_files import tmdb_original_url
 from marquee.core.poster_subjects import PosterSubject
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.taste_preferences import (
     activate_exemplar,
     pin_candidate_artifact,
@@ -238,6 +238,8 @@ def _decode_image(boundary: FilesystemBoundary, source: ClassifiedPath) -> tuple
     fd = boundary.open_read(source)
     try:
         with os.fdopen(fd, "rb", closefd=False) as stream, Image.open(stream) as image:
+            if image.format != "JPEG":
+                raise PosterMutationError("candidate image must be JPEG content")
             image.verify()
         os.lseek(fd, 0, os.SEEK_SET)
         with os.fdopen(fd, "rb", closefd=False) as stream, Image.open(stream) as image:
@@ -267,7 +269,7 @@ async def _fetch_provider_original(
     url = tmdb_original_url(selection.candidate_reference or "")
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(url, follow_redirects=True)
+            response = await client.get(url, follow_redirects=False)
             response.raise_for_status()
             ensure_image_response(response)
             content = response.content

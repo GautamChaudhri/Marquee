@@ -15,8 +15,8 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 
-from marquee.config import settings
 from marquee.core.jobs.event_service import JOB_EVENT_CHANNEL
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models.job import JobEvent
 

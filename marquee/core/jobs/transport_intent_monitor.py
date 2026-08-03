@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
-from marquee.config import settings
 from marquee.core.jobs.event_service import job_event_writer
 from marquee.core.jobs.pgqueuer_gateway import PgQueuerGateway, pgqueuer_gateway
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models.job import Job, JobDispatch
 

@@ -19,7 +19,11 @@ import numpy as np
 import pytest
 
 from marquee.core.filesystem import FilesystemBoundary, RootSpec
-from marquee.core.jobs.internal_runner import _safe_output_name
+from marquee.core.jobs.internal_runner import (
+    _apply_configuration_snapshot,
+    _install_operation_secrets,
+    _safe_output_name,
+)
 from marquee.core.jobs.internal_runner_host import (
     OUTCOME_CANCELLED,
     OUTCOME_FAILED,
@@ -28,6 +32,7 @@ from marquee.core.jobs.internal_runner_host import (
     OUTCOME_TIMEOUT,
     RunnerFile,
     _finalize,
+    _operation_secret_manifest,
     _read_frame,
     run_internal_operation,
     validate_runner_files,
@@ -44,8 +49,61 @@ from marquee.core.jobs.runner_protocol import (
     encode_frame,
 )
 from marquee.core.jobs.runner_runtime import poster_runner_runtime_options
+from marquee.core.managed_secrets import managed_secret_provider
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.ml.residual import ResidualArtifact
+
+
+@pytest.mark.asyncio
+async def test_runner_secret_capabilities_are_operation_scoped_and_consumed(monkeypatch):
+    monkeypatch.setattr(managed_secret_provider, "_started", False)
+    monkeypatch.setattr(
+        managed_secret_provider,
+        "_values",
+        {
+            "TMDB_READ_ACCESS_TOKEN": "tmdb-only",
+            "RADARR_API_KEY": "must-not-cross",
+            "SONARR_API_KEY": "must-not-cross-either",
+        },
+    )
+    monkeypatch.setattr(
+        managed_secret_provider,
+        "_generations",
+        {
+            "TMDB_READ_ACCESS_TOKEN": 9,
+            "RADARR_API_KEY": 8,
+            "SONARR_API_KEY": 7,
+        },
+    )
+
+    capability = _operation_secret_manifest(RunnerOperation.POSTER_SINGLE)
+    assert capability == {
+        "values": {"TMDB_READ_ACCESS_TOKEN": "tmdb-only"},
+        "generations": {"TMDB_READ_ACCESS_TOKEN": 9},
+    }
+    assert _operation_secret_manifest(RunnerOperation.TASTE_PROFILE) == {
+        "values": {},
+        "generations": {},
+    }
+
+    manifest = {"secrets": capability}
+    _install_operation_secrets(manifest)
+    assert "secrets" not in manifest
+    assert managed_secret_provider.values()["TMDB_READ_ACCESS_TOKEN"] == "tmdb-only"
+    assert managed_secret_provider.values()["RADARR_API_KEY"] is None
+    await managed_secret_provider.stop()
+    assert managed_secret_provider.started is False
+    assert all(value is None for value in managed_secret_provider.values().values())
+
+
+def test_runner_installs_validated_sealed_configuration(monkeypatch):
+    monkeypatch.setattr(pipeline_settings, "PREFERRED_LANG", "en")
+
+    _apply_configuration_snapshot({"configuration": {"PREFERRED_LANG": "fr"}})
+
+    assert pipeline_settings.PREFERRED_LANG == "fr"
+    with pytest.raises(ProtocolError, match="unknown fields"):
+        _apply_configuration_snapshot({"configuration": {"RADARR_API_KEY": "never"}})
 
 
 def _launcher(tmp_path: Path, **kwargs: object) -> tuple[ProcessLauncher, Path]:

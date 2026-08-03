@@ -1,0 +1,7 @@
+# One-release migration helper. Combine with compose.managed-secrets.yml for a
+# single API startup to import legacy TMDB/Radarr/Sonarr credentials, then stop
+# using this override so those values no longer enter the container environment.
+services:
+  marquee-api:
+    env_file:
+      - ../.env

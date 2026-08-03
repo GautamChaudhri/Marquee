@@ -18,10 +18,10 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core import system_metrics
 from marquee.core.jobs.process_identity import capture_process_identity, containment_capabilities
 from marquee.core.jobs.worker_nodes import worker_build
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models import RuntimeInstance
 

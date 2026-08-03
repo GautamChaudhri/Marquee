@@ -22,13 +22,14 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
 from marquee.core.cancellation import raise_if_cancelled
 from marquee.core.media_files import compute_signature
 from marquee.core.path_utils import safe_translate_and_validate
+from marquee.core.poster_files import is_jpeg_path
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.poster_subjects import PosterSubject
 from marquee.models import (
     Episode,
     EpisodeMediaFile,
@@ -663,28 +664,39 @@ class SyncService:
         *,
         series: Series | None = None,
     ) -> None:
-        """Check if a poster already exists on disk for *entity*.
+        """Retain only validated JPEG poster paths for *entity*.
 
-        If found, sets ``poster_path`` to the validated absolute path.
-        If a previously recorded poster file no longer exists (e.g. Radarr
-        deleted the folder during an upgrade), ``poster_path`` is cleared so
-        the NULL-means-needs-poster invariant holds and the item is queued
-        for re-selection instead of silently staying "complete".
-        Does NOT set ``poster_ai_selected`` (the pipeline didn't pick it).
+        A pipeline-deployed poster may use a filename from an older naming
+        policy, so the recorded path is validated before checking the current
+        expected filename. Missing, out-of-authority, or non-JPEG files are
+        never retained. This method does not change poster_ai_selected.
         """
+        if entity.poster_path:
+            source = "radarr" if isinstance(entity, Movie) else "sonarr"
+            try:
+                recorded = safe_translate_and_validate(entity.poster_path, source=source)
+            except ValueError:
+                recorded = None
+            if recorded is not None and is_jpeg_path(recorded):
+                entity.poster_path = str(recorded)
+                return
+
         try:
             expected = _resolve_poster_path(entity, series=series)
         except ValueError:
-            return  # path validation failed — skip
+            expected = None
 
-        if expected is not None and expected.exists():
+        if expected is not None and is_jpeg_path(expected):
             entity.poster_path = str(expected)
             return
 
-        if entity.poster_path and not Path(entity.poster_path).exists():
+        if expected is not None and expected.exists():
+            logger.warning("Ignoring non-JPEG poster content at expected poster path")
+        if entity.poster_path:
             logger.info(
-                "Poster file missing on disk — clearing stale poster_path: %s",
-                entity.poster_path,
+                "Clearing stale, out-of-authority, or invalid poster_path for %s id=%s",
+                type(entity).__name__,
+                entity.id,
             )
             entity.poster_path = None
 
@@ -709,7 +721,7 @@ def _resolve_poster_path(
         folder = _validate_folder(entity.folder_path, source=source)
         if folder is None:
             return None
-        filename = _build_movie_poster_filename(entity)
+        filename = PosterSubject.from_movie(entity).render_filename()
         return folder / filename
 
     if isinstance(entity, Season):
@@ -719,7 +731,7 @@ def _resolve_poster_path(
         folder = _validate_folder(series.series_path, source=source)
         if folder is None:
             return None
-        filename = settings.SEASON_POSTER_FORMAT.format(season=entity.season_number)
+        filename = PosterSubject.from_season(entity, series).render_filename()
         return folder / filename
 
     # Series
@@ -727,7 +739,7 @@ def _resolve_poster_path(
     folder = _validate_folder(entity.series_path, source=source)
     if folder is None:
         return None
-    return folder / settings.SERIES_POSTER_FORMAT
+    return folder / PosterSubject.from_series(entity).render_filename()
 
 
 async def _upsert_movie_media_file(db: AsyncSession, movie: Movie, movie_file: dict) -> None:
@@ -982,10 +994,4 @@ def _validate_folder(raw_path: str, *, source: str = "radarr") -> Path | None:
 
 def _build_movie_poster_filename(movie: Movie) -> str:
     """Resolve the movie poster filename from the configured format."""
-    fmt = settings.MOVIE_POSTER_FORMAT
-
-    if "{movie_basename}" in fmt and movie.movie_file_path:
-        basename = Path(movie.movie_file_path).stem
-        return fmt.replace("{movie_basename}", basename)
-
-    return fmt
+    return PosterSubject.from_movie(movie).render_filename()

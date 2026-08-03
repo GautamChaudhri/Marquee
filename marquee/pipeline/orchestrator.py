@@ -24,8 +24,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from marquee.config import settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor

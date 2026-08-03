@@ -9,12 +9,10 @@ Defense layers:
   2. Path translation — map *arr mount namespace to local filesystem,
      using the correct per-source mapping (radarr or sonarr).
   3. Canonical resolution — ``Path.resolve()`` collapses ``..`` and symlinks.
-  4. Root validation — resolved path must be within a configured media root
-     (auto-derived from ``RADARR_MEDIA_PATH`` / ``SONARR_MEDIA_PATH`` or
-     manually set via ``MEDIA_ROOTS``).
-
-When no path mapping is configured and ``MEDIA_ROOTS`` is empty, root
-validation is skipped entirely — all paths are allowed (dev/trusted mode).
+  4. Logical-root validation — resolved paths must be under the active revision's
+     media roots.
+  5. Deployment ceiling — editable logical roots must themselves remain under a
+     bootstrap-owned ceiling. Empty authorities fail closed.
 """
 
 from __future__ import annotations
@@ -25,10 +23,143 @@ from pathlib import Path
 from marquee.config import settings
 
 logger = logging.getLogger(__name__)
+_BOOTSTRAP_SETTINGS = settings
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DATA_PATH_KEYS = frozenset(
+    {
+        "DATA_DIR",
+        "METRICS_DISK_PATH",
+        "BACKUP_DIR",
+        "POSTER_CACHE_DIR",
+        "POSTER_STAGING_DIR",
+        "POSTER_BACKUP_DIR",
+    }
+)
+
+
+def _effective_path_settings():
+    # Tests and embedders may deliberately replace this module-level object.
+    if settings is not _BOOTSTRAP_SETTINGS:
+        return settings
+    from marquee.core.runtime_settings import effective_app_settings
+
+    return effective_app_settings()
 
 
 class PathValidationError(ValueError):
     """Raised when a path fails validation."""
+
+
+def _canonical_root(raw: str, *, label: str, relative_base: Path | None = None) -> Path:
+    if not isinstance(raw, str) or not raw.strip() or "\0" in raw:
+        raise PathValidationError(f"{label} must be a non-empty path without null bytes")
+    path = Path(raw.strip())
+    if not path.is_absolute():
+        if relative_base is None:
+            raise PathValidationError(f"{label} must be an absolute path")
+        path = relative_base / path
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise PathValidationError(f"Could not resolve {label}: {exc}") from exc
+    if resolved == Path(resolved.anchor):
+        raise PathValidationError(f"{label} cannot grant an entire filesystem root")
+    return resolved
+
+
+def deployment_media_ceilings() -> tuple[Path, ...]:
+    """Return bootstrap-owned media ceilings, including the migration fallback."""
+
+    bootstrap = settings
+    configured = list(getattr(bootstrap, "MEDIA_PATH_CEILINGS", None) or [])
+    if not configured:
+        configured = [
+            *(getattr(bootstrap, "MEDIA_ROOTS", None) or []),
+            getattr(bootstrap, "RADARR_MEDIA_PATH", None),
+            getattr(bootstrap, "SONARR_MEDIA_PATH", None),
+        ]
+    roots = {
+        _canonical_root(str(raw), label="deployment media ceiling") for raw in configured if raw
+    }
+    return tuple(sorted(roots))
+
+
+def deployment_data_ceiling() -> Path:
+    """Return the immutable data ceiling, falling back to bootstrap DATA_DIR."""
+
+    bootstrap = settings
+    raw = getattr(bootstrap, "DATA_PATH_CEILING", None) or getattr(bootstrap, "DATA_DIR", None)
+    if not raw:
+        raise PathValidationError("No deployment data path ceiling is configured")
+    return _canonical_root(
+        str(raw),
+        label="deployment data ceiling",
+        relative_base=_PROJECT_ROOT,
+    )
+
+
+def validate_media_path_candidate(raw: str, *, label: str = "media path") -> Path:
+    """Validate one editable media path against deployment authority."""
+
+    candidate = _canonical_root(raw, label=label)
+    ceilings = deployment_media_ceilings()
+    if not ceilings:
+        raise PathValidationError(
+            "No deployment media path ceiling is configured; media access fails closed"
+        )
+    if not any(candidate.is_relative_to(ceiling) for ceiling in ceilings):
+        raise PathValidationError(f"{label} is outside every deployment media ceiling")
+    return candidate
+
+
+def validate_data_path_candidate(
+    raw: str,
+    *,
+    label: str = "data path",
+    relative_base: Path = _PROJECT_ROOT,
+    legacy_data_prefix: bool = False,
+) -> Path:
+    """Validate one editable application-data path against deployment authority."""
+
+    candidate_value = Path(raw.strip())
+    if (
+        legacy_data_prefix
+        and not candidate_value.is_absolute()
+        and candidate_value.parts
+        and candidate_value.parts[0] == "data"
+    ):
+        candidate_value = Path(*candidate_value.parts[1:])
+    candidate = _canonical_root(str(candidate_value), label=label, relative_base=relative_base)
+    if not candidate.is_relative_to(deployment_data_ceiling()):
+        raise PathValidationError(f"{label} is outside the deployment data path ceiling")
+    return candidate
+
+
+def validate_path_configuration(values: dict[str, object]) -> None:
+    """Validate the complete effective path document before revision persistence."""
+
+    for index, raw in enumerate(values.get("MEDIA_ROOTS") or []):
+        validate_media_path_candidate(str(raw), label=f"MEDIA_ROOTS[{index}]")
+    for key in ("RADARR_MEDIA_PATH", "SONARR_MEDIA_PATH"):
+        raw = values.get(key)
+        if raw:
+            validate_media_path_candidate(str(raw), label=key)
+    for key in ("RADARR_PATH_PREFIX", "SONARR_PATH_PREFIX"):
+        raw = values.get(key)
+        if raw:
+            _canonical_root(str(raw), label=key)
+    data_root = validate_data_path_candidate(
+        str(values.get("DATA_DIR") or "data"), label="DATA_DIR"
+    )
+    for key in _DATA_PATH_KEYS - {"DATA_DIR"}:
+        raw = values.get(key)
+        if raw:
+            validate_data_path_candidate(
+                str(raw),
+                label=key,
+                relative_base=data_root,
+                legacy_data_prefix=True,
+            )
 
 
 def safe_translate_and_validate(arr_path: str, *, source: str = "radarr") -> Path:
@@ -36,12 +167,13 @@ def safe_translate_and_validate(arr_path: str, *, source: str = "radarr") -> Pat
     if "\0" in arr_path:
         raise PathValidationError(f"Path contains null byte: {arr_path!r}")
 
+    app_settings = _effective_path_settings()
     if source == "sonarr":
-        translated = settings.translate_sonarr_path(arr_path)
-        configured = settings.sonarr_path_configured
+        translated = app_settings.translate_sonarr_path(arr_path)
+        configured = app_settings.sonarr_path_configured
     else:
-        translated = settings.translate_radarr_path(arr_path)
-        configured = settings.radarr_path_configured
+        translated = app_settings.translate_radarr_path(arr_path)
+        configured = app_settings.radarr_path_configured
 
     if configured and translated == arr_path and arr_path:
         logger.warning(
@@ -55,18 +187,22 @@ def safe_translate_and_validate(arr_path: str, *, source: str = "radarr") -> Pat
     except (OSError, RuntimeError) as exc:
         raise PathValidationError(f"Could not resolve path {translated!r}: {exc}") from exc
 
-    media_roots = settings.effective_media_roots
-    if media_roots:
-        allowed = []
-        for root in media_roots:
-            try:
-                allowed.append(Path(root).resolve())
-            except (OSError, RuntimeError):
-                continue
-        if not any(resolved.is_relative_to(root) for root in allowed):
-            raise PathValidationError(
-                f"Path {str(resolved)!r} is not within any allowed media root. "
-                f"Allowed roots: {[str(root) for root in allowed]}"
-            )
+    ceilings = deployment_media_ceilings()
+    if not ceilings:
+        raise PathValidationError(
+            "No deployment media path ceiling is configured; media access fails closed"
+        )
+    logical_roots = tuple(
+        validate_media_path_candidate(str(root), label="configured logical media root")
+        for root in app_settings.effective_media_roots
+    )
+    if not logical_roots:
+        raise PathValidationError("No logical media root is configured; media access fails closed")
+    if not any(resolved.is_relative_to(root) for root in logical_roots):
+        raise PathValidationError(
+            f"Path {str(resolved)!r} is not within any allowed logical media root"
+        )
+    if not any(resolved.is_relative_to(root) for root in ceilings):
+        raise PathValidationError(f"Path {str(resolved)!r} is outside deployment authority")
 
     return resolved

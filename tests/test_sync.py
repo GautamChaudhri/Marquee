@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -311,7 +312,7 @@ async def test_sync_movies_never_overwrites_poster(db: AsyncSession, tmp_path: P
     the sync-derived expected location — sync must leave it alone.
     """
     deployed = tmp_path / "poster.jpg"
-    deployed.write_bytes(b"poster")
+    Image.new("RGB", (16, 24), (10, 20, 30)).save(deployed, format="JPEG")
     movie = Movie(
         radarr_id=1,
         title="Dune",
@@ -334,6 +335,32 @@ async def test_sync_movies_never_overwrites_poster(db: AsyncSession, tmp_path: P
     assert movie.poster_path == str(deployed)
     assert movie.poster_ai_selected is True
     assert movie.poster_source == "tmdb"
+
+
+@pytest.mark.asyncio
+async def test_sync_movies_clears_non_jpeg_poster_path(db: AsyncSession, tmp_path: Path):
+    """A file named .jpg is not trusted unless its bytes decode as JPEG."""
+    invalid = tmp_path / "poster.jpg"
+    invalid.write_bytes(b"not-a-jpeg")
+    movie = Movie(
+        radarr_id=1,
+        title="Dune",
+        year=2021,
+        folder_path="/movies/Dune",
+        poster_path=str(invalid),
+        poster_ai_selected=True,
+    )
+    db.add(movie)
+    await db.flush()
+
+    radarr = AsyncMock()
+    radarr.get_movies.return_value = [_radarr_movie()]
+
+    await SyncService(db, radarr=radarr).sync_all()
+
+    await db.refresh(movie)
+    assert movie.poster_path is None
+    assert movie.needs_poster
 
 
 @pytest.mark.asyncio

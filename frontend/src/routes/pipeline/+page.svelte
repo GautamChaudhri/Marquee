@@ -10,70 +10,40 @@
 	import TextProfilePanel from '$lib/components/pipeline/TextProfilePanel.svelte';
 	import {
 		backupAllPosters,
+		clearOcrLabels,
 		getPipelineSummary,
-		rescanPosters,
 		runPosterMaintenance
 	} from '$lib/api/pipeline';
 	import { getTvSummary } from '$lib/api/pipeline-tv';
-	import { getSettings, putSettings, runHealScan } from '$lib/api/system';
+	import { resetDeployedPosters } from '$lib/api/config';
+	import { runHealScan } from '$lib/api/system';
 	import {
 		describePlanScope,
 		parseSealedPlan,
 		type SealedPlan
 	} from '$lib/pipeline/maintenance-plan';
-	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import { bytesH, type Tone } from '$lib/display';
 	import { toast } from '$lib/toast';
-	import type { PipelineSummary, RuntimeSettings, TvPipelineSummary } from '$lib/api/types';
+	import type { PipelineSummary, TvPipelineSummary } from '$lib/api/types';
 	import type { PageData } from './$types';
 
 	let { data }: { data: PageData } = $props();
 
-	type Preset = 'movie' | 'poster' | 'custom';
 	// svelte-ignore state_referenced_locally
 	let summary = $state<PipelineSummary>(data.summary);
 	// svelte-ignore state_referenced_locally
 	let tvSummary = $state<TvPipelineSummary | null>(data.tvSummary);
-	// svelte-ignore state_referenced_locally
-	let runtimeSettings = $state<RuntimeSettings | null>(data.settings);
 	let initiatedJobIds = $state<string[]>([]);
 	const settledHandlers = new SvelteMap<string, (snapshot: JobSnapshotResponse) => void>();
 
-	let savingPoster = $state(false);
-	let savingRestore = $state(false);
-	let savingHeal = $state(false);
 	let backupBusy = $state(false);
+	let resetDialogOpen = $state(false);
+	let resetBusy = $state(false);
+	let clearOcrDialogOpen = $state(false);
+	let clearOcrBusy = $state(false);
 	let maintenanceOpen = $state(false);
 	let maintenanceBusy = $state(false);
 	let maintenancePlan = $state<SealedPlan | null>(null);
-
-	const currentMovieFormat = $derived(
-		String(runtimeSettings?.poster_formats?.movie ?? 'poster.jpg')
-	);
-	const currentShowFormat = $derived(String(runtimeSettings?.poster_formats?.series ?? 'show.jpg'));
-	const currentSeasonFormat = $derived(
-		String(runtimeSettings?.poster_formats?.season ?? 'season{season:02d}.jpg')
-	);
-	const currentRestoreMethod = $derived(
-		(runtimeSettings?.posters?.restore_method as 'download' | 'local' | undefined) ?? 'download'
-	);
-	const currentHealEnabled = $derived(Boolean(runtimeSettings?.sync?.heal_enabled ?? true));
-	const currentHealInterval = $derived(Number(runtimeSettings?.sync?.heal_interval_minutes ?? 60));
-
-	// svelte-ignore state_referenced_locally
-	let preset = $state<Preset>(formatToPreset(currentMovieFormat));
-	// svelte-ignore state_referenced_locally
-	let customName = $state(formatToCustom(currentMovieFormat));
-	// svelte-ignore state_referenced_locally
-	let showName = $state(currentShowFormat.replace(/\.jpe?g$/i, ''));
-	// svelte-ignore state_referenced_locally
-	let seasonTemplate = $state(currentSeasonFormat);
-	// svelte-ignore state_referenced_locally
-	let restoreMethod = $state<'download' | 'local'>(currentRestoreMethod);
-	// svelte-ignore state_referenced_locally
-	let healEnabled = $state(currentHealEnabled);
-	// svelte-ignore state_referenced_locally
-	let healInterval = $state(currentHealInterval);
 
 	const deployedPct = $derived(
 		summary.total_movies ? Math.round((summary.movies_with_poster / summary.total_movies) * 100) : 0
@@ -107,63 +77,6 @@
 	const tvMissing = $derived(tv.shows_missing_show_poster + tv.seasons_missing_poster);
 
 	const coverageTone = (pct: number): Tone => (pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
-	const posterDirty = $derived(
-		nextMovieFormat() !== currentMovieFormat ||
-			nextShowFormat() !== currentShowFormat ||
-			nextSeasonFormat() !== currentSeasonFormat
-	);
-	const restoreDirty = $derived(restoreMethod !== currentRestoreMethod);
-	const healDirty = $derived(
-		healEnabled !== currentHealEnabled || Number(healInterval) !== currentHealInterval
-	);
-
-	function formatToPreset(format: string): Preset {
-		if (format === '{movie_basename}.jpg') return 'movie';
-		if (format === 'poster.jpg') return 'poster';
-		return 'custom';
-	}
-
-	function formatToCustom(format: string): string {
-		return format.replaceAll('{movie_basename}', '<base_filename>').replace(/\.jpe?g$/i, '');
-	}
-
-	function nextMovieFormat(): string {
-		if (preset === 'movie') return '{movie_basename}.jpg';
-		if (preset === 'poster') return 'poster.jpg';
-		const base = (customName || 'poster')
-			.trim()
-			.replaceAll('{movie_basename}', '<base_filename>')
-			.replace(/\.jpe?g$/i, '');
-		return `${base.replaceAll('<base_filename>', '{movie_basename}')}.jpg`;
-	}
-
-	function nextShowFormat(): string {
-		const base = showName.trim().replace(/\.jpe?g$/i, '') || 'show';
-		return `${base}.jpg`;
-	}
-
-	function nextSeasonFormat(): string {
-		return seasonTemplate.trim() || 'season{season:02d}.jpg';
-	}
-
-	function resetFormsFromSettings() {
-		preset = formatToPreset(currentMovieFormat);
-		customName = formatToCustom(currentMovieFormat);
-		showName = currentShowFormat.replace(/\.jpe?g$/i, '');
-		seasonTemplate = currentSeasonFormat;
-		restoreMethod = currentRestoreMethod;
-		healEnabled = currentHealEnabled;
-		healInterval = currentHealInterval;
-	}
-
-	async function handleConfigurationSaveError(error: unknown, fallback: string) {
-		if (isConfigurationConflict(error)) {
-			runtimeSettings = await getSettings(fetch);
-			toast(CONFIGURATION_CONFLICT_MESSAGE, 'info');
-			return;
-		}
-		toast(error instanceof Error ? error.message : fallback, 'bad');
-	}
 
 	async function refreshSummary() {
 		try {
@@ -195,68 +108,6 @@
 		settledHandlers.delete(snapshot.job_id);
 	}
 
-	async function savePosterFormat() {
-		savingPoster = true;
-		try {
-			const result = await putSettings(
-				fetch,
-				{
-					posters: {
-						movie_poster_format: nextMovieFormat(),
-						series_poster_format: nextShowFormat(),
-						season_poster_format: nextSeasonFormat()
-					}
-				},
-				runtimeSettings!.configuration_version
-			);
-			runtimeSettings = result.settings;
-			resetFormsFromSettings();
-			const job = await rescanPosters(fetch);
-			trackAction(job, 'Poster rescan');
-		} catch (e) {
-			await handleConfigurationSaveError(e, 'Could not save poster filename');
-		} finally {
-			savingPoster = false;
-		}
-	}
-
-	async function saveRestoreMethod() {
-		savingRestore = true;
-		try {
-			const result = await putSettings(
-				fetch,
-				{ posters: { restore_method: restoreMethod } },
-				runtimeSettings!.configuration_version
-			);
-			runtimeSettings = result.settings;
-			resetFormsFromSettings();
-			toast('Restoration saved', 'good');
-		} catch (e) {
-			await handleConfigurationSaveError(e, 'Could not save restoration method');
-		} finally {
-			savingRestore = false;
-		}
-	}
-
-	async function saveHeal() {
-		savingHeal = true;
-		try {
-			const result = await putSettings(
-				fetch,
-				{ heal: { enabled: healEnabled, interval_minutes: Number(healInterval) } },
-				runtimeSettings!.configuration_version
-			);
-			runtimeSettings = result.settings;
-			resetFormsFromSettings();
-			toast('Heal scan saved', 'good');
-			await refreshSummary();
-		} catch (e) {
-			await handleConfigurationSaveError(e, 'Could not save heal scan');
-		} finally {
-			savingHeal = false;
-		}
-	}
-
 	let healBusy = $state(false);
 
 	async function runHeal() {
@@ -280,6 +131,36 @@
 			toast(e instanceof Error ? e.message : 'Could not start backup', 'bad');
 		} finally {
 			backupBusy = false;
+		}
+	}
+
+	async function handleReset() {
+		resetBusy = true;
+		try {
+			const job = await resetDeployedPosters(fetch);
+			trackAction(job, 'Poster reset');
+			toast('Poster reset queued', 'info');
+		} catch (error) {
+			toast(error instanceof Error ? error.message : 'Could not reset posters', 'bad');
+		} finally {
+			resetBusy = false;
+			resetDialogOpen = false;
+		}
+	}
+
+	async function handleClearOcrLabels() {
+		clearOcrBusy = true;
+		try {
+			const result = await clearOcrLabels(fetch);
+			toast(
+				`Cleared ${result.deleted_capture_dirs} OCR label capture${result.deleted_capture_dirs === 1 ? '' : 's'}`,
+				'good'
+			);
+		} catch (error) {
+			toast(error instanceof Error ? error.message : 'Could not clear OCR captures', 'bad');
+		} finally {
+			clearOcrBusy = false;
+			clearOcrDialogOpen = false;
 		}
 	}
 
@@ -476,109 +357,66 @@
 	onSettled={handleSettled}
 />
 
-<div class="settings-grid">
-	<details class="panel" open>
-		<summary>Poster Filename</summary>
-		<div class="panel-body">
-			<div class="section-title">Movie</div>
-			<label class="radio">
-				<input type="radio" bind:group={preset} value="movie" />
-				<span>Movie filename</span>
-				<small>{'{movie_basename}.jpg'}</small>
-			</label>
-			<label class="radio">
-				<input type="radio" bind:group={preset} value="poster" />
-				<span>Poster</span>
-				<small>poster.jpg</small>
-			</label>
-			<label class="radio">
-				<input type="radio" bind:group={preset} value="custom" />
-				<span>Custom</span>
-				<input class="inline-input" bind:value={customName} disabled={preset !== 'custom'} />
-			</label>
-			<div class="section-title">Show</div>
-			<label class="field">
-				<span>Filename</span>
-				<input class="inline-input" bind:value={showName} />
-			</label>
-			<div class="section-title">Season</div>
-			<label class="field field-col">
-				<span>Template</span>
-				<input class="inline-input" bind:value={seasonTemplate} />
-				<small
-					>Preview: {nextSeasonFormat()
-						.replace('{season:02d}', '01')
-						.replace('{season}', '1')}</small
+<section class="maintenance-dock">
+	<header>
+		<div class="maintenance-title">
+			<span class="maintenance-icon"><Icon name="settings" size={17} /></span>
+			<div>
+				<h2>Poster maintenance</h2>
+				<p>
+					Operational actions stay close to the poster workspace. Configuration now lives in
+					Settings.
+				</p>
+			</div>
+		</div>
+		<a href="/settings?tab=posters">Poster settings <Icon name="chevron" size={13} /></a>
+	</header>
+
+	<div class="maintenance-body">
+		<div class="maintenance-facts">
+			<div>
+				<span>Backups</span><b>{summary.backups.count}</b><small
+					>{bytesH(summary.backups.bytes)}</small
 				>
-			</label>
-			<div class="panel-foot">
-				<code>{nextMovieFormat()} · {nextShowFormat()} · {nextSeasonFormat()}</code>
-				<button onclick={savePosterFormat} disabled={!posterDirty || savingPoster}>
-					{savingPoster ? 'Saving' : 'Save'}
-				</button>
+			</div>
+			<div>
+				<span>Last heal</span><b>{isoDate(summary.last_heal?.last_run)}</b><small
+					>most recent scan</small
+				>
+			</div>
+			<div>
+				<span>Next heal</span><b>{isoDate(summary.heal_schedule?.next_run_at)}</b><small
+					>configured schedule</small
+				>
 			</div>
 		</div>
-	</details>
+		<div class="maintenance-actions">
+			<button onclick={runBackupAll} disabled={backupBusy}
+				>{backupBusy ? 'Starting…' : 'Backup all'}</button
+			>
+			<button onclick={previewMaintenance}>Clean orphaned cache</button>
+			<button onclick={runHeal} disabled={healBusy}
+				>{healBusy ? 'Running…' : 'Run heal scan'}</button
+			>
+		</div>
+	</div>
 
-	<details class="panel" open>
-		<summary>Restoration</summary>
-		<div class="panel-body">
-			<label class="radio">
-				<input type="radio" bind:group={restoreMethod} value="download" />
-				<span>Download</span>
-				<small>cache, download, local</small>
-			</label>
-			<label class="radio">
-				<input type="radio" bind:group={restoreMethod} value="local" />
-				<span>Local</span>
-				<small>local, cache, download</small>
-			</label>
-			<div class="backup-row">
-				<span>{summary.backups.count} backups</span>
-				<span>{bytesH(summary.backups.bytes)}</span>
-			</div>
-			<div class="panel-foot">
-				<button onclick={runBackupAll} disabled={backupBusy}>
-					{backupBusy ? 'Starting' : 'Backup all'}
-				</button>
-				<button onclick={previewMaintenance}>Run maintenance</button>
-				<button onclick={saveRestoreMethod} disabled={!restoreDirty || savingRestore}>
-					{savingRestore ? 'Saving' : 'Save'}
-				</button>
-			</div>
+	<div class="danger-actions">
+		<div>
+			<b>Contextual cleanup</b>
+			<span>Destructive tools are isolated from configuration and always require confirmation.</span
+			>
 		</div>
-	</details>
-
-	<details class="panel" open>
-		<summary>Heal Scan</summary>
-		<div class="panel-body">
-			<label class="toggle">
-				<input type="checkbox" bind:checked={healEnabled} />
-				<span>{healEnabled ? 'Enabled' : 'Disabled'}</span>
-			</label>
-			<label class="field">
-				<span>Interval</span>
-				<select bind:value={healInterval}>
-					{#each [15, 30, 60, 120, 180, 360, 720, 1440] as minutes (minutes)}
-						<option value={minutes}>{minutes} min</option>
-					{/each}
-				</select>
-			</label>
-			<div class="facts">
-				<span>Last: {isoDate(summary.last_heal?.last_run)}</span>
-				<span>Next: {isoDate(summary.heal_schedule?.next_run_at)}</span>
-			</div>
-			<div class="panel-foot">
-				<button onclick={runHeal} disabled={healBusy}>
-					{healBusy ? 'Running…' : 'Run scan'}
-				</button>
-				<button onclick={saveHeal} disabled={!healDirty || savingHeal}>
-					{savingHeal ? 'Saving' : 'Save'}
-				</button>
-			</div>
-		</div>
-	</details>
-</div>
+		{#if data.settings?.deployment?.debug}
+			<button class="danger-button" onclick={() => (clearOcrDialogOpen = true)}
+				>Clear OCR debug captures</button
+			>
+		{/if}
+		<button class="danger-button" onclick={() => (resetDialogOpen = true)}
+			>Delete deployed posters</button
+		>
+	</div>
+</section>
 
 <ConfirmDialog
 	open={maintenanceOpen}
@@ -607,6 +445,30 @@
 		{/if}
 	</div>
 </ConfirmDialog>
+
+<ConfirmDialog
+	open={resetDialogOpen}
+	title="Delete all deployed posters?"
+	message="This removes deployed movie posters and marks those movies as missing so the pipeline can run again. Cached candidates and taste artifacts are preserved."
+	confirmLabel="Delete deployed posters"
+	cancelLabel="Cancel"
+	tone="bad"
+	busy={resetBusy}
+	onConfirm={handleReset}
+	onCancel={() => (resetDialogOpen = false)}
+/>
+
+<ConfirmDialog
+	open={clearOcrDialogOpen}
+	title="Clear OCR debug captures?"
+	message="This deletes debug-only OCR label captures. It does not affect run archives, deployed posters, or taste artifacts."
+	confirmLabel="Clear captures"
+	cancelLabel="Cancel"
+	tone="bad"
+	busy={clearOcrBusy}
+	onConfirm={handleClearOcrLabels}
+	onCancel={() => (clearOcrDialogOpen = false)}
+/>
 
 <style>
 	.row-head {
@@ -704,112 +566,142 @@
 		color: var(--faint);
 		flex: none;
 	}
-	.settings-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 12px;
-	}
-	.panel {
+	.maintenance-dock {
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--panel);
 		overflow: hidden;
 	}
-	summary {
-		cursor: pointer;
-		padding: 13px 15px;
-		font-size: 13px;
-		font-weight: 650;
-		color: var(--text);
+	.maintenance-dock > header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 16px;
+		padding: 14px 16px;
 		border-bottom: 1px solid var(--line);
 	}
-	.panel-body {
-		padding: 14px 15px;
-		display: flex;
-		flex-direction: column;
-		gap: 12px;
-	}
-	.radio,
-	.toggle,
-	.field,
-	.backup-row,
-	.facts {
+	.maintenance-title {
 		display: flex;
 		align-items: center;
-		gap: 10px;
+		gap: 11px;
+	}
+	.maintenance-icon {
+		display: grid;
+		place-items: center;
+		width: 34px;
+		height: 34px;
+		border: 1px solid color-mix(in srgb, var(--gold) 30%, var(--line));
+		border-radius: 8px;
+		background: var(--gold-soft);
+		color: var(--gold);
+	}
+	.maintenance-title h2 {
+		margin: 0;
 		font-size: 13px;
-		color: var(--text);
+		font-weight: 680;
 	}
-	.radio small {
-		margin-left: auto;
+	.maintenance-title p {
+		margin: 2px 0 0;
 		color: var(--muted);
-		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: 11.5px;
 	}
-	.inline-input,
-	select {
-		min-width: 0;
+	.maintenance-dock > header > a {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		color: var(--gold);
+		font-size: 11px;
+		font-weight: 650;
+		white-space: nowrap;
+	}
+	.maintenance-body {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
+		align-items: center;
+		gap: 18px;
+		padding: 15px 16px;
+	}
+	.maintenance-facts {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 1px;
+		border: 1px solid var(--line);
+		border-radius: 8px;
+		overflow: hidden;
+		background: var(--line);
+	}
+	.maintenance-facts div {
+		display: grid;
+		gap: 2px;
+		min-height: 66px;
+		padding: 10px 12px;
+		background: var(--panel2);
+	}
+	.maintenance-facts span {
+		color: var(--faint);
+		font: 650 9px/1.2 var(--font-mono);
+		text-transform: uppercase;
+	}
+	.maintenance-facts b {
+		overflow: hidden;
+		color: var(--text);
+		font: 600 11px/1.35 var(--font-mono);
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.maintenance-facts small {
+		color: var(--muted);
+		font-size: 10px;
+	}
+	.maintenance-actions {
+		display: grid;
+		grid-template-columns: repeat(3, auto);
+		gap: 7px;
+	}
+	.maintenance-actions button,
+	.danger-button {
 		border: 1px solid var(--line2);
 		border-radius: 7px;
-		background: var(--ink2);
-		color: var(--text);
-		padding: 7px 9px;
-		font-size: 13px;
-	}
-	.inline-input {
-		flex: 1;
-	}
-	.field {
-		justify-content: space-between;
-	}
-	.field-col {
-		flex-direction: column;
-		align-items: flex-start;
-	}
-	.section-title {
-		font-size: 11px;
-		font-weight: 700;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
-		color: var(--faint);
-	}
-	.backup-row,
-	.facts {
-		justify-content: space-between;
-		color: var(--muted);
-	}
-	.facts {
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 5px;
-	}
-	.panel-foot {
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: 8px;
-		border-top: 1px solid var(--line);
-		padding-top: 12px;
-	}
-	code {
-		margin-right: auto;
-		color: var(--muted);
-		font-size: 11px;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-	button {
-		border: 1px solid var(--line2);
-		border-radius: 8px;
 		background: var(--panel2);
 		color: var(--text);
-		padding: 8px 12px;
-		font-size: 13px;
+		padding: 8px 10px;
+		font-size: 11px;
+		font-weight: 650;
+		white-space: nowrap;
 	}
-	button:disabled {
+	.maintenance-actions button:disabled,
+	.danger-button:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.danger-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 11px 16px;
+		border-top: 1px solid var(--line);
+		background: color-mix(in srgb, var(--bad) 3%, var(--panel));
+	}
+	.danger-actions > div {
+		display: grid;
+		gap: 1px;
+		margin-right: auto;
+	}
+	.danger-actions b {
+		color: var(--bad);
+		font-size: 11px;
+	}
+	.danger-actions span {
+		color: var(--muted);
+		font-size: 10.5px;
+	}
+	.danger-button {
+		color: var(--bad);
+		border-color: color-mix(in srgb, var(--bad) 28%, var(--line));
+		background: color-mix(in srgb, var(--bad) 6%, var(--panel2));
+	}
+	.danger-button:hover {
+		background: color-mix(in srgb, var(--bad) 12%, var(--panel2));
 	}
 	.preview {
 		display: grid;
@@ -823,16 +715,35 @@
 		}
 	}
 	@media (max-width: 980px) {
-		.stats,
-		.settings-grid {
+		.stats {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+		.maintenance-body {
+			grid-template-columns: 1fr;
+		}
+		.maintenance-actions {
+			justify-content: end;
 		}
 	}
 	@media (max-width: 680px) {
 		.stats,
-		.actions,
-		.settings-grid {
+		.actions {
 			grid-template-columns: 1fr;
+		}
+		.maintenance-dock > header,
+		.danger-actions {
+			align-items: flex-start;
+			flex-direction: column;
+		}
+		.maintenance-facts {
+			grid-template-columns: 1fr;
+			width: 100%;
+		}
+		.maintenance-actions {
+			grid-template-columns: 1fr;
+		}
+		.danger-actions > div {
+			margin-right: 0;
 		}
 	}
 </style>

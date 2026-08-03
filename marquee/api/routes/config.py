@@ -18,7 +18,7 @@ from marquee.core.configuration import (
 )
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.pipeline_config import PipelineSettings
-from marquee.core.pipeline_config_meta import KNOB_GROUPS, KNOB_META
+from marquee.core.pipeline_config_meta import KNOB_GROUPS
 from marquee.database import get_db
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -34,20 +34,21 @@ def _serialize(value: Any) -> Any:
 
 
 def _metadata() -> dict[str, dict[str, Any]]:
-    fields = PipelineSettings.model_fields
     metadata: dict[str, dict[str, Any]] = {}
     for name, catalog_entry in CONFIGURATION_CATALOG.items():
         if catalog_entry.owner != "pipeline":
             continue
-        entry = dict(KNOB_META.get(name, {}))
-        field = fields.get(name)
-        if field and field.description:
-            entry["help"] = field.description
+        entry = dict(catalog_entry.control)
         entry.update(
             {
-                "owner": "database" if catalog_entry.database_owned else "environment",
+                "owner": ("database" if catalog_entry.storage == "revision" else "environment"),
+                "storage": catalog_entry.storage,
                 "apply_mode": catalog_entry.apply_mode,
                 "sensitivity": catalog_entry.sensitivity,
+                "tab": catalog_entry.tab,
+                "section": catalog_entry.section,
+                "level": catalog_entry.level,
+                "visible": catalog_entry.visible,
             }
         )
         metadata[name] = entry

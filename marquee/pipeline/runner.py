@@ -40,11 +40,11 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from marquee.config import settings
 from marquee.core.cancellation import JobCancelledError
 from marquee.core.download_guard import ensure_image_response
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper

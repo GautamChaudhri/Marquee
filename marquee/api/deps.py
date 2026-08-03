@@ -8,11 +8,11 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request
 
-from marquee.config import settings
 from marquee.core.arr_clients.radarr_client import RadarrClient
 from marquee.core.arr_clients.sonarr_client import SonarrClient
 from marquee.core.poster_sources.tmdb import TMDBClient
 from marquee.core.rate_limit import RateLimiter
+from marquee.core.runtime_settings import effective_settings as settings
 
 
 def get_radarr(request: Request) -> RadarrClient:

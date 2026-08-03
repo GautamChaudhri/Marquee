@@ -12,7 +12,6 @@ from pathlib import Path
 from sqlalchemy import delete, exists, func, or_, select
 from sqlalchemy.orm import aliased
 
-from marquee.config import settings
 from marquee.core.backup import backup_service
 from marquee.core.filesystem import ClassifiedPath, FilesystemBoundary, RootSpec
 from marquee.core.jobs.artifact_service import (
@@ -29,6 +28,7 @@ from marquee.core.jobs.mutation_documents import (
     RetentionPurgeRequestV1,
 )
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.models import (
     Job,
     JobArtifact,
@@ -65,6 +65,23 @@ class PlannedFile:
 def _checksum(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_plan_checksum(
+    context: ExecutionContext,
+    *,
+    roots: dict[str, Path],
+    plan: tuple[PlannedFile, ...],
+) -> str:
+    """Bind confirmation to the pinned revision and every canonical root."""
+
+    return _checksum(
+        {
+            "configuration_version": getattr(context.delivery, "configuration_version", 0),
+            "roots": sorted((category, str(root.resolve())) for category, root in roots.items()),
+            "items": [(item.category, item.relative, item.size) for item in plan],
+        }
+    )
 
 
 def _validate_confirmed_plan(
@@ -330,7 +347,7 @@ async def execute_pipeline_cache_clear(context: ExecutionContext) -> dict[str, o
             continue
         plan.extend(candidates)
     sealed = tuple(plan)
-    checksum = _checksum([(item.category, item.relative, item.size) for item in sealed])
+    checksum = _file_plan_checksum(context, roots=roots, plan=sealed)
     _validate_confirmed_plan(
         dry_run=request.dry_run,
         confirmed=request.confirmed_plan_checksum,
@@ -421,7 +438,11 @@ async def execute_poster_maintenance(context: ExecutionContext) -> dict[str, obj
         for item in candidates
         if not _poster_cache_referenced(item, movie_tmdb, series_tmdb, seasons)
     )
-    checksum = _checksum([(item.category, item.relative, item.size) for item in sealed])
+    checksum = _file_plan_checksum(
+        context,
+        roots={"poster_cache": settings.poster_cache_path},
+        plan=sealed,
+    )
     _validate_confirmed_plan(
         dry_run=request.dry_run,
         confirmed=request.confirmed_plan_checksum,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,7 @@ _ML_DIR = _PROJECT_ROOT / "marquee" / "ml"
 _MODELS_DIR = _ML_DIR / "models"
 _DATA_DIR = _PROJECT_ROOT / "data"
 _DATA_ML_DIR = _DATA_DIR / "ml"
+_ENV_FILE = None if os.environ.get("MARQUEE_INTERNAL_RUNNER") == "1" else _PROJECT_ROOT / ".env"
 
 _TMDB_SIZES = {"w92", "w154", "w185", "w342", "w500", "w780", "original"}
 
@@ -347,7 +349,7 @@ class PipelineSettings(BaseSettings):
     FACE_NMS_THRESHOLD: float = 0.4
 
     model_config = SettingsConfigDict(
-        env_file=_PROJECT_ROOT / ".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         env_file_override=False,
         env_prefix="",

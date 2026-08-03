@@ -21,9 +21,9 @@ from sqlalchemy import URL
 from sqlalchemy.engine import make_url
 
 from marquee.api.results import BackupInfo, BackupResult, RestoreResult
-from marquee.config import settings
 from marquee.core.filesystem import FilesystemBoundary, FilesystemBoundaryError, RootSpec
 from marquee.core.jobs.safety_gates import SafetyGateService, SafetyRequirements
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.db_migration import asyncpg_dsn, connect_admin, verify_runtime_schema
 
 logger = logging.getLogger(__name__)

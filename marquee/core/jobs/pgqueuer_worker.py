@@ -12,13 +12,13 @@ from pgqueuer import PgQueuer
 from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
 
-from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.delivery import deliver_job
 from marquee.core.jobs.manifest import JOB_DEFINITION_REGISTRY
 from marquee.core.jobs.orphan_reconciliation import reconcile_startup_orphans
 from marquee.core.jobs.runtime_instances import RuntimeInstanceHandle, capability_snapshot
 from marquee.core.jobs.workspaces import reconcile_stale_workspaces
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,14 @@ async def run() -> None:
     try:
         await verify_runtime_schema(connection)
         await configuration_provider.start(role="worker")
+        from marquee.core.managed_secrets import managed_secret_provider
+        from marquee.core.runtime_settings import initialize_effective_settings
+
+        await managed_secret_provider.start()
+        initialize_effective_settings()
+        from marquee.logging import setup_logging
+
+        setup_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
         entrypoints = entrypoint_concurrency_limits()
         runtime = RuntimeInstanceHandle(
             role="worker",

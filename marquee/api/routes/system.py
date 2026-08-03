@@ -29,7 +29,6 @@ from marquee.api.system_operations import (
     OperationsTransport,
     OperationsWorkers,
 )
-from marquee.config import settings
 from marquee.core import system_metrics
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.contracts import TriggerKind
@@ -41,6 +40,7 @@ from marquee.core.jobs.poster_summary import latest_poster_heal_summary
 from marquee.core.jobs.readiness import connection_budget_report, schedule_catalog_report
 from marquee.core.jobs.submission import Initiator, SubmissionError
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import get_db, pool_stats, reset_database
 from marquee.ml.hardware import effective_ocr_workers
 from marquee.models import (

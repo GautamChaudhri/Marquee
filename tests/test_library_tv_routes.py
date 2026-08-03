@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
@@ -49,7 +50,7 @@ async def _seed_series(
     )
     if show_poster:
         show_file = root / "show.jpg"
-        show_file.write_bytes(b"show")
+        Image.new("RGB", (16, 24), (20, 40, 60)).save(show_file, format="JPEG")
         series.poster_path = str(show_file)
         series.poster_user_approved = True
     db.add(series)
@@ -65,7 +66,7 @@ async def _seed_series(
         )
         if spec.get("poster"):
             poster_file = root / f"season{spec['number']:02d}.jpg"
-            poster_file.write_bytes(b"season")
+            Image.new("RGB", (16, 24), (60, 40, 20)).save(poster_file, format="JPEG")
             season.poster_path = str(poster_file)
             season.poster_user_approved = True
         db.add(season)
@@ -340,9 +341,11 @@ async def test_series_poster_endpoints_translate_sonarr_paths_and_reject_outside
     show_file = await client.get(f"/api/library/series/{series.id}/poster")
     season_file = await client.get(f"/api/library/seasons/{seasons[0].id}/poster")
     assert show_file.status_code == 200
-    assert show_file.content == b"show"
+    assert show_file.headers["content-type"] == "image/jpeg"
+    assert show_file.content.startswith(b"\xff\xd8")
     assert season_file.status_code == 200
-    assert season_file.content == b"season"
+    assert season_file.headers["content-type"] == "image/jpeg"
+    assert season_file.content.startswith(b"\xff\xd8")
 
     outside = tmp_path / "outside-season.jpg"
     outside.write_bytes(b"outside")

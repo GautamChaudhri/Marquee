@@ -349,29 +349,29 @@ pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 ```
 
-Fill in at minimum:
+For a bare-host development process, add the bootstrap database/API values and an external settings
+keyring:
 
 ```ini
 DB_URL=postgresql+asyncpg://marquee:your-password@127.0.0.1:5432/marquee
 API_KEY=generate-a-long-random-string
-TMDB_READ_ACCESS_TOKEN=your-tmdb-bearer-token
-
-RADARR_URL=http://localhost:7878
-RADARR_API_KEY=your-radarr-key
-SONARR_URL=http://localhost:8989
-SONARR_API_KEY=your-sonarr-key
-
-# Map *arr container paths onto host paths, if they differ
-RADARR_PATH_PREFIX=/movies
-RADARR_MEDIA_PATH=/mnt/media/Movies
-SONARR_PATH_PREFIX=/tv
-SONARR_MEDIA_PATH=/mnt/media/TV
+MARQUEE_SETTINGS_KEYRING_FILE=/home/you/.config/marquee/settings-keyring.json
 ```
 
-`.env.example` documents every knob with its default. `DEBUG=true` disables the API-key gate and the
-rate-limit cooldowns and serves `/docs` — development only.
+Create the keyring without printing its material:
+
+```bash
+python -m marquee.maintenance generate-settings-keyring \
+  --output ~/.config/marquee/settings-keyring.json
+```
+
+After startup, enter TMDB/Radarr/Sonarr credentials, URLs, logical media roots, path mappings, and
+runtime defaults through the eight-tab Settings UI. `DEBUG=true` disables authentication and rate
+limits and serves `/docs` — development only. See
+[Consolidated Settings](design/consolidated-settings.md) for migration and rotation procedures.
 
 ### 3. Database
 
@@ -427,21 +427,41 @@ A Compose stack is provided that splits the API, worker, scheduler, web UI, and 
 proxy so a GPU-bound run never occupies Uvicorn:
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+docker compose \
+  -f docker/docker-compose.yml \
+  -f docker/compose.managed-secrets.yml \
+  up -d
 ```
 
-Add `docker/compose.nvidia.yml` for the GPU reservation on the worker.
+Set `POSTGRES_PASSWORD`, `API_KEY`, and `MARQUEE_SETTINGS_KEYRING_PATH` in the mode-`0600` `.env`
+first. Caddy binds to loopback by default; deliberately set `MARQUEE_BIND_ADDRESS` only when the
+host firewall and HTTPS posture are ready. Set `MEDIA_PATH_CEILINGS` to a JSON list containing only
+the media paths actually mounted in the API/worker containers. Logical roots configured in the UI
+may narrow, but never expand, that deployment authority. Add `docker/compose.nvidia.yml` for the GPU
+reservation on the worker.
+
+The worker launches contained compute as the unprivileged `JOB_RUNNER_UID`/`JOB_RUNNER_GID`
+(65532 by default). Root-owned mode-`0400` bootstrap secrets remain unreadable to that child; it
+receives only the operation-scoped provider credential it needs over a bounded stdin envelope.
 
 ## Configuration
 
-Configuration has two ownership boundaries. Secrets, connection details, paths, and other
-restart-owned values come from environment variables or `.env`. Safe runtime knobs are stored as
-immutable, versioned PostgreSQL revisions and apply to the next job:
+The Settings catalog classifies every application and pipeline field into four independent storage
+boundaries:
 
-- **`Settings`** (`marquee/config.py`) — application runtime: `DB_URL`, `API_KEY`, `DEBUG`,
-  `HOST`/`PORT`, media paths and `*arr` path translation, rate limits, backups,
-  `JOB_EMBEDDED_WORKERS`, `MOVIE_POSTER_FORMAT`, `SERIES_POSTER_FORMAT`.
-- **`PipelineSettings`** (`marquee/core/pipeline_config.py`) — the pipeline's tunables.
+- **Revision** — public/private settings stored in immutable PostgreSQL revisions, with explicit
+  Live, Next job, or Restart required behavior.
+- **Secret store** — TMDB, Radarr, and Sonarr credentials encrypted with AES-256-GCM under an
+  external Docker-secret keyring.
+- **Deployment** — database/API credentials, keyring, ports, roles, hardware profile, and host
+  mounts; visible only as sanitized status.
+- **Internal** — compatibility invariants intentionally absent from the user interface.
+
+`Settings` (`marquee/config.py`) and `PipelineSettings`
+(`marquee/core/pipeline_config.py`) remain the typed validation models. A catalog-coverage test
+requires every field to have storage, sensitivity, apply mode, tab, section, level, control, and
+help metadata. Details and existing-install migration steps are in
+[Consolidated Settings](design/consolidated-settings.md).
 
 <details>
 <summary><b>Representative pipeline knobs</b></summary>
@@ -455,7 +475,6 @@ immutable, versioned PostgreSQL revisions and apply to the next job:
 | `GATE_MIN_KNN_SIM`          | `0.45`          | Off-style floor on taste similarity                                             |
 | `K_NEIGHBORS`               | `10`            | Neighbours used for the k-NN taste similarity                                   |
 | `TASTE_NEG_WEIGHT`          | `1.0`           | Weight of negative exemplars in the taste match                                 |
-| `OCR_TEXT_MODE`             | `title_only`    | What text a poster is allowed to carry                                          |
 | `OCR_MAX_RESIDUAL_BOXES`    | `0`             | Non-title text boxes tolerated                                                  |
 | `OCR_WORKERS`               | `8`             | PaddleOCR process-pool size                                                     |
 | `STACK_ENABLED`             | `true`          | DINO grouping of same-design variants                                           |

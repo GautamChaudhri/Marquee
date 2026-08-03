@@ -2,6 +2,7 @@
  *  forwards to the backend with the server-only API key attached, so the key
  *  never reaches the client. Response bodies stream through (SSE-safe). */
 import { env } from '$env/dynamic/private';
+import { readFileSync } from 'node:fs';
 import type { RequestHandler } from './$types';
 
 const BASE = () => env.MARQUEE_API_URL ?? 'http://localhost:3165';
@@ -17,6 +18,16 @@ const MAX_REQUEST_BODY_BYTES = 1_048_576;
 const BODY_TOO_LARGE = 'Request body exceeds the maximum allowed size.';
 const BODY_BAD_LENGTH = 'Malformed or conflicting Content-Length header.';
 
+function apiKey(): string | null {
+	if (env.MARQUEE_API_KEY) return env.MARQUEE_API_KEY;
+	if (!env.MARQUEE_API_KEY_FILE) return null;
+	try {
+		return readFileSync(env.MARQUEE_API_KEY_FILE, 'utf8').trim() || null;
+	} catch {
+		return null;
+	}
+}
+
 // Mirror the backend envelope: { detail, code }.
 function bodyError(status: number, code: string, detail: string): Response {
 	return Response.json({ detail, code }, { status });
@@ -30,13 +41,29 @@ function declaredLength(request: Request): number | null | 'invalid' {
 }
 
 const handler: RequestHandler = async ({ request, params, url, fetch }) => {
+	const mutating = !['GET', 'HEAD', 'OPTIONS'].includes(request.method);
+	const origin = request.headers.get('origin');
+	const fetchSite = request.headers.get('sec-fetch-site');
+	if (mutating && (origin !== url.origin || (fetchSite !== null && fetchSite !== 'same-origin'))) {
+		return bodyError(403, 'cross_origin_mutation', 'Cross-origin changes are not allowed.');
+	}
+	const credentialOperation = mutating && params.path.startsWith('settings/integrations/');
+	const loopback = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+	if (credentialOperation && url.protocol !== 'https:' && !loopback) {
+		return bodyError(400, 'insecure_credential_transport', 'Credential operations require HTTPS.');
+	}
+
 	const target = `${BASE()}/api/${params.path}${url.search}`;
 
 	const headers = new Headers(request.headers);
 	headers.delete('host');
 	headers.delete('connection');
 	headers.delete('content-length');
-	if (env.MARQUEE_API_KEY) headers.set('X-Api-Key', env.MARQUEE_API_KEY);
+	const configuredKey = apiKey();
+	if (configuredKey) headers.set('X-Api-Key', configuredKey);
+	headers.set('X-Forwarded-Proto', url.protocol.replace(':', ''));
+	headers.set('X-Forwarded-Host', url.host);
+	headers.set('X-Marquee-Internal-Proxy', 'same-origin');
 
 	const declared = declaredLength(request);
 	if (declared === 'invalid') return bodyError(400, 'invalid_content_length', BODY_BAD_LENGTH);

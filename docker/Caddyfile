@@ -7,7 +7,7 @@
 # The API's own port is published on loopback only (see docker-compose.yml) for
 # tooling that carries its own key.
 
-:80 {
+{$MARQUEE_SITE_ADDRESS::80} {
 	encode zstd gzip
 
 	# Job event streams are long-lived; never buffer or time them out.
@@ -18,8 +18,4 @@
 
 	reverse_proxy marquee-web:3000
 
-	log {
-		output stdout
-		format console
-	}
 }

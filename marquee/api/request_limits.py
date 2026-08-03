@@ -21,7 +21,7 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from marquee.config import settings
+from marquee.core.runtime_settings import effective_settings as settings
 
 Message = dict[str, Any]
 Receive = Callable[[], Awaitable[Message]]

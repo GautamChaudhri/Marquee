@@ -1,18 +1,25 @@
 import type { PageLoad } from './$types';
-import { getPipelineConfig } from '$lib/api/config';
 import { getSettings } from '$lib/api/system';
-import type { PipelineConfig } from '$lib/api/config';
-import type { RuntimeSettings } from '$lib/api/types';
+import type { RuntimeSettings, SettingsLevel, SettingsTab } from '$lib/api/types';
+import { readSettingsLocation } from '$lib/settings/navigation';
 
-export const load: PageLoad = async ({ fetch }) => {
+export const load: PageLoad = async ({ fetch, url }) => {
+	const location = readSettingsLocation(url.searchParams);
+	const initialTab: SettingsTab = location.tab;
+	const initialLevel: SettingsLevel = location.level;
 	try {
-		const [config, settings] = await Promise.all([getPipelineConfig(fetch), getSettings(fetch)]);
-		return { config, settings, error: null as string | null };
-	} catch (e) {
 		return {
-			config: null as PipelineConfig | null,
+			settings: await getSettings(fetch),
+			initialTab,
+			initialLevel,
+			error: null as string | null
+		};
+	} catch (error) {
+		return {
 			settings: null as RuntimeSettings | null,
-			error: e instanceof Error ? e.message : 'Failed to load settings'
+			initialTab,
+			initialLevel,
+			error: error instanceof Error ? error.message : 'Failed to load settings'
 		};
 	}
 };

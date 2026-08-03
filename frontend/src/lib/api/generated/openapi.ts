@@ -1485,15 +1485,103 @@ export interface paths {
 		};
 		/**
 		 * Get Settings
-		 * @description Return effective redacted settings from the current immutable revision.
+		 * @description Return one redacted Settings document for every frontend tab.
 		 */
 		get: operations['get_settings_api_settings_get'];
 		/**
 		 * Put Settings
-		 * @description Append one validated configuration revision using optimistic concurrency.
+		 * @description Compatibility adapter for the original poster/heal settings endpoint.
 		 */
 		put: operations['put_settings_api_settings_put'];
 		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/settings/config': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		/** Put Configuration */
+		put: operations['put_configuration_api_settings_config_put'];
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/settings/integrations/{provider}': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		/** Put Integration */
+		put: operations['put_integration_api_settings_integrations__provider__put'];
+		post?: never;
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/settings/integrations/{provider}/credential': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		post?: never;
+		/** Delete Integration Credential */
+		delete: operations['delete_integration_credential_api_settings_integrations__provider__credential_delete'];
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/settings/integrations/{provider}/test': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/** Test Integration */
+		post: operations['test_integration_api_settings_integrations__provider__test_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
+	'/api/settings/paths/test': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Test Path Mappings
+		 * @description Validate candidate logical paths without creating files or changing mounts.
+		 */
+		post: operations['test_path_mappings_api_settings_paths_test_post'];
 		delete?: never;
 		options?: never;
 		head?: never;
@@ -2708,6 +2796,15 @@ export interface components {
 				[key: string]: unknown;
 			};
 		};
+		/** ConfigurationUpdatePayload */
+		ConfigurationUpdatePayload: {
+			/** Expected Version */
+			expected_version: number;
+			/** Values */
+			values: {
+				[key: string]: unknown;
+			};
+		};
 		/** ContainedWorkItem */
 		ContainedWorkItem: {
 			/** Detail Href */
@@ -2866,6 +2963,11 @@ export interface components {
 			 * @constant
 			 */
 			version: 1;
+		};
+		/** CredentialClearPayload */
+		CredentialClearPayload: {
+			/** Expected Generation */
+			expected_generation: number;
 		};
 		/** DiagnosticLinks */
 		DiagnosticLinks: {
@@ -3059,6 +3161,24 @@ export interface components {
 			enabled?: boolean | null;
 			/** Interval Minutes */
 			interval_minutes?: number | null;
+		};
+		/** IntegrationTestPayload */
+		IntegrationTestPayload: {
+			/** Credential */
+			credential?: string | null;
+			/** Url */
+			url?: string | null;
+		};
+		/** IntegrationUpdatePayload */
+		IntegrationUpdatePayload: {
+			/** Credential */
+			credential?: string | null;
+			/** Expected Secret Generation */
+			expected_secret_generation: number;
+			/** Expected Version */
+			expected_version: number;
+			/** Url */
+			url?: string | null;
 		};
 		/**
 		 * JobAction
@@ -4109,6 +4229,19 @@ export interface components {
 			runtime_instances: components['schemas']['OperationsRuntimeInstances'];
 			/** Supervisor Available */
 			supervisor_available: boolean;
+		};
+		/** PathMappingTestPayload */
+		PathMappingTestPayload: {
+			/** Media Roots */
+			media_roots?: string[];
+			/** Radarr Media Path */
+			radarr_media_path?: string | null;
+			/** Radarr Path Prefix */
+			radarr_path_prefix?: string | null;
+			/** Sonarr Media Path */
+			sonarr_media_path?: string | null;
+			/** Sonarr Path Prefix */
+			sonarr_path_prefix?: string | null;
 		};
 		/** PipelineCacheClearRequestV1 */
 		PipelineCacheClearRequestV1: {
@@ -7332,6 +7465,177 @@ export interface operations {
 		requestBody: {
 			content: {
 				'application/json': components['schemas']['SettingsUpdatePayload'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	put_configuration_api_settings_config_put: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['ConfigurationUpdatePayload'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	put_integration_api_settings_integrations__provider__put: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				provider: string;
+			};
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['IntegrationUpdatePayload'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	delete_integration_credential_api_settings_integrations__provider__credential_delete: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				provider: string;
+			};
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['CredentialClearPayload'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	test_integration_api_settings_integrations__provider__test_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path: {
+				provider: string;
+			};
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['IntegrationTestPayload'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	test_path_mappings_api_settings_paths_test_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['PathMappingTestPayload'];
 			};
 		};
 		responses: {

@@ -105,6 +105,7 @@ async def test_movie_rollout_preserves_singles_or_builds_stable_group_chunks(
             {
                 "POSTER_GROUP_ENABLED": enabled,
                 "POSTER_GROUP_CHUNK_SIZE": 2,
+                "PIPELINE_BATCH_MAX_MOVIES": 200,
             }
             if owner == "pipeline"
             else {}
@@ -159,6 +160,7 @@ async def test_movie_all_at_once_builds_one_group_and_audits_parent_mode(
                 "POSTER_GROUP_ENABLED": False,
                 "POSTER_GROUP_BATCH_MODE": "chunked",
                 "POSTER_GROUP_CHUNK_SIZE": 2,
+                "PIPELINE_BATCH_MAX_MOVIES": 200,
             }
             if owner == "pipeline"
             else {}

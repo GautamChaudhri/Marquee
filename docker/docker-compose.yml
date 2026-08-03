@@ -11,11 +11,16 @@
 # NVIDIA: add the GPU reservation with
 #   docker compose -f docker/docker-compose.yml -f docker/compose.nvidia.yml up -d
 x-marquee-environment: &marquee-environment
-  DB_URL: postgresql+asyncpg://marquee:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/marquee
+  DB_URL: postgresql+asyncpg://marquee@postgres:5432/marquee
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
   MARQUEE_ENVIRONMENT: ${MARQUEE_ENVIRONMENT:-production}
   MARQUEE_PROCESS_ROLE: api
   EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-auto}
   JOB_EMBEDDED_WORKERS: "false"
+  DATA_PATH_CEILING: /app/data
+  MEDIA_PATH_CEILINGS: "${MEDIA_PATH_CEILINGS:-[]}"
+  JOB_RUNNER_UID: "${JOB_RUNNER_UID:-65532}"
+  JOB_RUNNER_GID: "${JOB_RUNNER_GID:-65532}"
 
 x-marquee: &marquee
   build:
@@ -24,8 +29,6 @@ x-marquee: &marquee
     args:
       MARQUEE_HW: ${MARQUEE_HW:-cpu}
   image: marquee:${MARQUEE_HW:-cpu}
-  env_file:
-    - ../.env
   environment:
     <<: *marquee-environment
     # Dedicated marquee-worker / marquee-scheduler services run the job runtime,
@@ -39,6 +42,12 @@ x-marquee: &marquee
     # worker needs these read-write. Add site-specific mounts here.
     # - /mnt/media/movies:/movies
     # - /mnt/media/tv:/tv
+  secrets:
+    - source: postgres_password
+      target: postgres_password
+      uid: "0"
+      gid: "0"
+      mode: 0400
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -50,7 +59,13 @@ services:
     environment:
       POSTGRES_DB: marquee
       POSTGRES_USER: marquee
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - source: postgres_password
+        target: postgres_password
+        uid: "0"
+        gid: "0"
+        mode: 0400
     volumes:
       - marquee-postgres:/var/lib/postgresql/data
     ports:
@@ -78,6 +93,22 @@ services:
   marquee-api:
     <<: *marquee
     command: ["uvicorn", "marquee.main:app", "--host", "0.0.0.0", "--port", "3165", "--no-access-log"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: api
+      JOB_EMBEDDED_WORKERS: "false"
+      API_KEY_FILE: /run/secrets/marquee_api_key
+    secrets:
+      - source: postgres_password
+        target: postgres_password
+        uid: "0"
+        gid: "0"
+        mode: 0400
+      - source: marquee_api_key
+        target: marquee_api_key
+        uid: "0"
+        gid: "0"
+        mode: 0400
     ports:
       # Loopback only. Public traffic arrives through caddy -> marquee-web.
       - "127.0.0.1:3165:3165"
@@ -113,8 +144,14 @@ services:
     image: marquee-web:latest
     environment:
       MARQUEE_API_URL: http://marquee-api:3165
-      MARQUEE_API_KEY: ${API_KEY:?set API_KEY in .env}
+      MARQUEE_API_KEY_FILE: /run/secrets/marquee_api_key
       PUBLIC_USE_MOCKS: "false"
+    secrets:
+      - source: marquee_api_key
+        target: marquee_api_key
+        uid: "0"
+        gid: "0"
+        mode: 0400
     depends_on:
       marquee-api:
         condition: service_healthy
@@ -123,7 +160,10 @@ services:
   caddy:
     image: caddy:2-alpine
     ports:
-      - "${MARQUEE_HTTP_PORT:-8080}:80"
+      - "${MARQUEE_BIND_ADDRESS:-127.0.0.1}:${MARQUEE_HTTP_PORT:-8080}:80"
+      - "${MARQUEE_BIND_ADDRESS:-127.0.0.1}:${MARQUEE_HTTPS_PORT:-8443}:443"
+    environment:
+      MARQUEE_SITE_ADDRESS: ${MARQUEE_SITE_ADDRESS:-:80}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -137,3 +177,9 @@ volumes:
   marquee-postgres:
   caddy-data:
   caddy-config:
+
+secrets:
+  postgres_password:
+    environment: POSTGRES_PASSWORD
+  marquee_api_key:
+    environment: API_KEY

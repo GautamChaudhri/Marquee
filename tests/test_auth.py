@@ -53,13 +53,19 @@ async def test_protected_requires_key(enforce):
     [
         ({"Authorization": f"Bearer {KEY}"}, {}),
         ({"X-Api-Key": KEY}, {}),
-        ({}, {"apikey": KEY}),
     ],
 )
 async def test_valid_key_accepted(db, enforce, headers, params):
     async with _client() as c:
         resp = await c.get(PROTECTED, headers=headers, params=params)
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_query_string_key_is_rejected_outside_webhook_compatibility(enforce):
+    async with _client() as c:
+        resp = await c.get(PROTECTED, params={"apikey": KEY})
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio

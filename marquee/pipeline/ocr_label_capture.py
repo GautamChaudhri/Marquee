@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from marquee.api.results import find_candidate
-from marquee.config import settings
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.models import PipelineRun
 from marquee.pipeline.runner import _sanitise_filename
 

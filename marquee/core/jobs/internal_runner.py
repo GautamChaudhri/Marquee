@@ -51,6 +51,27 @@ class RunnerOperationNotEnabledError(RuntimeError):
     """A closed-vocabulary operation exists but is not yet wired to real behavior."""
 
 
+def _install_operation_secrets(manifest: dict[str, Any]) -> None:
+    """Consume the host-issued capability without opening the DB or keyring."""
+
+    raw = manifest.pop("secrets", None)
+    if not isinstance(raw, dict) or set(raw) != {"values", "generations"}:
+        raise ProtocolError("operation credential capability is malformed")
+    values = raw.get("values")
+    generations = raw.get("generations")
+    if not isinstance(values, dict) or not isinstance(generations, dict):
+        raise ProtocolError("operation credential capability is malformed")
+    from marquee.core.managed_secrets import (  # noqa: PLC0415
+        ManagedSecretError,
+        managed_secret_provider,
+    )
+
+    try:
+        managed_secret_provider.install_ephemeral(values, generations=generations)
+    except ManagedSecretError as exc:
+        raise ProtocolError("operation credential capability was rejected") from exc
+
+
 def _safe_output_name(name: object) -> str:
     """Confine a produced-file name to a single safe component under the workspace."""
     if not isinstance(name, str) or not name:
@@ -989,12 +1010,46 @@ def _emit_error(control: ControlWriter, exc: BaseException) -> None:
         )
 
 
+def _apply_configuration_snapshot(manifest: dict[str, Any]) -> None:
+    """Validate and install the sealed pipeline snapshot in this one-shot process."""
+    raw = manifest.get("configuration", {})
+    if not isinstance(raw, dict):
+        raise ProtocolError("runner configuration snapshot is invalid")
+
+    # The runner is a one-operation subprocess, so mutating this singleton is
+    # process-confined. Existing constructors and default arguments all retain
+    # the same object identity while observing the sealed next-job values.
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from marquee.core.pipeline_config import (  # noqa: PLC0415
+        PipelineSettings,
+        pipeline_settings,
+    )
+
+    unknown = sorted(set(raw) - set(PipelineSettings.model_fields))
+    if unknown:
+        raise ProtocolError("runner configuration snapshot contains unknown fields")
+    try:
+        validated = PipelineSettings(
+            **{
+                **pipeline_settings.model_dump(),
+                **raw,
+            }
+        )
+    except ValidationError as exc:
+        raise ProtocolError("runner configuration snapshot failed validation") from exc
+    for name in raw:
+        setattr(pipeline_settings, name, getattr(validated, name))
+
+
 def run(operation: RunnerOperation, control: ControlWriter) -> int:
     """Emit the ready barrier, read the manifest, dispatch, and return an exit code."""
     control.emit({"v": PROTOCOL_VERSION, "type": "ready", "operation": operation.value})
     manifest = read_manifest_from_stdin(0)
     if manifest.get("operation") != operation.value:
         raise ProtocolError("manifest operation does not match the invocation")
+    _install_operation_secrets(manifest)
+    _apply_configuration_snapshot(manifest)
     handler = _OPERATIONS.get(operation)
     if handler is None:
         raise RunnerOperationNotEnabledError(operation.value)

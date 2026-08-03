@@ -22,7 +22,7 @@ from marquee.core.jobs.submission import (
     SubjectLocator,
     submit_job,
 )
-from marquee.database import _get_engine
+from marquee.database import _get_engine, _get_session_factory
 from marquee.main import app
 from marquee.models import Job
 
@@ -146,12 +146,19 @@ async def test_sync_all_route_submits_202_and_reuses_active(client: AsyncClient,
 
 @pytest.mark.asyncio
 async def test_handler_reports_no_change_when_no_source_configured(
+    db,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(type(settings), "radarr_configured", False)
-    monkeypatch.setattr(type(settings), "sonarr_configured", False)
-    monkeypatch.setattr(type(settings), "tmdb_configured", False)
-    context = SimpleNamespace(cancellation=SimpleNamespace(cancel_called=False))
+    del db
+    monkeypatch.setattr(settings, "RADARR_URL", "")
+    monkeypatch.setattr(settings, "RADARR_API_KEY", None)
+    monkeypatch.setattr(settings, "SONARR_URL", "")
+    monkeypatch.setattr(settings, "SONARR_API_KEY", None)
+    monkeypatch.setattr(settings, "TMDB_READ_ACCESS_TOKEN", None)
+    context = SimpleNamespace(
+        cancellation=SimpleNamespace(cancel_called=False),
+        session_factory=_get_session_factory(),
+    )
     result = await execute_library_sync(context)  # type: ignore[arg-type]
     assert result["outcome"] == "no_change"
     assert result["summary"]["reason"] == "no_source_configured"

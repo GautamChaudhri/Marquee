@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from marquee.config import settings
 from marquee.core.jobs.poster_group_limits import MAX_POSTER_GROUP_MEMBERS
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.poster_sources.tmdb import TMDBClient
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.text_profiles import OcrGateContext
 from marquee.models import Movie
 from marquee.pipeline.deduper import PosterDeduper
@@ -312,12 +312,13 @@ def _member_progress(ctx: _MemberState, progress: GroupProgress | None):
 
 
 async def _fetch_all(contexts: list[_MemberState], progress: GroupProgress | None) -> None:
-    if not settings.TMDB_READ_ACCESS_TOKEN:
+    tmdb_token = settings.TMDB_READ_ACCESS_TOKEN
+    if not tmdb_token:
         raise RuntimeError(
             "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline cannot fetch candidates"
         )
 
-    async with TMDBClient(read_access_token=settings.TMDB_READ_ACCESS_TOKEN) as tmdb:
+    async with TMDBClient(read_access_token=tmdb_token) as tmdb:
 
         async def fetch_one(ctx: _MemberState) -> None:
             if ctx.subject.tmdb_id is None:

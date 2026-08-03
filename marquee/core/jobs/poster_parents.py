@@ -13,7 +13,6 @@ from typing import Literal
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.config import settings
 from marquee.core.jobs.batches import (
     MAX_FIXED_CHILDREN,
     BatchScope,
@@ -24,6 +23,7 @@ from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.submission import Initiator, SubjectLocator, SubmissionIntent
 from marquee.core.path_utils import safe_translate_and_validate
 from marquee.core.poster_subjects import PosterSubject
+from marquee.core.runtime_settings import effective_app_settings
 from marquee.models import Movie, Season, Series
 
 PosterParentOperation = Literal["reset", "backup", "heal"]
@@ -53,7 +53,9 @@ async def discover_poster_parent_subjects(
     operation: PosterParentOperation,
 ) -> PosterParentDiscovery:
     """Resolve at most the canonical fixed-child cap with three bounded queries."""
-    cutoff = datetime.now(UTC) - timedelta(minutes=settings.HEAL_RECENT_DEPLOY_GRACE_MINUTES)
+    cutoff = datetime.now(UTC) - timedelta(
+        minutes=effective_app_settings().HEAL_RECENT_DEPLOY_GRACE_MINUTES
+    )
     selected: list[tuple[str, int]] = []
     unchanged = unsupported = 0
 

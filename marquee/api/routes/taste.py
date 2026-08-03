@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.api.deps import enforce_rate_limit, get_rate_limiter
 from marquee.api.job_submission import JobSubmissionResponse, submission_response
 from marquee.api.routes.jobs import job_summary
-from marquee.config import settings
 from marquee.core.jobs import control as job_control
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.ml_publication import MlPublicationError, resolve_active_publication
@@ -32,6 +31,7 @@ from marquee.core.jobs.submission import (
 )
 from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.taste_preferences import (
     TastePreferenceError,
     derive_readiness,

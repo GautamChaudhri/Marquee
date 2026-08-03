@@ -20,8 +20,9 @@ from pathlib import Path
 
 import numpy as np
 
-from marquee.config import settings
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.runtime_settings import effective_app_settings
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.ml.artifact_codec import (
     decode_unicode_list,
     ensure_safe_artifact,
@@ -70,7 +71,7 @@ def _db_index() -> dict[str, tuple[list[str], int | None, int | None]]:
 
 
 def _tmdb_lookup(title: str, year: int | None) -> tuple[list[str], int | None] | None:
-    token = settings.TMDB_READ_ACCESS_TOKEN
+    token = effective_app_settings().TMDB_READ_ACCESS_TOKEN
     if not token:
         return None
     import httpx  # noqa: PLC0415

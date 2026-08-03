@@ -4,12 +4,16 @@ import { installTasteFixtures } from './support/taste-fixtures';
 
 const fixedTime = new Date('2026-08-02T12:05:00Z');
 
-async function stablePage(page: Page, viewport = { width: 1440, height: 1000 }) {
+async function stablePage(
+	page: Page,
+	viewport = { width: 1440, height: 1000 },
+	colorScheme: 'dark' | 'light' = 'dark'
+) {
 	await page.setViewportSize(viewport);
 	await page.clock.setFixedTime(fixedTime);
-	await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
-	await page.addInitScript(() => {
-		localStorage.setItem('marquee:theme', '"dark"');
+	await page.emulateMedia({ colorScheme, reducedMotion: 'reduce' });
+	await page.addInitScript((theme) => {
+		localStorage.setItem('marquee:theme', JSON.stringify(theme));
 		class StableEventSource {
 			addEventListener(type: string, listener: (event: Event) => void) {
 				if (type === 'open') queueMicrotask(() => listener(new Event('open')));
@@ -17,7 +21,7 @@ async function stablePage(page: Page, viewport = { width: 1440, height: 1000 }) 
 			close() {}
 		}
 		Object.defineProperty(window, 'EventSource', { value: StableEventSource });
-	});
+	}, colorScheme);
 }
 
 async function certify(page: Page, name: string) {
@@ -261,4 +265,25 @@ for (const library of ['movies', 'tv'] as const) {
 		).toBeVisible();
 		await certify(page, `key-art-${library}-mobile.png`);
 	});
+}
+
+for (const colorScheme of ['dark', 'light'] as const) {
+	for (const viewport of [
+		{ label: 'desktop', size: { width: 1440, height: 1000 } },
+		{ label: 'mobile', size: { width: 390, height: 844 } }
+	] as const) {
+		test(`Settings Posters advanced ${colorScheme} ${viewport.label}`, async ({ page }) => {
+			await stablePage(page, viewport.size, colorScheme);
+			await page.goto('/settings?tab=posters&level=advanced');
+			await expect(page.getByRole('tab', { name: 'Posters' })).toHaveAttribute(
+				'aria-selected',
+				'true'
+			);
+			await expect(page.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
+				'aria-pressed',
+				'true'
+			);
+			await certify(page, `settings-posters-advanced-${colorScheme}-${viewport.label}.png`);
+		});
+	}
 }

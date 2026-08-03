@@ -34,7 +34,6 @@ from marquee.api.results import (
     poster_url,
 )
 from marquee.api.routes.jobs import job_summary
-from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.artifact_service import ArtifactError, verify_physical_artifact
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
@@ -62,9 +61,10 @@ from marquee.core.jobs.submission import (
     submit_job,
 )
 from marquee.core.movie_queries import movie_downloaded, movie_review_pending
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
+from marquee.core.pipeline_config import PipelineSettings
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.review_queries import REVIEW_QUEUE_STATUSES, terminal_review_conditions
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.sort_title import title_sort_expr
 from marquee.database import get_db
 from marquee.models import (
@@ -348,7 +348,7 @@ def _clone_config(
     weights: dict[str, float] | None, gates: dict[str, float] | None
 ) -> PipelineSettings:
     """A throwaway PipelineSettings with weight/gate overrides applied."""
-    merged = pipeline_settings.model_dump()
+    merged = configuration_provider.effective("pipeline")
     for feature_name, value in (weights or {}).items():
         merged[f"WEIGHT_{feature_name.upper()}"] = value
     for knob, value in (gates or {}).items():
@@ -571,7 +571,8 @@ async def run_pipeline_batch(
         raise HTTPException(
             status_code=409, detail=f"all movies for scope={scope!r} are already active"
         )
-    cap = pipeline_settings.PIPELINE_BATCH_MAX_MOVIES
+    effective = configuration_provider.effective("pipeline")
+    cap = int(effective["PIPELINE_BATCH_MAX_MOVIES"])
     if len(movies) > cap:
         raise HTTPException(
             status_code=400,
@@ -588,7 +589,6 @@ async def run_pipeline_batch(
         }
         for movie in movies
     ]
-    effective = configuration_provider.effective("pipeline")
     try:
         group_options = resolve_poster_group_execution_options(
             requested_mode=body.batch_mode,
@@ -843,7 +843,9 @@ async def get_pipeline_cache():
     sizes = {
         "runs_work": directory_size(settings.runs_work_path),
         "staging": directory_size(settings.poster_staging_path),
-        "embeddings": directory_size(Path(pipeline_settings.EMBEDDING_CACHE_DIR)),
+        "embeddings": directory_size(
+            Path(configuration_provider.effective("pipeline")["EMBEDDING_CACHE_DIR"])
+        ),
         "archives": directory_size(settings.runs_archive_path),
     }
     clearable = sizes["runs_work"] + sizes["staging"] + sizes["embeddings"]

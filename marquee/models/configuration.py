@@ -7,10 +7,12 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     func,
 )
@@ -52,4 +54,49 @@ class ConfigurationCurrent(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ManagedSecret(Base):
+    """One encrypted integration credential; plaintext never enters revisions."""
+
+    __tablename__ = "managed_secrets"
+    __table_args__ = (
+        CheckConstraint("generation >= 1", name="ck_managed_secrets_generation"),
+        CheckConstraint("octet_length(nonce) = 12", name="ck_managed_secrets_nonce_length"),
+    )
+
+    name: Mapped[str] = mapped_column(String(80), primary_key=True)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    key_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    configured: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ManagedSecretEvent(Base):
+    """Value-free audit trail for credential lifecycle operations."""
+
+    __tablename__ = "managed_secret_events"
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('imported', 'replaced', 'cleared', 'rotated')",
+            name="ck_managed_secret_events_action",
+        ),
+        CheckConstraint("generation >= 1", name="ck_managed_secret_events_generation"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -20,9 +20,50 @@ export interface ConfigurationHealth {
 
 export interface ConfigurationKeyMeta {
 	owner: 'database' | 'environment';
-	apply_mode: 'next_job' | 'restart';
-	sensitivity: 'public' | 'secret';
+	storage?: SettingsStorage;
+	apply_mode: SettingsApplyMode;
+	sensitivity: SettingsSensitivity;
 	scope: 'execution' | 'application';
+}
+
+export type SettingsTab =
+	'general' | 'connections' | 'media' | 'posters' | 'pipeline' | 'taste' | 'system' | 'access';
+export type SettingsStorage = 'revision' | 'secret_store' | 'deployment' | 'internal';
+export type SettingsSensitivity = 'public' | 'private' | 'secret';
+export type SettingsApplyMode = 'hot' | 'next_job' | 'restart' | 'deployment';
+export type SettingsLevel = 'standard' | 'advanced';
+
+export interface SettingsControl {
+	kind: 'weight' | 'float' | 'int' | 'bool' | 'enum' | 'str' | 'path' | 'list';
+	min?: number;
+	max?: number;
+	step?: number;
+	options?: Array<string | number | boolean>;
+	help?: string;
+}
+
+export interface SettingsCatalogEntry {
+	key: string;
+	title: string;
+	description: string | null;
+	owner: 'app' | 'pipeline';
+	scope: 'execution' | 'application';
+	storage: SettingsStorage;
+	sensitivity: SettingsSensitivity;
+	apply_mode: SettingsApplyMode;
+	tab: SettingsTab;
+	section: string;
+	level: SettingsLevel;
+	control: SettingsControl;
+	visible: boolean;
+	editable: boolean;
+}
+
+export interface ManagedSecretStatus {
+	configured: boolean;
+	source: 'managed' | 'environment' | 'default';
+	generation: number;
+	updated_at: string | null;
 }
 
 export interface RuntimeSettings {
@@ -30,6 +71,29 @@ export interface RuntimeSettings {
 	etag: string;
 	stale: boolean;
 	health: ConfigurationHealth;
+	catalog: Record<string, SettingsCatalogEntry>;
+	values: Record<string, unknown>;
+	defaults: Record<string, unknown>;
+	sources: Record<string, string>;
+	secrets: Record<string, ManagedSecretStatus>;
+	secret_store: { writable: boolean; reason: string | null };
+	deployment: {
+		version: string;
+		environment: string;
+		process_role: string;
+		host: string;
+		port: number;
+		debug: boolean;
+		database_configured: boolean;
+		api_key_configured: boolean;
+		keyring_configured: boolean;
+		mounts: Array<{
+			path: string;
+			exists: boolean;
+			readable: boolean;
+			writable: boolean;
+		}>;
+	};
 	configuration_meta: Record<string, ConfigurationKeyMeta>;
 	integrations: {
 		tmdb: { configured: boolean };

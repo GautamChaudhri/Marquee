@@ -334,6 +334,7 @@ async def _publish_native_taste_profile(
             context.process_launcher,
             operation=RunnerOperation.TASTE_PROFILE,
             manifest=manifest,
+            configuration=context.configuration,
             on_progress=bridge.on_frame if bridge is not None else None,
             should_stop=should_stop,
             resolve_output=resolve,
@@ -497,6 +498,7 @@ async def _publish_native_taste_map(
                     "profile_checksum": active_profile.checksum,
                 }
             },
+            configuration=context.configuration,
             on_progress=bridge.on_frame if bridge is not None else None,
             should_stop=lambda: bool(context.cancellation.cancel_called),
             resolve_output=lambda key: workspace_dir / key,
@@ -607,6 +609,7 @@ async def _publish_native_enrichment(
                     "use_tmdb": False,
                 }
             },
+            configuration=context.configuration,
             on_progress=bridge.on_frame if bridge is not None else None,
             should_stop=lambda: bool(context.cancellation.cancel_called),
             resolve_output=lambda key: workspace_dir / key,
@@ -829,6 +832,7 @@ async def _publish_native_ranking_residual(
                 "min_improvement": 0.02,
             }
         },
+        configuration=context.configuration,
         should_stop=lambda: bool(context.cancellation.cancel_called),
         resolve_output=lambda key: workspace_dir / key,
     )

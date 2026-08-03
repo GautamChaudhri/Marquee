@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from marquee.config import settings
-from marquee.core.path_utils import PathValidationError
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.models.movie import Movie
 from marquee.models.season import Season
 from marquee.models.series import Series
@@ -85,36 +84,26 @@ class PosterSubject:
         raise ValueError(f"Unknown media type: {self.media_type}")
 
     def render_filename(self) -> str:
-        from marquee.core.poster_files import sanitize_poster_filename
+        from marquee.core.poster_naming import render_poster_filename
 
         if self.media_type == MEDIA_TYPE_MOVIE:
-            fmt = settings.MOVIE_POSTER_FORMAT
-            if "{movie_basename}" in fmt:
-                basename = (
-                    Path(self.movie.movie_file_path).stem
-                    if self.movie.movie_file_path
-                    else "poster"
-                )
-                try:
-                    rendered = fmt.format(movie_basename=basename)
-                except (KeyError, IndexError, ValueError) as exc:
-                    raise PathValidationError(
-                        f"Invalid MOVIE_POSTER_FORMAT {fmt!r}: {exc}"
-                    ) from exc
-            else:
-                rendered = fmt
-        elif self.media_type == MEDIA_TYPE_SERIES:
-            rendered = settings.SERIES_POSTER_FORMAT
-        elif self.media_type == MEDIA_TYPE_SEASON:
-            fmt = settings.SEASON_POSTER_FORMAT
-            try:
-                rendered = fmt.format(season=self.season.season_number)
-            except (KeyError, IndexError, ValueError) as exc:
-                raise PathValidationError(f"Invalid SEASON_POSTER_FORMAT {fmt!r}: {exc}") from exc
-        else:
-            raise ValueError(f"Unknown media type: {self.media_type}")
-
-        return sanitize_poster_filename(rendered)
+            basename = (
+                Path(self.movie.movie_file_path).stem if self.movie.movie_file_path else "poster"
+            )
+            return render_poster_filename(
+                "movie",
+                settings.MOVIE_POSTER_FORMAT,
+                movie_basename=basename,
+            )
+        if self.media_type == MEDIA_TYPE_SERIES:
+            return render_poster_filename("series", settings.SERIES_POSTER_FORMAT)
+        if self.media_type == MEDIA_TYPE_SEASON:
+            return render_poster_filename(
+                "season",
+                settings.SEASON_POSTER_FORMAT,
+                season=self.season.season_number,
+            )
+        raise ValueError(f"Unknown media type: {self.media_type}")
 
     def cache_paths(self) -> tuple[Path, Path] | None:
         if self.tmdb_id is None:

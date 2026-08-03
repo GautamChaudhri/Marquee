@@ -551,7 +551,7 @@ async def test_taste_rebuild_publishes_native_loadable_profile_artifact(db, data
                 reason="route resolver fixture",
             )
         )
-    await db.flush()
+    await db.commit()
     workspace_dir = (
         context.workspace.directory.root.resolved() / context.workspace.directory.key.value
     )
@@ -604,8 +604,8 @@ async def test_taste_rebuild_publishes_native_loadable_profile_artifact(db, data
         detail = await client.get(f"/api/taste/profiles/{artifact.id}")
         assert detail.status_code == 200, detail.text
         assert [movie["title"] for movie in detail.json()["movies"]] == [
-            tv_exemplar_id,
             "Heat",
+            tv_exemplar_id,
         ]
         assert "TV Namespace Must Not Leak" not in {
             movie["title"] for movie in detail.json()["movies"]

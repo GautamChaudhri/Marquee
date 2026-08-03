@@ -63,6 +63,8 @@ dependencies = [
     # Utilities
     "python-dotenv>=1.0,<2.0",
     "python-multipart>=0.0.12,<1.0",
+    # Authenticated encryption for UI-managed integration credentials.
+    "cryptography>=46.0,<47.0",
     # Host telemetry for the dashboard (CPU/RAM/disk/uptime). GPU metrics use
     # nvidia-ml-py, which ships in the [nvidia] extra.
     "psutil>=5.9,<8.0",

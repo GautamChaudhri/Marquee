@@ -1865,6 +1865,25 @@
         "title": "ConfigUpdate",
         "type": "object"
       },
+      "ConfigurationUpdatePayload": {
+        "properties": {
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "values": {
+            "additionalProperties": true,
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "expected_version",
+          "values"
+        ],
+        "title": "ConfigurationUpdatePayload",
+        "type": "object"
+      },
       "ContainedWorkItem": {
         "additionalProperties": false,
         "properties": {
@@ -2231,6 +2250,20 @@
           "href"
         ],
         "title": "ContainedWorkSummary",
+        "type": "object"
+      },
+      "CredentialClearPayload": {
+        "properties": {
+          "expected_generation": {
+            "minimum": 0.0,
+            "title": "Expected Generation",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_generation"
+        ],
+        "title": "CredentialClearPayload",
         "type": "object"
       },
       "DiagnosticLinks": {
@@ -2902,6 +2935,77 @@
           }
         },
         "title": "HealSettingsUpdate",
+        "type": "object"
+      },
+      "IntegrationTestPayload": {
+        "properties": {
+          "credential": {
+            "anyOf": [
+              {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "IntegrationTestPayload",
+        "type": "object"
+      },
+      "IntegrationUpdatePayload": {
+        "properties": {
+          "credential": {
+            "anyOf": [
+              {
+                "maxLength": 8192,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential"
+          },
+          "expected_secret_generation": {
+            "minimum": 0.0,
+            "title": "Expected Secret Generation",
+            "type": "integer"
+          },
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "expected_version",
+          "expected_secret_generation"
+        ],
+        "title": "IntegrationUpdatePayload",
         "type": "object"
       },
       "JobAction": {
@@ -6434,6 +6538,68 @@
           "runtime_instances"
         ],
         "title": "OperationsWorkers",
+        "type": "object"
+      },
+      "PathMappingTestPayload": {
+        "properties": {
+          "media_roots": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Media Roots",
+            "type": "array"
+          },
+          "radarr_media_path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radarr Media Path"
+          },
+          "radarr_path_prefix": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radarr Path Prefix"
+          },
+          "sonarr_media_path": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sonarr Media Path"
+          },
+          "sonarr_path_prefix": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sonarr Path Prefix"
+          }
+        },
+        "title": "PathMappingTestPayload",
         "type": "object"
       },
       "PipelineCacheClearRequestV1": {
@@ -12439,7 +12605,7 @@
     },
     "/api/settings": {
       "get": {
-        "description": "Return effective redacted settings from the current immutable revision.",
+        "description": "Return one redacted Settings document for every frontend tab.",
         "operationId": "get_settings_api_settings_get",
         "responses": {
           "200": {
@@ -12457,7 +12623,7 @@
         ]
       },
       "put": {
-        "description": "Append one validated configuration revision using optimistic concurrency.",
+        "description": "Compatibility adapter for the original poster/heal settings endpoint.",
         "operationId": "put_settings_api_settings_put",
         "requestBody": {
           "content": {
@@ -12490,6 +12656,235 @@
           }
         },
         "summary": "Put Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/config": {
+      "put": {
+        "operationId": "put_configuration_api_settings_config_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigurationUpdatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Configuration",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/integrations/{provider}": {
+      "put": {
+        "operationId": "put_integration_api_settings_integrations__provider__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntegrationUpdatePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Integration",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/integrations/{provider}/credential": {
+      "delete": {
+        "operationId": "delete_integration_credential_api_settings_integrations__provider__credential_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialClearPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Integration Credential",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/integrations/{provider}/test": {
+      "post": {
+        "operationId": "test_integration_api_settings_integrations__provider__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IntegrationTestPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Integration",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/paths/test": {
+      "post": {
+        "description": "Validate candidate logical paths without creating files or changing mounts.",
+        "operationId": "test_path_mappings_api_settings_paths_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PathMappingTestPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Path Mappings",
         "tags": [
           "settings"
         ]

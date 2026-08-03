@@ -24,7 +24,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, update
 
-from marquee.config import settings
 from marquee.core.filesystem import (
     ClassifiedPath,
     FilesystemBoundary,
@@ -37,6 +36,7 @@ from marquee.core.jobs.process_identity import (
     ProcessIdentity,
     verify_process_identity,
 )
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models.job import Job, JobAttempt
 from marquee.models.job_evidence import JobLog
@@ -125,7 +125,9 @@ class CentralRedactor:
 
     @classmethod
     def configured(cls) -> CentralRedactor:
-        return cls(settings.job_log_redaction_secrets)
+        from marquee.core.runtime_settings import effective_app_settings
+
+        return cls(effective_app_settings().job_log_redaction_secrets)
 
     def redact_text(self, value: str) -> tuple[str, int]:
         redacted = value

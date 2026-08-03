@@ -89,6 +89,11 @@ def _get_session_factory() -> async_sessionmaker:
     return _session_factory
 
 
+def session_factory() -> async_sessionmaker:
+    """Return the canonical process-local async session factory."""
+    return _get_session_factory()
+
+
 def pool_stats() -> dict[str, int | None]:
     """Point-in-time telemetry for the current role-budgeted SQLAlchemy pool."""
     pool_size, max_overflow = settings.db_pool_budget

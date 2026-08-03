@@ -2,7 +2,12 @@
 
 from marquee.models.artwork_event import ArtworkEvent
 from marquee.models.base import ArtworkMixin, TimestampMixin
-from marquee.models.configuration import ConfigurationCurrent, ConfigurationRevision
+from marquee.models.configuration import (
+    ConfigurationCurrent,
+    ConfigurationRevision,
+    ManagedSecret,
+    ManagedSecretEvent,
+)
 from marquee.models.episode import Episode
 from marquee.models.job import (
     Job,
@@ -42,6 +47,8 @@ __all__ = [
     "ArtworkEvent",
     "ConfigurationCurrent",
     "ConfigurationRevision",
+    "ManagedSecret",
+    "ManagedSecretEvent",
     "ArtworkMixin",
     "TimestampMixin",
     "Job",

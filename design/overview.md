@@ -96,15 +96,14 @@ embedded worker and scheduler, and starts the system-metrics sampler.
 
 ## Configuration Families
 
-- `Settings` (`marquee/config.py`) — application runtime, auth, database URL,
-  media paths, clients, rate limits, backups, and job platform behaviour.
-  Representative knobs: `DB_URL`, `API_KEY`, `JOB_EMBEDDED_WORKERS`,
-  `RADARR_PATH_PREFIX`, `RADARR_MEDIA_PATH`, `RATE_PIPELINE_RUN_SECONDS`,
-  `MOVIE_POSTER_FORMAT`.
-- `PipelineSettings` (`marquee/core/pipeline_config.py`) — pipeline models and
-  thresholds. Representative knobs: `SCORER=auto`, `OCR_MAX_RESIDUAL_BOXES=0`,
-  `PIPELINE_BATCH_MAX_MOVIES=500`, `TMDB_POSTER_SIZE=w500`, `K_NEIGHBORS=10`,
-  `GATE_MIN_WIDTH=500`.
+`Settings` (`marquee/config.py`) and `PipelineSettings`
+(`marquee/core/pipeline_config.py`) are fully classified by one generated catalog. Public/private
+values use immutable revisions, TMDB/Radarr/Sonarr credentials use the AES-GCM managed-secret
+store, bootstrap values remain deployment-owned, and Text Profile compatibility fields remain
+internal. API, worker, and scheduler resolve the same revision before constructing services.
+
+The eight-tab UI, API contract, ownership rules, migration, and key rotation are documented in
+[Consolidated Settings](consolidated-settings.md).
 
 ## Implemented Versus Deferred
 

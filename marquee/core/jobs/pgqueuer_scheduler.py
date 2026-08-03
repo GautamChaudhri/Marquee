@@ -11,7 +11,6 @@ from collections.abc import Callable
 import asyncpg
 from pgqueuer import PgQueuer
 
-from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.runtime_instances import RuntimeInstanceHandle
 from marquee.core.jobs.schedules import (
@@ -24,6 +23,7 @@ from marquee.core.jobs.schedules import (
     schedule_diagnostics,
 )
 from marquee.core.jobs.transport_intent_monitor import monitor_until_shutdown
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.db_migration import asyncpg_dsn, verify_runtime_schema
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,11 @@ async def run() -> None:
     try:
         await verify_runtime_schema(connection)
         await configuration_provider.start(role="scheduler")
+        from marquee.core.runtime_settings import initialize_effective_settings
+        from marquee.logging import setup_logging
+
+        initialize_effective_settings()
+        setup_logging(settings.LOG_LEVEL, settings.LOG_FORMAT)
         runtime = RuntimeInstanceHandle(
             role="scheduler",
             node_label=settings.JOB_WORKER_NODE_ID,

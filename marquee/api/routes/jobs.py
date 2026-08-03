@@ -26,7 +26,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from marquee.config import settings
 from marquee.core.filesystem import FilesystemBoundaryError
 from marquee.core.jobs.api_errors import (
     ERROR_INVALID_CURSOR,
@@ -111,6 +110,7 @@ from marquee.core.jobs.work_item_documents import (
     WorkItemSummary,
 )
 from marquee.core.jobs.work_items import historical_work_item_fallback, work_item_summary
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory, get_db
 from marquee.models import (
     Episode,

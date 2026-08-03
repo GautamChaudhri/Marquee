@@ -34,7 +34,6 @@ from marquee.api.routes.pipeline import (
     _repair_stale_batch_pipeline_runs,
     aggregate_run_metrics,
 )
-from marquee.config import settings
 from marquee.core.configuration_cache import configuration_provider
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
@@ -59,9 +58,9 @@ from marquee.core.jobs.submission import (
     SubmissionIntent,
     SubmissionResult,
 )
-from marquee.core.pipeline_config import pipeline_settings
 from marquee.core.rate_limit import RateLimiter
 from marquee.core.review_queries import REVIEW_QUEUE_STATUSES, terminal_review_conditions
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.database import get_db
 from marquee.models import ArtworkEvent, Job, JobArtifact, PipelineRun, Season, Series
@@ -687,7 +686,8 @@ async def run_tv_pipeline_batch(
                 reason = "awaiting review" if review and not active else "already active"
                 raise HTTPException(status_code=409, detail=f"all selected assets are {reason}")
 
-            cap = pipeline_settings.PIPELINE_BATCH_MAX_MOVIES
+            effective = configuration_provider.effective("pipeline")
+            cap = int(effective["PIPELINE_BATCH_MAX_MOVIES"])
             if len(assets) > cap:
                 raise HTTPException(
                     status_code=400,
@@ -698,7 +698,6 @@ async def run_tv_pipeline_batch(
 
             nonce = uuid4().hex
             initiator = Initiator(kind="system", identifier="pipeline-tv-api")
-            effective = configuration_provider.effective("pipeline")
             try:
                 group_options = resolve_poster_group_execution_options(
                     requested_mode=body.batch_mode,

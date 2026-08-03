@@ -137,6 +137,30 @@ def _minimal_environment() -> dict[str, str]:
     return environment
 
 
+def _prepare_runner_workspace(path: Path, *, uid: int, gid: int) -> None:
+    """Transfer one confined workspace without following links or crossing a size bound."""
+
+    if os.name != "posix":
+        raise ProcessLaunchError("runner privilege separation requires a POSIX host")
+    if os.geteuid() != 0:
+        if uid != os.geteuid() or gid != os.getegid():
+            raise ProcessLaunchError("worker lacks authority to select the runner identity")
+        return
+    count = 0
+    for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+        current_path = Path(current)
+        entries = [*directories, *files]
+        for name in entries:
+            count += 1
+            if count > 50_000:
+                raise ProcessLaunchError("runner workspace exceeds the ownership-transfer bound")
+            entry = current_path / name
+            if entry.is_symlink():
+                raise ProcessLaunchError("runner workspace contains a symbolic link")
+            os.chown(entry, uid, gid, follow_symlinks=False)
+        os.chown(current_path, uid, gid, follow_symlinks=False)
+
+
 class TrackedProcess:
     def __init__(
         self,
@@ -287,11 +311,22 @@ class ProcessLauncher:
         pipe_sink: PipeSink | None = None,
         capture_limit: int = 64 * 1024,
         cgroup_root: Path = Path("/sys/fs/cgroup"),
+        runner_uid: int | None = None,
+        runner_gid: int | None = None,
+        require_privilege_separation: bool = False,
     ) -> None:
         if not worker_node or len(worker_node) > 100:
             raise ProcessLaunchError("worker node identity is invalid")
         if capture_limit < 0 or capture_limit > 1024 * 1024:
             raise ProcessLaunchError("capture limit is outside the fixed bound")
+        if (runner_uid is None) != (runner_gid is None):
+            raise ProcessLaunchError("runner UID and GID must be configured together")
+        if require_privilege_separation and runner_uid is None:
+            raise ProcessLaunchError(
+                "runner privilege separation is required while bootstrap secrets are mounted"
+            )
+        if require_privilege_separation and runner_uid == os.geteuid():
+            raise ProcessLaunchError("runner identity must differ from the secret-bearing worker")
         self._worker_node = worker_node
         self._boundary = boundary
         self._working_directory = working_directory
@@ -300,6 +335,8 @@ class ProcessLauncher:
         self._pipe_sink = pipe_sink
         self._capture_limit = capture_limit
         self._cgroup_root = cgroup_root
+        self._runner_uid = runner_uid
+        self._runner_gid = runner_gid
         self._active: set[TrackedProcess] = set()
 
     def _cwd(self) -> Path:
@@ -546,21 +583,38 @@ class ProcessLauncher:
             raise ProcessLaunchError("verified process-group containment is unavailable")
         command = (sys.executable, "-m", INTERNAL_RUNNER_MODULE, resolved.value)
         environment = _minimal_environment()
+        environment["MARQUEE_INTERNAL_RUNNER"] = "1"
         if runtime_options is not None:
             environment.update(runtime_options.environment())
+        cwd = self._cwd()
+        identity_options: dict[str, object] = {}
+        if self._runner_uid is not None and self._runner_gid is not None:
+            await asyncio.to_thread(
+                _prepare_runner_workspace,
+                cwd,
+                uid=self._runner_uid,
+                gid=self._runner_gid,
+            )
+            identity_options = {
+                "user": self._runner_uid,
+                "group": self._runner_gid,
+                "extra_groups": (),
+                "umask": 0o077,
+            }
         control_read, control_write = os.pipe()
         started_at = datetime.now(UTC)
         try:
             environment[CONTROL_FD_ENV] = str(control_write)
             process = await asyncio.create_subprocess_exec(
                 *command,
-                cwd=self._cwd(),
+                cwd=cwd,
                 env=environment,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
                 pass_fds=(control_write,),
+                **identity_options,
             )
         except BaseException:
             os.close(control_read)

@@ -18,7 +18,6 @@ from pgqueuer.models import Context
 from pgqueuer.models import Job as PgQueuerJob
 from sqlalchemy import func, select, update
 
-from marquee.config import settings
 from marquee.core.jobs.artifact_service import (
     artifact_boundary,
     register_existing_physical_artifact,
@@ -58,6 +57,7 @@ from marquee.core.jobs.safety_gates import (
 from marquee.core.jobs.terminal_decision import TerminalDecision, WorkspaceDisposition
 from marquee.core.jobs.work_items import terminalize_work_items
 from marquee.core.jobs.workspaces import AttemptWorkspace, AttemptWorkspaceManager
+from marquee.core.runtime_settings import effective_settings as settings
 from marquee.database import _get_session_factory
 from marquee.models import RuntimeInstance
 from marquee.models.job import Job, JobAttempt, JobDispatch
@@ -89,6 +89,7 @@ class DeliveryIdentity:
     pgqueuer_attempt: int
     definition_key: str
     definition_version: int
+    configuration_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +241,7 @@ async def _preflight(
             pgqueuer_attempt=transport_job.attempts,
             definition_key=definition.job_type,
             definition_version=job.payload_version,
+            configuration_version=job.configuration_version,
         )
         requirements = requirements_for_policy(
             definition.safety_policy,
@@ -1090,6 +1092,11 @@ async def deliver_job(
             record_exit=writer.record_process_exit,
             pipe_sink=log_sink.feed_pipe if log_sink is not None else None,
             capture_limit=0 if log_sink is not None else 64 * 1024,
+            runner_uid=settings.JOB_RUNNER_UID,
+            runner_gid=settings.JOB_RUNNER_GID,
+            require_privilege_separation=bool(
+                settings.POSTGRES_PASSWORD_FILE or settings.MARQUEE_SETTINGS_KEYRING_FILE
+            ),
         )
         execution_progress = ExecutionProgress.create(
             job_id=admitted.delivery.canonical_job_id,

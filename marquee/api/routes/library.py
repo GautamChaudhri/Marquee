@@ -69,12 +69,17 @@ def _serve_subject_poster(subject, *, media_type: str):
         boundary_for_roots,
     )
     from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
+    from marquee.core.poster_files import verify_jpeg_file  # noqa: PLC0415
 
     try:
         folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
         boundary = boundary_for_roots({"subject": folder}, purpose="poster-serve")
         classified = boundary.classify(subject.entity.poster_path, require_file=True)
-        return boundary.response(classified, media_type=media_type)
+        return boundary.response(
+            classified,
+            media_type=media_type,
+            validator=verify_jpeg_file,
+        )
     except (FilesystemBoundaryError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Poster file not found on disk") from exc
 

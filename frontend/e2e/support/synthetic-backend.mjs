@@ -509,9 +509,200 @@ const onboardingReview = () => ({
 	}
 });
 
+let settingsVersion = 7;
+const settingsValues = {
+	APP_NAME: 'Marquee',
+	SYNC_INTERVAL_MINUTES: 30,
+	WEBHOOK_DRY_RUN: false,
+	DATA_DIR: '/app/data',
+	MEDIA_ROOTS: ['/movies', '/television'],
+	RADARR_URL: 'http://radarr:7878',
+	SONARR_URL: 'http://sonarr:8989',
+	RADARR_PATH_PREFIX: '/movies',
+	RADARR_MEDIA_PATH: '/movies',
+	SONARR_PATH_PREFIX: '/tv',
+	SONARR_MEDIA_PATH: '/television',
+	MOVIE_POSTER_FORMAT: 'poster.jpg',
+	SERIES_POSTER_FORMAT: 'show.jpg',
+	SEASON_POSTER_FORMAT: 'season{season:02d}.jpg',
+	POSTER_BACKUP_DIR: '/app/data/poster-backups',
+	PREFERRED_LANG: 'en',
+	WEIGHT_AESTHETIC: 0.35,
+	K_NEIGHBORS: 20,
+	KNN_SOFTMAX_TEMP: 0.07,
+	LOG_LEVEL: 'INFO',
+	JOB_WORKER_CONCURRENCY: 4,
+	AUTH_ALLOW_LOCAL: false,
+	AUTH_BRUTE_LOCKOUT_ATTEMPTS: 8
+};
+
+const settingEntry = (key, tab, section, level, control, applyMode = 'next_job') => ({
+	key,
+	title: key
+		.toLowerCase()
+		.split('_')
+		.map((word) => word[0].toUpperCase() + word.slice(1))
+		.join(' '),
+	description: `Synthetic ${key.toLowerCase().replaceAll('_', ' ')} setting.`,
+	owner: ['PREFERRED_LANG', 'WEIGHT_AESTHETIC', 'K_NEIGHBORS', 'KNN_SOFTMAX_TEMP'].includes(key)
+		? 'pipeline'
+		: 'app',
+	scope: 'application',
+	storage: 'revision',
+	sensitivity: key.includes('DIR') || key.includes('ROOT') ? 'private' : 'public',
+	apply_mode: applyMode,
+	tab,
+	section,
+	level,
+	control,
+	visible: true,
+	editable: true
+});
+
+const settingsCatalog = Object.fromEntries(
+	[
+		settingEntry('APP_NAME', 'general', 'Application', 'standard', { kind: 'text' }, 'restart'),
+		settingEntry('SYNC_INTERVAL_MINUTES', 'connections', 'Synchronization', 'standard', {
+			kind: 'int',
+			min: 1,
+			max: 1440
+		}),
+		settingEntry('WEBHOOK_DRY_RUN', 'connections', 'Synchronization', 'advanced', {
+			kind: 'bool'
+		}),
+		settingEntry('MEDIA_ROOTS', 'media', 'Library paths', 'standard', { kind: 'list' }),
+		settingEntry(
+			'DATA_DIR',
+			'media',
+			'Application paths',
+			'advanced',
+			{
+				kind: 'path'
+			},
+			'restart'
+		),
+		settingEntry('MOVIE_POSTER_FORMAT', 'posters', 'Poster behavior', 'standard', {
+			kind: 'text'
+		}),
+		settingEntry(
+			'POSTER_BACKUP_DIR',
+			'posters',
+			'Storage and healing',
+			'advanced',
+			{
+				kind: 'path'
+			},
+			'restart'
+		),
+		settingEntry('PREFERRED_LANG', 'pipeline', 'Runtime defaults', 'standard', {
+			kind: 'enum',
+			options: ['en', 'fr']
+		}),
+		settingEntry('WEIGHT_AESTHETIC', 'pipeline', 'Scoring weights', 'advanced', {
+			kind: 'weight',
+			min: 0,
+			max: 1,
+			step: 0.05
+		}),
+		settingEntry('K_NEIGHBORS', 'taste', 'Taste profile', 'standard', {
+			kind: 'int',
+			min: 1,
+			max: 200
+		}),
+		settingEntry('KNN_SOFTMAX_TEMP', 'taste', 'Calibration', 'advanced', {
+			kind: 'float',
+			min: 0.01,
+			max: 2,
+			step: 0.01
+		}),
+		settingEntry(
+			'LOG_LEVEL',
+			'system',
+			'Logging',
+			'standard',
+			{
+				kind: 'enum',
+				options: ['DEBUG', 'INFO', 'WARNING', 'ERROR']
+			},
+			'restart'
+		),
+		settingEntry(
+			'JOB_WORKER_CONCURRENCY',
+			'system',
+			'Workers',
+			'advanced',
+			{
+				kind: 'int',
+				min: 1,
+				max: 32
+			},
+			'restart'
+		),
+		settingEntry('AUTH_ALLOW_LOCAL', 'access', 'Request access', 'standard', {
+			kind: 'bool'
+		}),
+		settingEntry('AUTH_BRUTE_LOCKOUT_ATTEMPTS', 'access', 'Defensive limits', 'advanced', {
+			kind: 'int',
+			min: 1,
+			max: 100
+		})
+	].map((entry) => [entry.key, entry])
+);
+
+const settingsDocument = () => ({
+	configuration_version: settingsVersion,
+	etag: `synthetic-settings-${settingsVersion}`,
+	stale: false,
+	health: { status: 'valid' },
+	catalog: settingsCatalog,
+	values: settingsValues,
+	defaults: { ...settingsValues, APP_NAME: 'Marquee' },
+	sources: Object.fromEntries(Object.keys(settingsCatalog).map((key) => [key, 'default'])),
+	secrets: Object.fromEntries(
+		['TMDB_READ_ACCESS_TOKEN', 'RADARR_API_KEY', 'SONARR_API_KEY'].map((key) => [
+			key,
+			{ configured: true, source: 'managed', generation: 2, updated_at: now }
+		])
+	),
+	secret_store: { writable: true, reason: null },
+	deployment: {
+		version: '0.0.0-e2e',
+		environment: 'test',
+		process_role: 'api',
+		host: '0.0.0.0',
+		port: 3165,
+		debug: false,
+		database_configured: true,
+		api_key_configured: true,
+		keyring_configured: true,
+		mounts: [
+			{ path: '/movies', exists: true, readable: true, writable: true },
+			{ path: '/television', exists: true, readable: true, writable: true }
+		]
+	},
+	writable: true
+});
+
 const server = createServer((req, res) => {
 	const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
 	const path = url.pathname;
+	if (req.method === 'PUT' && path === '/api/settings/config') {
+		let body = '';
+		req.setEncoding('utf8');
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			const payload = JSON.parse(body || '{}');
+			Object.assign(settingsValues, payload.values ?? {});
+			settingsVersion += 1;
+			json(res, 200, {
+				configuration_version: settingsVersion,
+				etag: `synthetic-settings-${settingsVersion}`,
+				changed: true,
+				settings: settingsDocument()
+			});
+		});
+		return;
+	}
 	if (
 		req.method === 'POST' &&
 		(path === '/api/onboarding/choose' || path === '/api/onboarding/hate')
@@ -551,6 +742,10 @@ const server = createServer((req, res) => {
 	}
 	if (path === '/api/onboarding/status') {
 		json(res, 200, onboardingStatus());
+		return;
+	}
+	if (path === '/api/settings') {
+		json(res, 200, settingsDocument());
 		return;
 	}
 	if (path === `/api/onboarding/runs/${ONBOARDING_RUN_ID}/review`) {
