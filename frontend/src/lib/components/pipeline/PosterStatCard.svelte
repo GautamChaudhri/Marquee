@@ -11,6 +11,7 @@
 		tone = 'gold',
 		icon,
 		breakdown,
+		bars,
 		href,
 		hint,
 		emphasis = 'quiet'
@@ -22,6 +23,8 @@
 		tone?: Tone;
 		icon?: string;
 		breakdown?: { label: string; value: string | number }[];
+		/** Several named coverage bars in one card, each with its own percentage. */
+		bars?: { label: string; value: number; tone?: Tone }[];
 		/** When set the whole card becomes a link into the matching workspace tab. */
 		href?: string;
 		/** Accessible name for the link — say where it goes, not just what it counts. */
@@ -44,7 +47,7 @@
 	class:zero={isZero}
 	style="--c:{toneVar(tone)}"
 >
-	{#if emphasis === 'loud'}<div class="rail"></div>{/if}
+	<div class="rail"></div>
 	<div class="top">
 		<div class="label">{label}</div>
 		{#if icon}
@@ -62,6 +65,17 @@
 		</div>
 	{/if}
 	{#if bar != null}<div class="bar"><ProgressBar value={bar} {tone} /></div>{/if}
+	{#if bars?.length}
+		<div class="bars">
+			{#each bars as row (row.label)}
+				<div class="bar-row">
+					<span class="bar-label">{row.label}</span>
+					<span class="bar-pct">{row.value}%</span>
+				</div>
+				<ProgressBar value={row.value} tone={row.tone ?? tone} height={5} />
+			{/each}
+		</div>
+	{/if}
 	{#if href}<span class="go" aria-hidden="true"><Icon name="chevron" size={13} /></span>{/if}
 </svelte:element>
 
@@ -156,10 +170,14 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	/* Carries the "needs attention" signal the wash used to, now that it only
-	   appears on hover. */
-	.card.loud .label {
-		color: color-mix(in srgb, var(--c) 55%, var(--muted));
+	/* A card with a count in it names itself in its own tone; a zero stays grey so
+	   the row reads at a glance. Loud cards push further, since the tinted wash
+	   now only appears on hover. */
+	.card:not(.zero) .label {
+		color: color-mix(in srgb, var(--c) 72%, var(--muted));
+	}
+	.card.loud:not(.zero) .label {
+		color: color-mix(in srgb, var(--c) 90%, var(--muted));
 	}
 	.chip {
 		display: inline-flex;
@@ -214,5 +232,27 @@
 	}
 	.bar {
 		margin-top: 10px;
+	}
+	.bars {
+		display: grid;
+		gap: 3px;
+		margin-top: 9px;
+	}
+	.bar-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+	}
+	.bar-row:not(:first-child) {
+		margin-top: 5px;
+	}
+	.bar-label {
+		color: var(--muted);
+		font-size: 11px;
+	}
+	.bar-pct {
+		color: var(--text);
+		font: 600 11px/1 var(--font-mono);
 	}
 </style>

@@ -600,14 +600,24 @@ def ocr_device_plan() -> dict[str, Any]:
     disagree with what the pool actually does.
     """
     from marquee.core.system_metrics import gpu_inventory
+    from marquee.ml.hardware import detect_hardware
 
     requested = pipeline_settings.OCR_DEVICE
     gpus = gpu_inventory()
     gpu_build = paddle_gpu_build()
+    # What OCR_WORKERS=0 resolves to. `effective_workers` cannot stand in for this:
+    # once an explicit count is stored it returns that instead, and the UI still
+    # needs to know which number means "auto".
+    try:
+        auto_workers = detect_hardware().ocr_workers
+    except Exception as exc:  # noqa: BLE001 - an explicit unavailable provider raises
+        logger.debug("Could not resolve the auto OCR worker count: %s", exc)
+        auto_workers = None
     plan: dict[str, Any] = {
         "requested": requested,
         "gpu_build": gpu_build,
         "gpus": gpus,
+        "auto_workers": auto_workers,
         "expected_device": None,
         "error": None,
         # "auto" defers to a run-time CUDA probe this process will not pay for,

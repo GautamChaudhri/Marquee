@@ -934,6 +934,7 @@ def test_system_ocr_status_shape(monkeypatch: pytest.MonkeyPatch):
         "requested": "auto",
         "gpu_build": False,
         "gpus": [],
+        "auto_workers": 3,
         "expected_device": "cpu",
         "error": None,
         "confirmed": False,

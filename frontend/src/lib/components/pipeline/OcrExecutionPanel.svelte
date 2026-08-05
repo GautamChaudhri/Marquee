@@ -38,11 +38,28 @@
 	const effective = $derived(status?.effective_workers ?? 0);
 	const activeWorkers = $derived(status?.workers.active.length ?? 0);
 
-	/** 0 means "size from the hardware profile", so it needs spelling out. */
-	const workerHint = $derived(
-		workers === 0 ? `auto — ${effective} on this host` : `${effective} in use`
+	/** OCR_WORKERS stores 0 for "auto", but showing a 0 in a worker-count stepper
+	 *  reads as "no workers". The control shows the real number either way, and
+	 *  writes 0 back whenever that number is the host default. */
+	const autoWorkers = $derived(plan?.auto_workers ?? effective ?? 1);
+	const shownWorkers = $derived(workers === 0 ? autoWorkers : workers);
+	const isAuto = $derived(shownWorkers === autoWorkers);
+	/** Kept short so it can sit centred under the number rather than wrapping; the
+	 *  full explanation lives in the title attribute. */
+	const workerHint = $derived(isAuto ? 'Default' : 'Overridden');
+	const workerTitle = $derived(
+		isAuto
+			? `Auto-sized for this host (${autoWorkers} workers)`
+			: `Manually set; the host default is ${autoWorkers}`
 	);
 	const dirty = $derived(device !== savedDevice || workers !== savedWorkers);
+
+	/** Persist 0 when the count lands back on the host default, so "auto" survives
+	 *  the round trip instead of being frozen as an explicit number. */
+	function setWorkers(next: number) {
+		const clamped = Math.min(16, Math.max(1, next));
+		workers = clamped === autoWorkers ? 0 : clamped;
+	}
 
 	const DEVICES = [
 		{ id: 'auto', label: 'Auto', hint: 'GPU when Paddle CUDA works, else CPU.' },
@@ -160,25 +177,28 @@
 					<label class="flabel" for="ocr-workers">Workers</label>
 					<div class="stepper">
 						<button
-							disabled={busy || workers <= 0}
+							disabled={busy || shownWorkers <= 1}
 							aria-label="Fewer workers"
-							onclick={() => (workers = Math.max(0, workers - 1))}>−</button
+							onclick={() => setWorkers(shownWorkers - 1)}>−</button
 						>
 						<input
 							id="ocr-workers"
 							type="number"
-							min="0"
+							min="1"
 							max="16"
-							bind:value={workers}
+							value={shownWorkers}
 							disabled={busy}
+							oninput={(e) => setWorkers(Number(e.currentTarget.value))}
 						/>
 						<button
-							disabled={busy || workers >= 16}
+							disabled={busy || shownWorkers >= 16}
 							aria-label="More workers"
-							onclick={() => (workers = Math.min(16, workers + 1))}>+</button
+							onclick={() => setWorkers(shownWorkers + 1)}>+</button
 						>
 					</div>
-					<small>{workerHint}</small>
+					<!-- Centred on the stepper, which puts it under the number rather than
+					     under the decrement button. -->
+					<small class="under-stepper" title={workerTitle}>{workerHint}</small>
 				</div>
 
 				<div class="apply">
@@ -343,6 +363,11 @@
 	.field small {
 		color: var(--muted);
 		font-size: 10.5px;
+	}
+	/* The stepper is the widest thing in this field, so centring here lands on the
+	   number. Keep the hint short or it widens the field and the centring drifts. */
+	.under-stepper {
+		text-align: center;
 	}
 	.seg {
 		display: inline-flex;

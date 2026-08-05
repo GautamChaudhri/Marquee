@@ -77,6 +77,11 @@
 		tv.seasons_total ? Math.round((tv.seasons_with_poster / tv.seasons_total) * 100) : 0
 	);
 	const tvMissing = $derived(tv.shows_missing_show_poster + tv.seasons_missing_poster);
+	/** Show art and season art rolled into one "Deployed" figure, so the television
+	 *  row has the same five columns as the film row. */
+	const tvDeployed = $derived(tv.shows_with_show_poster + tv.seasons_with_poster);
+	const tvArtTotal = $derived(tv.shows_total + tv.seasons_total);
+	const tvArtPct = $derived(tvArtTotal ? Math.round((tvDeployed / tvArtTotal) * 100) : 0);
 
 	const coverageTone = (pct: number): Tone => (pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
 
@@ -249,13 +254,7 @@
 </div>
 
 <div class="stats" style="--cols:5">
-	<PosterStatCard
-		label="Films"
-		value={summary.total_movies}
-		sub="downloaded"
-		tone="info"
-		icon="film"
-	/>
+	<PosterStatCard label="Films" value={summary.total_movies} tone="purple" icon="film" />
 	<PosterStatCard
 		label="Deployed"
 		value={summary.movies_with_poster}
@@ -270,7 +269,7 @@
 		label="Missing"
 		value={summary.movies_awaiting_run}
 		sub={summary.movies_awaiting_run ? 'awaiting a run' : 'fully covered'}
-		tone={summary.movies_awaiting_run ? 'warn' : 'good'}
+		tone={summary.movies_awaiting_run ? 'bad' : 'good'}
 		icon="alert"
 		href="/pipeline/movies?tab=run"
 		hint={`${summary.movies_awaiting_run} films missing a poster — open the Run queue`}
@@ -300,29 +299,26 @@
 	<span class="eyebrow"><Icon name="tv" size={14} /> Television</span>
 </div>
 
-<div class="stats" style="--cols:6">
+<div class="stats" style="--cols:5">
 	<PosterStatCard
 		label="Shows"
 		value={tv.shows_total}
-		sub={`${tv.shows_fully_covered} fully covered`}
-		tone="info"
+		sub={`${tv.seasons_total} seasons`}
+		tone="purple"
 		icon="tv"
 	/>
+	<!-- Show art and season art share one card so this row has the same five
+	     columns as the film row, with a bar each so neither coverage is lost. -->
 	<PosterStatCard
-		label="Show Art"
-		value={tv.shows_with_show_poster}
-		sub={`${showArtPct}% coverage`}
-		bar={showArtPct}
-		tone={coverageTone(showArtPct)}
-		icon="image"
-	/>
-	<PosterStatCard
-		label="Season Art"
-		value={tv.seasons_with_poster}
-		sub={`${seasonArtPct}% of ${tv.seasons_total} seasons`}
-		bar={seasonArtPct}
-		tone={coverageTone(seasonArtPct)}
-		icon="layers"
+		label="Deployed"
+		value={tvDeployed}
+		sub={`of ${tvArtTotal} assets`}
+		bars={[
+			{ label: 'show', value: showArtPct, tone: coverageTone(showArtPct) },
+			{ label: 'season', value: seasonArtPct, tone: coverageTone(seasonArtPct) }
+		]}
+		tone={coverageTone(tvArtPct)}
+		icon="check"
 	/>
 	<PosterStatCard
 		label="Missing"
@@ -331,7 +327,7 @@
 			{ label: 'show', value: tv.shows_missing_show_poster },
 			{ label: 'season', value: tv.seasons_missing_poster }
 		]}
-		tone={tvMissing ? 'warn' : 'good'}
+		tone={tvMissing ? 'bad' : 'good'}
 		icon="alert"
 		href="/pipeline/tv?tab=run"
 		hint={`${tvMissing} television assets missing artwork — open the Run queue`}

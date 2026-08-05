@@ -190,6 +190,8 @@ export interface OcrStatus {
 		requested: string;
 		gpu_build: boolean;
 		gpus: OcrGpu[];
+		/** What OCR_WORKERS=0 resolves to on this host; null if it could not resolve. */
+		auto_workers: number | null;
 		/** null when the request cannot be satisfied — see `error`. */
 		expected_device: string | null;
 		error: string | null;
