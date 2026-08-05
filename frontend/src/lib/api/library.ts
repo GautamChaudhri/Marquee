@@ -51,6 +51,15 @@ export function getSeries(fetch: Fetch, id: number): Promise<SeriesDetail> {
 	return apiGet<SeriesDetail>(fetch, `/library/series/${id}`);
 }
 
+/**
+ * Kick off a full library synchronization. An in-flight sync is reused rather
+ * than starting a second one, so the caller may get back an existing job.
+ */
+export function syncLibraries(fetch: Fetch): Promise<JobSubmissionResponse> {
+	if (useMocks()) throw new Error('Library sync is unavailable in mock mode');
+	return apiSend(fetch, 'POST', '/sync/all', undefined);
+}
+
 export function getSeriesPosterUrl(id: number): string {
 	return `/api/library/series/${id}/poster`;
 }

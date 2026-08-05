@@ -299,7 +299,7 @@
 			<p>Taste profile &amp; bounded preference residual</p>
 		</div>
 		<div class="scope">
-			<a class="settings-link" href="/settings?tab=taste">
+			<a class="pill quiet" href="/settings?tab=taste">
 				<Icon name="settings" size={14} /> Taste settings
 			</a>
 			<PosterLibraryToggle
@@ -719,21 +719,6 @@
 		display: flex;
 		align-items: center;
 		gap: 10px;
-	}
-	.settings-link {
-		display: inline-flex;
-		align-items: center;
-		gap: 6px;
-		padding: 6px 9px;
-		border: 1px solid var(--line);
-		border-radius: 7px;
-		color: var(--muted);
-		font-size: 11px;
-		font-weight: 650;
-	}
-	.settings-link:hover {
-		color: var(--gold);
-		border-color: var(--gold-deep);
 	}
 	.workspace-head .titles p {
 		margin: 0;

@@ -1865,11 +1865,73 @@
         "title": "ConfigUpdate",
         "type": "object"
       },
+      "ConfigurationResetPayload": {
+        "properties": {
+          "expected_version": {
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "title": "Keys",
+            "type": "array"
+          },
+          "scope": {
+            "default": "all",
+            "enum": [
+              "all",
+              "tab",
+              "section",
+              "keys"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "section": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Section"
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tab"
+          }
+        },
+        "required": [
+          "expected_version"
+        ],
+        "title": "ConfigurationResetPayload",
+        "type": "object"
+      },
       "ConfigurationUpdatePayload": {
         "properties": {
           "expected_version": {
             "title": "Expected Version",
             "type": "integer"
+          },
+          "removals": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 512,
+            "title": "Removals",
+            "type": "array"
           },
           "values": {
             "additionalProperties": true,
@@ -1878,8 +1940,7 @@
           }
         },
         "required": [
-          "expected_version",
-          "values"
+          "expected_version"
         ],
         "title": "ConfigurationUpdatePayload",
         "type": "object"
@@ -2988,6 +3049,20 @@
           "expected_version": {
             "title": "Expected Version",
             "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "pattern": ".*\\S.*",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
           "url": {
             "anyOf": [
@@ -12695,6 +12770,46 @@
           }
         },
         "summary": "Put Configuration",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/settings/config/reset": {
+      "post": {
+        "description": "Drop stored overrides so the owning model's defaults become effective.",
+        "operationId": "reset_configuration_api_settings_config_reset_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigurationResetPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reset Configuration",
         "tags": [
           "settings"
         ]

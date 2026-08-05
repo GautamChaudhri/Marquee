@@ -54,7 +54,12 @@ describe('IntegrationCard secure transport gate', () => {
 		test.removeAttribute('disabled');
 		await fireEvent.click(test);
 
-		expect(fetchSpy).not.toHaveBeenCalled();
+		// The card also reads a library count on mount, which carries no credential.
+		// What must never happen is a request to an integrations endpoint, since
+		// those are the ones that would put a secret on an insecure wire.
+		const requested = fetchSpy.mock.calls.map(([input]) => String(input));
+		expect(requested.filter((url) => url.includes('/settings/integrations'))).toEqual([]);
+		expect(requested.join(' ')).not.toContain('candidate-secret');
 		expect(credential).toHaveValue('');
 	});
 });

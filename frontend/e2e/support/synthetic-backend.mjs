@@ -517,7 +517,9 @@ const settingsValues = {
 	DATA_DIR: '/app/data',
 	MEDIA_ROOTS: ['/movies', '/television'],
 	RADARR_URL: 'http://radarr:7878',
+	RADARR_INSTANCE_NAME: 'Cinema Rack',
 	SONARR_URL: 'http://sonarr:8989',
+	SONARR_INSTANCE_NAME: 'Series Rack',
 	RADARR_PATH_PREFIX: '/movies',
 	RADARR_MEDIA_PATH: '/movies',
 	SONARR_PATH_PREFIX: '/tv',
@@ -535,6 +537,14 @@ const settingsValues = {
 	AUTH_ALLOW_LOCAL: false,
 	AUTH_BRUTE_LOCKOUT_ATTEMPTS: 8
 };
+
+const settingDefaults = { ...settingsValues, APP_NAME: 'Marquee' };
+/**
+ * Keys carrying a stored override. The real server derives `sources` from the
+ * revision document; resetting removes the key rather than writing its default
+ * back, so this set is what makes a key read "custom" instead of "default".
+ */
+const overriddenKeys = new Set();
 
 const settingEntry = (key, tab, section, level, control, applyMode = 'next_job') => ({
 	key,
@@ -567,6 +577,8 @@ const settingsCatalog = Object.fromEntries(
 			min: 1,
 			max: 1440
 		}),
+		settingEntry('RADARR_INSTANCE_NAME', 'connections', 'Services', 'standard', { kind: 'str' }),
+		settingEntry('SONARR_INSTANCE_NAME', 'connections', 'Services', 'standard', { kind: 'str' }),
 		settingEntry('WEBHOOK_DRY_RUN', 'connections', 'Synchronization', 'advanced', {
 			kind: 'bool'
 		}),
@@ -594,11 +606,11 @@ const settingsCatalog = Object.fromEntries(
 			},
 			'restart'
 		),
-		settingEntry('PREFERRED_LANG', 'pipeline', 'Runtime defaults', 'standard', {
+		settingEntry('PREFERRED_LANG', 'pipeline', 'Runtime Defaults', 'standard', {
 			kind: 'enum',
 			options: ['en', 'fr']
 		}),
-		settingEntry('WEIGHT_AESTHETIC', 'pipeline', 'Scoring weights', 'advanced', {
+		settingEntry('WEIGHT_AESTHETIC', 'pipeline', 'Scoring Weights', 'advanced', {
 			kind: 'weight',
 			min: 0,
 			max: 1,
@@ -656,14 +668,38 @@ const settingsDocument = () => ({
 	health: { status: 'valid' },
 	catalog: settingsCatalog,
 	values: settingsValues,
-	defaults: { ...settingsValues, APP_NAME: 'Marquee' },
-	sources: Object.fromEntries(Object.keys(settingsCatalog).map((key) => [key, 'default'])),
+	defaults: settingDefaults,
+	sources: Object.fromEntries(
+		Object.keys(settingsCatalog).map((key) => [key, overriddenKeys.has(key) ? 'custom' : 'default'])
+	),
 	secrets: Object.fromEntries(
 		['TMDB_READ_ACCESS_TOKEN', 'RADARR_API_KEY', 'SONARR_API_KEY'].map((key) => [
 			key,
-			{ configured: true, source: 'managed', generation: 2, updated_at: now }
+			{
+				configured: true,
+				source: key === 'TMDB_READ_ACCESS_TOKEN' ? 'environment' : 'managed',
+				generation: 2,
+				updated_at: now
+			}
 		])
 	),
+	integrations: {
+		tmdb: { configured: true, name: 'The Movie Database' },
+		radarr: {
+			configured: true,
+			name: settingsValues.RADARR_INSTANCE_NAME,
+			url_configured: true,
+			api_key_configured: true,
+			path_mapping_configured: true
+		},
+		sonarr: {
+			configured: true,
+			name: settingsValues.SONARR_INSTANCE_NAME,
+			url_configured: true,
+			api_key_configured: true,
+			path_mapping_configured: true
+		}
+	},
 	secret_store: { writable: true, reason: null },
 	deployment: {
 		version: '0.0.0-e2e',
@@ -680,8 +716,23 @@ const settingsDocument = () => ({
 			{ path: '/television', exists: true, readable: true, writable: true }
 		]
 	},
+	sync: {
+		interval_minutes: settingsValues.SYNC_INTERVAL_MINUTES,
+		cooldown_seconds: 30,
+		heal_enabled: true,
+		heal_interval_minutes: 30,
+		webhook_dry_run: settingsValues.WEBHOOK_DRY_RUN
+	},
 	writable: true
 });
+
+/** Drop overrides so the shipped default becomes effective again. */
+function applyRemovals(keys) {
+	for (const key of keys) {
+		if (!overriddenKeys.delete(key)) continue;
+		settingsValues[key] = settingDefaults[key];
+	}
+}
 
 const server = createServer((req, res) => {
 	const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
@@ -692,14 +743,91 @@ const server = createServer((req, res) => {
 		req.on('data', (chunk) => (body += chunk));
 		req.on('end', () => {
 			const payload = JSON.parse(body || '{}');
-			Object.assign(settingsValues, payload.values ?? {});
+			const values = payload.values ?? {};
+			Object.assign(settingsValues, values);
+			for (const key of Object.keys(values)) overriddenKeys.add(key);
+			applyRemovals(payload.removals ?? []);
 			settingsVersion += 1;
 			json(res, 200, {
 				configuration_version: settingsVersion,
 				etag: `synthetic-settings-${settingsVersion}`,
 				changed: true,
+				applied: [...Object.keys(values), ...(payload.removals ?? [])],
 				settings: settingsDocument()
 			});
+		});
+		return;
+	}
+	if (req.method === 'POST' && path === '/api/settings/config/reset') {
+		let body = '';
+		req.setEncoding('utf8');
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			const payload = JSON.parse(body || '{}');
+			const scope = payload.scope ?? 'all';
+			const candidates =
+				scope === 'keys'
+					? (payload.keys ?? [])
+					: Object.keys(settingsCatalog).filter((key) => {
+							if (scope === 'all') return true;
+							if (scope === 'tab') return settingsCatalog[key].tab === payload.tab;
+							return settingsCatalog[key].section === payload.section;
+						});
+			const applied = candidates.filter((key) => overriddenKeys.has(key));
+			applyRemovals(applied);
+			if (applied.length) settingsVersion += 1;
+			json(res, 200, {
+				configuration_version: settingsVersion,
+				etag: `synthetic-settings-${settingsVersion}`,
+				changed: applied.length > 0,
+				applied,
+				settings: settingsDocument()
+			});
+		});
+		return;
+	}
+	const integration = path.match(
+		/^\/api\/settings\/integrations\/(tmdb|radarr|sonarr)(?:\/(test|credential))?$/
+	);
+	if (integration && req.method !== 'GET') {
+		let body = '';
+		req.setEncoding('utf8');
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			const [, provider, action] = integration;
+			const payload = JSON.parse(body || '{}');
+			if (req.method === 'POST' && action === 'test') {
+				json(res, 200, {
+					ok: true,
+					provider,
+					status: { appName: provider === 'tmdb' ? 'TMDB' : provider, version: 'synthetic' }
+				});
+				return;
+			}
+			if (req.method === 'PUT' && !action) {
+				if (provider === 'radarr') {
+					if (payload.name) settingsValues.RADARR_INSTANCE_NAME = payload.name;
+					if (payload.url) settingsValues.RADARR_URL = payload.url;
+				}
+				if (provider === 'sonarr') {
+					if (payload.name) settingsValues.SONARR_INSTANCE_NAME = payload.name;
+					if (payload.url) settingsValues.SONARR_URL = payload.url;
+				}
+				settingsVersion += 1;
+				json(res, 200, {
+					configuration_version: settingsVersion,
+					etag: `synthetic-settings-${settingsVersion}`,
+					changed: true,
+					status: { appName: provider === 'tmdb' ? 'TMDB' : provider, version: 'synthetic' },
+					settings: settingsDocument()
+				});
+				return;
+			}
+			if (req.method === 'DELETE' && action === 'credential') {
+				json(res, 200, { cleared: true, settings: settingsDocument() });
+				return;
+			}
+			json(res, 405, { detail: 'Method not allowed' });
 		});
 		return;
 	}

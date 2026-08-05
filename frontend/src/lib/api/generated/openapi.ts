@@ -1517,6 +1517,26 @@ export interface paths {
 		patch?: never;
 		trace?: never;
 	};
+	'/api/settings/config/reset': {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		get?: never;
+		put?: never;
+		/**
+		 * Reset Configuration
+		 * @description Drop stored overrides so the owning model's defaults become effective.
+		 */
+		post: operations['reset_configuration_api_settings_config_reset_post'];
+		delete?: never;
+		options?: never;
+		head?: never;
+		patch?: never;
+		trace?: never;
+	};
 	'/api/settings/integrations/{provider}': {
 		parameters: {
 			query?: never;
@@ -2796,12 +2816,31 @@ export interface components {
 				[key: string]: unknown;
 			};
 		};
+		/** ConfigurationResetPayload */
+		ConfigurationResetPayload: {
+			/** Expected Version */
+			expected_version: number;
+			/** Keys */
+			keys?: string[];
+			/**
+			 * Scope
+			 * @default all
+			 * @enum {string}
+			 */
+			scope: 'all' | 'tab' | 'section' | 'keys';
+			/** Section */
+			section?: string | null;
+			/** Tab */
+			tab?: string | null;
+		};
 		/** ConfigurationUpdatePayload */
 		ConfigurationUpdatePayload: {
 			/** Expected Version */
 			expected_version: number;
+			/** Removals */
+			removals?: string[];
 			/** Values */
-			values: {
+			values?: {
 				[key: string]: unknown;
 			};
 		};
@@ -3177,6 +3216,8 @@ export interface components {
 			expected_secret_generation: number;
 			/** Expected Version */
 			expected_version: number;
+			/** Name */
+			name?: string | null;
 			/** Url */
 			url?: string | null;
 		};
@@ -7498,6 +7539,39 @@ export interface operations {
 		requestBody: {
 			content: {
 				'application/json': components['schemas']['ConfigurationUpdatePayload'];
+			};
+		};
+		responses: {
+			/** @description Successful Response */
+			200: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': unknown;
+				};
+			};
+			/** @description Validation Error */
+			422: {
+				headers: {
+					[name: string]: unknown;
+				};
+				content: {
+					'application/json': components['schemas']['HTTPValidationError'];
+				};
+			};
+		};
+	};
+	reset_configuration_api_settings_config_reset_post: {
+		parameters: {
+			query?: never;
+			header?: never;
+			path?: never;
+			cookie?: never;
+		};
+		requestBody: {
+			content: {
+				'application/json': components['schemas']['ConfigurationResetPayload'];
 			};
 		};
 		responses: {

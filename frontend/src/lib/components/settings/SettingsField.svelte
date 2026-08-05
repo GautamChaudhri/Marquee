@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Icon from '$lib/components/Icon.svelte';
+	import SliderControl from './SliderControl.svelte';
 	import type { SettingsCatalogEntry } from '$lib/api/types';
 
 	let {
@@ -24,6 +26,42 @@
 	const inputId = $derived(`setting-${entry.key.toLowerCase().replaceAll('_', '-')}`);
 	const locked = $derived(disabled || !entry.editable || entry.storage === 'deployment');
 
+	/**
+	 * A numeric knob only earns a slider when the catalog gives it real bounds.
+	 * A range input with no min/max silently becomes 0–100, which would quietly
+	 * mangle any knob whose true range is wider or finer.
+	 */
+	const bounded = $derived.by(() => {
+		if (!['weight', 'float', 'int'].includes(entry.control.kind)) return null;
+		const { min, max } = entry.control;
+		if (typeof min !== 'number' || typeof max !== 'number' || max <= min) return null;
+		return { min, max, step: entry.control.step ?? (entry.control.kind === 'int' ? 1 : 0.01) };
+	});
+
+	/**
+	 * Most pipeline knobs document themselves in source comments rather than
+	 * Field(description=...), so the old fallback rendered the de-cased key —
+	 * "k neighbors" under a "K Neighbors" label. Say nothing instead of that.
+	 */
+	const description = $derived.by(() => {
+		const text = entry.description ?? entry.control.help ?? '';
+		const trimmed = text.trim();
+		if (!trimmed) return null;
+		const normalize = (value: string) =>
+			value
+				.toLowerCase()
+				.replaceAll(/[\s_]+/g, ' ')
+				.trim();
+		return normalize(trimmed) === normalize(entry.title) ? null : trimmed;
+	});
+
+	// Only a stored override can be dropped. A key already sitting on its default
+	// has nothing to reset, so offering the action there would be a no-op button.
+	const overridden = $derived(source === 'custom' || source === 'revision');
+	const resettable = $derived(
+		entry.storage === 'revision' && defaultValue !== undefined && (dirty || overridden)
+	);
+
 	function numberValue(raw: string): number {
 		return entry.control.kind === 'int' ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
 	}
@@ -41,34 +79,35 @@
 			.replace(/\b\w/g, (letter) => letter.toUpperCase());
 	}
 
-	function sourceLabel(raw: string): string {
-		if (entry.storage === 'deployment') return 'Deployment';
-		if (raw === 'custom' || raw === 'revision') return 'Custom';
-		if (raw === 'environment') return 'Legacy environment';
-		return 'Default';
-	}
-
-	function applyLabel(): string {
-		return {
-			hot: 'Live',
-			next_job: 'Next job',
-			restart: 'Restart required',
-			deployment: 'Deployment only'
-		}[entry.apply_mode];
-	}
+	/**
+	 * Badges only earn their place when they say something the row does not already
+	 * show. "Default" labels the status quo, "Custom" duplicates the reset button
+	 * that appears alongside it, and `next_job` is the apply mode of nearly every
+	 * key in the catalog, so it printed on nearly every row while carrying no
+	 * information. What survives is the genuinely exceptional: a key that needs a
+	 * restart, one still being read from a deprecated environment variable, and one
+	 * whose value is private.
+	 */
+	const badges = $derived.by(() => {
+		const marks: { text: string; tone?: 'warn' }[] = [];
+		if (entry.apply_mode === 'restart') marks.push({ text: 'Restart required', tone: 'warn' });
+		if (source === 'environment') marks.push({ text: 'Legacy environment' });
+		if (entry.sensitivity === 'private') marks.push({ text: 'Private' });
+		return marks;
+	});
 </script>
 
 <div class:dirty class:locked class="setting-row">
 	<div class="setting-copy">
 		<label for={inputId}>{entry.title}</label>
-		<p>{entry.description ?? entry.control.help ?? entry.key.replaceAll('_', ' ').toLowerCase()}</p>
-		<div class="setting-meta">
-			<span class:custom={source === 'custom' || source === 'revision'}>{sourceLabel(source)}</span>
-			<span class:restart={entry.apply_mode === 'restart'}>
-				{applyLabel()}
-			</span>
-			{#if entry.sensitivity === 'private'}<span>private</span>{/if}
-		</div>
+		{#if description}<p>{description}</p>{/if}
+		{#if badges.length}
+			<div class="setting-meta">
+				{#each badges as badge (badge.text)}
+					<span class:warn={badge.tone === 'warn'}>{badge.text}</span>
+				{/each}
+			</div>
+		{/if}
 	</div>
 
 	<div class="setting-control">
@@ -96,6 +135,18 @@
 					<option value={String(option)}>{optionLabel(option)}</option>
 				{/each}
 			</select>
+		{:else if bounded}
+			<SliderControl
+				id={inputId}
+				label={entry.title}
+				value={Number(value ?? 0)}
+				min={bounded.min}
+				max={bounded.max}
+				step={bounded.step}
+				integer={entry.control.kind === 'int'}
+				disabled={locked}
+				{onChange}
+			/>
 		{:else if ['weight', 'float', 'int'].includes(entry.control.kind)}
 			<input
 				id={inputId}
@@ -125,8 +176,17 @@
 				oninput={(event) => onChange((event.currentTarget as HTMLInputElement).value)}
 			/>
 		{/if}
-		{#if entry.editable && defaultValue !== undefined}
-			<button type="button" class="reset" {disabled} onclick={onReset}>Reset</button>
+		{#if resettable}
+			<button
+				type="button"
+				class="reset"
+				{disabled}
+				onclick={onReset}
+				title="Drop the stored override and use the server default"
+			>
+				<Icon name="refresh" size={12} />
+				Reset
+			</button>
 		{/if}
 	</div>
 </div>
@@ -134,7 +194,7 @@
 <style>
 	.setting-row {
 		display: grid;
-		grid-template-columns: minmax(220px, 1fr) minmax(180px, 0.8fr);
+		grid-template-columns: minmax(200px, 1fr) minmax(240px, 0.9fr);
 		gap: 24px;
 		align-items: center;
 		padding: 16px 18px;
@@ -179,26 +239,31 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 	}
-	.setting-meta span.custom {
-		color: var(--gold-copy);
-		border-color: var(--gold-deep);
-	}
-	.setting-meta span.restart {
+	.setting-meta span.warn {
 		color: var(--warn-copy);
+		border-color: color-mix(in srgb, var(--warn) 32%, var(--line2));
 	}
 	.setting-control {
 		display: flex;
 		justify-content: flex-end;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 8px;
+		min-width: 0;
+	}
+	/* A slider needs the whole column to be worth dragging, so it pushes Reset
+	   onto its own line rather than competing with it for width. */
+	.setting-control :global(.slider-control) {
+		flex: 1 1 200px;
 	}
 	.setting-control input[type='text'],
 	.setting-control input[type='number'],
 	.setting-control select,
 	.setting-control textarea {
 		width: min(100%, 300px);
+		min-width: 0;
 		border: 1px solid var(--line2);
-		border-radius: 7px;
+		border-radius: var(--radius-sm);
 		background: var(--panel2);
 		color: var(--text);
 		font: 12px/1.4 var(--font-mono);
@@ -221,16 +286,27 @@
 		font: 11px/1.4 var(--font-mono);
 		text-align: right;
 	}
+	/* With the Custom badge gone this button is the only sign that a row has moved
+	   off its default, so it has to read as a control rather than as fine print. */
 	.reset {
-		border: 0;
-		background: transparent;
-		color: var(--muted);
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
+		display: inline-flex;
+		flex: 0 0 auto;
+		align-items: center;
+		gap: 5px;
+		padding: 5px 10px;
+		border: 1px solid var(--gold-deep);
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, var(--gold) 9%, transparent);
+		color: var(--gold-copy);
+		font-size: 11px;
+		font-weight: 650;
 	}
 	.reset:hover:not(:disabled) {
-		color: var(--gold);
+		background: color-mix(in srgb, var(--gold) 18%, transparent);
+	}
+	.reset:disabled {
+		cursor: not-allowed;
+		opacity: 0.5;
 	}
 	.switch {
 		position: relative;

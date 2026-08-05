@@ -38,7 +38,27 @@ export type SettingsPutResponse = {
 	etag: string;
 	changed: boolean;
 	applied?: string[];
+	status?: IntegrationStatusFacts;
 	settings: RuntimeSettings;
+};
+export type ConfigurationResetPayload = {
+	expected_version: number;
+	scope: 'all' | 'tab' | 'section' | 'keys';
+	tab?: string;
+	section?: string;
+	keys?: string[];
+};
+/** Whitelisted identifying facts the server reads back from a service probe. */
+export type IntegrationStatusFacts = {
+	version?: string;
+	appName?: string;
+	instanceName?: string;
+	osName?: string;
+	osVersion?: string;
+	runtimeVersion?: string;
+	isDocker?: boolean;
+	startTime?: string;
+	imageBaseUrl?: string;
 };
 type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
 
@@ -78,15 +98,17 @@ function mockSettings(version = 1): RuntimeSettings {
 			auth: { api_key_configured: false, allow_local: true }
 		},
 		integrations: {
-			tmdb: { configured: true },
+			tmdb: { configured: true, name: 'The Movie Database' },
 			radarr: {
 				configured: true,
+				name: 'Radarr',
 				url_configured: true,
 				api_key_configured: true,
 				path_mapping_configured: false
 			},
 			sonarr: {
 				configured: true,
+				name: 'Sonarr',
 				url_configured: true,
 				api_key_configured: true,
 				path_mapping_configured: false
@@ -145,21 +167,44 @@ export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 export function putConfiguration(
 	fetch: Fetch,
 	values: Record<string, unknown>,
-	expectedVersion: number
+	expectedVersion: number,
+	removals: string[] = []
 ): Promise<SettingsPutResponse> {
 	if (useMocks()) {
 		return Promise.resolve({
 			configuration_version: expectedVersion + 1,
 			etag: `"configuration-${expectedVersion + 1}"`,
-			changed: Object.keys(values).length > 0,
-			applied: Object.keys(values),
+			changed: Object.keys(values).length + removals.length > 0,
+			applied: [...Object.keys(values), ...removals],
 			settings: mockSettings(expectedVersion + 1)
 		});
 	}
 	return apiSend<SettingsPutResponse>(fetch, 'PUT', '/settings/config', {
 		expected_version: expectedVersion,
-		values
+		values,
+		removals
 	});
+}
+
+/**
+ * Drop stored overrides so the server's own defaults apply again. This is not
+ * the same as writing the default value, which would leave every key marked as
+ * a custom override.
+ */
+export function resetConfiguration(
+	fetch: Fetch,
+	payload: ConfigurationResetPayload
+): Promise<SettingsPutResponse> {
+	if (useMocks()) {
+		return Promise.resolve({
+			configuration_version: payload.expected_version + 1,
+			etag: `"configuration-${payload.expected_version + 1}"`,
+			changed: true,
+			applied: payload.keys ?? [],
+			settings: mockSettings(payload.expected_version + 1)
+		});
+	}
+	return apiSend<SettingsPutResponse>(fetch, 'POST', '/settings/config/reset', payload);
 }
 
 export function putSettings(
@@ -186,7 +231,7 @@ export function testIntegration(
 	fetch: Fetch,
 	provider: IntegrationProvider,
 	payload: { url?: string; credential?: string }
-): Promise<{ ok: boolean; provider: string }> {
+): Promise<{ ok: boolean; provider: string; status?: IntegrationStatusFacts }> {
 	return apiSend(fetch, 'POST', `/settings/integrations/${provider}/test`, payload);
 }
 
@@ -196,6 +241,7 @@ export function putIntegration(
 	payload: {
 		expected_version: number;
 		expected_secret_generation: number;
+		name?: string;
 		url?: string;
 		credential?: string;
 	}

@@ -24,13 +24,18 @@ orphan-cache cleanup, poster reset, and debug-capture cleanup remain contextual 
 Pipeline dashboard. Taste artifact generation and management remain on Taste, which links to
 Settings → Taste.
 
+Connections is a single full-width service registry. It exposes one named Radarr and one named
+Sonarr slot, with `RADARR_INSTANCE_NAME` and `SONARR_INSTANCE_NAME` stored as public revision
+metadata. TMDB remains visibly distinct: a Marquee-supplied credential is marked as built-in, while
+the same edit flow permits an explicit encrypted custom-token replacement.
+
 ## Complete catalog
 
 `CONFIGURATION_CATALOG` is generated from every modeled `Settings` and `PipelineSettings` field.
 Coverage tests require exact equality, so adding a Python setting without classifying it fails CI.
-The implementation currently classifies 242 fields (129 application plus 113 pipeline):
+The implementation currently classifies 244 fields (131 application plus 113 pipeline):
 
-- 203 revision-managed
+- 205 revision-managed
 - 3 encrypted integration credentials
 - 28 deployment/bootstrap-owned
 - 8 hidden Text Profile compatibility invariants
@@ -53,7 +58,7 @@ does not edit Compose files, mount host paths, use the Docker socket, or restart
 - `POST /api/settings/integrations/{provider}/test` tests stored or candidate details without a
   write.
 - `PUT /api/settings/integrations/{provider}` tests first, then atomically updates the public URL
-  and optional credential replacement.
+  and instance name plus an optional credential replacement.
 - `DELETE /api/settings/integrations/{provider}/credential` writes an explicit tombstone so a
   cleared managed credential cannot fall back to a legacy environment value.
 

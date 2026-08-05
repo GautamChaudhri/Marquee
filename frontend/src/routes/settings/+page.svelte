@@ -1,21 +1,15 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { SvelteMap } from 'svelte/reactivity';
+	import { onMount, tick } from 'svelte';
+	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
 	import { beforeNavigate } from '$app/navigation';
 	import Icon from '$lib/components/Icon.svelte';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
-	import IntegrationCard from '$lib/components/settings/IntegrationCard.svelte';
+	import ConnectionRegistry from '$lib/components/settings/ConnectionRegistry.svelte';
 	import PathMappingsCard from '$lib/components/settings/PathMappingsCard.svelte';
 	import PosterNamingCard from '$lib/components/settings/PosterNamingCard.svelte';
 	import SettingsField from '$lib/components/settings/SettingsField.svelte';
-	import { getSettings, putConfiguration } from '$lib/api/system';
+	import { getSettings, putConfiguration, resetConfiguration } from '$lib/api/system';
 	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
-	import type {
-		RuntimeSettings,
-		SettingsCatalogEntry,
-		SettingsLevel,
-		SettingsTab
-	} from '$lib/api/types';
+	import type { RuntimeSettings, SettingsCatalogEntry, SettingsTab } from '$lib/api/types';
 	import { filmMode, libraryPosterSize, televisionMode, theme } from '$lib/theme';
 	import { SETTINGS_TABS } from '$lib/settings/navigation';
 	import { toast } from '$lib/toast';
@@ -42,129 +36,144 @@
 	// svelte-ignore state_referenced_locally
 	let activeTab = $state<SettingsTab>(data.initialTab);
 	// svelte-ignore state_referenced_locally
-	let activeLevel = $state<SettingsLevel>(
-		data.initialLevel === 'advanced' &&
-			data.settings &&
-			Object.values(data.settings.catalog).some(
-				(entry) => entry.visible && entry.tab === data.initialTab && entry.level === 'advanced'
-			)
-			? 'advanced'
-			: 'standard'
-	);
+	let advancedOpen = $state(data.initialLevel === 'advanced');
 	let drafts = $state<Record<string, unknown>>({});
+	/** Keys staged to be dropped from the revision, so their default applies again. */
+	let stagedResets = new SvelteSet<string>();
 	let saving = $state(false);
+	let resetting = $state(false);
+	let resetArmed = $state(false);
 	let conflictNote = $state<string | null>(null);
 	let secureContext = $state(false);
+	let advancedRegion = $state<HTMLElement | null>(null);
 
 	const allEntries = $derived(
 		settings ? Object.values(settings.catalog).filter((entry) => entry.visible) : []
 	);
-	const hasAdvanced = $derived(
-		allEntries.some((entry) => entry.tab === activeTab && entry.level === 'advanced')
-	);
-	const dirtyKeys = $derived(Object.keys(drafts));
+	const dirtyKeys = $derived([...Object.keys(drafts), ...stagedResets]);
 	const dirtyCount = $derived(dirtyKeys.length);
+	/* Rows read their dirty flag from this rather than probing `drafts` directly:
+	   Object.hasOwn goes through the state proxy's getOwnPropertyDescriptor trap,
+	   which registers no dependency, so editing a value moved the save-bar count
+	   but never lit up the row that changed. */
+	const dirtyKeySet = $derived(new Set(dirtyKeys));
 	const tabDirtyCount = $derived(
 		dirtyKeys.filter((key) => settings?.catalog[key]?.tab === activeTab).length
 	);
-	const hasDedicatedContent = $derived(
-		activeLevel === 'standard' && ['connections', 'media', 'posters'].includes(activeTab)
-	);
+	const hasDedicatedContent = $derived(['connections', 'media', 'posters'].includes(activeTab));
 
-	const activeSections = $derived.by(() => {
+	// Keys owned by a bespoke card on this tab, so the catalog grid does not render
+	// a second, duller control for the same setting.
+	const CLAIMED_KEYS: Partial<Record<SettingsTab, string[]>> = {
+		general: ['MARQUEE_ENVIRONMENT', 'MARQUEE_PROCESS_ROLE', 'HOST', 'PORT'],
+		connections: ['RADARR_URL', 'RADARR_INSTANCE_NAME', 'SONARR_URL', 'SONARR_INSTANCE_NAME'],
+		media: [
+			'MEDIA_ROOTS',
+			'RADARR_PATH_PREFIX',
+			'RADARR_MEDIA_PATH',
+			'SONARR_PATH_PREFIX',
+			'SONARR_MEDIA_PATH'
+		],
+		posters: ['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT']
+	};
+
+	function sectionsFor(level: 'standard' | 'advanced') {
+		const claimed = CLAIMED_KEYS[activeTab] ?? [];
 		const grouped = new SvelteMap<string, SettingsCatalogEntry[]>();
 		for (const entry of allEntries) {
-			if (entry.tab !== activeTab || entry.level !== activeLevel) continue;
+			if (entry.tab !== activeTab || entry.level !== level) continue;
 			if (entry.storage === 'secret_store') continue;
-			if (
-				activeTab === 'general' &&
-				['MARQUEE_ENVIRONMENT', 'MARQUEE_PROCESS_ROLE', 'HOST', 'PORT'].includes(entry.key)
-			)
-				continue;
-			if (activeTab === 'connections' && ['RADARR_URL', 'SONARR_URL'].includes(entry.key)) continue;
-			if (
-				activeTab === 'media' &&
-				[
-					'MEDIA_ROOTS',
-					'RADARR_PATH_PREFIX',
-					'RADARR_MEDIA_PATH',
-					'SONARR_PATH_PREFIX',
-					'SONARR_MEDIA_PATH'
-				].includes(entry.key)
-			)
-				continue;
-			if (
-				activeTab === 'posters' &&
-				['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT'].includes(entry.key)
-			)
-				continue;
+			if (claimed.includes(entry.key)) continue;
 			const rows = grouped.get(entry.section) ?? [];
 			rows.push(entry);
 			grouped.set(entry.section, rows);
 		}
 		return [...grouped.entries()].map(([name, entries]) => ({ name, entries }));
-	});
+	}
+
+	const standardSections = $derived(sectionsFor('standard'));
+	const advancedSections = $derived(sectionsFor('advanced'));
+	const advancedCount = $derived(
+		advancedSections.reduce((total, section) => total + section.entries.length, 0)
+	);
+	const resettableCount = $derived(
+		allEntries.filter(
+			(entry) =>
+				entry.storage === 'revision' &&
+				(settings?.sources[entry.key] === 'custom' || settings?.sources[entry.key] === 'revision')
+		).length
+	);
 
 	function same(left: unknown, right: unknown): boolean {
 		return JSON.stringify(left) === JSON.stringify(right);
 	}
 
 	function valueFor(key: string): unknown {
-		return Object.hasOwn(drafts, key) ? drafts[key] : settings?.values[key];
+		// `key in drafts` goes through the state proxy's has() trap, which subscribes.
+		// Object.hasOwn does not, so a draft could change without redrawing the row.
+		if (key in drafts) return drafts[key];
+		// A staged reset previews the default it will restore.
+		if (stagedResets.has(key)) return settings?.defaults[key];
+		return settings?.values[key];
 	}
 
 	function changeValue(key: string, value: unknown) {
 		if (!settings) return;
+		stagedResets.delete(key);
 		if (same(value, settings.values[key])) delete drafts[key];
 		else drafts[key] = value;
 		conflictNote = null;
 	}
 
+	/**
+	 * Stage a reset rather than writing the default value. Writing it would store
+	 * the default as an override, so the key would read "Custom" forever and stop
+	 * tracking any future change to the shipped default.
+	 */
 	function resetValue(entry: SettingsCatalogEntry) {
-		if (!settings || !Object.hasOwn(settings.defaults, entry.key)) return;
-		changeValue(entry.key, settings.defaults[entry.key]);
-	}
-
-	function resetTabToDefaults() {
-		if (!settings) return;
-		for (const entry of allEntries) {
-			if (
-				entry.tab === activeTab &&
-				entry.storage === 'revision' &&
-				Object.hasOwn(settings.defaults, entry.key)
-			) {
-				changeValue(entry.key, settings.defaults[entry.key]);
-			}
-		}
+		if (!settings || entry.storage !== 'revision') return;
+		delete drafts[entry.key];
+		const source = settings.sources[entry.key];
+		if (source === 'custom' || source === 'revision') stagedResets.add(entry.key);
+		conflictNote = null;
 	}
 
 	function resetKeys(keys: string[]) {
 		if (!settings) return;
 		for (const key of keys) {
-			if (Object.hasOwn(settings.defaults, key)) changeValue(key, settings.defaults[key]);
+			const entry = settings.catalog[key];
+			if (entry) resetValue(entry);
 		}
+	}
+
+	function discardDraft() {
+		drafts = {};
+		stagedResets.clear();
 	}
 
 	function updateQuery() {
 		if (typeof window === 'undefined') return;
 		const url = new URL(window.location.href);
 		url.searchParams.set('tab', activeTab);
-		if (activeLevel === 'advanced') url.searchParams.set('level', 'advanced');
+		// A tab with nothing advanced has no advanced view to link to, so the URL
+		// never claims one — otherwise the link would open to nothing.
+		if (advancedOpen && advancedCount) url.searchParams.set('level', 'advanced');
 		else url.searchParams.delete('level');
 		window.history.replaceState(window.history.state, '', url);
 	}
 
 	function selectTab(tab: SettingsTab) {
 		activeTab = tab;
-		if (!allEntries.some((entry) => entry.tab === tab && entry.level === 'advanced')) {
-			activeLevel = 'standard';
-		}
+		resetArmed = false;
 		updateQuery();
 	}
 
-	function selectLevel(level: SettingsLevel) {
-		activeLevel = level;
+	async function toggleAdvanced() {
+		advancedOpen = !advancedOpen;
 		updateQuery();
+		if (!advancedOpen) return;
+		await tick();
+		advancedRegion?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
 
 	function navigateTabs(event: KeyboardEvent) {
@@ -185,38 +194,71 @@
 		});
 	}
 
+	/** Refetch after a lost optimistic race, keeping the draft so nothing is typed twice. */
+	async function absorbConflict(previous: Record<string, unknown>) {
+		const fresh = await getSettings(fetch);
+		const changedElsewhere = Object.keys(fresh.values).filter(
+			(key) => !same(previous[key], fresh.values[key])
+		);
+		settings = fresh;
+		conflictNote = changedElsewhere.length
+			? `${CONFIGURATION_CONFLICT_MESSAGE} Changed elsewhere: ${changedElsewhere
+					.slice(0, 5)
+					.map((key) => fresh.catalog[key]?.title ?? key)
+					.join(', ')}${changedElsewhere.length > 5 ? '…' : ''}`
+			: CONFIGURATION_CONFLICT_MESSAGE;
+		toast('Newer settings loaded; your draft is still here', 'info');
+	}
+
 	async function save() {
 		if (!settings || !dirtyCount || saving) return;
 		saving = true;
 		conflictNote = null;
 		try {
-			const result = await putConfiguration(fetch, { ...drafts }, settings.configuration_version);
+			// Writes and resets travel together so the whole draft lands as one revision.
+			const result = await putConfiguration(fetch, { ...drafts }, settings.configuration_version, [
+				...stagedResets
+			]);
 			settings = result.settings;
-			drafts = {};
+			discardDraft();
 			toast(
 				result.changed ? 'Settings saved' : 'No settings changed',
 				result.changed ? 'good' : 'info'
 			);
 		} catch (error) {
-			if (isConfigurationConflict(error)) {
-				const previous = settings.values;
-				const fresh = await getSettings(fetch);
-				const changedElsewhere = Object.keys(fresh.values).filter(
-					(key) => !same(previous[key], fresh.values[key])
-				);
-				settings = fresh;
-				conflictNote = changedElsewhere.length
-					? `${CONFIGURATION_CONFLICT_MESSAGE} Changed elsewhere: ${changedElsewhere
-							.slice(0, 5)
-							.map((key) => fresh.catalog[key]?.title ?? key)
-							.join(', ')}${changedElsewhere.length > 5 ? '…' : ''}`
-					: CONFIGURATION_CONFLICT_MESSAGE;
-				toast('Newer settings loaded; your draft is still here', 'info');
-			} else {
-				toast(error instanceof Error ? error.message : 'Could not save settings', 'bad');
-			}
+			if (isConfigurationConflict(error)) await absorbConflict(settings.values);
+			else toast(error instanceof Error ? error.message : 'Could not save settings', 'bad');
 		} finally {
 			saving = false;
+		}
+	}
+
+	/** Drop stored overrides server-side. Applies immediately — it is not staged. */
+	async function applyReset(scope: 'all' | 'tab') {
+		if (!settings || resetting) return;
+		resetting = true;
+		conflictNote = null;
+		try {
+			const result = await resetConfiguration(fetch, {
+				expected_version: settings.configuration_version,
+				scope,
+				...(scope === 'tab' ? { tab: activeTab } : {})
+			});
+			settings = result.settings;
+			discardDraft();
+			resetArmed = false;
+			const count = result.applied?.length ?? 0;
+			toast(
+				count
+					? `${count} ${count === 1 ? 'setting' : 'settings'} restored to defaults`
+					: 'Everything was already on its default',
+				count ? 'good' : 'info'
+			);
+		} catch (error) {
+			if (isConfigurationConflict(error)) await absorbConflict(settings.values);
+			else toast(error instanceof Error ? error.message : 'Could not reset settings', 'bad');
+		} finally {
+			resetting = false;
 		}
 	}
 
@@ -232,7 +274,15 @@
 	}
 
 	onMount(() => {
-		if (activeLevel !== data.initialLevel) updateQuery();
+		// A ?level=advanced deep link lands with the disclosure already open; bring
+		// it into view so the link points at something the reader can see. If the
+		// tab has no advanced entries, drop the claim from the URL instead.
+		if (advancedOpen && advancedCount) {
+			tick().then(() => advancedRegion?.scrollIntoView({ block: 'start' }));
+		} else if (advancedOpen) {
+			advancedOpen = false;
+			updateQuery();
+		}
 		secureContext =
 			window.isSecureContext || ['localhost', '127.0.0.1', '::1'].includes(location.hostname);
 		const unload = (event: BeforeUnloadEvent) => {
@@ -249,15 +299,55 @@
 	});
 </script>
 
-<svelte:head>
-	<title>Settings — Marquee</title>
-</svelte:head>
+<!-- Standard and advanced render the same grid; only the entry set differs. -->
+{#snippet cardGrid(
+	sections: { name: string; entries: SettingsCatalogEntry[] }[],
+	lead: boolean,
+	advanced = false
+)}
+	{#if settings && sections.length}
+		<div class="cards-grid" class:after-lead={lead}>
+			{#each sections as section (section.name)}
+				<section class="settings-card">
+					<header>
+						<Icon
+							name={activeTab === 'posters'
+								? 'image'
+								: (tabs.find((tab) => tab.id === activeTab)?.icon ?? 'settings')}
+							size={15}
+						/>
+						<h3>{section.name}</h3>
+						<!-- Several sections carry both standard and advanced keys, so without
+						     this the same card title would appear twice on one page. -->
+						<span
+							>{advanced ? 'Advanced · ' : ''}{section.entries.length}
+							{section.entries.length === 1 ? 'setting' : 'settings'}</span
+						>
+					</header>
+					<div class="setting-list">
+						{#each section.entries as entry (entry.key)}
+							<SettingsField
+								{entry}
+								value={valueFor(entry.key)}
+								defaultValue={settings.defaults[entry.key]}
+								source={settings.sources[entry.key] ?? 'default'}
+								dirty={dirtyKeySet.has(entry.key)}
+								disabled={!settings.writable || saving || resetting}
+								onChange={(value) => changeValue(entry.key, value)}
+								onReset={() => resetValue(entry)}
+							/>
+						{/each}
+					</div>
+				</section>
+			{/each}
+		</div>
+	{/if}
+{/snippet}
 
 <div class="settings-page">
-	<SectionHeader
-		title="Settings"
-		subtitle="One control desk for Marquee, its poster workflow, and connected services."
-	/>
+	<!-- The visible "Settings" title lives in the top bar, but the document still
+	     needs an h1 above the per-tab h2s. Same pattern as /taste. -->
+	<h1 class="sr-only">Settings</h1>
 
 	<nav class="tab-rail" aria-label="Settings sections">
 		<div
@@ -294,31 +384,28 @@
 			<p>{loadError ?? 'Marquee did not return a settings document.'}</p>
 		</section>
 	{:else}
-		<div class="workspace-head">
-			<div>
+		<div class="tab-head">
+			<div class="tab-title">
 				<span class="kicker">{tabs.find((tab) => tab.id === activeTab)?.hint}</span>
 				<h2>{tabs.find((tab) => tab.id === activeTab)?.label}</h2>
 			</div>
-			{#if hasAdvanced}
-				<div class="level-switch" aria-label="Settings detail level">
+			<div class="tab-head-actions">
+				{#if resettableCount}
+					<!-- A scoped reset writes straight through, so it would silently throw
+					     away an unsaved draft. Make the user land the draft first. -->
 					<button
 						type="button"
-						class:active={activeLevel === 'standard'}
-						aria-pressed={activeLevel === 'standard'}
-						onclick={() => selectLevel('standard')}
+						class="pill ghost"
+						onclick={() => applyReset('tab')}
+						disabled={resetting || !settings.writable || dirtyCount > 0}
+						title={dirtyCount
+							? 'Save or discard your draft before resetting'
+							: 'Restore this tab to its defaults'}
 					>
-						Standard
+						Reset this tab
 					</button>
-					<button
-						type="button"
-						class:active={activeLevel === 'advanced'}
-						aria-pressed={activeLevel === 'advanced'}
-						onclick={() => selectLevel('advanced')}
-					>
-						Advanced
-					</button>
-				</div>
-			{/if}
+				{/if}
+			</div>
 		</div>
 
 		{#if conflictNote}
@@ -333,7 +420,7 @@
 			</div>
 		{/if}
 
-		{#if activeTab === 'general' && activeLevel === 'standard'}
+		{#if activeTab === 'general'}
 			<div class="cards-grid lead-cards">
 				<section class="settings-card preferences-card">
 					<header>
@@ -388,20 +475,11 @@
 			</div>
 		{/if}
 
-		{#if activeTab === 'connections' && activeLevel === 'standard'}
-			<div class="integration-grid">
-				{#each ['tmdb', 'radarr', 'sonarr'] as provider (provider)}
-					<IntegrationCard
-						provider={provider as 'tmdb' | 'radarr' | 'sonarr'}
-						{settings}
-						{secureContext}
-						onSettings={acceptIntegrationSettings}
-					/>
-				{/each}
-			</div>
+		{#if activeTab === 'connections'}
+			<ConnectionRegistry {settings} {secureContext} onSettings={acceptIntegrationSettings} />
 		{/if}
 
-		{#if activeTab === 'media' && activeLevel === 'standard'}
+		{#if activeTab === 'media'}
 			<div class="notice info">
 				<Icon name="film" size={15} /> Logical roots and Arr path mappings are editable. Host bind mounts
 				remain deployment-owned; Marquee never changes Docker mounts.
@@ -418,7 +496,7 @@
 					'RADARR_MEDIA_PATH',
 					'SONARR_PATH_PREFIX',
 					'SONARR_MEDIA_PATH'
-				].some((key) => Object.hasOwn(drafts, key))}
+				].some((key) => key in drafts)}
 				disabled={!settings.writable || saving}
 				onChange={changeValue}
 				onReset={() =>
@@ -445,13 +523,13 @@
 			{/if}
 		{/if}
 
-		{#if activeTab === 'posters' && activeLevel === 'standard'}
+		{#if activeTab === 'posters'}
 			<PosterNamingCard
 				movie={String(valueFor('MOVIE_POSTER_FORMAT') ?? 'poster.jpg')}
 				series={String(valueFor('SERIES_POSTER_FORMAT') ?? 'show.jpg')}
 				season={String(valueFor('SEASON_POSTER_FORMAT') ?? 'season{season:02d}.jpg')}
-				dirty={['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT'].some((key) =>
-					Object.hasOwn(drafts, key)
+				dirty={['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT'].some(
+					(key) => key in drafts
 				)}
 				disabled={!settings.writable || saving}
 				onChange={changeValue}
@@ -460,14 +538,14 @@
 			/>
 		{/if}
 
-		{#if activeTab === 'taste' && activeLevel === 'standard'}
+		{#if activeTab === 'taste'}
 			<div class="notice info">
 				<Icon name="taste" size={15} /> These are server defaults and learning thresholds. Profile generation,
 				maps, enrichment, and model operations remain in <a href="/taste">Taste operations</a>.
 			</div>
 		{/if}
 
-		{#if activeTab === 'access' && activeLevel === 'standard'}
+		{#if activeTab === 'access'}
 			<div class="security-grid">
 				<section class:warning={!settings.deployment.api_key_configured} class="posture-card">
 					<span>API authentication</span>
@@ -496,44 +574,73 @@
 			</div>
 		{/if}
 
-		<div class="cards-grid" class:after-lead={activeTab === 'general'}>
-			{#each activeSections as section (section.name)}
-				<section class="settings-card">
-					<header>
-						<Icon
-							name={activeTab === 'posters'
-								? 'image'
-								: (tabs.find((tab) => tab.id === activeTab)?.icon ?? 'settings')}
-							size={15}
-						/>
-						<h3>{section.name}</h3>
-						<span
-							>{section.entries.length}
-							{section.entries.length === 1 ? 'setting' : 'settings'}</span
-						>
-					</header>
-					<div class="setting-list">
-						{#each section.entries as entry (entry.key)}
-							<SettingsField
-								{entry}
-								value={valueFor(entry.key)}
-								defaultValue={settings.defaults[entry.key]}
-								source={settings.sources[entry.key] ?? 'default'}
-								dirty={Object.hasOwn(drafts, entry.key)}
-								disabled={!settings.writable || saving}
-								onChange={(value) => changeValue(entry.key, value)}
-								onReset={() => resetValue(entry)}
-							/>
-						{/each}
-					</div>
-				</section>
-			{/each}
-		</div>
+		{@render cardGrid(standardSections, activeTab === 'general')}
 
-		{#if activeSections.length === 0 && !hasDedicatedContent}
+		{#if standardSections.length === 0 && !hasDedicatedContent && !advancedCount}
 			<section class="empty-state compact">
-				<h2>No {activeLevel} settings</h2>
+				<h2>No settings here</h2>
 				<p>This section contains status or browser-local controls only.</p>
+			</section>
+		{/if}
+
+		{#if advancedCount}
+			<section class="advanced-block" bind:this={advancedRegion}>
+				<div class="advanced-divider">
+					<button
+						type="button"
+						class="pill quiet"
+						aria-expanded={advancedOpen}
+						aria-controls="settings-advanced"
+						onclick={toggleAdvanced}
+					>
+						<span class="chev" aria-hidden="true">{advancedOpen ? '▴' : '▾'}</span>
+						{advancedOpen ? 'Hide advanced' : 'Show advanced'}
+						<span class="pill-count">{advancedCount}</span>
+					</button>
+					<p>Lower-level knobs. The defaults are what Marquee is tuned around.</p>
+				</div>
+				<div id="settings-advanced" hidden={!advancedOpen}>
+					{#if advancedOpen}
+						{@render cardGrid(advancedSections, false, true)}
+					{/if}
+				</div>
+			</section>
+		{/if}
+
+		{#if activeTab === 'system'}
+			<section class="danger-card">
+				<header>
+					<Icon name="alert" size={15} />
+					<div>
+						<h3>Reset everything to defaults</h3>
+						<p>
+							Drops every stored override across all tabs so Marquee's own defaults apply again.
+							Credentials, path mounts, and deployment values are untouched.
+						</p>
+					</div>
+					<span>{resettableCount} overridden</span>
+				</header>
+				<footer>
+					{#if resetArmed}
+						<button type="button" class="pill ghost" onclick={() => (resetArmed = false)}>
+							Cancel
+						</button>
+					{/if}
+					<button
+						type="button"
+						class="pill danger"
+						class:armed={resetArmed}
+						onclick={() => (resetArmed ? applyReset('all') : (resetArmed = true))}
+						disabled={resetting || !settings.writable || !resettableCount || dirtyCount > 0}
+						title={dirtyCount ? 'Save or discard your draft before resetting' : undefined}
+					>
+						{resetting
+							? 'Resetting…'
+							: resetArmed
+								? `Confirm — reset ${resettableCount} settings`
+								: 'Reset everything'}
+					</button>
+				</footer>
 			</section>
 		{/if}
 
@@ -544,21 +651,21 @@
 					<span
 						><b>{dirtyCount}</b> unsaved {dirtyCount === 1 ? 'change' : 'changes'}{tabDirtyCount
 							? ` · ${tabDirtyCount} on this tab`
-							: ''}</span
+							: ''}{stagedResets.size ? ` · ${stagedResets.size} to reset` : ''}</span
 					>
 				</div>
 				<div class="save-actions">
-					<button type="button" class="text-button" onclick={() => (drafts = {})} disabled={saving}
-						>Discard draft</button
-					>
-					<button type="button" class="text-button" onclick={resetTabToDefaults} disabled={saving}
-						>Reset tab</button
+					<button
+						type="button"
+						class="pill ghost"
+						onclick={discardDraft}
+						disabled={saving || resetting}>Discard draft</button
 					>
 					<button
 						type="button"
-						class="save-button"
+						class="pill primary"
 						onclick={save}
-						disabled={saving || !settings.writable}
+						disabled={saving || resetting || !settings.writable}
 					>
 						{saving ? 'Saving…' : 'Save all changes'}
 					</button>
@@ -578,7 +685,7 @@
 		z-index: 12;
 		margin: 0 0 18px;
 		border: 1px solid var(--line);
-		border-radius: var(--radius);
+		border-radius: var(--radius-pill);
 		background: color-mix(in srgb, var(--ink2) 91%, transparent);
 		box-shadow: 0 10px 30px color-mix(in srgb, var(--shadow) 24%, transparent);
 		backdrop-filter: blur(14px);
@@ -586,8 +693,11 @@
 	.tab-scroll {
 		display: grid;
 		grid-template-columns: repeat(8, minmax(112px, 1fr));
+		gap: 2px;
 		overflow-x: auto;
-		padding: 4px;
+		overscroll-behavior-x: contain;
+		scroll-snap-type: x proximity;
+		padding: 5px;
 	}
 	.tab-scroll button {
 		position: relative;
@@ -595,23 +705,36 @@
 		align-items: center;
 		justify-content: center;
 		gap: 7px;
-		min-height: 40px;
-		border: 0;
-		border-radius: 6px;
+		min-width: 0;
+		min-height: 38px;
+		padding: 0 12px;
+		border: 1px solid transparent;
+		border-radius: var(--radius-pill);
 		background: transparent;
 		color: var(--muted);
 		font-size: 11.5px;
 		font-weight: 650;
 		white-space: nowrap;
+		scroll-snap-align: center;
+		transition:
+			background 0.12s,
+			color 0.12s;
 	}
-	.tab-scroll button:hover {
+	.tab-scroll button > span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.tab-scroll button:hover:not(.active) {
 		color: var(--text);
-		background: color-mix(in srgb, var(--panel2) 55%, transparent);
+		background: var(--panel2);
 	}
 	.tab-scroll button.active {
-		color: var(--text);
-		background: var(--panel);
-		box-shadow: inset 0 -2px var(--gold);
+		border-color: var(--gold-deep);
+		background: var(--gold);
+		color: var(--on-gold);
+	}
+	.tab-scroll button.active i {
+		background: var(--on-gold);
 	}
 	.tab-scroll i,
 	.save-bar i {
@@ -620,17 +743,35 @@
 		border-radius: 50%;
 		background: var(--gold);
 	}
-	.workspace-head {
+	/* Deliberately NOT .workspace-head: that class is defined globally in
+	   workspace.css as a column flex container, and the cascade would drag
+	   flex-direction in here and stack the title against the right edge. */
+	.tab-head {
 		display: flex;
+		flex-direction: row;
+		align-items: center;
 		justify-content: space-between;
-		align-items: end;
 		gap: 16px;
-		margin-bottom: 12px;
+		margin-bottom: 14px;
+		padding: 7px 10px 7px 18px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--panel);
 	}
-	.workspace-head h2 {
+	.tab-title {
+		min-width: 0;
+	}
+	.tab-head h2 {
 		margin: 2px 0 0;
 		font-size: 17px;
 		font-weight: 680;
+		letter-spacing: -0.01em;
+	}
+	.tab-head-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 	.kicker {
 		color: var(--muted);
@@ -638,37 +779,47 @@
 		text-transform: uppercase;
 		letter-spacing: 0.08em;
 	}
-	.level-switch {
-		display: inline-grid;
-		grid-template-columns: 1fr 1fr;
-		padding: 3px;
-		border: 1px solid var(--line);
-		border-radius: 8px;
-		background: var(--panel);
+	.pill-count {
+		padding: 1px 7px;
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, currentcolor 18%, transparent);
+		font: 600 10px/1.5 var(--font-mono);
 	}
-	.level-switch button {
-		min-width: 88px;
-		border: 0;
-		border-radius: 5px;
-		padding: 6px 10px;
-		background: transparent;
-		color: var(--muted);
-		font-size: 10.5px;
-		font-weight: 650;
+	.advanced-block {
+		margin-top: 18px;
 	}
-	.level-switch button.active {
-		background: var(--gold-soft);
-		color: var(--gold-copy);
-	}
-	.cards-grid,
-	.integration-grid {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+	.advanced-divider {
+		display: flex;
+		align-items: center;
 		gap: 12px;
-		align-items: start;
+		flex-wrap: wrap;
+		padding-top: 16px;
+		border-top: 1px solid var(--line);
 	}
-	.integration-grid {
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+	.advanced-divider p {
+		margin: 0;
+		color: var(--muted);
+		font-size: 11.5px;
+	}
+	#settings-advanced {
+		margin-top: 14px;
+	}
+	#settings-advanced[hidden] {
+		display: none;
+	}
+	/* Section cards vary wildly in height (1 setting next to 20), and a two-track
+	   grid leaves a column-tall hole beside every short one. Columns pack them
+	   instead; break-inside keeps a card whole.
+	   The width is a floor, not a hint: a setting row needs ~500px for its label
+	   and control tracks, and the card clips (overflow: hidden) below that. Naming
+	   a column-width alongside the count drops to one column rather than shearing
+	   the controls off at mid-range viewports. */
+	.cards-grid {
+		columns: 520px 2;
+		column-gap: 12px;
+	}
+	.cards-grid > :global(section) {
+		break-inside: avoid;
 		margin-bottom: 12px;
 	}
 	.lead-cards {
@@ -730,17 +881,22 @@
 	}
 	.preference-row select {
 		border: 1px solid var(--line2);
-		border-radius: 7px;
+		border-radius: var(--radius-sm);
 		background: var(--panel2);
 		color: var(--text);
 		padding: 8px 9px;
 		font-size: 11px;
 	}
+	/* Hairline grid: the 1px gaps show the container through as rules. An odd
+	   final cell therefore has to span, or it leaves a bare panel-coloured gap. */
 	.fact-grid {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 		gap: 1px;
 		background: var(--line);
+	}
+	.fact-grid div:last-child:nth-child(odd) {
+		grid-column: 1 / -1;
 	}
 	.fact-grid div {
 		display: grid;
@@ -773,7 +929,7 @@
 		margin-bottom: 12px;
 		padding: 10px 12px;
 		border: 1px solid var(--line);
-		border-radius: 8px;
+		border-radius: var(--radius);
 		background: var(--panel);
 		color: var(--muted);
 		font-size: 11.5px;
@@ -801,7 +957,7 @@
 		gap: 1px;
 		margin-bottom: 12px;
 		border: 1px solid var(--line);
-		border-radius: 8px;
+		border-radius: var(--radius);
 		overflow: hidden;
 		background: var(--line);
 	}
@@ -839,7 +995,7 @@
 		gap: 5px;
 		padding: 13px 14px;
 		border: 1px solid color-mix(in srgb, var(--good) 28%, var(--line));
-		border-radius: 8px;
+		border-radius: var(--radius);
 		background: var(--panel);
 	}
 	.posture-card.warning {
@@ -884,19 +1040,20 @@
 		margin: 4px 0 0;
 		font-size: 12px;
 	}
+	/* Sticky, not fixed: a fixed bar has to guess the sidebar width and drifts
+	   out of alignment the moment the sidebar collapses. */
 	.save-bar {
-		position: fixed;
+		position: sticky;
 		z-index: 30;
-		left: calc(var(--sidebar-w) + 24px);
-		right: 24px;
 		bottom: 18px;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 16px;
-		padding: 10px 12px 10px 15px;
+		margin-top: 18px;
+		padding: 9px 10px 9px 18px;
 		border: 1px solid color-mix(in srgb, var(--gold) 38%, var(--line));
-		border-radius: 9px;
+		border-radius: var(--radius-pill);
 		background: color-mix(in srgb, var(--panel) 94%, transparent);
 		box-shadow: 0 16px 42px var(--shadow);
 		backdrop-filter: blur(16px);
@@ -913,37 +1070,60 @@
 		align-items: center;
 		gap: 8px;
 	}
-	.save-actions button {
-		border-radius: 7px;
-		padding: 7px 11px;
-		font-size: 10.5px;
-		font-weight: 650;
+	.danger-card {
+		margin-top: 18px;
+		border: 1px solid color-mix(in srgb, var(--bad) 26%, var(--line));
+		border-radius: var(--radius);
+		background: var(--panel);
+		overflow: hidden;
 	}
-	.text-button {
-		border: 0;
-		background: transparent;
+	.danger-card > header {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: start;
+		gap: 10px;
+		padding: 13px 16px;
+		color: var(--bad);
+	}
+	.danger-card h3 {
+		margin: 0;
+		color: var(--text);
+		font-size: 12px;
+		font-weight: 680;
+	}
+	.danger-card p {
+		margin: 4px 0 0;
 		color: var(--muted);
+		font-size: 11.5px;
+		line-height: 1.45;
 	}
-	.save-button {
-		border: 1px solid var(--gold-deep);
-		background: var(--gold);
-		color: var(--on-gold);
+	.danger-card > header > span {
+		color: var(--muted);
+		font: 600 9px/1.2 var(--font-mono);
+		text-transform: uppercase;
+		white-space: nowrap;
 	}
-	.save-actions button:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+	.danger-card footer {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		padding: 10px 15px;
+		border-top: 1px solid var(--line);
+		background: color-mix(in srgb, var(--panel2) 35%, transparent);
+	}
+	.danger-card .armed {
+		border-color: var(--bad);
+		background: color-mix(in srgb, var(--bad) 16%, transparent);
+		color: var(--bad);
 	}
 	@media (max-width: 1180px) {
-		.integration-grid {
-			grid-template-columns: 1fr;
-		}
 		.security-grid {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 	@media (max-width: 840px) {
 		.cards-grid {
-			grid-template-columns: 1fr;
+			columns: 1;
 		}
 		.tab-scroll {
 			display: flex;
@@ -951,20 +1131,24 @@
 		.tab-scroll button {
 			min-width: 112px;
 		}
+	}
+	/* The navigation keeps its pill silhouette while a wrapped save bar squares off. */
+	@media (max-width: 1080px) {
 		.save-bar {
-			left: 76px;
+			border-radius: var(--radius);
 		}
 	}
 	@media (max-width: 620px) {
 		.settings-page {
-			padding-bottom: 125px;
+			padding-bottom: 24px;
 		}
-		.workspace-head {
+		.tab-head {
 			align-items: stretch;
 			flex-direction: column;
+			padding: 12px 14px;
 		}
-		.level-switch {
-			align-self: flex-start;
+		.tab-head-actions {
+			justify-content: flex-start;
 		}
 		.security-grid {
 			grid-template-columns: 1fr;
@@ -977,8 +1161,6 @@
 			grid-template-columns: 1fr;
 		}
 		.save-bar {
-			left: 12px;
-			right: 12px;
 			bottom: 10px;
 			align-items: stretch;
 			flex-direction: column;
@@ -986,14 +1168,10 @@
 		.save-actions {
 			justify-content: flex-end;
 		}
-		.text-button:first-child {
-			display: none;
-		}
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.tab-scroll,
 		.tab-scroll button,
-		.level-switch button,
 		.save-bar,
 		.settings-card {
 			scroll-behavior: auto;

@@ -103,6 +103,7 @@ async def test_integration_update_is_atomic_redacted_and_generation_checked(
             json={
                 "expected_version": 1,
                 "expected_secret_generation": 0,
+                "name": "Cinema Rack",
                 "url": "http://radarr:7878/",
                 "credential": "managed-radarr-key",
             },
@@ -110,6 +111,8 @@ async def test_integration_update_is_atomic_redacted_and_generation_checked(
         assert response.status_code == 200
         payload = response.json()
         assert payload["settings"]["values"]["RADARR_URL"] == "http://radarr:7878"
+        assert payload["settings"]["values"]["RADARR_INSTANCE_NAME"] == "Cinema Rack"
+        assert payload["settings"]["integrations"]["radarr"]["name"] == "Cinema Rack"
         assert payload["settings"]["secrets"]["RADARR_API_KEY"]["configured"] is True
         assert payload["settings"]["secrets"]["RADARR_API_KEY"]["generation"] == 1
         assert "managed-radarr-key" not in response.text

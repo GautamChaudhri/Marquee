@@ -96,15 +96,17 @@ export interface RuntimeSettings {
 	};
 	configuration_meta: Record<string, ConfigurationKeyMeta>;
 	integrations: {
-		tmdb: { configured: boolean };
+		tmdb: { configured: boolean; name: string };
 		radarr: {
 			configured: boolean;
+			name: string;
 			url_configured: boolean;
 			api_key_configured: boolean;
 			path_mapping_configured: boolean;
 		};
 		sonarr: {
 			configured: boolean;
+			name: string;
 			url_configured: boolean;
 			api_key_configured: boolean;
 			path_mapping_configured: boolean;

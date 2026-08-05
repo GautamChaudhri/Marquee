@@ -93,7 +93,7 @@ KNOB_GROUPS: list[dict[str, Any]] = [
     },
     {
         "id": "residual",
-        "label": "Residual feedback",
+        "label": "Residual Feedback",
         "description": "Bounded residual eligibility and feedback-loop controls.",
         "knobs": [
             "SCORER",
@@ -242,6 +242,13 @@ KNOB_META: dict[str, dict[str, Any]] = {
         "kind": "enum",
         "options": ["en", "fr", "de", "es", "it", "ja", "ko", "zh", "pt", "ru"],
     },
+    # ── Taste map and seeding ────────────────────────────────────────
+    # Bounds mirror the validators in PipelineSettings.model_post_init; without
+    # them the UI has no range to bind a slider to and falls back to a bare box.
+    "TASTE_SEEDING_MIN_POSTERS": {"kind": "int", "min": 0, "max": 1000, "step": 5},
+    "TASTE_MAP_MIN_CLUSTER_SIZE_RATIO": {"kind": "float", "min": 0.01, "max": 0.5, "step": 0.01},
+    "TASTE_MAP_CLUSTER_EPSILON": {"kind": "float", "min": 0, "max": 2, "step": 0.05},
+    "TASTE_MAP_CLUSTER_METHOD": {"kind": "enum", "options": ["eom", "leaf"]},
     # ── Detail ───────────────────────────────────────────────────────
     "DINO_ENABLED": {"kind": "enum", "options": ["auto", "on", "off"]},
     "EXTRA_QUALITY_ENABLED": {"kind": "bool"},
@@ -260,6 +267,8 @@ KNOB_META: dict[str, dict[str, Any]] = {
     "RESIDUAL_MIN_PAIRS": {"kind": "int", "min": 1, "max": 10000, "step": 10},
     "FEEDBACK_GATE_ALERT_THRESHOLD": {"kind": "int", "min": 1, "max": 100, "step": 1},
     "FEEDBACK_DEPLOY_DEFAULT": {"kind": "bool"},
+    "FEEDBACK_HARD_NEGATIVE_RANK_MAX": {"kind": "int", "min": 0, "max": 100, "step": 1},
+    "TYPICALITY_FEATURES": {"kind": "list"},
     # ── Dedup ────────────────────────────────────────────────────────
     "DEDUP_PHASH_THRESHOLD": {"kind": "int", "min": 0, "max": 64, "step": 1},
     "DEDUP_MIN_POSTER_WIDTH": {"kind": "int", "min": 0, "max": 4000, "step": 10},

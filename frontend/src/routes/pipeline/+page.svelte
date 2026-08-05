@@ -369,7 +369,7 @@
 				</p>
 			</div>
 		</div>
-		<a href="/settings?tab=posters">Poster settings <Icon name="chevron" size={13} /></a>
+		<a class="pill quiet" href="/settings?tab=posters">Poster settings <Icon name="chevron" size={13} /></a>
 	</header>
 
 	<div class="maintenance-body">
@@ -604,15 +604,6 @@
 		margin: 2px 0 0;
 		color: var(--muted);
 		font-size: 11.5px;
-	}
-	.maintenance-dock > header > a {
-		display: flex;
-		align-items: center;
-		gap: 4px;
-		color: var(--gold);
-		font-size: 11px;
-		font-weight: 650;
-		white-space: nowrap;
 	}
 	.maintenance-body {
 		display: grid;

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args, get_origin
@@ -182,7 +183,9 @@ APP_NEXT_JOB_KEYS = frozenset(
         "AUTH_BRUTE_WINDOW_SECONDS",
         "AUTH_BRUTE_LOCKOUT_SECONDS",
         "RADARR_URL",
+        "RADARR_INSTANCE_NAME",
         "SONARR_URL",
+        "SONARR_INSTANCE_NAME",
         "RADARR_PATH_PREFIX",
         "RADARR_MEDIA_PATH",
         "SONARR_PATH_PREFIX",
@@ -289,6 +292,14 @@ def _control_for(model: type[BaseModel], key: str) -> dict[str, Any]:
             value = getattr(constraint, source, None)
             if value is not None and target not in control:
                 control[target] = value
+
+    # A float knob whose whole range fits inside a single unit is a ratio or a
+    # probability; the generic 0.1 step would give it ten usable positions.
+    if control.get("kind") == "float" and control.get("step") == 0.1:
+        low, high = control.get("min"), control.get("max")
+        if low is not None and high is not None and high - low <= 1:
+            control["step"] = 0.01
+
     if field.description:
         control["help"] = field.description
     return control
@@ -306,8 +317,10 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
     if key in {
         "TMDB_READ_ACCESS_TOKEN",
         "RADARR_URL",
+        "RADARR_INSTANCE_NAME",
         "RADARR_API_KEY",
         "SONARR_URL",
+        "SONARR_INSTANCE_NAME",
         "SONARR_API_KEY",
         "SYNC_INTERVAL_MINUTES",
     }:
@@ -321,7 +334,7 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         "SONARR_PATH_PREFIX",
         "SONARR_MEDIA_PATH",
     }:
-        return ("media", "Library paths", "standard")
+        return ("media", "Library Paths", "standard")
     if key in {
         "DATA_DIR",
         "DATA_PATH_CEILING",
@@ -330,7 +343,7 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         "POSTER_CACHE_DIR",
         "POSTER_STAGING_DIR",
     }:
-        return ("media", "Application paths", "advanced")
+        return ("media", "Application Paths", "advanced")
     if key in {
         "MOVIE_POSTER_FORMAT",
         "SERIES_POSTER_FORMAT",
@@ -339,26 +352,26 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         "HEAL_ENABLED",
         "HEAL_INTERVAL_MINUTES",
     }:
-        return ("posters", "Poster behavior", "standard")
+        return ("posters", "Poster Behavior", "standard")
     if key in {
         "HEAL_RECENT_DEPLOY_GRACE_MINUTES",
         "POSTER_BACKUP_DIR",
     }:
-        return ("posters", "Storage and healing", "advanced")
+        return ("posters", "Storage and Healing", "advanced")
     if key in {"PIPELINE_CACHE_EXTRACTOR", "RATE_PIPELINE_RUN_SECONDS"}:
-        return ("pipeline", "Runtime defaults", "standard")
+        return ("pipeline", "Runtime Defaults", "standard")
     if key == "ONBOARDING_ENABLED":
         return ("taste", "Onboarding", "standard")
     if key.startswith("RATE_TASTE_"):
-        return ("taste", "Rate limits", "advanced")
+        return ("taste", "Rate Limits", "advanced")
     if key in {"API_KEY", "AUTH_ALLOW_LOCAL", "CORS_ORIGINS", "DEBUG"}:
-        return ("access", "Request access", "standard")
+        return ("access", "Request Access", "standard")
     if key.startswith("AUTH_BRUTE_") or key in {
         "MAX_REQUEST_BODY_BYTES",
         "MARQUEE_SETTINGS_KEYRING_FILE",
         "API_KEY_FILE",
     }:
-        return ("access", "Defensive limits", "advanced")
+        return ("access", "Defensive Limits", "advanced")
     if key == "POSTGRES_PASSWORD_FILE":
         return ("system", "Database", "advanced")
     if key in {
@@ -377,13 +390,13 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
     if key.startswith("DB_"):
         return ("system", "Database", "advanced")
     if key.startswith("HEALTH_"):
-        return ("system", "Health checks", "advanced")
+        return ("system", "Health Checks", "advanced")
     if key.startswith("JOB_"):
         if any(part in key for part in ("LOG_", "EVENT_", "ARTIFACT_")):
-            return ("system", "Evidence and streams", "advanced")
+            return ("system", "Evidence and Streams", "advanced")
         if any(part in key for part in ("CONCURRENCY", "SLOTS", "ENTRYPOINTS")):
-            return ("system", "Worker resources", "advanced")
-        return ("system", "Job runtime", "advanced")
+            return ("system", "Worker Resources", "advanced")
+        return ("system", "Job Runtime", "advanced")
     return ("system", "Runtime", "advanced")
 
 
@@ -394,16 +407,16 @@ _PIPELINE_GROUP_BY_KEY = {
 
 def _pipeline_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
     if key in PIPELINE_INTERNAL_KEYS:
-        return ("pipeline", "Text profile compatibility", "advanced")
+        return ("pipeline", "Text Profile Compatibility", "advanced")
     if key in PIPELINE_TASTE_KEYS:
         if key.startswith("TASTE_MAP_"):
-            section = "Taste map"
+            section = "Taste Map"
         elif key.startswith(("FEEDBACK_", "RESIDUAL_", "SCORER")):
-            section = "Residual feedback"
+            section = "Residual Feedback"
         elif key.endswith("_PATH") or key.endswith("_DIR"):
-            section = "Taste artifacts"
+            section = "Taste Artifacts"
         else:
-            section = "Profile behavior"
+            section = "Profile Behavior"
         level: SettingsLevel = (
             "standard"
             if key
@@ -423,11 +436,11 @@ def _pipeline_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         )
         return ("taste", section, level)
     if key in PIPELINE_STANDARD_KEYS:
-        return ("pipeline", "Run defaults", "standard")
+        return ("pipeline", "Run Defaults", "standard")
     if key.endswith("_PATH") or key.endswith("_DIR") or key in {"AI_MODEL", "EXECUTION_PROVIDER"}:
-        return ("pipeline", "Models and artifacts", "advanced")
+        return ("pipeline", "Models and Artifacts", "advanced")
     if key.startswith("OCR_"):
-        return ("pipeline", "OCR tuning", "advanced")
+        return ("pipeline", "OCR Tuning", "advanced")
     return ("pipeline", _PIPELINE_GROUP_BY_KEY.get(key, "Scoring"), "advanced")
 
 
@@ -614,6 +627,29 @@ async def read_current_configuration(
     )
 
 
+def validate_removals(keys: Iterable[str]) -> frozenset[str]:
+    """Validate that every key may be dropped from the stored revision.
+
+    Removing a key is how a setting is reset: the revision stops carrying an
+    override, so the owning model's default becomes effective again. Only
+    revision-stored keys work that way — deployment keys never reach a revision,
+    and secrets are cleared through the secret-store endpoints instead.
+    """
+    removals = frozenset(keys)
+    for key in sorted(removals):
+        entry = CONFIGURATION_CATALOG.get(key)
+        if entry is None:
+            kind = "secret-like" if _SECRET_LIKE.search(key) else "unknown"
+            raise ConfigurationError(f"{kind} configuration key is not allowed: {key}")
+        if entry.storage == "secret_store":
+            raise ConfigurationError(f"secret configuration key belongs in the secret store: {key}")
+        if entry.storage != "revision":
+            raise ConfigurationError(
+                f"configuration key is {entry.storage}-owned and cannot be reset: {key}"
+            )
+    return removals
+
+
 async def update_configuration(
     session: AsyncSession,
     *,
@@ -621,6 +657,7 @@ async def update_configuration(
     updates: dict[str, Any],
     actor: dict[str, Any],
     trigger: str,
+    removals: Iterable[str] = (),
 ) -> tuple[ConfigurationState, bool]:
     """Atomically validate, append, point, and notify one optimistic update."""
     current = await read_current_configuration(session, for_update=True)
@@ -631,7 +668,14 @@ async def update_configuration(
     # boundary before validating the complete document. Existing internal keys
     # remain readable for one-release compatibility but cannot be changed.
     validate_database_values(updates)
-    merged = {**current.values, **updates}
+    dropped = validate_removals(removals)
+    if dropped & updates.keys():
+        raise ConfigurationError(
+            "a configuration key cannot be written and reset in the same update: "
+            + ", ".join(sorted(dropped & updates.keys()))
+        )
+    kept = {key: value for key, value in current.values.items() if key not in dropped}
+    merged = {**kept, **updates}
     normalized = validate_database_values(merged, allow_internal=True)
     if normalized == current.values:
         return current, False

@@ -162,8 +162,8 @@
 	{/if}
 
 	<footer>
-		<button type="button" class="reset" onclick={onReset} {disabled}>Reset path defaults</button>
-		<button type="button" class="test" onclick={testPaths} disabled={disabled || testing}
+		<button type="button" class="pill ghost" onclick={onReset} {disabled}>Reset path defaults</button>
+		<button type="button" class="pill quiet" onclick={testPaths} disabled={disabled || testing}
 			>{testing ? 'Testing…' : 'Test accessibility'}</button
 		>
 	</footer>
@@ -252,7 +252,7 @@
 		width: 100%;
 		min-width: 0;
 		border: 1px solid var(--line2);
-		border-radius: 7px;
+		border-radius: var(--radius-sm);
 		background: var(--panel2);
 		color: var(--text);
 		padding: 8px 9px;
@@ -306,22 +306,6 @@
 		gap: 8px;
 		padding: 10px 15px;
 		border-top: 1px solid var(--line);
-	}
-	footer button {
-		border-radius: 7px;
-		padding: 7px 10px;
-		font-size: 10.5px;
-		font-weight: 650;
-	}
-	.reset {
-		border: 0;
-		background: transparent;
-		color: var(--muted);
-	}
-	.test {
-		border: 1px solid var(--line2);
-		background: var(--panel2);
-		color: var(--text);
 	}
 	@media (max-width: 920px) {
 		.path-layout {

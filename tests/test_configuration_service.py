@@ -40,6 +40,12 @@ def test_configuration_catalog_records_owner_sensitivity_and_apply_mode():
 
     assert CONFIGURATION_CATALOG["RADARR_URL"].apply_mode == "next_job"
     assert CONFIGURATION_CATALOG["SONARR_URL"].apply_mode == "next_job"
+    for key in ("RADARR_INSTANCE_NAME", "SONARR_INSTANCE_NAME"):
+        entry = CONFIGURATION_CATALOG[key]
+        assert entry.storage == "revision"
+        assert entry.apply_mode == "next_job"
+        assert entry.tab == "connections"
+        assert entry.level == "standard"
 
     restart = CONFIGURATION_CATALOG["CLIP_MODEL_PATH"]
     assert restart.storage == "revision"
@@ -159,6 +165,29 @@ async def test_optimistic_update_appends_revision_and_noop_does_not_churn(db):
     assert count == 2
 
 
+async def test_connection_instance_names_are_revision_managed_and_validated(db):
+    state, changed = await update_configuration(
+        db,
+        expected_version=1,
+        updates={"RADARR_INSTANCE_NAME": "Cinema Rack"},
+        actor={"kind": "user", "id": "test"},
+        trigger="connection_name",
+    )
+    await db.commit()
+
+    assert changed is True
+    assert state.values["RADARR_INSTANCE_NAME"] == "Cinema Rack"
+
+    with pytest.raises(ConfigurationError, match="invalid app configuration"):
+        await update_configuration(
+            db,
+            expected_version=2,
+            updates={"SONARR_INSTANCE_NAME": "   "},
+            actor={"kind": "user", "id": "test"},
+            trigger="connection_name",
+        )
+
+
 @pytest.mark.parametrize(
     ("updates", "message"),
     [
@@ -234,3 +263,160 @@ async def test_simultaneous_same_version_writers_have_one_winner(db):
     assert len(winners) == len(conflicts) == 1
     assert winners[0][0].version == conflicts[0].current.version == 2
     assert await db.scalar(select(func.count()).select_from(ConfigurationRevision)) == 2
+
+
+async def test_removal_drops_the_override_so_the_model_default_applies_again(db):
+    state, _ = await update_configuration(
+        db,
+        expected_version=1,
+        updates={"K_NEIGHBORS": 12, "TASTE_NEG_WEIGHT": 2.0},
+        actor={"kind": "user", "id": "test"},
+        trigger="api",
+    )
+    await db.commit()
+    assert state.values == {"K_NEIGHBORS": 12, "TASTE_NEG_WEIGHT": 2.0}
+
+    state, changed = await update_configuration(
+        db,
+        expected_version=2,
+        updates={},
+        actor={"kind": "user", "id": "test"},
+        trigger="reset",
+        removals=["K_NEIGHBORS"],
+    )
+    await db.commit()
+
+    assert changed is True
+    # The key is gone from the document entirely, not rewritten to its default,
+    # so it reads as a default rather than as a customization.
+    assert state.values == {"TASTE_NEG_WEIGHT": 2.0}
+    assert "K_NEIGHBORS" not in (await read_current_configuration(db)).values
+
+
+async def test_removal_and_write_land_in_one_revision(db):
+    await update_configuration(
+        db,
+        expected_version=1,
+        updates={"K_NEIGHBORS": 12, "TASTE_NEG_WEIGHT": 2.0},
+        actor={"kind": "user", "id": "test"},
+        trigger="api",
+    )
+    await db.commit()
+
+    state, changed = await update_configuration(
+        db,
+        expected_version=2,
+        updates={"TASTE_NEG_WEIGHT": 3.0},
+        actor={"kind": "user", "id": "test"},
+        trigger="api",
+        removals=["K_NEIGHBORS"],
+    )
+    await db.commit()
+
+    assert changed is True
+    assert state.version == 3
+    assert state.values == {"TASTE_NEG_WEIGHT": 3.0}
+    assert await db.scalar(select(func.count()).select_from(ConfigurationRevision)) == 3
+
+
+async def test_removing_every_key_restores_a_pristine_document(db):
+    await update_configuration(
+        db,
+        expected_version=1,
+        updates={"K_NEIGHBORS": 12, "TASTE_NEG_WEIGHT": 2.0, "APP_NAME": "Screening Room"},
+        actor={"kind": "user", "id": "test"},
+        trigger="api",
+    )
+    await db.commit()
+
+    state, changed = await update_configuration(
+        db,
+        expected_version=2,
+        updates={},
+        actor={"kind": "user", "id": "test"},
+        trigger="reset_all",
+        removals=["K_NEIGHBORS", "TASTE_NEG_WEIGHT", "APP_NAME"],
+    )
+    await db.commit()
+
+    assert changed is True
+    assert state.values == {}
+
+
+async def test_removing_nothing_stored_is_a_noop_without_a_revision(db):
+    state, changed = await update_configuration(
+        db,
+        expected_version=1,
+        updates={},
+        actor={"kind": "user", "id": "test"},
+        trigger="reset",
+        removals=["K_NEIGHBORS"],
+    )
+    await db.commit()
+
+    assert changed is False
+    assert state.version == 1
+    assert await db.scalar(select(func.count()).select_from(ConfigurationRevision)) == 1
+
+
+@pytest.mark.parametrize(
+    ("removals", "message"),
+    [
+        (["UNKNOWN_OPTION"], "unknown"),
+        (["api_token"], "secret-like"),
+        (["TMDB_READ_ACCESS_TOKEN"], "secret"),
+        (["HOST"], "deployment-owned"),
+    ],
+)
+async def test_unresettable_removals_create_no_revision(db, removals, message):
+    with pytest.raises(ConfigurationError, match=message):
+        await update_configuration(
+            db,
+            expected_version=1,
+            updates={},
+            actor={"kind": "user", "id": "test"},
+            trigger="reset",
+            removals=removals,
+        )
+    await db.rollback()
+
+    assert await db.scalar(select(func.count()).select_from(ConfigurationRevision)) == 1
+
+
+async def test_writing_and_resetting_the_same_key_is_rejected(db):
+    with pytest.raises(ConfigurationError, match="cannot be written and reset"):
+        await update_configuration(
+            db,
+            expected_version=1,
+            updates={"K_NEIGHBORS": 12},
+            actor={"kind": "user", "id": "test"},
+            trigger="api",
+            removals=["K_NEIGHBORS"],
+        )
+    await db.rollback()
+
+    assert await db.scalar(select(func.count()).select_from(ConfigurationRevision)) == 1
+
+
+async def test_stale_reset_conflicts_without_dropping_anything(db):
+    await update_configuration(
+        db,
+        expected_version=1,
+        updates={"K_NEIGHBORS": 12},
+        actor={"kind": "user", "id": "winner"},
+        trigger="api",
+    )
+    await db.commit()
+
+    with pytest.raises(ConfigurationVersionConflictError):
+        await update_configuration(
+            db,
+            expected_version=1,
+            updates={},
+            actor={"kind": "user", "id": "stale"},
+            trigger="reset",
+            removals=["K_NEIGHBORS"],
+        )
+    await db.rollback()
+
+    assert (await read_current_configuration(db)).values == {"K_NEIGHBORS": 12}

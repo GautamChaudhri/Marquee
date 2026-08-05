@@ -59,6 +59,8 @@
 
 	--radius: 10px;
 	--radius-sm: 7px;
+	/* Toolbars, tabs, chips, and buttons are pills across the workspaces. */
+	--radius-pill: 999px;
 	--sidebar-w: 220px;
 	--sidebar-w-collapsed: 52px;
 	--header-h: 56px;

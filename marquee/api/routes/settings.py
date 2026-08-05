@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -18,6 +19,7 @@ from marquee.core.configuration import (
     CONFIGURATION_CATALOG,
     ConfigurationError,
     ConfigurationVersionConflictError,
+    read_current_configuration,
     update_configuration,
 )
 from marquee.core.configuration_cache import configuration_provider
@@ -57,6 +59,7 @@ _PROVIDER_SECRET_KEYS = {
     "sonarr": "SONARR_API_KEY",
 }
 _PROVIDER_URL_KEYS = {"radarr": "RADARR_URL", "sonarr": "SONARR_URL"}
+_PROVIDER_NAME_KEYS = {"radarr": "RADARR_INSTANCE_NAME", "sonarr": "SONARR_INSTANCE_NAME"}
 _INTEGRATION_URL_KEYS = frozenset(_PROVIDER_URL_KEYS.values())
 
 
@@ -233,15 +236,17 @@ async def get_settings(db: Annotated[AsyncSession, Depends(get_db)]):
             },
         },
         "integrations": {
-            "tmdb": {"configured": tmdb_status["configured"]},
+            "tmdb": {"configured": tmdb_status["configured"], "name": "The Movie Database"},
             "radarr": {
                 "configured": _configured(app_settings.RADARR_URL) and radarr_status["configured"],
+                "name": app_settings.RADARR_INSTANCE_NAME,
                 "url_configured": _configured(app_settings.RADARR_URL),
                 "api_key_configured": radarr_status["configured"],
                 "path_mapping_configured": app_settings.radarr_path_configured,
             },
             "sonarr": {
                 "configured": _configured(app_settings.SONARR_URL) and sonarr_status["configured"],
+                "name": app_settings.SONARR_INSTANCE_NAME,
                 "url_configured": _configured(app_settings.SONARR_URL),
                 "api_key_configured": sonarr_status["configured"],
                 "path_mapping_configured": app_settings.sonarr_path_configured,
@@ -298,12 +303,25 @@ class SettingsUpdatePayload(BaseModel):
 
 class ConfigurationUpdatePayload(BaseModel):
     expected_version: int
-    values: dict[str, Any]
+    values: dict[str, Any] = Field(default_factory=dict)
+    # Keys to drop from the revision so their model default becomes effective
+    # again. Writing the default value instead would leave the key marked as a
+    # custom override forever.
+    removals: list[str] = Field(default_factory=list, max_length=512)
+
+
+class ConfigurationResetPayload(BaseModel):
+    expected_version: int
+    scope: Literal["all", "tab", "section", "keys"] = "all"
+    tab: str | None = None
+    section: str | None = None
+    keys: list[str] = Field(default_factory=list, max_length=512)
 
 
 class IntegrationUpdatePayload(BaseModel):
     expected_version: int
     expected_secret_generation: int = Field(ge=0)
+    name: str | None = Field(default=None, min_length=1, max_length=80, pattern=r".*\S.*")
     url: str | None = None
     credential: str | None = Field(default=None, max_length=8192)
 
@@ -451,13 +469,51 @@ def _configuration_exception(exc: Exception) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
 
+def _resolve_reset_scope(payload: ConfigurationResetPayload) -> frozenset[str]:
+    """Turn a reset request into the set of catalog keys it names."""
+    resettable = {
+        key for key, entry in CONFIGURATION_CATALOG.items() if entry.storage == "revision"
+    }
+    if payload.scope == "keys":
+        unknown = sorted(set(payload.keys) - resettable)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "configuration_key_not_resettable", "fields": unknown},
+            )
+        return frozenset(payload.keys)
+    if payload.scope == "all":
+        return frozenset(resettable)
+
+    field = "tab" if payload.scope == "tab" else "section"
+    wanted = payload.tab if payload.scope == "tab" else payload.section
+    if not wanted:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "configuration_reset_scope_incomplete", "fields": [field]},
+        )
+    scoped = frozenset(
+        key for key in resettable if getattr(CONFIGURATION_CATALOG[key], field) == wanted
+    )
+    if not scoped:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "configuration_reset_scope_unknown", "fields": [f"{field}={wanted}"]},
+        )
+    return scoped
+
+
 async def _update_public_configuration(
     db: AsyncSession,
     *,
     expected_version: int,
     values: dict[str, Any],
     trigger: str,
+    removals: Sequence[str] = (),
 ) -> tuple[Any, bool]:
+    # An integration URL is only half of a credential pair, so it stays behind the
+    # provider endpoint that tests before it writes. Resetting one is safe: it drops
+    # the override and the provider simply falls back to its unconfigured default.
     integration_url_keys = sorted(_INTEGRATION_URL_KEYS.intersection(values))
     if integration_url_keys:
         raise HTTPException(
@@ -474,6 +530,7 @@ async def _update_public_configuration(
             updates=_validate_special_values(values),
             actor={"kind": "api", "id": "settings"},
             trigger=trigger,
+            removals=removals,
         )
     except (ConfigurationError, ConfigurationVersionConflictError) as exc:
         await db.rollback()
@@ -490,6 +547,7 @@ async def put_configuration(
         expected_version=payload.expected_version,
         values=payload.values,
         trigger="unified_settings_api",
+        removals=payload.removals,
     )
     await db.commit()
     await configuration_provider.refresh_from_session(db)
@@ -497,7 +555,39 @@ async def put_configuration(
         "configuration_version": state.version,
         "etag": state.etag,
         "changed": changed,
-        "applied": sorted(payload.values) if changed else [],
+        "applied": sorted({*payload.values, *payload.removals}) if changed else [],
+        "settings": await get_settings(db),
+    }
+
+
+@router.post("/config/reset")
+async def reset_configuration(
+    payload: ConfigurationResetPayload,
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Drop stored overrides so the owning model's defaults become effective."""
+    # Narrow the scope to overrides that are actually stored, so `applied` names
+    # the keys that really moved. A concurrent write between this read and the
+    # locked read inside update_configuration still trips the version check.
+    try:
+        current = await read_current_configuration(db)
+    except ConfigurationError as exc:
+        raise _configuration_exception(exc) from exc
+    removals = sorted(_resolve_reset_scope(payload) & current.values.keys())
+    state, changed = await _update_public_configuration(
+        db,
+        expected_version=payload.expected_version,
+        values={},
+        trigger=f"settings_reset_{payload.scope}",
+        removals=removals,
+    )
+    await db.commit()
+    await configuration_provider.refresh_from_session(db)
+    return {
+        "configuration_version": state.version,
+        "etag": state.etag,
+        "changed": changed,
+        "applied": sorted(removals) if changed else [],
         "settings": await get_settings(db),
     }
 
@@ -581,7 +671,37 @@ def _normalize_service_url(value: str) -> str:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-async def _test_integration(provider: str, *, url: str | None, credential: str | None) -> None:
+_ARR_STATUS_FIELDS = (
+    "version",
+    "appName",
+    "instanceName",
+    "osName",
+    "osVersion",
+    "runtimeVersion",
+    "isDocker",
+    "startTime",
+)
+
+
+def _arr_status_facts(raw: object) -> dict[str, Any]:
+    """Whitelist the /system/status fields worth showing in Settings.
+
+    The raw body also carries host filesystem paths (appData, startupPath) and
+    the *arr's own URL base, so it is never passed through wholesale.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        field: raw[field]
+        for field in _ARR_STATUS_FIELDS
+        if isinstance(raw.get(field), str | bool | int | float)
+    }
+
+
+async def _test_integration(
+    provider: str, *, url: str | None, credential: str | None
+) -> dict[str, Any]:
+    """Verify a credential against its service and return safe identifying facts."""
     if not credential:
         raise HTTPException(status_code=400, detail=f"{provider.title()} credential is required.")
     try:
@@ -594,7 +714,12 @@ async def _test_integration(provider: str, *, url: str | None, credential: str |
             ) as client:
                 response = await client.get("/configuration")
                 response.raise_for_status()
-            return
+                body = response.json()
+            images = body.get("images") if isinstance(body, dict) else None
+            base_url = images.get("secure_base_url") if isinstance(images, dict) else None
+            return (
+                {"appName": "TMDB", "imageBaseUrl": base_url} if base_url else {"appName": "TMDB"}
+            )
         if not url:
             raise HTTPException(status_code=400, detail=f"{provider.title()} URL is required.")
         if provider == "radarr":
@@ -607,9 +732,10 @@ async def _test_integration(provider: str, *, url: str | None, credential: str |
             client = SonarrClient(url, credential)
         await client.connect()
         try:
-            await client.get_system_status()
+            status = await client.get_system_status()
         finally:
             await client.disconnect()
+        return _arr_status_facts(status)
     except HTTPException:
         raise
     except Exception as exc:
@@ -734,8 +860,8 @@ async def test_integration(
         url=payload.url,
         credential=payload.credential,
     )
-    await _test_integration(provider, url=url, credential=credential)
-    return {"ok": True, "provider": provider}
+    status = await _test_integration(provider, url=url, credential=credential)
+    return {"ok": True, "provider": provider, "status": status}
 
 
 @router.put("/integrations/{provider}")
@@ -746,6 +872,8 @@ async def put_integration(
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     _require_secure_secret_transport(request)
+    if payload.name is not None and provider not in _PROVIDER_NAME_KEYS:
+        raise HTTPException(status_code=400, detail="This integration has a fixed display name.")
     url, credential, capability = await _integration_inputs(
         db,
         provider=provider,
@@ -754,12 +882,14 @@ async def put_integration(
         expected_version=payload.expected_version,
         expected_secret_generation=payload.expected_secret_generation,
     )
-    await _test_integration(provider, url=url, credential=credential)
+    status = await _test_integration(provider, url=url, credential=credential)
     updates = (
         {_PROVIDER_URL_KEYS[provider]: url}
         if provider in _PROVIDER_URL_KEYS and payload.url is not None
         else {}
     )
+    if payload.name is not None:
+        updates[_PROVIDER_NAME_KEYS[provider]] = payload.name.strip()
     try:
         state, changed = await update_configuration(
             db,
@@ -812,6 +942,7 @@ async def put_integration(
         "configuration_version": state.version,
         "etag": state.etag,
         "changed": changed or payload.credential is not None,
+        "status": status,
         "settings": await get_settings(db),
     }
 

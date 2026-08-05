@@ -494,6 +494,13 @@ class Settings(BaseSettings):
         default=None,
         description="Radarr base URL (e.g. http://localhost:7878)",
     )
+    RADARR_INSTANCE_NAME: str = Field(
+        default="Radarr",
+        min_length=1,
+        max_length=80,
+        pattern=r".*\S.*",
+        description="Human-readable name for the single connected Radarr instance.",
+    )
     RADARR_API_KEY: str | None = Field(
         default=None,
         description="Radarr API key",
@@ -509,6 +516,13 @@ class Settings(BaseSettings):
     SONARR_URL: str | None = Field(
         default=None,
         description="Sonarr base URL (e.g. http://localhost:8989)",
+    )
+    SONARR_INSTANCE_NAME: str = Field(
+        default="Sonarr",
+        min_length=1,
+        max_length=80,
+        pattern=r".*\S.*",
+        description="Human-readable name for the single connected Sonarr instance.",
     )
     SONARR_API_KEY: str | None = Field(
         default=None,

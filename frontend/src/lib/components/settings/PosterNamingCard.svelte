@@ -54,8 +54,8 @@
 	</header>
 
 	<div class="naming-grid">
-		<fieldset>
-			<legend>Movies</legend>
+		<div role="group" aria-labelledby="poster-naming-movies" class="naming-group">
+			<span id="poster-naming-movies" class="group-label">Movies</span>
 			<label class="choice">
 				<input
 					type="radio"
@@ -92,10 +92,10 @@
 				spellcheck="false"
 			/>
 			<small>Preview: {movie.replace('{movie_basename}', 'Example Movie')}</small>
-		</fieldset>
+		</div>
 
-		<fieldset>
-			<legend>Television</legend>
+		<div role="group" aria-labelledby="poster-naming-tv" class="naming-group">
+			<span id="poster-naming-tv" class="group-label">Television</span>
 			<label>
 				<span>Show poster filename</span>
 				<input
@@ -122,11 +122,11 @@
 				/>
 			</label>
 			<small>Preview: {seasonPreview}</small>
-		</fieldset>
+		</div>
 	</div>
 	<footer>
 		<code>{movie} · {series} · {season}</code>
-		<button type="button" onclick={onReset} {disabled}>Reset naming defaults</button>
+		<button type="button" class="pill ghost" onclick={onReset} {disabled}>Reset naming defaults</button>
 	</footer>
 </section>
 
@@ -168,7 +168,11 @@
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
-	fieldset {
+	/* Not a <fieldset>/<legend>: a rendered legend is laid into the block-start
+	   border area regardless of the fieldset's display mode, so the card's
+	   overflow:hidden sliced these labels in half. role="group" +
+	   aria-labelledby keeps the grouping semantics without the special layout. */
+	.naming-group {
 		display: grid;
 		align-content: start;
 		gap: 10px;
@@ -177,10 +181,10 @@
 		border: 0;
 		min-width: 0;
 	}
-	fieldset + fieldset {
+	.naming-group + .naming-group {
 		border-left: 1px solid var(--line);
 	}
-	legend {
+	.group-label {
 		padding: 0;
 		color: var(--muted);
 		font: 700 9px/1.2 var(--font-mono);
@@ -211,7 +215,7 @@
 	input[type='text'] {
 		width: 100%;
 		border: 1px solid var(--line2);
-		border-radius: 7px;
+		border-radius: var(--radius-sm);
 		background: var(--panel2);
 		color: var(--text);
 		padding: 8px 9px;
@@ -243,19 +247,12 @@
 	}
 	footer button {
 		flex: none;
-		border: 0;
-		background: transparent;
-		color: var(--muted);
-		font-size: 10px;
-	}
-	footer button:hover:not(:disabled) {
-		color: var(--gold);
 	}
 	@media (max-width: 720px) {
 		.naming-grid {
 			grid-template-columns: 1fr;
 		}
-		fieldset + fieldset {
+		.naming-group + .naming-group {
 			border-top: 1px solid var(--line);
 			border-left: 0;
 		}

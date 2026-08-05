@@ -1,12 +1,15 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import {
 		clearIntegrationCredential,
 		getSettings,
 		putIntegration,
 		testIntegration,
-		type IntegrationProvider
+		type IntegrationProvider,
+		type IntegrationStatusFacts
 	} from '$lib/api/system';
+	import { listMovies, listSeries, syncLibraries } from '$lib/api/library';
 	import { ApiError, CONFIGURATION_CONFLICT_MESSAGE } from '$lib/api/client';
 	import type { RuntimeSettings } from '$lib/api/types';
 	import { toast } from '$lib/toast';
@@ -54,11 +57,60 @@
 	let url = $state('');
 	let credential = $state('');
 	let urlDirty = $state(false);
-	let busy = $state<'test' | 'save' | 'clear' | null>(null);
+	let busy = $state<'test' | 'save' | 'clear' | 'sync' | null>(null);
 	let clearArmed = $state(false);
+	/** Facts the last successful probe read back off the service. */
+	let probe = $state<IntegrationStatusFacts | null>(null);
+	let probeError = $state<string | null>(null);
+	let libraryCount = $state<number | null>(null);
 
 	$effect(() => {
 		if (!urlDirty) url = savedUrl;
+	});
+
+	// Radarr and Sonarr each own one side of the library, so the row each service
+	// is responsible for is the most direct evidence that the link works.
+	onMount(async () => {
+		if (provider === 'tmdb' || !configured) return;
+		try {
+			const page =
+				provider === 'radarr'
+					? await listMovies(fetch, { page_size: 1 })
+					: await listSeries(fetch, { page_size: 1 });
+			libraryCount = page.total;
+		} catch {
+			libraryCount = null;
+		}
+	});
+
+	/**
+	 * Catch the obvious URL mistakes before spending a round trip: the server
+	 * normalizes and rejects properly, this just gives faster feedback.
+	 */
+	const urlProblem = $derived.by(() => {
+		if (!detail.urlKey || !url.trim()) return null;
+		let parsed: URL;
+		try {
+			parsed = new URL(url.trim());
+		} catch {
+			return 'Enter a full URL, including http:// or https://.';
+		}
+		if (!['http:', 'https:'].includes(parsed.protocol)) return 'Only http:// and https:// work.';
+		if (!parsed.hostname) return 'That URL has no host.';
+		return null;
+	});
+
+	const facts = $derived.by(() => {
+		if (!probe) return [];
+		const rows: string[] = [];
+		const name = probe.appName ?? detail.short;
+		rows.push(probe.version ? `${name} ${probe.version}` : name);
+		if (probe.instanceName && probe.instanceName !== probe.appName) rows.push(probe.instanceName);
+		if (probe.osName) rows.push(probe.osVersion ? `${probe.osName} ${probe.osVersion}` : probe.osName);
+		if (probe.isDocker) rows.push('Docker');
+		if (probe.runtimeVersion) rows.push(`Runtime ${probe.runtimeVersion}`);
+		if (probe.imageBaseUrl) rows.push('Images reachable');
+		return rows;
 	});
 
 	function message(error: unknown, fallback: string): string {
@@ -75,16 +127,38 @@
 	async function test() {
 		if (busy || !transportAllowed()) return;
 		busy = 'test';
+		probeError = null;
 		try {
-			await testIntegration(fetch, provider, {
+			const result = await testIntegration(fetch, provider, {
 				...(detail.urlKey ? { url } : {}),
 				...(credential ? { credential } : {})
 			});
+			probe = result.status ?? {};
 			toast(`${detail.short} connection verified`, 'good');
 		} catch (error) {
-			toast(message(error, `${detail.short} connection failed`), 'bad');
+			probe = null;
+			probeError = message(error, `${detail.short} connection failed`);
+			toast(probeError, 'bad');
 		} finally {
 			credential = '';
+			busy = null;
+		}
+	}
+
+	async function sync() {
+		if (busy || provider === 'tmdb') return;
+		busy = 'sync';
+		try {
+			const job = await syncLibraries(fetch);
+			toast(
+				job.disposition === 'reused'
+					? 'A library sync is already running'
+					: 'Library sync started',
+				'info'
+			);
+		} catch (error) {
+			toast(message(error, 'Could not start a library sync'), 'bad');
+		} finally {
 			busy = null;
 		}
 	}
@@ -102,6 +176,8 @@
 			credential = '';
 			urlDirty = false;
 			clearArmed = false;
+			probe = result.status ?? {};
+			probeError = null;
 			onSettings(result.settings);
 			toast(`${detail.short} settings saved`, 'good');
 		} catch (error) {
@@ -129,6 +205,8 @@
 			const result = await clearIntegrationCredential(fetch, provider, secret?.generation ?? 0);
 			credential = '';
 			clearArmed = false;
+			probe = null;
+			probeError = null;
 			onSettings(result.settings);
 			toast(`${detail.short} credential cleared`, 'info');
 		} catch (error) {
@@ -159,12 +237,15 @@
 				<span>Service URL</span>
 				<input
 					type="url"
+					class:invalid={Boolean(urlProblem)}
 					bind:value={url}
 					oninput={() => (urlDirty = true)}
 					placeholder="http://service:port"
 					spellcheck="false"
 					autocomplete="url"
+					aria-invalid={Boolean(urlProblem)}
 				/>
+				{#if urlProblem}<small class="field-error">{urlProblem}</small>{/if}
 			</label>
 		{/if}
 		<label>
@@ -179,6 +260,37 @@
 			/>
 		</label>
 	</div>
+
+	{#if probe}
+		<div class="probe good" role="status">
+			<Icon name="check" size={14} />
+			<div class="chips">
+				{#each facts as fact (fact)}<span>{fact}</span>{/each}
+				{#if libraryCount !== null}
+					<span
+						>{libraryCount.toLocaleString()}
+						{provider === 'radarr' ? 'movies' : 'series'}</span
+					>
+				{/if}
+			</div>
+		</div>
+	{:else if probeError}
+		<div class="probe bad" role="status">
+			<Icon name="alert" size={14} />
+			<p>{probeError}</p>
+		</div>
+	{:else if configured && libraryCount !== null}
+		<div class="probe" role="status">
+			<Icon name={provider === 'radarr' ? 'film' : 'tv'} size={14} />
+			<div class="chips">
+				<span
+					>{libraryCount.toLocaleString()}
+					{provider === 'radarr' ? 'movies' : 'series'} tracked</span
+				>
+				<span>Syncs every {settings.sync.interval_minutes} min</span>
+			</div>
+		</div>
+	{/if}
 
 	<div class="secret-facts">
 		<span>Source: {secret?.source ?? 'default'}</span>
@@ -199,20 +311,27 @@
 	{/if}
 
 	<footer>
-		<button
-			type="button"
-			class="secondary"
-			onclick={test}
-			disabled={Boolean(busy) || !secureContext}
-		>
-			{busy === 'test' ? 'Testing…' : 'Test connection'}
-		</button>
+		<div class="probe-actions">
+			<button
+				type="button"
+				class="pill quiet"
+				onclick={test}
+				disabled={Boolean(busy) || !secureContext}
+			>
+				{busy === 'test' ? 'Testing…' : 'Test connection'}
+			</button>
+			{#if provider !== 'tmdb' && configured}
+				<button type="button" class="pill ghost" onclick={sync} disabled={Boolean(busy)}>
+					{busy === 'sync' ? 'Starting…' : 'Sync now'}
+				</button>
+			{/if}
+		</div>
 		<div class="credential-actions">
 			{#if configured}
 				<button
 					type="button"
 					class:armed={clearArmed}
-					class="clear"
+					class="pill danger clear"
 					onclick={clearCredential}
 					disabled={Boolean(busy) || !settings.secret_store.writable || !secureContext}
 				>
@@ -221,9 +340,12 @@
 			{/if}
 			<button
 				type="button"
-				class="primary"
+				class="pill primary"
 				onclick={save}
-				disabled={Boolean(busy) || !secureContext || (!urlDirty && !credential)}
+				disabled={Boolean(busy) ||
+					!secureContext ||
+					Boolean(urlProblem) ||
+					(!urlDirty && !credential)}
 			>
 				{busy === 'save' ? 'Saving…' : configured ? 'Test & save' : 'Test & configure'}
 			</button>
@@ -252,7 +374,7 @@
 		width: 32px;
 		height: 32px;
 		border: 1px solid var(--line2);
-		border-radius: 8px;
+		border-radius: var(--radius-sm);
 		color: var(--muted);
 		background: var(--panel2);
 	}
@@ -299,7 +421,7 @@
 	input {
 		width: 100%;
 		border: 1px solid var(--line2);
-		border-radius: 7px;
+		border-radius: var(--radius-sm);
 		background: var(--panel2);
 		color: var(--text);
 		padding: 9px 10px;
@@ -308,6 +430,56 @@
 	input:disabled {
 		opacity: 0.55;
 		cursor: not-allowed;
+	}
+	input.invalid {
+		border-color: color-mix(in srgb, var(--bad) 55%, var(--line2));
+	}
+	.field-error {
+		color: var(--bad);
+		font-size: 10.5px;
+		font-weight: 500;
+	}
+	/* What the service said about itself, so a successful test leaves evidence
+	   behind instead of a toast that disappears. */
+	.probe {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+		margin: 0 16px 14px;
+		padding: 9px 11px;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--panel2);
+		color: var(--muted);
+	}
+	.probe.good {
+		border-color: color-mix(in srgb, var(--good) 32%, var(--line));
+		color: var(--good);
+	}
+	.probe.bad {
+		border-color: color-mix(in srgb, var(--bad) 32%, var(--line));
+		color: var(--bad);
+	}
+	.probe :global(svg) {
+		flex: none;
+		margin-top: 1px;
+	}
+	.probe p {
+		margin: 0;
+		font-size: 11.5px;
+		line-height: 1.45;
+	}
+	.chips {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 5px;
+		min-width: 0;
+	}
+	.chips span {
+		padding: 2px 8px;
+		border: 1px solid currentcolor;
+		border-radius: var(--radius-pill);
+		font: 600 10px/1.5 var(--font-mono);
 	}
 	.secret-facts {
 		display: flex;
@@ -324,41 +496,28 @@
 	}
 	footer {
 		display: flex;
+		/* Without this the default `stretch` inflates every pill to the height of
+		   the tallest wrapped row, turning a button into an oval. */
+		align-items: center;
 		justify-content: space-between;
+		flex-wrap: wrap;
 		gap: 10px;
 		padding: 12px 16px;
 		border-top: 1px solid var(--line);
 		background: color-mix(in srgb, var(--panel2) 42%, transparent);
 	}
+	.probe-actions,
 	.credential-actions {
 		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
 		gap: 8px;
 	}
-	button {
-		border-radius: 7px;
-		padding: 7px 11px;
-		font-size: 11px;
-		font-weight: 650;
-	}
-	button:disabled {
-		opacity: 0.46;
-		cursor: not-allowed;
-	}
-	.secondary {
-		border: 1px solid var(--line2);
-		background: var(--panel2);
-	}
-	.primary {
-		border: 1px solid var(--gold-deep);
-		background: var(--gold);
-		color: var(--on-gold);
-	}
-	.clear {
-		border: 0;
-		background: transparent;
-		color: var(--muted);
-	}
+	/* Buttons use the shared .pill vocabulary from workspace.css; only the armed
+	   confirm state is specific to this card. */
 	.clear.armed {
+		border-color: var(--bad);
+		background: color-mix(in srgb, var(--bad) 16%, transparent);
 		color: var(--bad);
 	}
 	@media (max-width: 620px) {
