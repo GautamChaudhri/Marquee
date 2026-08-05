@@ -74,6 +74,30 @@ test('settings keeps drafts visible, saves through the unified API, and stays ac
 	expect(results.violations).toEqual([]);
 });
 
+test('media paths group Films and Television, support extra mappings, and keep app checks advanced', async ({
+	page
+}) => {
+	await page.goto('/settings?tab=media');
+	await expect(page.getByRole('heading', { name: 'Library paths' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Films' })).toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Television' })).toBeVisible();
+	await expect(page.getByText('Remote prefix')).toHaveCount(0);
+
+	await page.getByRole('button', { name: /Add film path/ }).click();
+	await expect(page.getByLabel('Radarr Path 2')).toBeVisible();
+	await expect(page.getByLabel('Marquee Path Films 2')).toBeVisible();
+
+	await page.getByRole('button', { name: 'Test accessibility' }).click();
+	await expect(page.getByRole('region', { name: 'Marquee path checks' })).toContainText('readable');
+
+	await page.getByRole('button', { name: /Show advanced/ }).click();
+	const applicationPaths = page.getByRole('heading', { name: 'Application paths' });
+	await expect(applicationPaths).toBeVisible();
+	const dataPath = page.locator('.setting-row', { has: page.getByLabel('Data Dir') });
+	await expect(dataPath).toContainText('Readable');
+	await expect(dataPath).toContainText('Writable');
+});
+
 test('settings tab rail scrolls instead of clipping on a phone viewport', async ({ page }) => {
 	await page.setViewportSize({ width: 390, height: 844 });
 	await page.goto('/settings?tab=posters');

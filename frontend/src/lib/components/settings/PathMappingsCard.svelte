@@ -3,30 +3,31 @@
 	import { testPathMappings, type PathMappingTestResult } from '$lib/api/system';
 	import { toast } from '$lib/toast';
 
+	type MappingKey = 'RADARR_PATH_MAPPINGS' | 'SONARR_PATH_MAPPINGS';
+	type EditablePathMapping = { arr_path: string; marquee_path: string };
+	type PathFact = NonNullable<PathMappingTestResult['path_mappings']['radarr'][number]['target']>;
+
 	let {
 		mediaRoots,
-		radarrPrefix,
-		radarrTarget,
-		sonarrPrefix,
-		sonarrTarget,
+		radarrMappings,
+		sonarrMappings,
 		dirty = false,
 		disabled = false,
 		onChange,
-		onReset
+		onReset,
+		onTestResults
 	}: {
 		mediaRoots: string[];
-		radarrPrefix: string;
-		radarrTarget: string;
-		sonarrPrefix: string;
-		sonarrTarget: string;
+		radarrMappings: EditablePathMapping[];
+		sonarrMappings: EditablePathMapping[];
 		dirty?: boolean;
 		disabled?: boolean;
 		onChange: (key: string, value: unknown) => void;
 		onReset: () => void;
+		onTestResults?: (facts: PathFact[]) => void;
 	} = $props();
 
 	let testing = $state(false);
-	let result = $state<PathMappingTestResult | null>(null);
 
 	function roots(raw: string): string[] {
 		return raw
@@ -36,31 +37,60 @@
 	}
 
 	function change(key: string, value: unknown) {
-		result = null;
+		onTestResults?.([]);
 		onChange(key, value);
+	}
+
+	function addMapping(key: MappingKey, mappings: EditablePathMapping[]) {
+		change(key, [...mappings, { arr_path: '', marquee_path: '' }]);
+	}
+
+	function updateMapping(
+		key: MappingKey,
+		mappings: EditablePathMapping[],
+		index: number,
+		field: keyof EditablePathMapping,
+		value: string
+	) {
+		change(
+			key,
+			mappings.map((mapping, mappingIndex) =>
+				mappingIndex === index ? { ...mapping, [field]: value } : mapping
+			)
+		);
+	}
+
+	function removeMapping(key: MappingKey, mappings: EditablePathMapping[], index: number) {
+		change(
+			key,
+			mappings.filter((_, mappingIndex) => mappingIndex !== index)
+		);
+	}
+
+	function requestMappings(mappings: EditablePathMapping[]): EditablePathMapping[] {
+		// Empty rows are a harmless drafting affordance; a half-filled row still reaches the
+		// server, which can name the missing side of the mapping in its validation error.
+		return mappings.filter((mapping) => mapping.arr_path.trim() || mapping.marquee_path.trim());
 	}
 
 	async function testPaths() {
 		testing = true;
 		try {
-			result = await testPathMappings(fetch, {
+			const result = await testPathMappings(fetch, {
 				media_roots: mediaRoots,
-				...(radarrPrefix ? { radarr_path_prefix: radarrPrefix } : {}),
-				...(radarrTarget ? { radarr_media_path: radarrTarget } : {}),
-				...(sonarrPrefix ? { sonarr_path_prefix: sonarrPrefix } : {}),
-				...(sonarrTarget ? { sonarr_media_path: sonarrTarget } : {})
+				radarr_mappings: requestMappings(radarrMappings),
+				sonarr_mappings: requestMappings(sonarrMappings)
 			});
-			const facts = [
-				...result.media_roots,
-				...Object.values(result.mappings).flatMap((mapping) =>
-					mapping.target ? [mapping.target] : []
-				)
-			];
+			const mappingFacts = Object.values(result.path_mappings).flatMap((mappings) =>
+				mappings.flatMap((mapping) => (mapping.target ? [mapping.target] : []))
+			);
+			const allFacts = [...result.media_roots, ...mappingFacts];
+			onTestResults?.(mappingFacts);
 			toast(
-				facts.every((fact) => fact.readable)
+				allFacts.every((fact) => fact.readable)
 					? 'All configured paths are readable'
 					: 'Some configured paths are unavailable',
-				facts.every((fact) => fact.readable) ? 'good' : 'info'
+				allFacts.every((fact) => fact.readable) ? 'good' : 'info'
 			);
 		} catch (error) {
 			toast(error instanceof Error ? error.message : 'Could not validate path mappings', 'bad');
@@ -70,99 +100,131 @@
 	}
 </script>
 
+{#snippet mappingGroup(
+	title: string,
+	singular: string,
+	arrLabel: string,
+	settingKey: MappingKey,
+	mappings: EditablePathMapping[]
+)}
+	<section class="library-group" aria-label={`${title} library paths`}>
+		<header>
+			<h4>{title}</h4>
+			<button
+				type="button"
+				class="add-path"
+				onclick={() => addMapping(settingKey, mappings)}
+				{disabled}
+			>
+				+ Add {singular} path
+			</button>
+		</header>
+		<div class="path-heading" aria-hidden="true">
+			<span>{arrLabel}</span><i>→</i><span>Marquee Path</span><span></span>
+		</div>
+		<div class="mapping-rows">
+			{#if mappings.length}
+				{#each mappings as mapping, index (index)}
+					<div class="mapping-row">
+						<label>
+							<span class="sr-only">{arrLabel} {index + 1}</span>
+							<input
+								type="text"
+								value={mapping.arr_path}
+								placeholder={arrLabel === 'Radarr Path' ? '/movies' : '/tv'}
+								aria-label={`${arrLabel} ${index + 1}`}
+								{disabled}
+								oninput={(event) =>
+									updateMapping(
+										settingKey,
+										mappings,
+										index,
+										'arr_path',
+										(event.currentTarget as HTMLInputElement).value
+									)}
+							/>
+						</label>
+						<i aria-hidden="true">→</i>
+						<label>
+							<span class="sr-only">Marquee Path {index + 1}</span>
+							<input
+								type="text"
+								value={mapping.marquee_path}
+								placeholder={arrLabel === 'Radarr Path' ? '/media/movies' : '/media/tv'}
+								aria-label={`Marquee Path ${title} ${index + 1}`}
+								{disabled}
+								oninput={(event) =>
+									updateMapping(
+										settingKey,
+										mappings,
+										index,
+										'marquee_path',
+										(event.currentTarget as HTMLInputElement).value
+									)}
+							/>
+						</label>
+						<button
+							type="button"
+							class="remove-path"
+							onclick={() => removeMapping(settingKey, mappings, index)}
+							aria-label={`Remove ${title} path ${index + 1}`}
+							{disabled}
+						>
+							Remove
+						</button>
+					</div>
+				{/each}
+			{:else}
+				<p class="empty-paths">No {singular} paths have been added.</p>
+			{/if}
+		</div>
+	</section>
+{/snippet}
+
 <section class:dirty class="path-card">
 	<header>
 		<Icon name="film" size={15} />
 		<div>
 			<h3>Library paths</h3>
-			<p>Translate remote Arr paths into container-visible media roots.</p>
+			<p>Map Arr folders to the paths available inside Marquee.</p>
 		</div>
 		<span>Next job</span>
 	</header>
 
 	<div class="path-layout">
 		<div class="mapping-list">
-			<div class="mapping-row">
-				<div class="provider"><b>Radarr</b><small>Remote prefix → Marquee path</small></div>
-				<label
-					><span>Arr path prefix</span><input
-						type="text"
-						value={radarrPrefix}
-						{disabled}
-						placeholder="/movies"
-						oninput={(event) =>
-							change('RADARR_PATH_PREFIX', (event.currentTarget as HTMLInputElement).value || null)}
-					/></label
-				>
-				<i>→</i>
-				<label
-					><span>Container media path</span><input
-						type="text"
-						value={radarrTarget}
-						{disabled}
-						placeholder="/media/movies"
-						oninput={(event) =>
-							change('RADARR_MEDIA_PATH', (event.currentTarget as HTMLInputElement).value || null)}
-					/></label
-				>
-			</div>
-			<div class="mapping-row">
-				<div class="provider"><b>Sonarr</b><small>Remote prefix → Marquee path</small></div>
-				<label
-					><span>Arr path prefix</span><input
-						type="text"
-						value={sonarrPrefix}
-						{disabled}
-						placeholder="/tv"
-						oninput={(event) =>
-							change('SONARR_PATH_PREFIX', (event.currentTarget as HTMLInputElement).value || null)}
-					/></label
-				>
-				<i>→</i>
-				<label
-					><span>Container media path</span><input
-						type="text"
-						value={sonarrTarget}
-						{disabled}
-						placeholder="/media/tv"
-						oninput={(event) =>
-							change('SONARR_MEDIA_PATH', (event.currentTarget as HTMLInputElement).value || null)}
-					/></label
-				>
-			</div>
+			{@render mappingGroup('Films', 'film', 'Radarr Path', 'RADARR_PATH_MAPPINGS', radarrMappings)}
+			{@render mappingGroup(
+				'Television',
+				'television',
+				'Sonarr Path',
+				'SONARR_PATH_MAPPINGS',
+				sonarrMappings
+			)}
 		</div>
 		<label class="roots-field">
 			<span>Additional allowed media roots</span>
+			<p>
+				Extra Marquee-visible folders that are allowed alongside your Film and Television paths.
+			</p>
 			<textarea
 				rows="5"
 				value={mediaRoots.join('\n')}
 				{disabled}
-				placeholder="One absolute container path per line"
+				placeholder="One absolute Marquee path per line"
 				oninput={(event) =>
 					change('MEDIA_ROOTS', roots((event.currentTarget as HTMLTextAreaElement).value))}
 			></textarea>
 			<small
-				>Arr media targets are included automatically. Host mount sources are never exposed here.</small
+				>These add allowed locations; they do not create Docker mounts or Arr translations.</small
 			>
 		</label>
 	</div>
 
-	{#if result}
-		<div class="path-results" aria-live="polite">
-			{#each [...result.media_roots, ...Object.values(result.mappings).flatMap( (mapping) => (mapping.target ? [mapping.target] : []) )] as fact (fact.path)}
-				<div>
-					<code>{fact.path}</code><span class:good={fact.readable}
-						>{fact.readable ? 'Readable' : fact.exists ? 'Not readable' : 'Not found'}{fact.writable
-							? ' · Writable'
-							: ''}</span
-					>
-				</div>
-			{/each}
-		</div>
-	{/if}
-
 	<footer>
-		<button type="button" class="pill ghost" onclick={onReset} {disabled}>Reset path defaults</button>
+		<button type="button" class="pill ghost" onclick={onReset} {disabled}
+			>Reset path defaults</button
+		>
 		<button type="button" class="pill quiet" onclick={testPaths} disabled={disabled || testing}
 			>{testing ? 'Testing…' : 'Test accessibility'}</button
 		>
@@ -180,7 +242,7 @@
 	.path-card.dirty {
 		border-color: color-mix(in srgb, var(--gold) 38%, var(--line));
 	}
-	header {
+	.path-card > header {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		gap: 9px;
@@ -189,63 +251,107 @@
 		border-bottom: 1px solid var(--line);
 		color: var(--muted);
 	}
-	header h3 {
+	.path-card > header h3 {
 		margin: 0;
 		color: var(--text);
 		font-size: 12px;
 	}
-	header p {
+	.path-card > header p {
 		margin: 2px 0 0;
 		font-size: 11px;
 	}
-	header > span {
+	.path-card > header > span {
 		color: var(--muted);
 		font: 600 9px/1.2 var(--font-mono);
 		text-transform: uppercase;
 	}
 	.path-layout {
 		display: grid;
-		grid-template-columns: minmax(0, 1.7fr) minmax(220px, 0.7fr);
+		grid-template-columns: minmax(0, 1.65fr) minmax(230px, 0.72fr);
 	}
 	.mapping-list {
 		min-width: 0;
 	}
-	.mapping-row {
-		display: grid;
-		grid-template-columns: 130px minmax(130px, 1fr) auto minmax(130px, 1fr);
-		align-items: end;
-		gap: 9px;
-		padding: 13px 15px;
-		border-bottom: 1px solid var(--line);
+	.library-group + .library-group {
+		border-top: 1px solid var(--line);
 	}
-	.mapping-row:last-child {
-		border-bottom: 0;
+	.library-group > header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 11px 15px 7px;
 	}
-	.provider {
-		display: grid;
-		gap: 2px;
-		align-self: center;
-	}
-	.provider b {
+	.library-group h4 {
+		margin: 0;
+		color: var(--text);
 		font-size: 12px;
+		font-weight: 700;
 	}
-	.provider small,
-	.roots-field small {
-		color: var(--muted);
-		font-size: 10px;
-	}
-	.mapping-row label,
-	.roots-field {
-		display: grid;
-		gap: 5px;
+	.add-path,
+	.remove-path {
+		border: 1px solid var(--line2);
+		border-radius: var(--radius-pill);
+		background: transparent;
 		color: var(--muted);
 		font-size: 10px;
 		font-weight: 650;
 	}
-	.mapping-row i {
-		align-self: center;
+	.add-path {
+		padding: 5px 9px;
+		color: var(--gold-copy);
+	}
+	.add-path:hover:not(:disabled) {
+		border-color: color-mix(in srgb, var(--gold) 48%, var(--line2));
+		background: color-mix(in srgb, var(--gold) 8%, transparent);
+	}
+	.remove-path {
+		padding: 5px 8px;
+	}
+	.remove-path:hover:not(:disabled) {
+		color: var(--bad);
+		border-color: color-mix(in srgb, var(--bad) 42%, var(--line2));
+	}
+	.add-path:focus-visible,
+	.remove-path:focus-visible {
+		outline: 2px solid var(--gold);
+		outline-offset: 2px;
+	}
+	.add-path:disabled,
+	.remove-path:disabled {
+		cursor: not-allowed;
+		opacity: 0.52;
+	}
+	.path-heading,
+	.mapping-row {
+		display: grid;
+		grid-template-columns: minmax(120px, 1fr) auto minmax(120px, 1fr) auto;
+		align-items: center;
+		gap: 9px;
+		padding-inline: 15px;
+	}
+	.path-heading {
+		padding-bottom: 6px;
 		color: var(--muted);
+		font: 650 9px/1.2 var(--font-mono);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+	.path-heading i,
+	.mapping-row > i {
+		color: var(--faint);
 		font-style: normal;
+	}
+	.mapping-row {
+		padding-block: 8px 12px;
+	}
+	.mapping-row + .mapping-row {
+		border-top: 1px dashed color-mix(in srgb, var(--line2) 72%, transparent);
+		padding-top: 12px;
+	}
+	.mapping-row label {
+		display: block;
+		min-width: 0;
 	}
 	input,
 	textarea {
@@ -258,49 +364,48 @@
 		padding: 8px 9px;
 		font: 11px/1.4 var(--font-mono);
 	}
-	textarea {
-		resize: vertical;
+	input:focus-visible,
+	textarea:focus-visible {
+		outline: 2px solid var(--gold);
+		outline-offset: 2px;
 	}
 	input:disabled,
 	textarea:disabled {
-		opacity: 0.52;
 		cursor: not-allowed;
+		opacity: 0.52;
+	}
+	.empty-paths {
+		margin: 0;
+		padding: 3px 15px 13px;
+		color: var(--muted);
+		font-size: 11px;
 	}
 	.roots-field {
+		display: grid;
+		align-content: start;
+		gap: 7px;
 		padding: 14px 15px;
 		border-left: 1px solid var(--line);
-	}
-	.path-results {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-		gap: 1px;
-		border-top: 1px solid var(--line);
-		background: var(--line);
-	}
-	.path-results div {
-		display: flex;
-		justify-content: space-between;
-		gap: 12px;
-		padding: 8px 11px;
-		background: var(--panel2);
-	}
-	.path-results code {
-		overflow: hidden;
 		color: var(--muted);
-		font: 9.5px/1.4 var(--font-mono);
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		font-size: 10px;
+		font-weight: 650;
 	}
-	.path-results span {
-		flex: none;
-		color: var(--bad);
-		font-size: 9px;
-		text-transform: uppercase;
+	.roots-field > p {
+		margin: -2px 0 0;
+		font-size: 10px;
+		font-weight: 400;
+		line-height: 1.45;
 	}
-	.path-results span.good {
-		color: var(--good);
+	.roots-field textarea {
+		resize: vertical;
 	}
-	footer {
+	.roots-field small {
+		color: var(--muted);
+		font-size: 10px;
+		font-weight: 400;
+		line-height: 1.45;
+	}
+	.path-card > footer {
 		display: flex;
 		justify-content: flex-end;
 		gap: 8px;
@@ -317,11 +422,18 @@
 		}
 	}
 	@media (max-width: 680px) {
+		.path-heading {
+			display: none;
+		}
 		.mapping-row {
 			grid-template-columns: 1fr;
+			gap: 7px;
 		}
-		.mapping-row i {
+		.mapping-row > i {
 			display: none;
+		}
+		.remove-path {
+			justify-self: start;
 		}
 	}
 </style>

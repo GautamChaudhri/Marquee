@@ -700,6 +700,81 @@ async def test_path_mapping_test_reports_access_without_mutating_filesystem(
 
 
 @pytest.mark.asyncio
+async def test_path_mapping_test_reports_every_multiple_mapping(
+    db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "MEDIA_PATH_CEILINGS", [str(tmp_path)])
+    movies = tmp_path / "movies"
+    archive = tmp_path / "archive"
+    television = tmp_path / "television"
+    for path in (movies, archive, television):
+        path.mkdir()
+
+    response = await client.post(
+        "/api/settings/paths/test",
+        json={
+            "radarr_mappings": [
+                {"arr_path": "/radarr/movies", "marquee_path": str(movies)},
+                {"arr_path": "/radarr/archive", "marquee_path": str(archive)},
+            ],
+            "sonarr_mappings": [
+                {"arr_path": "/sonarr/tv", "marquee_path": str(television)},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert [item["target"]["path"] for item in payload["path_mappings"]["radarr"]] == [
+        str(movies),
+        str(archive),
+    ]
+    assert payload["path_mappings"]["sonarr"][0]["target"]["path"] == str(television)
+    # Older callers still receive the first mapping in the established response field.
+    assert payload["mappings"]["radarr"]["target"]["path"] == str(movies)
+
+
+@pytest.mark.asyncio
+async def test_unified_settings_persists_multiple_library_mappings(
+    db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        settings,
+        "MEDIA_PATH_CEILINGS",
+        [
+            str(tmp_path),
+            *settings.MEDIA_ROOTS,
+            *(path for path in (settings.RADARR_MEDIA_PATH, settings.SONARR_MEDIA_PATH) if path),
+        ],
+    )
+    movies = tmp_path / "movies"
+    archive = tmp_path / "archive"
+    for path in (movies, archive):
+        path.mkdir()
+
+    response = await client.put(
+        "/api/settings/config",
+        json={
+            "expected_version": 1,
+            "values": {
+                "RADARR_PATH_MAPPINGS": [
+                    {"arr_path": "/radarr/movies", "marquee_path": str(movies)},
+                    {"arr_path": "/radarr/archive", "marquee_path": str(archive)},
+                ]
+            },
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["settings"]["values"]["RADARR_PATH_MAPPINGS"] == [
+        {"arr_path": "/radarr/movies", "marquee_path": str(movies)},
+        {"arr_path": "/radarr/archive", "marquee_path": str(archive)},
+    ]
+    assert payload["settings"]["integrations"]["radarr"]["path_mapping_configured"] is True
+
+
+@pytest.mark.asyncio
 async def test_path_mapping_test_rejects_candidates_outside_deployment_ceiling(
     db: AsyncSession, client: AsyncClient, tmp_path, monkeypatch
 ):

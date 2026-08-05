@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee import __version__
-from marquee.config import Settings, settings
+from marquee.config import PathMapping, Settings, settings
 from marquee.core.configuration import (
     CONFIGURATION_CATALOG,
     ConfigurationError,
@@ -152,6 +152,8 @@ def _container_path_facts(app_settings: Settings) -> list[dict[str, Any]]:
     candidates = [
         app_settings.DATA_DIR,
         *app_settings.MEDIA_ROOTS,
+        *(mapping.marquee_path for mapping in app_settings.radarr_path_mappings),
+        *(mapping.marquee_path for mapping in app_settings.sonarr_path_mappings),
         app_settings.POSTER_CACHE_DIR,
         app_settings.POSTER_STAGING_DIR,
         app_settings.POSTER_BACKUP_DIR,
@@ -339,8 +341,10 @@ class PathMappingTestPayload(BaseModel):
     media_roots: list[str] = Field(default_factory=list, max_length=32)
     radarr_path_prefix: str | None = Field(default=None, max_length=4096)
     radarr_media_path: str | None = Field(default=None, max_length=4096)
+    radarr_mappings: list[PathMapping] | None = Field(default=None, max_length=32)
     sonarr_path_prefix: str | None = Field(default=None, max_length=4096)
     sonarr_media_path: str | None = Field(default=None, max_length=4096)
+    sonarr_mappings: list[PathMapping] | None = Field(default=None, max_length=32)
 
 
 def _validate_movie_poster_format(value: str) -> str:
@@ -403,43 +407,88 @@ def _path_accessibility(path_value: str) -> dict[str, Any]:
     }
 
 
+def _requested_path_mappings(
+    provider: str,
+    *,
+    mappings: list[PathMapping] | None,
+    legacy_prefix: str | None,
+    legacy_target: str | None,
+) -> list[PathMapping]:
+    if mappings is not None:
+        if legacy_prefix or legacy_target:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{provider.title()} mappings cannot be combined with the legacy path prefix "
+                    "and media path fields."
+                ),
+            )
+        return mappings
+    if bool(legacy_prefix) != bool(legacy_target):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{provider.title()} path prefix and media path must be configured together.",
+        )
+    if not legacy_prefix or not legacy_target:
+        return []
+    return [PathMapping(arr_path=legacy_prefix, marquee_path=legacy_target)]
+
+
+def _test_mapping_accessibility(provider: str, mapping: PathMapping) -> dict[str, Any]:
+    normalized_prefix = _normalize_container_path(
+        mapping.arr_path, label=f"{provider.title()} path"
+    )
+    normalized_target = _normalize_container_path(
+        mapping.marquee_path, label=f"{provider.title()} Marquee path"
+    )
+    try:
+        normalized_target = str(
+            validate_media_path_candidate(
+                normalized_target,
+                label=f"{provider.title()} Marquee path",
+            )
+        )
+    except PathValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "configured": True,
+        "prefix": normalized_prefix,
+        "target": _path_accessibility(normalized_target),
+    }
+
+
 @router.post("/paths/test")
 async def test_path_mappings(payload: PathMappingTestPayload):
     """Validate candidate logical paths without creating files or changing mounts."""
-    pairs = {
-        "radarr": (payload.radarr_path_prefix, payload.radarr_media_path),
-        "sonarr": (payload.sonarr_path_prefix, payload.sonarr_media_path),
+    requested = {
+        "radarr": _requested_path_mappings(
+            "radarr",
+            mappings=payload.radarr_mappings,
+            legacy_prefix=payload.radarr_path_prefix,
+            legacy_target=payload.radarr_media_path,
+        ),
+        "sonarr": _requested_path_mappings(
+            "sonarr",
+            mappings=payload.sonarr_mappings,
+            legacy_prefix=payload.sonarr_path_prefix,
+            legacy_target=payload.sonarr_media_path,
+        ),
     }
     mappings: dict[str, dict[str, Any]] = {}
-    for provider, (prefix, target) in pairs.items():
-        if bool(prefix) != bool(target):
-            raise HTTPException(
-                status_code=400,
-                detail=f"{provider.title()} path prefix and media path must be configured together.",
-            )
-        if prefix and target:
-            normalized_prefix = _normalize_container_path(
-                prefix, label=f"{provider.title()} path prefix"
-            )
-            normalized_target = _normalize_container_path(
-                target, label=f"{provider.title()} media path"
-            )
-            try:
-                normalized_target = str(
-                    validate_media_path_candidate(
-                        normalized_target,
-                        label=f"{provider.title()} media path",
-                    )
-                )
-            except PathValidationError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            mappings[provider] = {
-                "configured": True,
-                "prefix": normalized_prefix,
-                "target": _path_accessibility(normalized_target),
+    path_mappings: dict[str, list[dict[str, Any]]] = {}
+    for provider, provider_mappings in requested.items():
+        results = [_test_mapping_accessibility(provider, mapping) for mapping in provider_mappings]
+        path_mappings[provider] = results
+        # Preserve the established response shape for clients that still manage one mapping.
+        mappings[provider] = (
+            results[0]
+            if results
+            else {
+                "configured": False,
+                "prefix": None,
+                "target": None,
             }
-        else:
-            mappings[provider] = {"configured": False, "prefix": None, "target": None}
+        )
 
     roots: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -453,7 +502,13 @@ async def test_path_mappings(payload: PathMappingTestPayload):
             continue
         seen.add(normalized)
         roots.append(_path_accessibility(normalized))
-    return {"ok": True, "mappings": mappings, "media_roots": roots, "mutated": False}
+    return {
+        "ok": True,
+        "mappings": mappings,
+        "path_mappings": path_mappings,
+        "media_roots": roots,
+        "mutated": False,
+    }
 
 
 def _configuration_exception(exc: Exception) -> HTTPException:

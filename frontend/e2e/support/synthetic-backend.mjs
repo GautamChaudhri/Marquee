@@ -515,15 +515,19 @@ const settingsValues = {
 	SYNC_INTERVAL_MINUTES: 30,
 	WEBHOOK_DRY_RUN: false,
 	DATA_DIR: '/app/data',
-	MEDIA_ROOTS: ['/movies', '/television'],
+	MEDIA_ROOTS: [],
 	RADARR_URL: 'http://radarr:7878',
 	RADARR_INSTANCE_NAME: 'Cinema Rack',
 	SONARR_URL: 'http://sonarr:8989',
 	SONARR_INSTANCE_NAME: 'Series Rack',
 	RADARR_PATH_PREFIX: '/movies',
 	RADARR_MEDIA_PATH: '/movies',
+	RADARR_PATH_MAPPINGS: null,
 	SONARR_PATH_PREFIX: '/tv',
 	SONARR_MEDIA_PATH: '/television',
+	SONARR_PATH_MAPPINGS: null,
+	POSTER_CACHE_DIR: '/app/data/cache/posters',
+	POSTER_STAGING_DIR: '/app/data/staging',
 	MOVIE_POSTER_FORMAT: 'poster.jpg',
 	SERIES_POSTER_FORMAT: 'show.jpg',
 	SEASON_POSTER_FORMAT: 'season{season:02d}.jpg',
@@ -583,8 +587,34 @@ const settingsCatalog = Object.fromEntries(
 			kind: 'bool'
 		}),
 		settingEntry('MEDIA_ROOTS', 'media', 'Library paths', 'standard', { kind: 'list' }),
+		settingEntry('RADARR_PATH_MAPPINGS', 'media', 'Library paths', 'standard', {
+			kind: 'list'
+		}),
+		settingEntry('SONARR_PATH_MAPPINGS', 'media', 'Library paths', 'standard', {
+			kind: 'list'
+		}),
 		settingEntry(
 			'DATA_DIR',
+			'media',
+			'Application paths',
+			'advanced',
+			{
+				kind: 'path'
+			},
+			'restart'
+		),
+		settingEntry(
+			'POSTER_CACHE_DIR',
+			'media',
+			'Application paths',
+			'advanced',
+			{
+				kind: 'path'
+			},
+			'restart'
+		),
+		settingEntry(
+			'POSTER_STAGING_DIR',
 			'media',
 			'Application paths',
 			'advanced',
@@ -598,8 +628,8 @@ const settingsCatalog = Object.fromEntries(
 		}),
 		settingEntry(
 			'POSTER_BACKUP_DIR',
-			'posters',
-			'Storage and healing',
+			'media',
+			'Application paths',
 			'advanced',
 			{
 				kind: 'path'
@@ -713,7 +743,11 @@ const settingsDocument = () => ({
 		keyring_configured: true,
 		mounts: [
 			{ path: '/movies', exists: true, readable: true, writable: true },
-			{ path: '/television', exists: true, readable: true, writable: true }
+			{ path: '/television', exists: true, readable: true, writable: true },
+			{ path: '/app/data', exists: true, readable: true, writable: true },
+			{ path: '/app/data/cache/posters', exists: true, readable: true, writable: true },
+			{ path: '/app/data/staging', exists: true, readable: true, writable: true },
+			{ path: '/app/data/poster-backups', exists: true, readable: true, writable: true }
 		]
 	},
 	sync: {
@@ -737,6 +771,47 @@ function applyRemovals(keys) {
 const server = createServer((req, res) => {
 	const url = new URL(req.url ?? '/', `http://127.0.0.1:${PORT}`);
 	const path = url.pathname;
+	if (req.method === 'POST' && path === '/api/settings/paths/test') {
+		let body = '';
+		req.setEncoding('utf8');
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			const payload = JSON.parse(body || '{}');
+			const checked = (mapping) => ({
+				configured: true,
+				prefix: mapping.arr_path,
+				target: {
+					path: mapping.marquee_path,
+					exists: true,
+					directory: true,
+					readable: true,
+					writable: true
+				}
+			});
+			const pathMappings = {
+				radarr: (payload.radarr_mappings ?? []).map(checked),
+				sonarr: (payload.sonarr_mappings ?? []).map(checked)
+			};
+			const empty = { configured: false, prefix: null, target: null };
+			json(res, 200, {
+				ok: true,
+				mutated: false,
+				mappings: {
+					radarr: pathMappings.radarr[0] ?? empty,
+					sonarr: pathMappings.sonarr[0] ?? empty
+				},
+				path_mappings: pathMappings,
+				media_roots: (payload.media_roots ?? []).map((mediaPath) => ({
+					path: mediaPath,
+					exists: true,
+					directory: true,
+					readable: true,
+					writable: true
+				}))
+			});
+		});
+		return;
+	}
 	if (req.method === 'PUT' && path === '/api/settings/config') {
 		let body = '';
 		req.setEncoding('utf8');

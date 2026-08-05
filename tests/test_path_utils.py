@@ -91,6 +91,23 @@ class TestRadarrTranslation:
         assert trailing.translate_radarr_path("/plunder/movies/Dune") == "/movies/Dune"
         assert root.translate_radarr_path("/Dune") == "/movies/Dune"
 
+    def test_settings_translation_uses_the_most_specific_multiple_mapping(self):
+        configured = Settings(
+            _env_file=None,
+            RADARR_PATH_MAPPINGS=[
+                {"arr_path": "/library", "marquee_path": "/media/library"},
+                {"arr_path": "/library/classics", "marquee_path": "/media/classics"},
+            ],
+        )
+
+        assert (
+            configured.translate_radarr_path("/library/classics/Metropolis")
+            == "/media/classics/Metropolis"
+        )
+        assert (
+            configured.translate_radarr_path("/library/new/Arrival") == "/media/library/new/Arrival"
+        )
+
 
 class TestSonarrTranslation:
     """Sonarr paths use SONARR_PATH_PREFIX → SONARR_MEDIA_PATH."""
@@ -320,6 +337,25 @@ def test_manual_and_auto_roots_combined():
         safe_translate_and_validate("/Volumes/PLUNDER/Media/Movies/Dune", source="radarr")
         # Manual pass
         safe_translate_and_validate("/some/manual/path/extra", source="radarr")
+
+
+def test_multiple_mapping_targets_are_automatically_allowed_roots():
+    configured = Settings(
+        _env_file=None,
+        RADARR_PATH_MAPPINGS=[
+            {"arr_path": "/movies/main", "marquee_path": "/media/movies"},
+            {"arr_path": "/movies/archived", "marquee_path": "/media/archive"},
+        ],
+        SONARR_PATH_MAPPINGS=[
+            {"arr_path": "/tv", "marquee_path": "/media/television"},
+        ],
+    )
+
+    assert {str(root) for root in configured.effective_media_roots} == {
+        "/media/archive",
+        "/media/movies",
+        "/media/television",
+    }
 
 
 # ---------------------------------------------------------------------------

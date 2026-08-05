@@ -6615,6 +6615,30 @@
         "title": "OperationsWorkers",
         "type": "object"
       },
+      "PathMapping": {
+        "additionalProperties": false,
+        "description": "One Arr-visible root and its corresponding Marquee-visible root.",
+        "properties": {
+          "arr_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Arr Path",
+            "type": "string"
+          },
+          "marquee_path": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Marquee Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "arr_path",
+          "marquee_path"
+        ],
+        "title": "PathMapping",
+        "type": "object"
+      },
       "PathMappingTestPayload": {
         "properties": {
           "media_roots": {
@@ -6624,6 +6648,21 @@
             "maxItems": 32,
             "title": "Media Roots",
             "type": "array"
+          },
+          "radarr_mappings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PathMapping"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radarr Mappings"
           },
           "radarr_media_path": {
             "anyOf": [
@@ -6648,6 +6687,21 @@
               }
             ],
             "title": "Radarr Path Prefix"
+          },
+          "sonarr_mappings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PathMapping"
+                },
+                "maxItems": 32,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sonarr Mappings"
           },
           "sonarr_media_path": {
             "anyOf": [

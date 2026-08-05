@@ -128,8 +128,10 @@ APP_PRIVATE_KEYS = frozenset(
         "BACKUP_DIR",
         "RADARR_PATH_PREFIX",
         "RADARR_MEDIA_PATH",
+        "RADARR_PATH_MAPPINGS",
         "SONARR_PATH_PREFIX",
         "SONARR_MEDIA_PATH",
+        "SONARR_PATH_MAPPINGS",
         "MEDIA_ROOTS",
         "MEDIA_PATH_CEILINGS",
         "POSTER_CACHE_DIR",
@@ -188,8 +190,10 @@ APP_NEXT_JOB_KEYS = frozenset(
         "SONARR_INSTANCE_NAME",
         "RADARR_PATH_PREFIX",
         "RADARR_MEDIA_PATH",
+        "RADARR_PATH_MAPPINGS",
         "SONARR_PATH_PREFIX",
         "SONARR_MEDIA_PATH",
+        "SONARR_PATH_MAPPINGS",
         "MEDIA_ROOTS",
         "SYNC_INTERVAL_MINUTES",
         "SYNC_COOLDOWN_SECONDS",
@@ -331,8 +335,10 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         "MEDIA_ROOTS",
         "RADARR_PATH_PREFIX",
         "RADARR_MEDIA_PATH",
+        "RADARR_PATH_MAPPINGS",
         "SONARR_PATH_PREFIX",
         "SONARR_MEDIA_PATH",
+        "SONARR_PATH_MAPPINGS",
     }:
         return ("media", "Library Paths", "standard")
     if key in {
@@ -342,6 +348,7 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         "METRICS_DISK_PATH",
         "POSTER_CACHE_DIR",
         "POSTER_STAGING_DIR",
+        "POSTER_BACKUP_DIR",
     }:
         return ("media", "Application Paths", "advanced")
     if key in {
@@ -353,10 +360,7 @@ def _app_ui(key: str) -> tuple[SettingsTab, str, SettingsLevel]:
         "HEAL_INTERVAL_MINUTES",
     }:
         return ("posters", "Poster Behavior", "standard")
-    if key in {
-        "HEAL_RECENT_DEPLOY_GRACE_MINUTES",
-        "POSTER_BACKUP_DIR",
-    }:
+    if key in {"HEAL_RECENT_DEPLOY_GRACE_MINUTES"}:
         return ("posters", "Storage and Healing", "advanced")
     if key in {"PIPELINE_CACHE_EXTRACTOR", "RATE_PIPELINE_RUN_SECONDS"}:
         return ("pipeline", "Runtime Defaults", "standard")
@@ -525,6 +529,8 @@ def configuration_checksum(values: dict[str, Any]) -> str:
 
 
 def _json_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return _json_value(value.model_dump())
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, tuple):

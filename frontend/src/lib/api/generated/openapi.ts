@@ -4271,14 +4271,28 @@ export interface components {
 			/** Supervisor Available */
 			supervisor_available: boolean;
 		};
+		/**
+		 * PathMapping
+		 * @description One Arr-visible root and its corresponding Marquee-visible root.
+		 */
+		PathMapping: {
+			/** Arr Path */
+			arr_path: string;
+			/** Marquee Path */
+			marquee_path: string;
+		};
 		/** PathMappingTestPayload */
 		PathMappingTestPayload: {
 			/** Media Roots */
 			media_roots?: string[];
+			/** Radarr Mappings */
+			radarr_mappings?: components['schemas']['PathMapping'][] | null;
 			/** Radarr Media Path */
 			radarr_media_path?: string | null;
 			/** Radarr Path Prefix */
 			radarr_path_prefix?: string | null;
+			/** Sonarr Mappings */
+			sonarr_mappings?: components['schemas']['PathMapping'][] | null;
 			/** Sonarr Media Path */
 			sonarr_media_path?: string | null;
 			/** Sonarr Path Prefix */

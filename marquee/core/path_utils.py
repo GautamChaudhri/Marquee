@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import cast
 
 from marquee.config import settings
 
@@ -67,6 +68,25 @@ def _canonical_root(raw: str, *, label: str, relative_base: Path | None = None) 
     return resolved
 
 
+def _mapping_targets(config: object, source: str) -> list[str]:
+    """Read every Marquee path from a source's new or legacy mapping shape."""
+    mappings = getattr(config, f"{source}_path_mappings", None)
+    if mappings is None:
+        target = getattr(config, f"{source.upper()}_MEDIA_PATH", None)
+        return [str(target)] if target else []
+
+    targets: list[str] = []
+    for mapping in mappings:
+        target = (
+            mapping.get("marquee_path")
+            if isinstance(mapping, dict)
+            else getattr(mapping, "marquee_path", None)
+        )
+        if target:
+            targets.append(str(target))
+    return targets
+
+
 def deployment_media_ceilings() -> tuple[Path, ...]:
     """Return bootstrap-owned media ceilings, including the migration fallback."""
 
@@ -75,8 +95,8 @@ def deployment_media_ceilings() -> tuple[Path, ...]:
     if not configured:
         configured = [
             *(getattr(bootstrap, "MEDIA_ROOTS", None) or []),
-            getattr(bootstrap, "RADARR_MEDIA_PATH", None),
-            getattr(bootstrap, "SONARR_MEDIA_PATH", None),
+            *_mapping_targets(bootstrap, "radarr"),
+            *_mapping_targets(bootstrap, "sonarr"),
         ]
     roots = {
         _canonical_root(str(raw), label="deployment media ceiling") for raw in configured if raw
@@ -135,10 +155,41 @@ def validate_data_path_candidate(
     return candidate
 
 
+def _validate_path_mappings(values: dict[str, object], *, key: str, provider: str) -> None:
+    mappings = values.get(key)
+    if mappings is None:
+        return
+    if not isinstance(mappings, list):
+        raise PathValidationError(f"{key} must be a list of path mappings")
+
+    seen_prefixes: set[Path] = set()
+    for index, mapping in enumerate(cast(list[object], mappings)):
+        if not isinstance(mapping, dict):
+            raise PathValidationError(f"{key}[{index}] must be a path mapping")
+        arr_path = mapping.get("arr_path")
+        marquee_path = mapping.get("marquee_path")
+        if not isinstance(arr_path, str) or not isinstance(marquee_path, str):
+            raise PathValidationError(
+                f"{provider.title()} mapping {index + 1} needs an Arr path and a Marquee path"
+            )
+        prefix = _canonical_root(arr_path, label=f"{provider.title()} mapping {index + 1} Arr path")
+        if prefix in seen_prefixes:
+            raise PathValidationError(f"{provider.title()} mapping prefixes must be unique")
+        seen_prefixes.add(prefix)
+        validate_media_path_candidate(
+            marquee_path,
+            label=f"{provider.title()} mapping {index + 1} Marquee path",
+        )
+
+
 def validate_path_configuration(values: dict[str, object]) -> None:
     """Validate the complete effective path document before revision persistence."""
 
-    for index, raw in enumerate(values.get("MEDIA_ROOTS") or []):
+    media_roots = values.get("MEDIA_ROOTS")
+    if media_roots is not None and not isinstance(media_roots, list):
+        raise PathValidationError("MEDIA_ROOTS must be a list of paths")
+    root_values: list[object] = cast(list[object], media_roots) if media_roots else []
+    for index, raw in enumerate(root_values):
         validate_media_path_candidate(str(raw), label=f"MEDIA_ROOTS[{index}]")
     for key in ("RADARR_MEDIA_PATH", "SONARR_MEDIA_PATH"):
         raw = values.get(key)
@@ -148,6 +199,8 @@ def validate_path_configuration(values: dict[str, object]) -> None:
         raw = values.get(key)
         if raw:
             _canonical_root(str(raw), label=key)
+    _validate_path_mappings(values, key="RADARR_PATH_MAPPINGS", provider="radarr")
+    _validate_path_mappings(values, key="SONARR_PATH_MAPPINGS", provider="sonarr")
     data_root = validate_data_path_candidate(
         str(values.get("DATA_DIR") or "data"), label="DATA_DIR"
     )

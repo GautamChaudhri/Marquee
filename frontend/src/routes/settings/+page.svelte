@@ -7,7 +7,12 @@
 	import PathMappingsCard from '$lib/components/settings/PathMappingsCard.svelte';
 	import PosterNamingCard from '$lib/components/settings/PosterNamingCard.svelte';
 	import SettingsField from '$lib/components/settings/SettingsField.svelte';
-	import { getSettings, putConfiguration, resetConfiguration } from '$lib/api/system';
+	import {
+		getSettings,
+		putConfiguration,
+		resetConfiguration,
+		type PathMappingTestResult
+	} from '$lib/api/system';
 	import { CONFIGURATION_CONFLICT_MESSAGE, isConfigurationConflict } from '$lib/api/client';
 	import type { RuntimeSettings, SettingsCatalogEntry, SettingsTab } from '$lib/api/types';
 	import { filmMode, libraryPosterSize, televisionMode, theme } from '$lib/theme';
@@ -28,6 +33,10 @@
 		access: { label: 'Access', icon: 'eye', hint: 'Security posture' }
 	};
 	const tabs = SETTINGS_TABS.map((id) => ({ id, ...tabDetails[id] }));
+	type EditablePathMapping = { arr_path: string; marquee_path: string };
+	type TestedMediaPath = NonNullable<
+		PathMappingTestResult['path_mappings']['radarr'][number]['target']
+	>;
 
 	// svelte-ignore state_referenced_locally
 	let settings = $state<RuntimeSettings | null>(data.settings);
@@ -46,6 +55,7 @@
 	let conflictNote = $state<string | null>(null);
 	let secureContext = $state(false);
 	let advancedRegion = $state<HTMLElement | null>(null);
+	let testedMediaPaths = $state<TestedMediaPath[]>([]);
 
 	const allEntries = $derived(
 		settings ? Object.values(settings.catalog).filter((entry) => entry.visible) : []
@@ -71,8 +81,10 @@
 			'MEDIA_ROOTS',
 			'RADARR_PATH_PREFIX',
 			'RADARR_MEDIA_PATH',
+			'RADARR_PATH_MAPPINGS',
 			'SONARR_PATH_PREFIX',
-			'SONARR_MEDIA_PATH'
+			'SONARR_MEDIA_PATH',
+			'SONARR_PATH_MAPPINGS'
 		],
 		posters: ['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT']
 	};
@@ -115,6 +127,38 @@
 		// A staged reset previews the default it will restore.
 		if (stagedResets.has(key)) return settings?.defaults[key];
 		return settings?.values[key];
+	}
+
+	function mappingListFor(
+		key: string,
+		legacyPrefixKey: string,
+		legacyTargetKey: string
+	): EditablePathMapping[] {
+		const value = valueFor(key);
+		if (Array.isArray(value)) {
+			return value.flatMap((mapping) => {
+				if (!mapping || typeof mapping !== 'object') return [];
+				const candidate = mapping as Record<string, unknown>;
+				return [
+					{
+						arr_path: String(candidate.arr_path ?? ''),
+						marquee_path: String(candidate.marquee_path ?? '')
+					}
+				];
+			});
+		}
+		const arrPath = String(valueFor(legacyPrefixKey) ?? '');
+		const marqueePath = String(valueFor(legacyTargetKey) ?? '');
+		return arrPath || marqueePath ? [{ arr_path: arrPath, marquee_path: marqueePath }] : [];
+	}
+
+	function pathStatusFor(entry: SettingsCatalogEntry) {
+		if (activeTab !== 'media' || entry.section.toLowerCase() !== 'application paths') {
+			return undefined;
+		}
+		const value = valueFor(entry.key);
+		if (typeof value !== 'string') return undefined;
+		return settings?.deployment.mounts.find((mount) => mount.path === value);
 	}
 
 	function changeValue(key: string, value: unknown) {
@@ -331,6 +375,7 @@
 								value={valueFor(entry.key)}
 								defaultValue={settings.defaults[entry.key]}
 								source={settings.sources[entry.key] ?? 'default'}
+								pathStatus={pathStatusFor(entry)}
 								dirty={dirtyKeySet.has(entry.key)}
 								disabled={!settings.writable || saving || resetting}
 								onChange={(value) => changeValue(entry.key, value)}
@@ -486,36 +531,51 @@
 			</div>
 			<PathMappingsCard
 				mediaRoots={(valueFor('MEDIA_ROOTS') as string[] | undefined) ?? []}
-				radarrPrefix={String(valueFor('RADARR_PATH_PREFIX') ?? '')}
-				radarrTarget={String(valueFor('RADARR_MEDIA_PATH') ?? '')}
-				sonarrPrefix={String(valueFor('SONARR_PATH_PREFIX') ?? '')}
-				sonarrTarget={String(valueFor('SONARR_MEDIA_PATH') ?? '')}
+				radarrMappings={mappingListFor(
+					'RADARR_PATH_MAPPINGS',
+					'RADARR_PATH_PREFIX',
+					'RADARR_MEDIA_PATH'
+				)}
+				sonarrMappings={mappingListFor(
+					'SONARR_PATH_MAPPINGS',
+					'SONARR_PATH_PREFIX',
+					'SONARR_MEDIA_PATH'
+				)}
 				dirty={[
 					'MEDIA_ROOTS',
 					'RADARR_PATH_PREFIX',
 					'RADARR_MEDIA_PATH',
+					'RADARR_PATH_MAPPINGS',
 					'SONARR_PATH_PREFIX',
-					'SONARR_MEDIA_PATH'
-				].some((key) => key in drafts)}
+					'SONARR_MEDIA_PATH',
+					'SONARR_PATH_MAPPINGS'
+				].some((key) => dirtyKeySet.has(key))}
 				disabled={!settings.writable || saving}
 				onChange={changeValue}
-				onReset={() =>
+				onTestResults={(facts) => (testedMediaPaths = facts)}
+				onReset={() => {
+					testedMediaPaths = [];
 					resetKeys([
 						'MEDIA_ROOTS',
 						'RADARR_PATH_PREFIX',
 						'RADARR_MEDIA_PATH',
+						'RADARR_PATH_MAPPINGS',
 						'SONARR_PATH_PREFIX',
-						'SONARR_MEDIA_PATH'
-					])}
+						'SONARR_MEDIA_PATH',
+						'SONARR_PATH_MAPPINGS'
+					]);
+				}}
 			/>
-			{#if settings.deployment.mounts?.length}
-				<section class="mount-strip" aria-label="Container path checks">
-					{#each settings.deployment.mounts as mount (mount.path)}
+			{#if testedMediaPaths.length}
+				<section class="mount-strip" aria-label="Marquee path checks">
+					{#each testedMediaPaths as mount (mount.path)}
 						<div>
 							<code>{mount.path}</code><span class:good={mount.readable}
-								>{mount.readable ? 'readable' : 'unavailable'}{mount.writable
-									? ' · writable'
-									: ''}</span
+								>{mount.readable
+									? 'readable'
+									: mount.exists
+										? 'not readable'
+										: 'unavailable'}{mount.writable ? ' · writable' : ''}</span
 							>
 						</div>
 					{/each}

@@ -11,6 +11,20 @@ export type IntegrationProvider = 'tmdb' | 'radarr' | 'sonarr';
 export type PathMappingTestResult = {
 	ok: boolean;
 	mutated: false;
+	path_mappings: Record<
+		'radarr' | 'sonarr',
+		Array<{
+			configured: boolean;
+			prefix: string | null;
+			target: {
+				path: string;
+				exists: boolean;
+				directory: boolean;
+				readable: boolean;
+				writable: boolean;
+			} | null;
+		}>
+	>;
 	mappings: Record<
 		'radarr' | 'sonarr',
 		{
@@ -265,8 +279,10 @@ export function testPathMappings(
 		media_roots: string[];
 		radarr_path_prefix?: string;
 		radarr_media_path?: string;
+		radarr_mappings?: Array<{ arr_path: string; marquee_path: string }>;
 		sonarr_path_prefix?: string;
 		sonarr_media_path?: string;
+		sonarr_mappings?: Array<{ arr_path: string; marquee_path: string }>;
 	}
 ): Promise<PathMappingTestResult> {
 	return apiSend(fetch, 'POST', '/settings/paths/test', payload);

@@ -10,6 +10,7 @@
 		defaultValue,
 		dirty = false,
 		disabled = false,
+		pathStatus,
 		onChange,
 		onReset
 	}: {
@@ -19,6 +20,7 @@
 		defaultValue?: unknown;
 		dirty?: boolean;
 		disabled?: boolean;
+		pathStatus?: { path: string; exists: boolean; readable: boolean; writable: boolean };
 		onChange: (value: unknown) => void;
 		onReset: () => void;
 	} = $props();
@@ -188,6 +190,20 @@
 				Reset
 			</button>
 		{/if}
+		{#if pathStatus}
+			<output class="path-health" aria-label={`Current accessibility for ${entry.title}`}>
+				<span class:good={pathStatus.readable} class:bad={!pathStatus.readable}
+					>{pathStatus.readable
+						? 'Readable'
+						: pathStatus.exists
+							? 'Not readable'
+							: 'Unavailable'}</span
+				>
+				<span class:good={pathStatus.writable} class:bad={!pathStatus.writable}
+					>{pathStatus.writable ? 'Writable' : 'Not writable'}</span
+				>
+			</output>
+		{/if}
 	</div>
 </div>
 
@@ -250,6 +266,30 @@
 		flex-wrap: wrap;
 		gap: 8px;
 		min-width: 0;
+	}
+	.path-health {
+		display: flex;
+		flex: 1 0 100%;
+		justify-content: flex-end;
+		gap: 6px;
+		margin: -1px 0 0;
+	}
+	.path-health span {
+		border: 1px solid var(--line2);
+		border-radius: var(--radius-pill);
+		padding: 3px 6px;
+		color: var(--muted);
+		font: 650 9px/1.2 var(--font-mono);
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+	}
+	.path-health span.good {
+		color: var(--good);
+		border-color: color-mix(in srgb, var(--good) 32%, var(--line2));
+	}
+	.path-health span.bad {
+		color: var(--bad);
+		border-color: color-mix(in srgb, var(--bad) 30%, var(--line2));
 	}
 	/* A slider needs the whole column to be worth dragging, so it pushes Reset
 	   onto its own line rather than competing with it for width. */
@@ -351,6 +391,9 @@
 			gap: 12px;
 		}
 		.setting-control {
+			justify-content: flex-start;
+		}
+		.path-health {
 			justify-content: flex-start;
 		}
 		.setting-control input[type='text'],

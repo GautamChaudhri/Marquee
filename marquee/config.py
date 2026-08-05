@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ---------------------------------------------------------------------------
@@ -39,6 +39,15 @@ def _read_bootstrap_secret(path: Path) -> str:
     if not value:
         raise ValueError("bootstrap secret file is empty")
     return value
+
+
+class PathMapping(BaseModel):
+    """One Arr-visible root and its corresponding Marquee-visible root."""
+
+    arr_path: str = Field(min_length=1, max_length=4096)
+    marquee_path: str = Field(min_length=1, max_length=4096)
+
+    model_config = {"extra": "forbid"}
 
 
 class Settings(BaseSettings):
@@ -555,10 +564,47 @@ class Settings(BaseSettings):
         description="Corresponding path prefix as mounted in Marquee "
         "(e.g. /Volumes/PLUNDER/Media/Movies)",
     )
+    RADARR_PATH_MAPPINGS: list[PathMapping] | None = Field(
+        default=None,
+        description=(
+            "Optional Radarr-to-Marquee path mappings. When configured, these replace the "
+            "legacy RADARR_PATH_PREFIX and RADARR_MEDIA_PATH pair."
+        ),
+    )
+
+    @property
+    def radarr_path_mappings(self) -> list[PathMapping]:
+        """Return the configured mappings, falling back to the legacy single pair."""
+        if self.RADARR_PATH_MAPPINGS is not None:
+            return self.RADARR_PATH_MAPPINGS
+        if self.RADARR_PATH_PREFIX and self.RADARR_MEDIA_PATH:
+            return [
+                PathMapping(
+                    arr_path=self.RADARR_PATH_PREFIX,
+                    marquee_path=self.RADARR_MEDIA_PATH,
+                )
+            ]
+        return []
 
     @property
     def radarr_path_configured(self) -> bool:
-        return self.RADARR_PATH_PREFIX is not None and self.RADARR_MEDIA_PATH is not None
+        return bool(self.radarr_path_mappings)
+
+    @staticmethod
+    def _translate_path_mappings(arr_path: str, mappings: list[PathMapping]) -> str:
+        """Translate using the most-specific matching Arr path first."""
+        if not arr_path:
+            return arr_path
+        for mapping in sorted(
+            mappings, key=lambda item: len(item.arr_path.rstrip("/")), reverse=True
+        ):
+            prefix = mapping.arr_path.rstrip("/") or "/"
+            if arr_path == prefix:
+                return mapping.marquee_path
+            if prefix == "/" or arr_path.startswith(f"{prefix}/"):
+                suffix = arr_path if prefix == "/" else arr_path[len(prefix) :]
+                return f"{mapping.marquee_path.rstrip('/')}{suffix}"
+        return arr_path
 
     def translate_radarr_path(self, arr_path: str) -> str:
         """Translate a path from Radarr's mount namespace to Marquee's.
@@ -566,15 +612,7 @@ class Settings(BaseSettings):
         Returns the path untranslated if no mapping is configured or the
         path doesn't start with the configured prefix (caller should log).
         """
-        if not arr_path or not self.RADARR_PATH_PREFIX:
-            return arr_path
-        prefix = self.RADARR_PATH_PREFIX.rstrip("/") or "/"
-        if arr_path == prefix:
-            return self.RADARR_MEDIA_PATH
-        if prefix == "/" or arr_path.startswith(f"{prefix}/"):
-            suffix = arr_path if prefix == "/" else arr_path[len(prefix) :]
-            return f"{self.RADARR_MEDIA_PATH.rstrip('/')}{suffix}"
-        return arr_path
+        return self._translate_path_mappings(arr_path, self.radarr_path_mappings)
 
     # ------------------------------------------------------------------
     # Sonarr Path Mapping
@@ -596,10 +634,31 @@ class Settings(BaseSettings):
         description="Corresponding path prefix as mounted in Marquee "
         "(e.g. /Volumes/PLUNDER/Media/TV)",
     )
+    SONARR_PATH_MAPPINGS: list[PathMapping] | None = Field(
+        default=None,
+        description=(
+            "Optional Sonarr-to-Marquee path mappings. When configured, these replace the "
+            "legacy SONARR_PATH_PREFIX and SONARR_MEDIA_PATH pair."
+        ),
+    )
+
+    @property
+    def sonarr_path_mappings(self) -> list[PathMapping]:
+        """Return the configured mappings, falling back to the legacy single pair."""
+        if self.SONARR_PATH_MAPPINGS is not None:
+            return self.SONARR_PATH_MAPPINGS
+        if self.SONARR_PATH_PREFIX and self.SONARR_MEDIA_PATH:
+            return [
+                PathMapping(
+                    arr_path=self.SONARR_PATH_PREFIX,
+                    marquee_path=self.SONARR_MEDIA_PATH,
+                )
+            ]
+        return []
 
     @property
     def sonarr_path_configured(self) -> bool:
-        return self.SONARR_PATH_PREFIX is not None and self.SONARR_MEDIA_PATH is not None
+        return bool(self.sonarr_path_mappings)
 
     def translate_sonarr_path(self, arr_path: str) -> str:
         """Translate a path from Sonarr's mount namespace to Marquee's.
@@ -607,15 +666,7 @@ class Settings(BaseSettings):
         Returns the path untranslated if no mapping is configured or the
         path doesn't start with the configured prefix (caller should log).
         """
-        if not arr_path or not self.SONARR_PATH_PREFIX:
-            return arr_path
-        prefix = self.SONARR_PATH_PREFIX.rstrip("/") or "/"
-        if arr_path == prefix:
-            return self.SONARR_MEDIA_PATH
-        if prefix == "/" or arr_path.startswith(f"{prefix}/"):
-            suffix = arr_path if prefix == "/" else arr_path[len(prefix) :]
-            return f"{self.SONARR_MEDIA_PATH.rstrip('/')}{suffix}"
-        return arr_path
+        return self._translate_path_mappings(arr_path, self.sonarr_path_mappings)
 
     # ------------------------------------------------------------------
     # Path Validation — Media Roots
@@ -644,12 +695,16 @@ class Settings(BaseSettings):
     def effective_media_roots(self) -> list[Path]:
         """Canonical set of allowed root directories.
 
-        Built from: ``RADARR_MEDIA_PATH``, ``SONARR_MEDIA_PATH``,
-        and any manual ``MEDIA_ROOTS`` entries.  Each is resolved to
+        Built from configured Radarr/Sonarr Marquee paths and any manual
+        ``MEDIA_ROOTS`` entries. Each is resolved to
         its real path so symlinks don't break the ``startswith`` check.
         """
         roots: set[Path] = set()
-        candidates = [*self.MEDIA_ROOTS, self.RADARR_MEDIA_PATH, self.SONARR_MEDIA_PATH]
+        candidates = [
+            *self.MEDIA_ROOTS,
+            *(mapping.marquee_path for mapping in self.radarr_path_mappings),
+            *(mapping.marquee_path for mapping in self.sonarr_path_mappings),
+        ]
         for raw in candidates:
             if not raw:
                 continue
