@@ -12,7 +12,8 @@
 		icon,
 		breakdown,
 		href,
-		hint
+		hint,
+		emphasis = 'quiet'
 	}: {
 		label: string;
 		value: string | number;
@@ -25,7 +26,12 @@
 		href?: string;
 		/** Accessible name for the link — say where it goes, not just what it counts. */
 		hint?: string;
+		/** `loud` adds the tinted wash and coloured rail. Reserve it for cards that
+		 *  want acting on: twelve loud cards mean none of them reads as urgent. */
+		emphasis?: 'loud' | 'quiet';
 	} = $props();
+
+	const isZero = $derived(value === 0 || value === '0');
 </script>
 
 <svelte:element
@@ -34,9 +40,11 @@
 	aria-label={href ? (hint ?? `${label}: ${value}`) : undefined}
 	class="card mq-rise"
 	class:linked={href}
+	class:loud={emphasis === 'loud'}
+	class:zero={isZero}
 	style="--c:{toneVar(tone)}"
 >
-	<div class="rail"></div>
+	{#if emphasis === 'loud'}<div class="rail"></div>{/if}
 	<div class="top">
 		<div class="label">{label}</div>
 		{#if icon}
@@ -58,15 +66,12 @@
 </svelte:element>
 
 <style>
+	/* Quiet is the default: a plain panel that lets the number do the talking. */
 	.card {
 		position: relative;
 		overflow: hidden;
-		background: linear-gradient(
-			160deg,
-			color-mix(in srgb, var(--c) 12%, var(--panel)),
-			var(--panel) 62%
-		);
-		border: 1px solid color-mix(in srgb, var(--c) 26%, var(--line));
+		background: var(--panel);
+		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		padding: 13px 15px 14px;
 		transition:
@@ -74,7 +79,15 @@
 			box-shadow 0.15s ease,
 			border-color 0.15s ease;
 	}
-	.card:hover {
+	.card.loud {
+		background: linear-gradient(
+			160deg,
+			color-mix(in srgb, var(--c) 12%, var(--panel)),
+			var(--panel) 62%
+		);
+		border-color: color-mix(in srgb, var(--c) 26%, var(--line));
+	}
+	.card.linked:hover {
 		transform: translateY(-1px);
 		box-shadow: 0 8px 22px var(--shadow);
 		border-color: color-mix(in srgb, var(--c) 42%, var(--line));
@@ -134,9 +147,14 @@
 		height: 24px;
 		flex: none;
 		border-radius: 7px;
+		color: var(--faint);
+		background: transparent;
+		border: 1px solid var(--line2);
+	}
+	.card.loud .chip {
 		color: var(--c);
 		background: color-mix(in srgb, var(--c) 14%, transparent);
-		border: 1px solid color-mix(in srgb, var(--c) 24%, transparent);
+		border-color: color-mix(in srgb, var(--c) 24%, transparent);
 	}
 	.value {
 		font-family: var(--font-mono);
@@ -145,6 +163,11 @@
 		line-height: 1.1;
 		margin-top: 6px;
 		color: var(--text);
+	}
+	/* A zero means "nothing here" — dim it so a row of zeroes recedes instead of
+	   competing with the counts that do want acting on. Real figures stay bright. */
+	.card.zero .value {
+		color: var(--faint);
 	}
 	.sub {
 		font-size: 12px;

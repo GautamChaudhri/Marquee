@@ -17,7 +17,14 @@
 	import { toast } from '$lib/toast';
 	import { profileTone, type ProfileDialogMode } from './text-profile-fields';
 
-	let { initial = null }: { initial?: ScopedTextProfileList | null } = $props();
+	let {
+		initial = null,
+		flat = false
+	}: {
+		initial?: ScopedTextProfileList | null;
+		/** Drop the outer card so a parent can supply one shared border. */
+		flat?: boolean;
+	} = $props();
 
 	const EMPTY_SCOPE = { profiles: [] as TextProfile[], default_id: 'title_only' };
 	let activeScope = $state<TextProfileScope>('movie');
@@ -110,7 +117,7 @@
 	}
 </script>
 
-<section class="tp-card">
+<section class="tp-card" class:flat>
 	<header class="tp-head">
 		<div>
 			<h2>Poster text profiles</h2>
@@ -218,6 +225,12 @@
 		background: var(--panel);
 		margin-bottom: 18px;
 		overflow: hidden;
+	}
+	.tp-card.flat {
+		border: 0;
+		border-radius: 0;
+		background: none;
+		margin-bottom: 0;
 	}
 	.tp-head {
 		display: flex;

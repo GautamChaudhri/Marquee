@@ -6,19 +6,22 @@
 	let {
 		movie = null,
 		tv = null,
-		activeProfile
+		activeProfile,
+		flat = false
 	}: {
 		movie?: PipelineMetrics | null;
 		tv?: PipelineMetrics | null;
 		/** Named in the text-gate row so the cause sits next to the effect. */
 		activeProfile?: string;
+		/** Drop the outer card so a parent can supply one shared border. */
+		flat?: boolean;
 	} = $props();
 
 	const funnel = $derived(buildFunnel([movie, tv]));
 	const survivalPct = $derived(funnel ? Math.round((funnel.ranked / funnel.head) * 100) : 0);
 </script>
 
-<section class="funnel-card">
+<section class="funnel-card" class:flat>
 	<header>
 		<div>
 			<h2>Candidate funnel</h2>
@@ -84,6 +87,15 @@
 		background: var(--panel);
 		margin-bottom: 18px;
 		overflow: hidden;
+	}
+	/* Nested inside the text-profile card: the shared top border already separates
+	   this from the rule above it, so it contributes no box of its own. */
+	.funnel-card.flat {
+		border: 0;
+		border-top: 1px solid var(--line);
+		border-radius: 0;
+		background: none;
+		margin-bottom: 0;
 	}
 	header {
 		display: flex;

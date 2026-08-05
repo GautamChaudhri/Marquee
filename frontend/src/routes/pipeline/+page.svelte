@@ -5,6 +5,7 @@
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
+	import SectionDivider from '$lib/components/SectionDivider.svelte';
 	import CandidateFunnel from '$lib/components/pipeline/CandidateFunnel.svelte';
 	import OcrExecutionPanel from '$lib/components/pipeline/OcrExecutionPanel.svelte';
 	import PosterStatCard from '$lib/components/pipeline/PosterStatCard.svelte';
@@ -78,6 +79,17 @@
 	const tvMissing = $derived(tv.shows_missing_show_poster + tv.seasons_missing_poster);
 
 	const coverageTone = (pct: number): Tone => (pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
+
+	/** Only a card with work behind it earns the loud treatment — a grid where
+	 *  everything shouts tells you nothing about where to look. */
+	const emphasisFor = (count: number): 'loud' | 'quiet' => (count > 0 ? 'loud' : 'quiet');
+
+	const outstanding = $derived(
+		summary.movies_awaiting_run + summary.movies_in_review + tvMissing + tv.assets_in_review
+	);
+	const coverageNote = $derived(
+		outstanding ? `${outstanding} awaiting attention` : 'everything covered'
+	);
 
 	/** Named on the funnel's text-gate row so the rule sits beside what it removed. */
 	const activeMovieProfile = $derived.by(() => {
@@ -225,9 +237,15 @@
 	}
 </script>
 
+<SectionDivider label="Coverage" note={coverageNote}>
+	{#snippet action()}
+		<a class="row-link" href="/pipeline/movies">Films <Icon name="chevron" size={13} /></a>
+		<a class="row-link" href="/pipeline/tv">Television <Icon name="chevron" size={13} /></a>
+	{/snippet}
+</SectionDivider>
+
 <div class="row-head">
 	<span class="eyebrow"><Icon name="film" size={14} /> Films</span>
-	<a class="row-link" href="/pipeline/movies">Open workspace <Icon name="chevron" size={13} /></a>
 </div>
 
 <div class="stats" style="--cols:5">
@@ -256,6 +274,7 @@
 		icon="alert"
 		href="/pipeline/movies?tab=run"
 		hint={`${summary.movies_awaiting_run} films missing a poster — open the Run queue`}
+		emphasis={emphasisFor(summary.movies_awaiting_run)}
 	/>
 	<PosterStatCard
 		label="In review"
@@ -265,6 +284,7 @@
 		icon="eye"
 		href="/pipeline/movies?tab=review"
 		hint={`${summary.movies_in_review} films awaiting a decision — open the Review queue`}
+		emphasis={emphasisFor(summary.movies_in_review)}
 	/>
 	<PosterStatCard
 		label="Running"
@@ -272,12 +292,12 @@
 		sub={summary.running_jobs.length ? 'active jobs' : 'films in run'}
 		tone="info"
 		icon="refresh"
+		emphasis={emphasisFor(summary.running_jobs.length || summary.movies_in_run)}
 	/>
 </div>
 
 <div class="row-head">
 	<span class="eyebrow"><Icon name="tv" size={14} /> Television</span>
-	<a class="row-link" href="/pipeline/tv">Open workspace <Icon name="chevron" size={13} /></a>
 </div>
 
 <div class="stats" style="--cols:6">
@@ -315,6 +335,7 @@
 		icon="alert"
 		href="/pipeline/tv?tab=run"
 		hint={`${tvMissing} television assets missing artwork — open the Run queue`}
+		emphasis={emphasisFor(tvMissing)}
 	/>
 	<PosterStatCard
 		label="In review"
@@ -327,6 +348,7 @@
 		icon="eye"
 		href="/pipeline/tv?tab=review"
 		hint={`${tv.assets_in_review} television assets awaiting a decision — open the Review queue`}
+		emphasis={emphasisFor(tv.assets_in_review)}
 	/>
 	<PosterStatCard
 		label="Running"
@@ -334,12 +356,23 @@
 		sub={tv.shows_no_tmdb ? `${tv.shows_no_tmdb} no TMDB match` : 'assets in run'}
 		tone={tv.shows_no_tmdb ? 'low' : 'info'}
 		icon="refresh"
+		emphasis={emphasisFor(tv.shows_no_tmdb || tv.running_jobs.length || tv.assets_in_run)}
 	/>
 </div>
 
-<TextProfilePanel initial={data.textProfiles} />
+<SectionDivider label="Selection rules" note="What the pipeline accepts, and what that removes" />
 
-<CandidateFunnel movie={data.metrics} tv={data.tvMetrics} activeProfile={activeMovieProfile} />
+<!-- One card, two halves: the rule, then what it rejected. Split across separate
+     cards they scrolled apart and stopped explaining each other. -->
+<section class="rules">
+	<TextProfilePanel initial={data.textProfiles} flat />
+	<CandidateFunnel
+		movie={data.metrics}
+		tv={data.tvMetrics}
+		activeProfile={activeMovieProfile}
+		flat
+	/>
+</section>
 
 {#if data.ocr && data.settings}
 	<OcrExecutionPanel
@@ -349,6 +382,8 @@
 		configuredWorkers={Number(data.settings.values.OCR_WORKERS ?? 0)}
 	/>
 {/if}
+
+<SectionDivider label="Operations" />
 
 <FeatureActivityPanel
 	scopeKey="feature:pipeline:overview"
@@ -388,6 +423,13 @@
 				<span>Next heal</span><b>{isoDate(summary.heal_schedule?.next_run_at)}</b><small
 					>configured schedule</small
 				>
+			</div>
+			<!-- Sits beside "Clean orphaned cache" so the size is visible before the
+			     destructive click, not discovered by making it. -->
+			<div>
+				<span>Cache</span><b>{bytesH(data.cache?.total_bytes ?? 0)}</b><small>
+					{data.cache ? `${bytesH(data.cache.clearable_bytes)} clearable` : 'size unavailable'}
+				</small>
 			</div>
 		</div>
 		<div class="maintenance-actions">
@@ -473,19 +515,18 @@
 	.row-head {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: 12px;
-		margin: 4px 0 8px;
+		margin: 2px 0 7px;
 	}
 	.eyebrow {
 		display: inline-flex;
 		align-items: center;
 		gap: 7px;
-		font-size: 11px;
+		font-size: 10.5px;
 		text-transform: uppercase;
 		letter-spacing: 0.07em;
 		font-weight: 700;
-		color: var(--muted);
+		color: var(--faint);
 	}
 	.row-link {
 		display: inline-flex;
@@ -501,7 +542,15 @@
 		display: grid;
 		grid-template-columns: repeat(var(--cols, 5), minmax(0, 1fr));
 		gap: 12px;
+		margin-bottom: 14px;
+	}
+	/* The shared border that makes the profile rule and its funnel one object. */
+	.rules {
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--panel);
 		margin-bottom: 18px;
+		overflow: hidden;
 	}
 	.maintenance-dock {
 		border: 1px solid var(--line);
@@ -551,7 +600,7 @@
 	}
 	.maintenance-facts {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 1px;
 		border: 1px solid var(--line);
 		border-radius: 8px;

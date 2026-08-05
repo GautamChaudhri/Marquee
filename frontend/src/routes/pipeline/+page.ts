@@ -1,9 +1,10 @@
 import type { PageLoad } from './$types';
-import { getPipelineMetrics, getPipelineSummary } from '$lib/api/pipeline';
+import { getPipelineCache, getPipelineMetrics, getPipelineSummary } from '$lib/api/pipeline';
 import { getTvMetrics, getTvSummary } from '$lib/api/pipeline-tv';
 import { getOcrStatus, getSettings, type OcrStatus } from '$lib/api/system';
 import { listTextProfiles, type ScopedTextProfileList } from '$lib/api/text-profiles';
 import type {
+	CacheSizes,
 	PipelineMetrics,
 	PipelineSummary,
 	RuntimeSettings,
@@ -25,14 +26,16 @@ const EMPTY_SUMMARY: PipelineSummary = {
 
 export const load: PageLoad = async ({ fetch }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
-	const [summary, tvSummary, settings, textProfiles, metrics, tvMetrics, ocr] = await Promise.all([
-		safe<PipelineSummary>(getPipelineSummary(fetch), EMPTY_SUMMARY),
-		safe<TvPipelineSummary | null>(getTvSummary(fetch), null),
-		safe<RuntimeSettings | null>(getSettings(fetch), null),
-		safe<ScopedTextProfileList | null>(listTextProfiles(fetch), null),
-		safe<PipelineMetrics | null>(getPipelineMetrics(fetch, { limit: 500 }), null),
-		safe<PipelineMetrics | null>(getTvMetrics(fetch, { limit: 500 }), null),
-		safe<OcrStatus | null>(getOcrStatus(fetch), null)
-	]);
-	return { summary, tvSummary, settings, textProfiles, metrics, tvMetrics, ocr };
+	const [summary, tvSummary, settings, textProfiles, metrics, tvMetrics, ocr, cache] =
+		await Promise.all([
+			safe<PipelineSummary>(getPipelineSummary(fetch), EMPTY_SUMMARY),
+			safe<TvPipelineSummary | null>(getTvSummary(fetch), null),
+			safe<RuntimeSettings | null>(getSettings(fetch), null),
+			safe<ScopedTextProfileList | null>(listTextProfiles(fetch), null),
+			safe<PipelineMetrics | null>(getPipelineMetrics(fetch, { limit: 500 }), null),
+			safe<PipelineMetrics | null>(getTvMetrics(fetch, { limit: 500 }), null),
+			safe<OcrStatus | null>(getOcrStatus(fetch), null),
+			safe<CacheSizes | null>(getPipelineCache(fetch), null)
+		]);
+	return { summary, tvSummary, settings, textProfiles, metrics, tvMetrics, ocr, cache };
 };
