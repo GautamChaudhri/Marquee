@@ -120,7 +120,7 @@
 <section class="tp-card" class:flat>
 	<header class="tp-head">
 		<div>
-			<h2>Poster text profiles</h2>
+			<h2>Poster Text Profiles</h2>
 			<p class="sub">Controls what text is allowed on posters the pipeline accepts.</p>
 		</div>
 		<div class="scope-tabs">
@@ -138,7 +138,7 @@
 	<div class="tp-body">
 		<div class="list">
 			<div class="group">
-				<h3>Built-in presets</h3>
+				<h3>Built-in Presets</h3>
 				{#each builtins as profile (profile.id)}
 					<button
 						class="row"
@@ -152,7 +152,7 @@
 			</div>
 
 			<div class="group">
-				<h3>Custom profiles</h3>
+				<h3>Custom Profiles</h3>
 				{#each customs as profile (profile.id)}
 					<button
 						class="row"
@@ -205,7 +205,7 @@
 
 <ConfirmDialog
 	open={pendingDelete !== null}
-	title="Delete text profile"
+	title="Delete Text Profile"
 	message={pendingDelete
 		? `Delete “${pendingDelete.name}”? Titles using it fall back to the scope default.`
 		: ''}

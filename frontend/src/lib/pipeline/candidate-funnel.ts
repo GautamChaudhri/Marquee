@@ -47,7 +47,7 @@ const STAGES: { key: string; label: string; hint: string; isTextGate?: boolean }
 	},
 	{
 		key: 'ocr_survivors',
-		label: 'Passed text gate',
+		label: 'Passed Text Gate',
 		hint: 'Survived the OCR text gate set by the active text profile.',
 		isTextGate: true
 	},
@@ -58,7 +58,7 @@ const STAGES: { key: string; label: string; hint: string; isTextGate?: boolean }
 	},
 	{
 		key: 'feature_survivors',
-		label: 'Passed detail gates',
+		label: 'Passed Detail Gates',
 		hint: 'Survived face, person, and composition gates.'
 	},
 	{ key: 'ranked', label: 'Ranked', hint: 'Scored and ordered for selection.' }

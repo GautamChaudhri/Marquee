@@ -83,7 +83,7 @@
 			<div class="title">
 				<span class="icon" class:gpu={onGpu}><Icon name="layers" size={16} /></span>
 				<div>
-					<h2>OCR execution</h2>
+					<h2>OCR Execution</h2>
 					<p>The text gate is the slowest stage — this is the hardware it runs on.</p>
 				</div>
 			</div>
@@ -114,7 +114,7 @@
 					</small>
 				</div>
 				<div>
-					<dt>Paddle build</dt>
+					<dt>Paddle Build</dt>
 					<dd>{plan.gpu_build ? 'CUDA' : 'CPU-only'}</dd>
 					<small>{plan.gpu_build ? 'paddlepaddle-gpu' : 'paddlepaddle'}</small>
 				</div>
@@ -124,7 +124,7 @@
 					<small>{gpu ? `${bytesH(gpu.vram_free)} free` : 'no NVIDIA card visible'}</small>
 				</div>
 				<div>
-					<dt>Worker pool</dt>
+					<dt>Worker Pool</dt>
 					<dd>{effective}</dd>
 					<small>{activeWorkers ? `${activeWorkers} running now` : 'idle'}</small>
 				</div>

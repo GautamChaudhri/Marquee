@@ -28,10 +28,10 @@
 	const allowed = $derived(categoriesFor(scope).filter((c) => profile.settings[c.key]));
 	const areaPercent = $derived(Math.round(profile.settings.max_residual_area_fraction * 100));
 	const specs = $derived([
-		{ label: 'Residual boxes', value: `≤ ${profile.settings.max_residual_boxes}`, mono: true },
-		{ label: 'Residual area', value: `≤ ${areaPercent}%`, mono: true },
+		{ label: 'Residual Boxes', value: `≤ ${profile.settings.max_residual_boxes}`, mono: true },
+		{ label: 'Residual Area', value: `≤ ${areaPercent}%`, mono: true },
 		{
-			label: 'Title match',
+			label: 'Title Match',
 			value: profile.settings.require_title ? 'Required' : 'Optional',
 			mono: false
 		}
@@ -39,13 +39,13 @@
 </script>
 
 <div class="detail">
-	<h3 class="detail-head">Profile details</h3>
+	<h3 class="detail-head">Profile Details</h3>
 
 	<p class="summary">{describeProfile(profile, scope)}</p>
 
 	<div class="columns">
 		<section>
-			<h4>Allowed text</h4>
+			<h4>Allowed Text</h4>
 			{#if allowed.length}
 				<div class="chips">
 					{#each allowed as category (category.key)}

@@ -24,7 +24,7 @@
 <section class="funnel-card" class:flat>
 	<header>
 		<div>
-			<h2>Candidate funnel</h2>
+			<h2>Candidate Funnel</h2>
 			<p>
 				{#if funnel}
 					How {funnel.head.toLocaleString()} candidates across {funnel.windowRuns} run{funnel.windowRuns ===

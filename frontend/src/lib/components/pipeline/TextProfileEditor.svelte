@@ -34,7 +34,7 @@
 <div class="editor">
 	{#if showPresets}
 		<div class="field">
-			<span class="flabel">Start from</span>
+			<span class="flabel">Start From</span>
 			<div class="presets">
 				{#each PRESET_OPTIONS as option (option.id)}
 					<button
@@ -64,7 +64,7 @@
 	</div>
 
 	<div class="field">
-		<span class="flabel">Allowed text</span>
+		<span class="flabel">Allowed Text</span>
 		<div class="grid">
 			{#each categories as category (category.key)}
 				<label class="toggle" title={category.hint}>
@@ -83,7 +83,7 @@
 
 	<div class="sliders">
 		<div class="field">
-			<label class="flabel" for="tp-boxes">Residual boxes</label>
+			<label class="flabel" for="tp-boxes">Residual Boxes</label>
 			<div class="range-row">
 				<input
 					id="tp-boxes"
@@ -102,7 +102,7 @@
 			</div>
 		</div>
 		<div class="field">
-			<label class="flabel" for="tp-area">Residual area</label>
+			<label class="flabel" for="tp-area">Residual Area</label>
 			<div class="range-row">
 				<input
 					id="tp-area"

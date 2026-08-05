@@ -66,12 +66,14 @@
 </svelte:element>
 
 <style>
-	/* Quiet is the default: a plain panel that lets the number do the talking. */
+	/* Each card keeps its tone in the border and icon; the tinted wash is reserved
+	   for hover so a full grid reads as calm until you point at something. */
 	.card {
 		position: relative;
+		isolation: isolate;
 		overflow: hidden;
 		background: var(--panel);
-		border: 1px solid var(--line);
+		border: 1px solid color-mix(in srgb, var(--c) 16%, var(--line));
 		border-radius: var(--radius);
 		padding: 13px 15px 14px;
 		transition:
@@ -80,17 +82,32 @@
 			border-color 0.15s ease;
 	}
 	.card.loud {
+		border-color: color-mix(in srgb, var(--c) 30%, var(--line));
+	}
+	/* z-index -1 keeps the wash above the card background but under the content,
+	   and opacity is what makes a gradient fade — gradients cannot transition. */
+	.card::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		z-index: -1;
 		background: linear-gradient(
 			160deg,
-			color-mix(in srgb, var(--c) 12%, var(--panel)),
-			var(--panel) 62%
+			color-mix(in srgb, var(--c) 15%, transparent),
+			transparent 64%
 		);
-		border-color: color-mix(in srgb, var(--c) 26%, var(--line));
+		opacity: 0;
+		transition: opacity 0.22s ease;
+		pointer-events: none;
+	}
+	.card.linked:hover::before,
+	.card.linked:focus-visible::before {
+		opacity: 1;
 	}
 	.card.linked:hover {
 		transform: translateY(-1px);
 		box-shadow: 0 8px 22px var(--shadow);
-		border-color: color-mix(in srgb, var(--c) 42%, var(--line));
+		border-color: color-mix(in srgb, var(--c) 45%, var(--line));
 	}
 	.card.linked {
 		display: block;
@@ -139,6 +156,11 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
+	/* Carries the "needs attention" signal the wash used to, now that it only
+	   appears on hover. */
+	.card.loud .label {
+		color: color-mix(in srgb, var(--c) 55%, var(--muted));
+	}
 	.chip {
 		display: inline-flex;
 		align-items: center;
@@ -147,14 +169,13 @@
 		height: 24px;
 		flex: none;
 		border-radius: 7px;
-		color: var(--faint);
-		background: transparent;
-		border: 1px solid var(--line2);
+		color: var(--c);
+		background: color-mix(in srgb, var(--c) 9%, transparent);
+		border: 1px solid color-mix(in srgb, var(--c) 20%, transparent);
 	}
 	.card.loud .chip {
-		color: var(--c);
-		background: color-mix(in srgb, var(--c) 14%, transparent);
-		border-color: color-mix(in srgb, var(--c) 24%, transparent);
+		background: color-mix(in srgb, var(--c) 16%, transparent);
+		border-color: color-mix(in srgb, var(--c) 32%, transparent);
 	}
 	.value {
 		font-family: var(--font-mono);

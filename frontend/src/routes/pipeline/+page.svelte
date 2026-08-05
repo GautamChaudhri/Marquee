@@ -277,7 +277,7 @@
 		emphasis={emphasisFor(summary.movies_awaiting_run)}
 	/>
 	<PosterStatCard
-		label="In review"
+		label="In Review"
 		value={summary.movies_in_review}
 		sub="awaiting a decision"
 		tone="gold"
@@ -309,7 +309,7 @@
 		icon="tv"
 	/>
 	<PosterStatCard
-		label="Show art"
+		label="Show Art"
 		value={tv.shows_with_show_poster}
 		sub={`${showArtPct}% coverage`}
 		bar={showArtPct}
@@ -317,7 +317,7 @@
 		icon="image"
 	/>
 	<PosterStatCard
-		label="Season art"
+		label="Season Art"
 		value={tv.seasons_with_poster}
 		sub={`${seasonArtPct}% of ${tv.seasons_total} seasons`}
 		bar={seasonArtPct}
@@ -338,7 +338,7 @@
 		emphasis={emphasisFor(tvMissing)}
 	/>
 	<PosterStatCard
-		label="In review"
+		label="In Review"
 		value={tv.assets_in_review}
 		breakdown={[
 			{ label: 'shows', value: tv.shows_in_review },
@@ -360,7 +360,20 @@
 	/>
 </div>
 
-<SectionDivider label="Selection rules" note="What the pipeline accepts, and what that removes" />
+{#if data.ocr && data.settings}
+	<!-- Labelled "Hardware", not "Execution": the card below is already called OCR
+	     Execution and carries its own one-line explanation. -->
+	<SectionDivider label="Hardware" />
+
+	<OcrExecutionPanel
+		initial={data.ocr}
+		configVersion={data.settings.configuration_version}
+		configuredDevice={String(data.settings.values.OCR_DEVICE ?? 'auto')}
+		configuredWorkers={Number(data.settings.values.OCR_WORKERS ?? 0)}
+	/>
+{/if}
+
+<SectionDivider label="Selection Rules" note="What the pipeline accepts, and what that removes" />
 
 <!-- One card, two halves: the rule, then what it rejected. Split across separate
      cards they scrolled apart and stopped explaining each other. -->
@@ -373,15 +386,6 @@
 		flat
 	/>
 </section>
-
-{#if data.ocr && data.settings}
-	<OcrExecutionPanel
-		initial={data.ocr}
-		configVersion={data.settings.configuration_version}
-		configuredDevice={String(data.settings.values.OCR_DEVICE ?? 'auto')}
-		configuredWorkers={Number(data.settings.values.OCR_WORKERS ?? 0)}
-	/>
-{/if}
 
 <SectionDivider label="Operations" />
 
@@ -398,7 +402,7 @@
 		<div class="maintenance-title">
 			<span class="maintenance-icon"><Icon name="settings" size={17} /></span>
 			<div>
-				<h2>Poster maintenance</h2>
+				<h2>Poster Maintenance</h2>
 				<p>Backups, heal scans, and cache cleanup.</p>
 			</div>
 		</div>
@@ -415,12 +419,12 @@
 				>
 			</div>
 			<div>
-				<span>Last heal</span><b>{isoDate(summary.last_heal?.last_run)}</b><small
+				<span>Last Heal</span><b>{isoDate(summary.last_heal?.last_run)}</b><small
 					>most recent scan</small
 				>
 			</div>
 			<div>
-				<span>Next heal</span><b>{isoDate(summary.heal_schedule?.next_run_at)}</b><small
+				<span>Next Heal</span><b>{isoDate(summary.heal_schedule?.next_run_at)}</b><small
 					>configured schedule</small
 				>
 			</div>
@@ -445,7 +449,7 @@
 
 	<div class="danger-actions">
 		<div>
-			<b>Destructive actions</b>
+			<b>Destructive Actions</b>
 			<span>Permanent. Each one asks for confirmation first.</span>
 		</div>
 		{#if data.settings?.deployment?.debug}

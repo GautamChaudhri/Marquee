@@ -50,7 +50,7 @@
 	);
 	const title = $derived(
 		mode === 'create'
-			? 'New text profile'
+			? 'New Text Profile'
 			: mode === 'duplicate'
 				? `Duplicate ${source?.name ?? 'profile'}`
 				: `Edit ${source?.name ?? 'profile'}`
