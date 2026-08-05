@@ -32,7 +32,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
 		return {
 			data: null,
 			query,
-			error: e instanceof Error ? e.message : 'Failed to load movies',
+			error: e instanceof Error ? e.message : 'Failed to load films',
 			libraryHeader: filmLibraryHeader()
 		};
 	}

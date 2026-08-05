@@ -55,7 +55,7 @@
 
 	<div class="naming-grid">
 		<div role="group" aria-labelledby="poster-naming-movies" class="naming-group">
-			<span id="poster-naming-movies" class="group-label">Movies</span>
+			<span id="poster-naming-movies" class="group-label">Films</span>
 			<label class="choice">
 				<input
 					type="radio"
@@ -126,7 +126,9 @@
 	</div>
 	<footer>
 		<code>{movie} · {series} · {season}</code>
-		<button type="button" class="pill ghost" onclick={onReset} {disabled}>Reset naming defaults</button>
+		<button type="button" class="pill ghost" onclick={onReset} {disabled}
+			>Reset naming defaults</button
+		>
 	</footer>
 </section>
 

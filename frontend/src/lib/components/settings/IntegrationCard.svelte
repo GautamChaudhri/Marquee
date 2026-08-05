@@ -39,7 +39,7 @@
 			short: 'Radarr',
 			secretKey: 'RADARR_API_KEY',
 			urlKey: 'RADARR_URL',
-			description: 'Movie library discovery and synchronization.'
+			description: 'Film library discovery and synchronization.'
 		},
 		sonarr: {
 			title: 'Sonarr',
@@ -106,7 +106,8 @@
 		const name = probe.appName ?? detail.short;
 		rows.push(probe.version ? `${name} ${probe.version}` : name);
 		if (probe.instanceName && probe.instanceName !== probe.appName) rows.push(probe.instanceName);
-		if (probe.osName) rows.push(probe.osVersion ? `${probe.osName} ${probe.osVersion}` : probe.osName);
+		if (probe.osName)
+			rows.push(probe.osVersion ? `${probe.osName} ${probe.osVersion}` : probe.osName);
 		if (probe.isDocker) rows.push('Docker');
 		if (probe.runtimeVersion) rows.push(`Runtime ${probe.runtimeVersion}`);
 		if (probe.imageBaseUrl) rows.push('Images reachable');
@@ -151,9 +152,7 @@
 		try {
 			const job = await syncLibraries(fetch);
 			toast(
-				job.disposition === 'reused'
-					? 'A library sync is already running'
-					: 'Library sync started',
+				job.disposition === 'reused' ? 'A library sync is already running' : 'Library sync started',
 				'info'
 			);
 		} catch (error) {

@@ -1,9 +1,14 @@
 import type { PageLoad } from './$types';
-import { getPipelineSummary } from '$lib/api/pipeline';
-import { getTvSummary } from '$lib/api/pipeline-tv';
-import { getSettings } from '$lib/api/system';
+import { getPipelineMetrics, getPipelineSummary } from '$lib/api/pipeline';
+import { getTvMetrics, getTvSummary } from '$lib/api/pipeline-tv';
+import { getOcrStatus, getSettings, type OcrStatus } from '$lib/api/system';
 import { listTextProfiles, type ScopedTextProfileList } from '$lib/api/text-profiles';
-import type { PipelineSummary, RuntimeSettings, TvPipelineSummary } from '$lib/api/types';
+import type {
+	PipelineMetrics,
+	PipelineSummary,
+	RuntimeSettings,
+	TvPipelineSummary
+} from '$lib/api/types';
 
 const EMPTY_SUMMARY: PipelineSummary = {
 	total_movies: 0,
@@ -20,11 +25,14 @@ const EMPTY_SUMMARY: PipelineSummary = {
 
 export const load: PageLoad = async ({ fetch }) => {
 	const safe = <T>(p: Promise<T>, fallback: T): Promise<T> => p.catch(() => fallback);
-	const [summary, tvSummary, settings, textProfiles] = await Promise.all([
+	const [summary, tvSummary, settings, textProfiles, metrics, tvMetrics, ocr] = await Promise.all([
 		safe<PipelineSummary>(getPipelineSummary(fetch), EMPTY_SUMMARY),
 		safe<TvPipelineSummary | null>(getTvSummary(fetch), null),
 		safe<RuntimeSettings | null>(getSettings(fetch), null),
-		safe<ScopedTextProfileList | null>(listTextProfiles(fetch), null)
+		safe<ScopedTextProfileList | null>(listTextProfiles(fetch), null),
+		safe<PipelineMetrics | null>(getPipelineMetrics(fetch, { limit: 500 }), null),
+		safe<PipelineMetrics | null>(getTvMetrics(fetch, { limit: 500 }), null),
+		safe<OcrStatus | null>(getOcrStatus(fetch), null)
 	]);
-	return { summary, tvSummary, settings, textProfiles };
+	return { summary, tvSummary, settings, textProfiles, metrics, tvMetrics, ocr };
 };

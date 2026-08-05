@@ -10,7 +10,9 @@
 		bar,
 		tone = 'gold',
 		icon,
-		breakdown
+		breakdown,
+		href,
+		hint
 	}: {
 		label: string;
 		value: string | number;
@@ -19,10 +21,21 @@
 		tone?: Tone;
 		icon?: string;
 		breakdown?: { label: string; value: string | number }[];
+		/** When set the whole card becomes a link into the matching workspace tab. */
+		href?: string;
+		/** Accessible name for the link — say where it goes, not just what it counts. */
+		hint?: string;
 	} = $props();
 </script>
 
-<div class="card mq-rise" style="--c:{toneVar(tone)}">
+<svelte:element
+	this={href ? 'a' : 'div'}
+	{href}
+	aria-label={href ? (hint ?? `${label}: ${value}`) : undefined}
+	class="card mq-rise"
+	class:linked={href}
+	style="--c:{toneVar(tone)}"
+>
 	<div class="rail"></div>
 	<div class="top">
 		<div class="label">{label}</div>
@@ -41,7 +54,8 @@
 		</div>
 	{/if}
 	{#if bar != null}<div class="bar"><ProgressBar value={bar} {tone} /></div>{/if}
-</div>
+	{#if href}<span class="go" aria-hidden="true"><Icon name="chevron" size={13} /></span>{/if}
+</svelte:element>
 
 <style>
 	.card {
@@ -64,6 +78,31 @@
 		transform: translateY(-1px);
 		box-shadow: 0 8px 22px var(--shadow);
 		border-color: color-mix(in srgb, var(--c) 42%, var(--line));
+	}
+	.card.linked {
+		display: block;
+		color: inherit;
+		cursor: pointer;
+	}
+	/* The chevron is the only affordance distinguishing a link card from a plain
+	   one, so it brightens on hover instead of appearing only then. */
+	.go {
+		position: absolute;
+		right: 11px;
+		bottom: 10px;
+		display: inline-flex;
+		color: var(--faint2);
+		transition:
+			color 0.15s ease,
+			transform 0.15s ease;
+	}
+	.card.linked:hover .go {
+		color: var(--c);
+		transform: translateX(2px);
+	}
+	.card.linked:focus-visible {
+		outline: 2px solid var(--c);
+		outline-offset: 2px;
 	}
 	.rail {
 		position: absolute;

@@ -930,6 +930,15 @@ def test_system_ocr_status_shape(monkeypatch: pytest.MonkeyPatch):
         "active_worker_status",
         lambda: {"active": [], "stale_reaped": []},
     )
+    plan = {
+        "requested": "auto",
+        "gpu_build": False,
+        "gpus": [],
+        "expected_device": "cpu",
+        "error": None,
+        "confirmed": False,
+    }
+    monkeypatch.setattr(system, "ocr_device_plan", lambda: plan)
 
     status = system._ocr_status()
 
@@ -939,7 +948,40 @@ def test_system_ocr_status_shape(monkeypatch: pytest.MonkeyPatch):
         "effective_workers": 3,
         "paddle_cuda_available": False,
         "workers": {"active": [], "stale_reaped": []},
+        "plan": plan,
     }
+
+
+def test_ocr_device_plan_reports_gpu_when_wheel_and_card_present(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """auto mode predicts the GPU from the wheel + NVML, and flags it unconfirmed."""
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "auto")
+    monkeypatch.setattr(ocr_filter, "paddle_gpu_build", lambda: True)
+    monkeypatch.setattr(
+        "marquee.core.system_metrics.gpu_inventory",
+        lambda: [{"index": 0, "name": "NVIDIA GeForce RTX 3070", "vram_total": 1, "vram_free": 1}],
+    )
+
+    plan = ocr_filter.ocr_device_plan()
+
+    assert plan["expected_device"] == "gpu:0"
+    assert plan["confirmed"] is False
+    assert plan["error"] is None
+    assert plan["gpus"][0]["name"] == "NVIDIA GeForce RTX 3070"
+
+
+def test_ocr_device_plan_surfaces_forced_gpu_without_a_card(monkeypatch: pytest.MonkeyPatch):
+    """OCR_DEVICE=gpu with nothing usable must report the error, not guess a device."""
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "gpu")
+    monkeypatch.setattr(ocr_filter, "paddle_gpu_build", lambda: False)
+    monkeypatch.setattr("marquee.core.system_metrics.gpu_inventory", lambda: [])
+
+    plan = ocr_filter.ocr_device_plan()
+
+    assert plan["expected_device"] is None
+    assert plan["error"] is not None
+    assert "OCR_DEVICE=gpu" in plan["error"]
 
 
 def test_normalize_official_family_ramp():

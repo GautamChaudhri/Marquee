@@ -73,7 +73,7 @@
 			type="search"
 			maxlength="100"
 			value={filterState.q}
-			placeholder="Movie, show, file…"
+			placeholder="Film, show, file…"
 		/>
 	</label>
 	<label>

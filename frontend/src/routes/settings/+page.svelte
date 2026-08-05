@@ -480,8 +480,8 @@
 						>
 					</div>
 					<div class="preference-row">
-						<div><b>Movie view</b><small>Default movie library arrangement.</small></div>
-						<select aria-label="Movie view" bind:value={$filmMode}
+						<div><b>Film view</b><small>Default film library arrangement.</small></div>
+						<select aria-label="Film view" bind:value={$filmMode}
 							><option value="list">List</option><option value="grid">Grid</option></select
 						>
 					</div>

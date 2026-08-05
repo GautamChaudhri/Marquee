@@ -114,7 +114,7 @@
 		if (!movie) return;
 		if (
 			!confirm(
-				'Are you sure you want to delete the deployed poster? This will remove the file from the movie folder and reset the status to missing.'
+				'Are you sure you want to delete the deployed poster? This will remove the file from the film folder and reset the status to missing.'
 			)
 		) {
 			return;
@@ -173,11 +173,11 @@
 			movieTextProfileId = saved.profile_id;
 			effectiveTextProfileId = saved.effective_id;
 			toast(
-				profileId ? 'Movie text profile saved' : 'Movie text profile reset to the default',
+				profileId ? 'Film text profile saved' : 'Film text profile reset to the default',
 				'good'
 			);
 		} catch (e) {
-			toast(apiText(e, 'Failed to save movie text profile'), 'bad');
+			toast(apiText(e, 'Failed to save film text profile'), 'bad');
 		} finally {
 			savingTextProfile = false;
 		}
@@ -187,7 +187,7 @@
 {#if data.error || !movie}
 	<div class="errstate">
 		<Icon name="film" size={40} stroke={1} />
-		<strong>Could not load movie</strong>
+		<strong>Could not load film</strong>
 		<span>{data.error ?? 'Unknown error'}</span>
 		<button onclick={() => goto('/films')}>← Back to Films</button>
 	</div>
@@ -321,7 +321,7 @@
 								</select>
 								<div class="profile-meta">
 									<span>Effective: {textProfileLabel(effectiveTextProfile)}</span>
-									<span> Applies to future pipeline runs for this movie’s poster selection. </span>
+									<span> Applies to future pipeline runs for this film’s poster selection. </span>
 								</div>
 							</div>
 						</div>

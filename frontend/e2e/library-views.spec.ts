@@ -344,7 +344,7 @@ test('posters sidebar keeps Pipeline and exposes compact media workspace links',
 	await page.goto('/television');
 
 	const pipeline = page.getByRole('link', { name: 'Pipeline', exact: true });
-	const movies = page.getByRole('link', { name: 'Pipeline: Movies' });
+	const movies = page.getByRole('link', { name: 'Pipeline: Films' });
 	const television = page.getByRole('link', { name: 'Pipeline: TV' });
 	await expect(pipeline).toHaveAttribute('href', '/pipeline');
 	await expect(movies).toHaveAttribute('href', '/pipeline/movies');

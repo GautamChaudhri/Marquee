@@ -139,7 +139,7 @@
 		<button onclick={() => apply({})}>Retry</button>
 	</div>
 {:else if !data.data || data.data.items.length === 0}
-	<div class="state empty">No movies match these filters.</div>
+	<div class="state empty">No films match these filters.</div>
 {:else}
 	{#if $filmMode === 'grid'}
 		<FilmGrid items={data.data.items} />

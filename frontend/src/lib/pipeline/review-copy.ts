@@ -120,6 +120,6 @@ export function rejectAllCopy({
 	return {
 		title: 'Reject all candidates',
 		message:
-			'Records a negative label for the auto-pick and leaves this movie without a chosen poster. You can re-run later.'
+			'Records a negative label for the auto-pick and leaves this film without a chosen poster. You can re-run later.'
 	};
 }

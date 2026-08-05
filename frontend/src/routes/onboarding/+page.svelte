@@ -156,7 +156,7 @@
 		<p>{status.next_action}</p>
 		<p class="fine">
 			Only an explicit choice followed by a successful, validated poster deployment counts.
-			Duplicate movies or identical poster bytes do not increase this total.
+			Duplicate films or identical poster bytes do not increase this total.
 		</p>
 	</div>
 

@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -569,6 +570,59 @@ def _paddle_cuda_probe(*, allow_import: bool = False) -> tuple[bool, str]:
 
 def paddle_cuda_available(*, allow_import: bool = False) -> bool:
     return _paddle_cuda_probe(allow_import=allow_import)[0]
+
+
+@lru_cache(maxsize=1)
+def paddle_gpu_build() -> bool:
+    """Whether the installed Paddle wheel is the CUDA build.
+
+    A cheap stand-in for the real CUDA probe: importing paddle costs seconds, so
+    an API process that only wants to *describe* the OCR device reads the wheel
+    name instead. The in-worker probe in ``_load_ocr`` still has the final word.
+    """
+    try:
+        from importlib.metadata import distributions
+
+        return any(
+            (dist.metadata["Name"] or "").lower() == "paddlepaddle-gpu"
+            for dist in distributions()
+        )
+    except Exception as exc:  # noqa: BLE001 - a metadata read must never 500 a page
+        logger.debug("Could not read Paddle distribution metadata: %s", exc)
+        return False
+
+
+def ocr_device_plan() -> dict[str, Any]:
+    """Describe the device the next OCR run will use, without importing paddle.
+
+    Resolution deliberately goes through ``_resolve_ocr_device`` — the same
+    function ``_load_ocr`` calls — so an operator-facing readout can never
+    disagree with what the pool actually does.
+    """
+    from marquee.core.system_metrics import gpu_inventory
+
+    requested = pipeline_settings.OCR_DEVICE
+    gpus = gpu_inventory()
+    gpu_build = paddle_gpu_build()
+    plan: dict[str, Any] = {
+        "requested": requested,
+        "gpu_build": gpu_build,
+        "gpus": gpus,
+        "expected_device": None,
+        "error": None,
+        # "auto" defers to a run-time CUDA probe this process will not pay for,
+        # so auto is a prediction from the wheel plus NVML — not an observation.
+        "confirmed": requested in ("cpu", "gpu"),
+    }
+    try:
+        plan["expected_device"] = _resolve_ocr_device(
+            paddle_cuda_available=gpu_build and bool(gpus)
+        )
+    except RuntimeError as exc:
+        # OCR_DEVICE=gpu with no usable card: report it rather than guessing, because
+        # every run will fail here until the operator changes the setting.
+        plan["error"] = str(exc)
+    return plan
 
 
 def active_worker_status() -> dict:

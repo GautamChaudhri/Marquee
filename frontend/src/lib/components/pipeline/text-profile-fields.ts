@@ -96,9 +96,3 @@ export function profileTone(profile: TextProfile): 'blue' | 'gray' | 'gold' {
 	if (profile.settings.mode === 'textless') return 'gray';
 	return 'gold';
 }
-
-export function modeLabel(profile: TextProfile): string {
-	if (profile.settings.mode === 'title_only') return 'title only';
-	if (profile.settings.mode === 'textless') return 'textless';
-	return 'custom';
-}

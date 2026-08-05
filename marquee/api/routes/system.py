@@ -51,7 +51,11 @@ from marquee.models import (
     SchemaContract,
     SystemMetricsSample,
 )
-from marquee.pipeline.ocr_filter import active_worker_status, paddle_cuda_available
+from marquee.pipeline.ocr_filter import (
+    active_worker_status,
+    ocr_device_plan,
+    paddle_cuda_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +79,11 @@ def _ocr_status() -> dict:
         "device": pipeline_settings.OCR_DEVICE,
         "configured_workers": pipeline_settings.OCR_WORKERS,
         "effective_workers": effective_ocr_workers(),
+        # Only true when paddle happens to be imported here, which it is not in a
+        # plain API process. `plan` is the field worth showing an operator.
         "paddle_cuda_available": paddle_cuda_available(),
         "workers": active_worker_status(),
+        "plan": ocr_device_plan(),
     }
 
 

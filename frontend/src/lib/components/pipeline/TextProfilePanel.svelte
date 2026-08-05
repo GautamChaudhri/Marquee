@@ -15,7 +15,7 @@
 	import TextProfileDialog from '$lib/components/pipeline/TextProfileDialog.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import { toast } from '$lib/toast';
-	import { modeLabel, profileTone, type ProfileDialogMode } from './text-profile-fields';
+	import { profileTone, type ProfileDialogMode } from './text-profile-fields';
 
 	let { initial = null }: { initial?: ScopedTextProfileList | null } = $props();
 
@@ -139,7 +139,6 @@
 						onclick={() => (selectedId = profile.id)}
 					>
 						<span class="badge {profileTone(profile)}">{profile.name}</span>
-						<span class="row-meta">{modeLabel(profile)}</span>
 						{#if profile.id === defaultId}<span class="default-tag">active</span>{/if}
 					</button>
 				{/each}
@@ -217,24 +216,27 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--panel);
-		padding: 16px;
 		margin-bottom: 18px;
+		overflow: hidden;
 	}
 	.tp-head {
 		display: flex;
 		justify-content: space-between;
-		align-items: flex-start;
+		align-items: center;
 		gap: 12px;
 		flex-wrap: wrap;
+		padding: 13px 16px;
+		border-bottom: 1px solid var(--line);
 	}
 	.tp-head h2 {
 		margin: 0;
-		font-size: 15px;
+		font-size: 13px;
+		font-weight: 680;
 	}
 	.sub {
-		margin: 4px 0 0;
+		margin: 2px 0 0;
 		color: var(--muted);
-		font-size: 12px;
+		font-size: 11.5px;
 	}
 	.badge {
 		display: inline-block;
@@ -261,9 +263,9 @@
 	}
 	.tp-body {
 		display: grid;
-		grid-template-columns: 300px minmax(0, 1fr);
+		grid-template-columns: 280px minmax(0, 1fr);
 		gap: 16px;
-		margin-top: 14px;
+		padding: 16px;
 	}
 	@media (max-width: 980px) {
 		.tp-body {
@@ -300,10 +302,6 @@
 	.row.selected {
 		border-color: color-mix(in srgb, var(--gold) 30%, var(--line2));
 		background: var(--panel2);
-	}
-	.row-meta {
-		font-size: 11px;
-		color: var(--faint);
 	}
 	.default-tag {
 		margin-left: auto;

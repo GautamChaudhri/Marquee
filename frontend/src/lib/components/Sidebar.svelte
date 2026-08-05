@@ -33,7 +33,7 @@
 					href: '/pipeline',
 					icon: 'pipeline',
 					children: [
-						{ label: 'Movies', href: '/pipeline/movies', icon: 'film' },
+						{ label: 'Films', href: '/pipeline/movies', icon: 'film' },
 						{ label: 'TV', href: '/pipeline/tv', icon: 'tv' }
 					]
 				},
