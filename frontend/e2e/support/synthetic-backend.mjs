@@ -531,6 +531,7 @@ const settingsValues = {
 	MOVIE_POSTER_FORMAT: 'poster.jpg',
 	SERIES_POSTER_FORMAT: 'show.jpg',
 	SEASON_POSTER_FORMAT: 'season{season:02d}.jpg',
+	HEAL_RECENT_DEPLOY_GRACE_MINUTES: 10,
 	POSTER_BACKUP_DIR: '/app/data/poster-backups',
 	PREFERRED_LANG: 'en',
 	WEIGHT_AESTHETIC: 0.35,
@@ -569,7 +570,7 @@ const settingEntry = (key, tab, section, level, control, applyMode = 'next_job')
 	section,
 	level,
 	control,
-	visible: true,
+	visible: key !== 'MEDIA_ROOTS',
 	editable: true
 });
 
@@ -625,6 +626,11 @@ const settingsCatalog = Object.fromEntries(
 		),
 		settingEntry('MOVIE_POSTER_FORMAT', 'posters', 'Poster behavior', 'standard', {
 			kind: 'text'
+		}),
+		settingEntry('HEAL_RECENT_DEPLOY_GRACE_MINUTES', 'posters', 'Storage and Healing', 'advanced', {
+			kind: 'int',
+			min: 0,
+			max: 10080
 		}),
 		settingEntry(
 			'POSTER_BACKUP_DIR',

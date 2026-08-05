@@ -636,6 +636,13 @@ async def test_unified_settings_response_redacts_secrets_and_private_bootstrap_v
 
     for key in ("API_KEY", "DB_URL", "POSTGRES_PASSWORD_FILE", "MARQUEE_SETTINGS_KEYRING_FILE"):
         assert key not in payload["values"]
+
+    # Extra roots remain effective for legacy/deployment configurations, but are
+    # intentionally absent from the editable settings surface.
+    assert payload["catalog"]["MEDIA_ROOTS"]["visible"] is False
+    assert "MEDIA_ROOTS" not in payload["values"]
+    assert "MEDIA_ROOTS" not in payload["defaults"]
+    assert payload["paths"]["media_roots"] == settings.MEDIA_ROOTS
     assert "ciphertext" not in rendered
     assert "fingerprint" not in rendered
     assert "nonce" not in rendered

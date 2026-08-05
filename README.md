@@ -352,8 +352,9 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-For a bare-host development process, add the bootstrap database/API values and an external settings
-keyring:
+For a bare-host development process, add the bootstrap database/API values. The external settings
+keyring below is optional; it enables rotating integration credentials from Settings instead of
+keeping them in the host environment:
 
 ```ini
 DB_URL=postgresql+asyncpg://marquee:your-password@127.0.0.1:5432/marquee
@@ -368,9 +369,9 @@ python -m marquee.maintenance generate-settings-keyring \
   --output ~/.config/marquee/settings-keyring.json
 ```
 
-After startup, enter TMDB/Radarr/Sonarr credentials, URLs, logical media roots, path mappings, and
-runtime defaults through the eight-tab Settings UI. `DEBUG=true` disables authentication and rate
-limits and serves `/docs` — development only. See
+After startup, Settings can test environment-supplied TMDB/Radarr/Sonarr credentials and save
+non-secret connection details over authenticated internal HTTP. Enable the optional keyring to
+replace or clear credentials from the UI. `DEBUG=true` disables authentication and rate limits and serves `/docs` — development only. See
 [Consolidated Settings](design/consolidated-settings.md) for migration and rotation procedures.
 
 ### 3. Database

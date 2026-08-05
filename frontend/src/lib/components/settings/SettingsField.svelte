@@ -87,14 +87,12 @@
 	 * that appears alongside it, and `next_job` is the apply mode of nearly every
 	 * key in the catalog, so it printed on nearly every row while carrying no
 	 * information. What survives is the genuinely exceptional: a key that needs a
-	 * restart, one still being read from a deprecated environment variable, and one
-	 * whose value is private.
+	 * restart or one still being read from a deprecated environment variable.
 	 */
 	const badges = $derived.by(() => {
 		const marks: { text: string; tone?: 'warn' }[] = [];
 		if (entry.apply_mode === 'restart') marks.push({ text: 'Restart required', tone: 'warn' });
 		if (source === 'environment') marks.push({ text: 'Legacy environment' });
-		if (entry.sensitivity === 'private') marks.push({ text: 'Private' });
 		return marks;
 	});
 </script>

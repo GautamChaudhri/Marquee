@@ -59,7 +59,6 @@
 	});
 
 	$effect(() => {
-		if (!secureContext) return;
 		for (const provider of ['tmdb', 'radarr', 'sonarr'] as IntegrationProvider[]) {
 			if (!isConfigured(provider)) continue;
 			const fingerprint = `${secretFor(provider)?.generation ?? 0}:${provider === 'tmdb' ? '' : storedUrl(provider)}`;
@@ -152,13 +151,6 @@
 		clearArmed = false;
 	}
 
-	function transportAllowed(): boolean {
-		if (secureContext) return true;
-		credential = '';
-		toast('Use HTTPS or loopback before changing or testing credentials.', 'bad');
-		return false;
-	}
-
 	const nameProblem = $derived.by(() => {
 		if (modalProvider === 'tmdb') return null;
 		if (!instanceName.trim()) return 'Give this instance a name.';
@@ -190,16 +182,15 @@
 	}
 
 	function formReady(): boolean {
-		if (Boolean(busy) || !secureContext || Boolean(nameProblem) || Boolean(urlProblem))
-			return false;
+		if (Boolean(busy) || Boolean(nameProblem) || Boolean(urlProblem)) return false;
 		if (modalProvider !== 'tmdb' && !url.trim()) return false;
 		if (!secretFor(modalProvider)?.configured && !credential) return false;
+		if (credential && !settings.secret_store.writable) return false;
 		return hasChanges();
 	}
 
 	function testReady(): boolean {
-		if (Boolean(busy) || !secureContext || Boolean(nameProblem) || Boolean(urlProblem))
-			return false;
+		if (Boolean(busy) || Boolean(nameProblem) || Boolean(urlProblem)) return false;
 		if (modalProvider !== 'tmdb' && !url.trim()) return false;
 		return Boolean(secretFor(modalProvider)?.configured || credential);
 	}
@@ -236,7 +227,7 @@
 	}
 
 	async function testConnection() {
-		if (!transportAllowed() || !testReady()) return;
+		if (!testReady()) return;
 		busy = 'test';
 		probe = null;
 		probeError = null;
@@ -258,7 +249,7 @@
 	}
 
 	async function saveConnection() {
-		if (!transportAllowed() || !formReady()) return;
+		if (!formReady()) return;
 		busy = 'save';
 		probeError = null;
 		try {
@@ -294,7 +285,7 @@
 	}
 
 	async function clearCredential() {
-		if (!transportAllowed() || busy) return;
+		if (busy) return;
 		if (!clearArmed) {
 			clearArmed = true;
 			return;
@@ -573,15 +564,17 @@
 						type="password"
 						bind:value={credential}
 						name={`${modalProvider}-replacement-credential`}
+						aria-label={modalProvider === 'tmdb' ? 'Custom read access token' : 'API key'}
 						autocomplete="new-password"
 						placeholder={secretFor(modalProvider)?.configured
 							? 'Leave blank to keep current credential'
 							: 'Enter credential'}
-						disabled={!settings.secret_store.writable || !secureContext}
+						disabled={Boolean(busy)}
 					/>
 					<small
 						>Blank leaves the current credential unchanged. This value is never displayed after
-						submission.</small
+						submission. {#if !settings.secret_store.writable}Without managed credential storage, a
+							typed key can be tested but cannot be saved here.{/if}</small
 					>
 				</label>
 
@@ -599,12 +592,15 @@
 
 				{#if !settings.secret_store.writable}
 					<p class="security-note">
-						<Icon name="alert" size={14} /> Credential replacement is unavailable: {settings
-							.secret_store.reason ?? 'the settings keyring is not mounted'}.
+						<Icon name="alert" size={14} /> This installation uses an environment-supplied credential.
+						You can test it and save its name or URL; enable managed credential storage to replace or
+						clear the key from Marquee.
 					</p>
-				{:else if !secureContext}
+				{/if}
+				{#if !secureContext}
 					<p class="security-note">
-						<Icon name="alert" size={14} /> Credential controls require HTTPS or loopback.
+						<Icon name="alert" size={14} /> Internal HTTP mode is active. Connection actions are allowed,
+						but any key typed here travels unencrypted across this network.
 					</p>
 				{/if}
 
@@ -616,7 +612,7 @@
 								class:armed={clearArmed}
 								class="pill danger"
 								onclick={clearCredential}
-								disabled={Boolean(busy) || !settings.secret_store.writable || !secureContext}
+								disabled={Boolean(busy) || !settings.secret_store.writable}
 							>
 								{busy === 'clear' ? 'Clearing…' : clearArmed ? 'Confirm clear' : 'Clear credential'}
 							</button>
@@ -632,7 +628,13 @@
 							onclick={testConnection}
 							disabled={!testReady()}>{busy === 'test' ? 'Testing…' : 'Test connection'}</button
 						>
-						<button type="submit" class="pill primary" disabled={!formReady()}
+						<button
+							type="submit"
+							class="pill primary"
+							disabled={!formReady()}
+							title={credential && !settings.secret_store.writable
+								? 'Test this key now; enable managed credential storage to save or rotate it.'
+								: undefined}
 							>{busy === 'save'
 								? 'Saving…'
 								: modalIntent === 'add'

@@ -270,17 +270,14 @@ async def test_provider_fails_closed_when_database_rows_cannot_be_decrypted(
 
 
 @pytest.mark.asyncio
-async def test_remote_http_rejects_secret_operations_before_probe(
-    db, managed_keyring, integration_probe
-):
+async def test_internal_http_allows_connection_tests(db, managed_keyring, integration_probe):
     async with _client(secure=False) as client:
         response = await client.post(
             "/api/settings/integrations/tmdb/test",
             json={"credential": "candidate-key"},
         )
-    assert response.status_code == 400
-    assert "HTTPS" in response.json()["detail"]
-    assert integration_probe == []
+    assert response.status_code == 200
+    assert integration_probe == [("tmdb", None, "candidate-key")]
 
 
 @pytest.mark.asyncio

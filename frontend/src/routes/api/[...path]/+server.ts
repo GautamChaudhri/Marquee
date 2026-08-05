@@ -47,12 +47,6 @@ const handler: RequestHandler = async ({ request, params, url, fetch }) => {
 	if (mutating && (origin !== url.origin || (fetchSite !== null && fetchSite !== 'same-origin'))) {
 		return bodyError(403, 'cross_origin_mutation', 'Cross-origin changes are not allowed.');
 	}
-	const credentialOperation = mutating && params.path.startsWith('settings/integrations/');
-	const loopback = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
-	if (credentialOperation && url.protocol !== 'https:' && !loopback) {
-		return bodyError(400, 'insecure_credential_transport', 'Credential operations require HTTPS.');
-	}
-
 	const target = `${BASE()}/api/${params.path}${url.search}`;
 
 	const headers = new Headers(request.headers);

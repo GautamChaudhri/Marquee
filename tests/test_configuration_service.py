@@ -52,6 +52,11 @@ def test_configuration_catalog_records_owner_sensitivity_and_apply_mode():
     assert restart.database_owned is True
     assert restart.apply_mode == "restart"
 
+    media_roots = CONFIGURATION_CATALOG["MEDIA_ROOTS"]
+    assert media_roots.storage == "revision"
+    assert media_roots.database_owned is True
+    assert media_roots.visible is False
+
 
 def test_configuration_catalog_classifies_every_modeled_field():
     expected = set(Settings.model_fields) | set(PipelineSettings.model_fields)

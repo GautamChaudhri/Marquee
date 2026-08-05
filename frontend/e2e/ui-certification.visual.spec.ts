@@ -279,8 +279,8 @@ for (const colorScheme of ['dark', 'light'] as const) {
 				'aria-selected',
 				'true'
 			);
-			await expect(page.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
-				'aria-pressed',
+			await expect(page.getByRole('button', { name: 'Hide advanced' })).toHaveAttribute(
+				'aria-expanded',
 				'true'
 			);
 			await certify(page, `settings-posters-advanced-${colorScheme}-${viewport.label}.png`);

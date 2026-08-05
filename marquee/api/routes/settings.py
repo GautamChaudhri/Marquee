@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 from collections.abc import Sequence
 from pathlib import Path
@@ -686,39 +685,6 @@ async def put_settings(
     }
 
 
-def _is_loopback(host: str | None) -> bool:
-    if not host:
-        return False
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return host.lower() == "localhost"
-
-
-def _is_private_or_loopback(host: str | None) -> bool:
-    if not host:
-        return False
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host.lower() == "localhost"
-    return address.is_private or address.is_loopback
-
-
-def _require_secure_secret_transport(request: Request) -> None:
-    client_host = request.client.host if request.client else None
-    forwarded_https = (
-        _is_private_or_loopback(client_host)
-        and request.headers.get("x-marquee-internal-proxy") == "same-origin"
-        and request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip() == "https"
-    )
-    if request.url.scheme != "https" and not forwarded_https and not _is_loopback(client_host):
-        raise HTTPException(
-            status_code=400,
-            detail="Credential operations require HTTPS or a loopback connection.",
-        )
-
-
 def _normalize_service_url(value: str) -> str:
     try:
         return normalize_integration_url(value)
@@ -905,10 +871,8 @@ async def _integration_inputs(
 async def test_integration(
     provider: str,
     payload: IntegrationTestPayload,
-    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    _require_secure_secret_transport(request)
     url, credential, _ = await _integration_inputs(
         db,
         provider=provider,
@@ -926,7 +890,6 @@ async def put_integration(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    _require_secure_secret_transport(request)
     if payload.name is not None and provider not in _PROVIDER_NAME_KEYS:
         raise HTTPException(status_code=400, detail="This integration has a fixed display name.")
     url, credential, capability = await _integration_inputs(
@@ -1009,7 +972,6 @@ async def delete_integration_credential(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    _require_secure_secret_transport(request)
     if provider not in _PROVIDER_SECRET_KEYS:
         raise HTTPException(status_code=404, detail="Unknown integration provider.")
     try:

@@ -8,7 +8,6 @@
 	type PathFact = NonNullable<PathMappingTestResult['path_mappings']['radarr'][number]['target']>;
 
 	let {
-		mediaRoots,
 		radarrMappings,
 		sonarrMappings,
 		dirty = false,
@@ -17,7 +16,6 @@
 		onReset,
 		onTestResults
 	}: {
-		mediaRoots: string[];
 		radarrMappings: EditablePathMapping[];
 		sonarrMappings: EditablePathMapping[];
 		dirty?: boolean;
@@ -28,13 +26,6 @@
 	} = $props();
 
 	let testing = $state(false);
-
-	function roots(raw: string): string[] {
-		return raw
-			.split('\n')
-			.map((value) => value.trim())
-			.filter(Boolean);
-	}
 
 	function change(key: string, value: unknown) {
 		onTestResults?.([]);
@@ -77,7 +68,7 @@
 		testing = true;
 		try {
 			const result = await testPathMappings(fetch, {
-				media_roots: mediaRoots,
+				media_roots: [],
 				radarr_mappings: requestMappings(radarrMappings),
 				sonarr_mappings: requestMappings(sonarrMappings)
 			});
@@ -102,7 +93,6 @@
 
 {#snippet mappingGroup(
 	title: string,
-	singular: string,
 	arrLabel: string,
 	settingKey: MappingKey,
 	mappings: EditablePathMapping[]
@@ -116,11 +106,11 @@
 				onclick={() => addMapping(settingKey, mappings)}
 				{disabled}
 			>
-				+ Add {singular} path
+				+ Add path
 			</button>
 		</header>
 		<div class="path-heading" aria-hidden="true">
-			<span>{arrLabel}</span><i>→</i><span>Marquee Path</span><span></span>
+			<span>{arrLabel}</span><span>Marquee Path</span>
 		</div>
 		<div class="mapping-rows">
 			{#if mappings.length}
@@ -175,7 +165,7 @@
 					</div>
 				{/each}
 			{:else}
-				<p class="empty-paths">No {singular} paths have been added.</p>
+				<p class="empty-paths">No paths have been added.</p>
 			{/if}
 		</div>
 	</section>
@@ -191,34 +181,9 @@
 		<span>Next job</span>
 	</header>
 
-	<div class="path-layout">
-		<div class="mapping-list">
-			{@render mappingGroup('Films', 'film', 'Radarr Path', 'RADARR_PATH_MAPPINGS', radarrMappings)}
-			{@render mappingGroup(
-				'Television',
-				'television',
-				'Sonarr Path',
-				'SONARR_PATH_MAPPINGS',
-				sonarrMappings
-			)}
-		</div>
-		<label class="roots-field">
-			<span>Additional allowed media roots</span>
-			<p>
-				Extra Marquee-visible folders that are allowed alongside your Film and Television paths.
-			</p>
-			<textarea
-				rows="5"
-				value={mediaRoots.join('\n')}
-				{disabled}
-				placeholder="One absolute Marquee path per line"
-				oninput={(event) =>
-					change('MEDIA_ROOTS', roots((event.currentTarget as HTMLTextAreaElement).value))}
-			></textarea>
-			<small
-				>These add allowed locations; they do not create Docker mounts or Arr translations.</small
-			>
-		</label>
+	<div class="mapping-list">
+		{@render mappingGroup('Films', 'Radarr Path', 'RADARR_PATH_MAPPINGS', radarrMappings)}
+		{@render mappingGroup('Television', 'Sonarr Path', 'SONARR_PATH_MAPPINGS', sonarrMappings)}
 	</div>
 
 	<footer>
@@ -264,10 +229,6 @@
 		color: var(--muted);
 		font: 600 9px/1.2 var(--font-mono);
 		text-transform: uppercase;
-	}
-	.path-layout {
-		display: grid;
-		grid-template-columns: minmax(0, 1.65fr) minmax(230px, 0.72fr);
 	}
 	.mapping-list {
 		min-width: 0;
@@ -337,7 +298,9 @@
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 	}
-	.path-heading i,
+	.path-heading span:last-child {
+		grid-column: 3;
+	}
 	.mapping-row > i {
 		color: var(--faint);
 		font-style: normal;
@@ -353,8 +316,7 @@
 		display: block;
 		min-width: 0;
 	}
-	input,
-	textarea {
+	input {
 		width: 100%;
 		min-width: 0;
 		border: 1px solid var(--line2);
@@ -364,13 +326,11 @@
 		padding: 8px 9px;
 		font: 11px/1.4 var(--font-mono);
 	}
-	input:focus-visible,
-	textarea:focus-visible {
+	input:focus-visible {
 		outline: 2px solid var(--gold);
 		outline-offset: 2px;
 	}
-	input:disabled,
-	textarea:disabled {
+	input:disabled {
 		cursor: not-allowed;
 		opacity: 0.52;
 	}
@@ -380,46 +340,12 @@
 		color: var(--muted);
 		font-size: 11px;
 	}
-	.roots-field {
-		display: grid;
-		align-content: start;
-		gap: 7px;
-		padding: 14px 15px;
-		border-left: 1px solid var(--line);
-		color: var(--muted);
-		font-size: 10px;
-		font-weight: 650;
-	}
-	.roots-field > p {
-		margin: -2px 0 0;
-		font-size: 10px;
-		font-weight: 400;
-		line-height: 1.45;
-	}
-	.roots-field textarea {
-		resize: vertical;
-	}
-	.roots-field small {
-		color: var(--muted);
-		font-size: 10px;
-		font-weight: 400;
-		line-height: 1.45;
-	}
 	.path-card > footer {
 		display: flex;
 		justify-content: flex-end;
 		gap: 8px;
 		padding: 10px 15px;
 		border-top: 1px solid var(--line);
-	}
-	@media (max-width: 920px) {
-		.path-layout {
-			grid-template-columns: 1fr;
-		}
-		.roots-field {
-			border-top: 1px solid var(--line);
-			border-left: 0;
-		}
 	}
 	@media (max-width: 680px) {
 		.path-heading {

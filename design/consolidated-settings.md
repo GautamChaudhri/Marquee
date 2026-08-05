@@ -2,16 +2,16 @@
 
 Marquee exposes one `/settings` workspace with eight URL-addressable horizontal tabs:
 
-| Tab | Standard purpose | Advanced purpose |
-| --- | --- | --- |
-| General | Application identity and browser-local appearance | None |
-| Connections | TMDB, Radarr, Sonarr, and normal sync cadence | Diagnostics and synchronization policy |
-| Media | Logical roots and Arr path mappings | Application-managed paths |
-| Posters | Naming, restore order, and healing | Poster storage and healing policy |
-| Pipeline | Normal run defaults | Gates, scoring, OCR, models, stacks, and artifacts |
-| Taste | Profile and residual thresholds | Calibration, maps, artifacts, axes, and rate limits |
-| System | Logs, backups, metrics, retention, and schedules | Database, workers, leases, evidence, resources, and shutdown |
-| Access | API/authentication and transport posture | Lockout and defensive request controls |
+| Tab         | Standard purpose                                  | Advanced purpose                                             |
+| ----------- | ------------------------------------------------- | ------------------------------------------------------------ |
+| General     | Application identity and browser-local appearance | None                                                         |
+| Connections | TMDB, Radarr, Sonarr, and normal sync cadence     | Diagnostics and synchronization policy                       |
+| Media       | Logical roots and Arr path mappings               | Application-managed paths                                    |
+| Posters     | Naming, restore order, and healing                | Poster storage and healing policy                            |
+| Pipeline    | Normal run defaults                               | Gates, scoring, OCR, models, stacks, and artifacts           |
+| Taste       | Profile and residual thresholds                   | Calibration, maps, artifacts, axes, and rate limits          |
+| System      | Logs, backups, metrics, retention, and schedules  | Database, workers, leases, evidence, resources, and shutdown |
+| Access      | API/authentication and transport posture          | Lockout and defensive request controls                       |
 
 The rail is keyboard navigable, sticky, horizontally scrollable, and shareable through
 `?tab=<tab>&level=<standard|advanced>`. A dirty draft survives tab changes, while a sticky save bar
@@ -86,10 +86,14 @@ smallest required service set. The same-origin SvelteKit proxy reads the API key
 rejects cross-origin mutation requests.
 
 Credential forms use blank `autocomplete="new-password"` inputs; blank means unchanged. Client
-state is erased after a write and is never persisted in browser storage. Remote credential
-operations require HTTPS; loopback HTTP remains available for development. Integration URLs reject
-userinfo, queries, fragments, link-local/reserved destinations, and redirects. Provider failures
-are replaced with bounded messages that contain neither credentials nor upstream response bodies.
+state is erased after a write and is never persisted in browser storage. Authenticated same-origin
+internal HTTP is supported for self-hosted deployments; operators must keep that network trusted,
+because a typed credential is not encrypted in transit. HTTPS remains appropriate for exposed or
+untrusted networks. Without the optional managed-secret keyring, environment-supplied credentials
+remain usable and can be tested, while a typed candidate can only be tested—not persisted.
+Integration URLs reject userinfo, queries, fragments, link-local/reserved destinations, and
+redirects. Provider failures are replaced with bounded messages that contain neither credentials
+nor upstream response bodies.
 
 The central job log redactor resolves managed credentials and the effective database URL at use
 time. Query-string API authentication is rejected outside the reserved webhook compatibility path.
@@ -102,15 +106,23 @@ This design follows [OWASP Secrets Management](https://cheatsheetseries.owasp.or
 ## Fresh Compose installation
 
 1. Copy `.env.example` to `.env` and replace only the bootstrap values.
-2. Generate the external keyring without printing its material:
+
+The managed credential keyring is optional. It is required only when an operator wants Marquee to
+persist, replace, or clear integration credentials from the Settings UI. A bare-host deployment can
+instead keep the three provider credentials in its owner-readable environment/service configuration
+and use Settings to test them and manage non-secret connection details.
+
+## Compose setup with UI-managed credentials
+
+1. Generate the external keyring without printing its material:
 
    ```bash
    python -m marquee.maintenance generate-settings-keyring \
      --output ~/.config/marquee/settings-keyring.json
    ```
 
-3. Set `MARQUEE_SETTINGS_KEYRING_PATH` in `.env` to that absolute path.
-4. Start the stack with the managed-secret override:
+2. Set `MARQUEE_SETTINGS_KEYRING_PATH` in `.env` to that absolute path.
+3. Start the stack with the managed-secret override:
 
    ```bash
    docker compose \
@@ -119,8 +131,9 @@ This design follows [OWASP Secrets Management](https://cheatsheetseries.owasp.or
      up -d
    ```
 
-5. Open Connections and enter the provider credentials. Use a real DNS name in
-   `MARQUEE_SITE_ADDRESS` for automatic Caddy HTTPS before allowing remote credential changes.
+4. Open Connections and enter the provider credentials. A real DNS name in
+   `MARQUEE_SITE_ADDRESS` lets Caddy provide HTTPS when the deployment leaves a trusted network;
+   authenticated internal HTTP remains supported.
 
 Compose publishes Caddy on loopback unless `MARQUEE_BIND_ADDRESS` is deliberately changed. Set
 `MEDIA_PATH_CEILINGS` to the JSON list of container paths actually mounted for media; editable

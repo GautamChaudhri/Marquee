@@ -35,6 +35,10 @@ test('settings exposes eight URL-addressable keyboard tabs and only needed advan
 	await expect(page).toHaveURL(/tab=pipeline.*level=advanced/);
 	await expect(page.getByRole('heading', { name: 'Scoring Weights' })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Runtime Defaults' })).toBeVisible();
+	await expect(
+		page.getByText('Lower-level knobs. The defaults are what Marquee is tuned around.')
+	).toHaveCount(0);
+	await expect(page.getByText('Private', { exact: true })).toHaveCount(0);
 
 	await page.getByRole('button', { name: 'Hide advanced' }).click();
 	await expect(page).toHaveURL(/tab=pipeline(?!.*level=advanced)/);
@@ -74,7 +78,7 @@ test('settings keeps drafts visible, saves through the unified API, and stays ac
 	expect(results.violations).toEqual([]);
 });
 
-test('media paths group Films and Television, support extra mappings, and keep app checks advanced', async ({
+test('media paths group Films and Television, hide additional roots, and keep app checks advanced', async ({
 	page
 }) => {
 	await page.goto('/settings?tab=media');
@@ -82,10 +86,13 @@ test('media paths group Films and Television, support extra mappings, and keep a
 	await expect(page.getByRole('heading', { name: 'Films' })).toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Television' })).toBeVisible();
 	await expect(page.getByText('Remote prefix')).toHaveCount(0);
+	await expect(page.getByText('Additional allowed media roots')).toHaveCount(0);
 
-	await page.getByRole('button', { name: /Add film path/ }).click();
+	const films = page.getByRole('region', { name: 'Films library paths' });
+	await films.getByRole('button', { name: 'Add path' }).click();
 	await expect(page.getByLabel('Radarr Path 2')).toBeVisible();
 	await expect(page.getByLabel('Marquee Path Films 2')).toBeVisible();
+	await expect(films.locator('.path-heading i')).toHaveCount(0);
 
 	await page.getByRole('button', { name: 'Test accessibility' }).click();
 	await expect(page.getByRole('region', { name: 'Marquee path checks' })).toContainText('readable');
@@ -96,6 +103,75 @@ test('media paths group Films and Television, support extra mappings, and keep a
 	const dataPath = page.locator('.setting-row', { has: page.getByLabel('Data Dir') });
 	await expect(dataPath).toContainText('Readable');
 	await expect(dataPath).toContainText('Writable');
+});
+
+test('poster naming uses stem-only fields and saves each row immediately', async ({ page }) => {
+	await page.goto('/settings?tab=posters');
+
+	const movie = page.getByRole('textbox', { name: 'Movie poster filename' });
+	const movieRail = page.locator('.filename-rail', { has: movie });
+	const moviePresets = page.locator('[aria-label="Movie poster filename presets"]');
+	const movieChoices = movieRail.locator('.filename-copy');
+	await expect(movie).toHaveValue('poster');
+	await expect(movieChoices.getByRole('button', { name: 'Conventional' })).toBeVisible();
+	await expect(movieRail.locator('.filename-editor').getByRole('button')).toHaveCount(0);
+	await expect(movieChoices.locator('.selection-dot')).toHaveCount(3);
+	await expect(moviePresets.getByRole('button', { name: 'Conventional' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(moviePresets.getByRole('button', { name: 'Custom' })).toHaveAttribute(
+		'aria-pressed',
+		'false'
+	);
+	await moviePresets.getByRole('button', { name: 'Media filename' }).click();
+	await expect(movie).toHaveValue('{movie_basename}');
+	await expect(movieRail.getByRole('button', { name: 'Save' })).toBeVisible();
+
+	await moviePresets.getByRole('button', { name: 'Custom' }).click();
+	await expect(movie).toBeFocused();
+	await movie.fill('cinema-poster.jpg');
+	await expect(movie).toHaveValue('cinema-poster');
+	await expect(moviePresets.getByRole('button', { name: 'Custom' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(moviePresets.getByRole('button', { name: 'Custom' })).toHaveClass(/active/);
+	await expect(moviePresets.getByRole('button', { name: 'Conventional' })).toHaveAttribute(
+		'aria-pressed',
+		'false'
+	);
+	await movieRail.getByRole('button', { name: 'Cancel' }).click();
+	await expect(movie).toHaveValue('poster');
+	await expect(moviePresets.getByRole('button', { name: 'Custom' })).toHaveAttribute(
+		'aria-pressed',
+		'false'
+	);
+
+	await movie.fill('cinema-poster');
+	await movieRail.getByRole('button', { name: 'Save' }).click();
+	await expect(movie).toHaveValue('cinema-poster');
+	await expect(page.getByText(/unsaved change/)).toHaveCount(0);
+
+	const show = page.getByRole('textbox', { name: 'Show poster filename' });
+	const season = page.getByRole('textbox', { name: 'Season poster filename' });
+	const showRail = page.locator('.filename-rail', { has: show });
+	await expect(show).toHaveValue('show');
+	await expect(season).toHaveValue('season{season:02d}');
+	await expect(page.locator('[aria-label="Show poster filename presets"]')).not.toContainText(
+		'Media filename'
+	);
+	await expect(page.locator('[aria-label="Show poster filename presets"]')).toContainText('Custom');
+	await expect(page.locator('[aria-label="Season poster filename presets"]')).not.toContainText(
+		'Media filename'
+	);
+
+	await show.fill('alternate-show');
+	await expect(show).toHaveValue('alternate-show');
+	await expect(showRail.getByRole('button', { name: 'Save' })).toBeVisible();
+	await page.getByRole('button', { name: 'Reset naming defaults' }).click();
+	await expect(movie).toHaveValue('poster');
+	await expect(show).toHaveValue('show');
 });
 
 test('settings tab rail scrolls instead of clipping on a phone viewport', async ({ page }) => {

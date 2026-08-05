@@ -34,6 +34,12 @@
 	};
 	const tabs = SETTINGS_TABS.map((id) => ({ id, ...tabDetails[id] }));
 	type EditablePathMapping = { arr_path: string; marquee_path: string };
+	const POSTER_FORMAT_KEYS = [
+		'MOVIE_POSTER_FORMAT',
+		'SERIES_POSTER_FORMAT',
+		'SEASON_POSTER_FORMAT'
+	] as const;
+	type PosterFormatKey = (typeof POSTER_FORMAT_KEYS)[number];
 	type TestedMediaPath = NonNullable<
 		PathMappingTestResult['path_mappings']['radarr'][number]['target']
 	>;
@@ -51,6 +57,7 @@
 	let stagedResets = new SvelteSet<string>();
 	let saving = $state(false);
 	let resetting = $state(false);
+	let posterSaving = $state(false);
 	let resetArmed = $state(false);
 	let conflictNote = $state<string | null>(null);
 	let secureContext = $state(false);
@@ -78,7 +85,6 @@
 		general: ['MARQUEE_ENVIRONMENT', 'MARQUEE_PROCESS_ROLE', 'HOST', 'PORT'],
 		connections: ['RADARR_URL', 'RADARR_INSTANCE_NAME', 'SONARR_URL', 'SONARR_INSTANCE_NAME'],
 		media: [
-			'MEDIA_ROOTS',
 			'RADARR_PATH_PREFIX',
 			'RADARR_MEDIA_PATH',
 			'RADARR_PATH_MAPPINGS',
@@ -274,6 +280,67 @@
 			else toast(error instanceof Error ? error.message : 'Could not save settings', 'bad');
 		} finally {
 			saving = false;
+		}
+	}
+
+	function clearPosterDrafts() {
+		for (const key of POSTER_FORMAT_KEYS) {
+			delete drafts[key];
+			stagedResets.delete(key);
+		}
+	}
+
+	async function savePosterFormat(key: PosterFormatKey, value: string): Promise<boolean> {
+		if (!settings || posterSaving) return false;
+		posterSaving = true;
+		conflictNote = null;
+		const previous = { ...settings.values };
+		try {
+			const result = await putConfiguration(
+				fetch,
+				{ [key]: value },
+				settings.configuration_version
+			);
+			settings = result.settings;
+			delete drafts[key];
+			stagedResets.delete(key);
+			toast(
+				result.changed ? 'Poster filename saved' : 'Poster filename was unchanged',
+				result.changed ? 'good' : 'info'
+			);
+			return true;
+		} catch (error) {
+			if (isConfigurationConflict(error)) await absorbConflict(previous);
+			else toast(error instanceof Error ? error.message : 'Could not save poster filename', 'bad');
+			return false;
+		} finally {
+			posterSaving = false;
+		}
+	}
+
+	async function resetPosterFormats(): Promise<boolean> {
+		if (!settings || posterSaving) return false;
+		posterSaving = true;
+		conflictNote = null;
+		const previous = { ...settings.values };
+		try {
+			const result = await putConfiguration(fetch, {}, settings.configuration_version, [
+				...POSTER_FORMAT_KEYS
+			]);
+			settings = result.settings;
+			clearPosterDrafts();
+			const count = result.applied?.length ?? 0;
+			toast(
+				count ? 'Poster naming defaults restored' : 'Poster names already use their defaults',
+				count ? 'good' : 'info'
+			);
+			return true;
+		} catch (error) {
+			if (isConfigurationConflict(error)) await absorbConflict(previous);
+			else toast(error instanceof Error ? error.message : 'Could not reset poster naming', 'bad');
+			return false;
+		} finally {
+			posterSaving = false;
 		}
 	}
 
@@ -530,7 +597,6 @@
 				remain deployment-owned; Marquee never changes Docker mounts.
 			</div>
 			<PathMappingsCard
-				mediaRoots={(valueFor('MEDIA_ROOTS') as string[] | undefined) ?? []}
 				radarrMappings={mappingListFor(
 					'RADARR_PATH_MAPPINGS',
 					'RADARR_PATH_PREFIX',
@@ -542,7 +608,6 @@
 					'SONARR_MEDIA_PATH'
 				)}
 				dirty={[
-					'MEDIA_ROOTS',
 					'RADARR_PATH_PREFIX',
 					'RADARR_MEDIA_PATH',
 					'RADARR_PATH_MAPPINGS',
@@ -556,7 +621,6 @@
 				onReset={() => {
 					testedMediaPaths = [];
 					resetKeys([
-						'MEDIA_ROOTS',
 						'RADARR_PATH_PREFIX',
 						'RADARR_MEDIA_PATH',
 						'RADARR_PATH_MAPPINGS',
@@ -585,16 +649,12 @@
 
 		{#if activeTab === 'posters'}
 			<PosterNamingCard
-				movie={String(valueFor('MOVIE_POSTER_FORMAT') ?? 'poster.jpg')}
-				series={String(valueFor('SERIES_POSTER_FORMAT') ?? 'show.jpg')}
-				season={String(valueFor('SEASON_POSTER_FORMAT') ?? 'season{season:02d}.jpg')}
-				dirty={['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT'].some(
-					(key) => key in drafts
-				)}
-				disabled={!settings.writable || saving}
-				onChange={changeValue}
-				onReset={() =>
-					resetKeys(['MOVIE_POSTER_FORMAT', 'SERIES_POSTER_FORMAT', 'SEASON_POSTER_FORMAT'])}
+				movie={String(settings.values.MOVIE_POSTER_FORMAT ?? 'poster.jpg')}
+				series={String(settings.values.SERIES_POSTER_FORMAT ?? 'show.jpg')}
+				season={String(settings.values.SEASON_POSTER_FORMAT ?? 'season{season:02d}.jpg')}
+				disabled={!settings.writable || saving || resetting || posterSaving}
+				onSave={savePosterFormat}
+				onReset={resetPosterFormats}
 			/>
 		{/if}
 
@@ -612,19 +672,23 @@
 					<b>{settings.deployment.api_key_configured ? 'Configured' : 'Missing'}</b>
 					<small>Bootstrap secret · never returned to the browser</small>
 				</section>
-				<section class:warning={!settings.deployment.keyring_configured} class="posture-card">
-					<span>Settings keyring</span>
-					<b>{settings.deployment.keyring_configured ? 'Mounted' : 'Not mounted'}</b>
+				<section class="posture-card">
+					<span>Managed credential storage</span>
+					<b>{settings.secret_store.writable ? 'Enabled' : 'Optional'}</b>
 					<small
 						>{settings.secret_store.writable
-							? 'Managed credentials writable'
-							: 'Credential writes disabled'}</small
+							? 'Credentials can be rotated in Settings'
+							: 'Environment credentials remain usable'}</small
 					>
 				</section>
 				<section class:warning={!secureContext} class="posture-card">
 					<span>Browser transport</span>
-					<b>{secureContext ? 'Secure' : 'HTTP warning'}</b>
-					<small>Remote credential changes require HTTPS</small>
+					<b>{secureContext ? 'HTTPS' : 'Internal HTTP'}</b>
+					<small
+						>{secureContext
+							? 'Encrypted in transit'
+							: 'Connection actions are allowed on trusted networks'}</small
+					>
 				</section>
 				<section class:warning={settings.deployment.debug} class="posture-card">
 					<span>Debug mode</span>
@@ -657,7 +721,6 @@
 						{advancedOpen ? 'Hide advanced' : 'Show advanced'}
 						<span class="pill-count">{advancedCount}</span>
 					</button>
-					<p>Lower-level knobs. The defaults are what Marquee is tuned around.</p>
 				</div>
 				<div id="settings-advanced" hidden={!advancedOpen}>
 					{#if advancedOpen}
@@ -855,11 +918,6 @@
 		flex-wrap: wrap;
 		padding-top: 16px;
 		border-top: 1px solid var(--line);
-	}
-	.advanced-divider p {
-		margin: 0;
-		color: var(--muted);
-		font-size: 11.5px;
 	}
 	#settings-advanced {
 		margin-top: 14px;

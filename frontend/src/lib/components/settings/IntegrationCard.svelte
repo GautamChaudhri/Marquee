@@ -106,7 +106,8 @@
 		const name = probe.appName ?? detail.short;
 		rows.push(probe.version ? `${name} ${probe.version}` : name);
 		if (probe.instanceName && probe.instanceName !== probe.appName) rows.push(probe.instanceName);
-		if (probe.osName) rows.push(probe.osVersion ? `${probe.osName} ${probe.osVersion}` : probe.osName);
+		if (probe.osName)
+			rows.push(probe.osVersion ? `${probe.osName} ${probe.osVersion}` : probe.osName);
 		if (probe.isDocker) rows.push('Docker');
 		if (probe.runtimeVersion) rows.push(`Runtime ${probe.runtimeVersion}`);
 		if (probe.imageBaseUrl) rows.push('Images reachable');
@@ -117,15 +118,8 @@
 		return error instanceof Error && error.message ? error.message : fallback;
 	}
 
-	function transportAllowed(): boolean {
-		if (secureContext) return true;
-		credential = '';
-		toast('Use HTTPS or loopback before changing integration credentials.', 'bad');
-		return false;
-	}
-
 	async function test() {
-		if (busy || !transportAllowed()) return;
+		if (busy) return;
 		busy = 'test';
 		probeError = null;
 		try {
@@ -151,9 +145,7 @@
 		try {
 			const job = await syncLibraries(fetch);
 			toast(
-				job.disposition === 'reused'
-					? 'A library sync is already running'
-					: 'Library sync started',
+				job.disposition === 'reused' ? 'A library sync is already running' : 'Library sync started',
 				'info'
 			);
 		} catch (error) {
@@ -164,7 +156,8 @@
 	}
 
 	async function save() {
-		if (busy || !transportAllowed() || (!urlDirty && !credential)) return;
+		if (busy || (!urlDirty && !credential) || (credential && !settings.secret_store.writable))
+			return;
 		busy = 'save';
 		try {
 			const result = await putIntegration(fetch, provider, {
@@ -194,7 +187,6 @@
 	}
 
 	async function clearCredential() {
-		if (!transportAllowed()) return;
 		if (!clearArmed) {
 			clearArmed = true;
 			return;
@@ -254,9 +246,10 @@
 				type="password"
 				bind:value={credential}
 				name={`${provider}-replacement-credential`}
+				aria-label={provider === 'tmdb' ? 'Read access token' : 'API key'}
 				autocomplete="new-password"
 				placeholder={configured ? 'Leave blank to keep current credential' : 'Enter credential'}
-				disabled={!settings.secret_store.writable || !secureContext}
+				disabled={Boolean(busy)}
 			/>
 		</label>
 	</div>
@@ -301,23 +294,20 @@
 	</div>
 	{#if !settings.secret_store.writable}
 		<p class="store-warning">
-			Credential replacement is unavailable: {settings.secret_store.reason ??
-				'keyring not mounted'}.
+			This installation uses an environment-supplied credential. It can be tested, but enable
+			managed credential storage to replace or clear it here.
 		</p>
-	{:else if !secureContext}
+	{/if}
+	{#if !secureContext}
 		<p class="store-warning">
-			Credential controls are disabled until this page is opened over HTTPS or loopback.
+			Internal HTTP mode is active. Connection actions are allowed, but any key typed here travels
+			unencrypted across this network.
 		</p>
 	{/if}
 
 	<footer>
 		<div class="probe-actions">
-			<button
-				type="button"
-				class="pill quiet"
-				onclick={test}
-				disabled={Boolean(busy) || !secureContext}
-			>
+			<button type="button" class="pill quiet" onclick={test} disabled={Boolean(busy)}>
 				{busy === 'test' ? 'Testing…' : 'Test connection'}
 			</button>
 			{#if provider !== 'tmdb' && configured}
@@ -333,7 +323,7 @@
 					class:armed={clearArmed}
 					class="pill danger clear"
 					onclick={clearCredential}
-					disabled={Boolean(busy) || !settings.secret_store.writable || !secureContext}
+					disabled={Boolean(busy) || !settings.secret_store.writable}
 				>
 					{busy === 'clear' ? 'Clearing…' : clearArmed ? 'Confirm clear' : 'Clear credential'}
 				</button>
@@ -343,9 +333,9 @@
 				class="pill primary"
 				onclick={save}
 				disabled={Boolean(busy) ||
-					!secureContext ||
 					Boolean(urlProblem) ||
-					(!urlDirty && !credential)}
+					(!urlDirty && !credential) ||
+					Boolean(credential && !settings.secret_store.writable)}
 			>
 				{busy === 'save' ? 'Saving…' : configured ? 'Test & save' : 'Test & configure'}
 			</button>

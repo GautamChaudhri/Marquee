@@ -481,7 +481,9 @@ def _catalog() -> dict[str, ConfigurationKey]:
                     else "next_job"
                 )
                 tab, section, level = _app_ui(key)
-                visible = True
+                # Extra media roots remain a supported safety boundary for existing
+                # deployments, but they are no longer an operator-facing setting.
+                visible = key != "MEDIA_ROOTS"
             else:
                 storage = "internal" if key in PIPELINE_INTERNAL_KEYS else "revision"
                 annotation_args = get_args(field.annotation)
