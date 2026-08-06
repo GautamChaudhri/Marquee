@@ -148,6 +148,36 @@ def test_tv_map_points_carry_series_identity(synthetic_tv_profile):
     assert all(point["poster_url"] is None for point in points)
 
 
+def test_point_poster_urls_match_real_serving_routes():
+    """A poster URL the map invents is worthless unless something serves it.
+
+    These are built by string concatenation far from the routers, so this pins them
+    to the mounted paths rather than to a remembered prefix.
+    """
+    import re
+
+    from marquee.main import app
+    from marquee.ml.taste_map import _poster_url
+
+    mounted = {
+        getattr(route, "path", "") for route in app.routes if "GET" in getattr(route, "methods", ())
+    }
+    patterns = [re.compile(re.sub(r"\{[^}]+\}", "[^/]+", path) + "$") for path in mounted]
+
+    urls = [
+        _poster_url("movie", movie_id=7, series_id=None, season_id=None),
+        _poster_url("show", movie_id=None, series_id=7, season_id=None),
+        _poster_url("season", movie_id=None, series_id=7, season_id=9),
+    ]
+    for url in urls:
+        assert url is not None
+        assert any(pattern.match(url) for pattern in patterns), f"{url} is not a served route"
+
+    # Unresolved subjects get nothing rather than a URL that cannot resolve.
+    assert _poster_url("movie", movie_id=None, series_id=None, season_id=None) is None
+    assert _poster_url("season", movie_id=None, series_id=7, season_id=None) is None
+
+
 def test_map_is_deterministic(synthetic_profile):
     from marquee.ml.taste_map import build_map
 

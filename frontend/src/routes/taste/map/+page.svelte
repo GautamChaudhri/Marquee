@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import TasteMap from '$lib/components/TasteMap.svelte';
+	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { getExemplarNeighbors, getTasteMap, rebuildTasteMap } from '$lib/api/taste';
 	import { kindLabel, pointTitle, subjectHref } from '$lib/taste/map-points';
@@ -186,6 +187,7 @@
 				{colorBy}
 				{showNoise}
 				{selected}
+				dataset={view}
 				onSelect={select}
 			/>
 		{/if}
@@ -206,9 +208,15 @@
 				</button>
 			</div>
 
-			{#if selected.poster_url}
-				<img class="poster" src={selected.poster_url} alt="" loading="lazy" />
-			{/if}
+			<div class="poster">
+				<PosterThumb
+					title={pointTitle(selected)}
+					year={selected.year}
+					posterUrl={selected.poster_url}
+					imageAlt={`${pointTitle(selected)} artwork`}
+					gradientKey={selected.name}
+				/>
+			</div>
 
 			<h2>{pointTitle(selected)}</h2>
 			{#if selected.year}<p class="year">{selected.year}</p>{/if}
@@ -446,11 +454,6 @@
 	}
 	.poster {
 		width: 100%;
-		aspect-ratio: 2 / 3;
-		object-fit: cover;
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--line);
-		background: var(--panel2);
 	}
 	.detail h2 {
 		margin: 2px 0 0;

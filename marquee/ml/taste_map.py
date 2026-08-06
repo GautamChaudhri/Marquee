@@ -104,13 +104,18 @@ def _poster_url(
     series_id: int | None,
     season_id: int | None,
 ) -> str | None:
-    """The library artwork a map point stands for, or nothing when it is unresolved."""
+    """The library artwork a map point stands for, or nothing when it is unresolved.
+
+    Whether that subject currently has a poster on disk is deliberately not baked in:
+    the map artifact outlives deployments, so the caller renders a fallback if the
+    serving route 404s rather than trusting a frozen answer.
+    """
     if kind == "season" and season_id:
-        return f"/api/seasons/{season_id}/poster"
+        return f"/api/library/seasons/{season_id}/poster"
     if kind == "show" and series_id:
-        return f"/api/series/{series_id}/poster"
+        return f"/api/library/series/{series_id}/poster"
     if kind == "movie" and movie_id:
-        return f"/api/movies/{movie_id}/poster"
+        return f"/api/library/movies/{movie_id}/poster"
     return None
 
 
@@ -143,12 +148,11 @@ def _resolve_profile_movie_rows(profile: dict) -> list[dict]:
         with psycopg.connect(db_url) as conn, conn.cursor() as cursor:
             cursor.execute("SELECT id, title, year, tmdb_id FROM movies")
             for movie_id, title, year, tmdb_id in cursor:
-                by_id[int(movie_id)] = (int(movie_id), str(title), year, tmdb_id)
+                entry = (int(movie_id), str(title), year, tmdb_id)
+                by_id[int(movie_id)] = entry
                 if tmdb_id:
-                    by_tmdb[int(tmdb_id)] = (int(movie_id), str(title), year, tmdb_id)
-                by_title.setdefault(str(title).lower(), []).append(
-                    (int(movie_id), str(title), year, tmdb_id)
-                )
+                    by_tmdb[int(tmdb_id)] = entry
+                by_title.setdefault(str(title).lower(), []).append(entry)
     except Exception:  # noqa: BLE001
         logger.warning("Could not resolve taste-map movie metadata from PostgreSQL", exc_info=True)
         return rows

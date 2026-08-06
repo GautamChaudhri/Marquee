@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { theme } from '$lib/theme';
 	import { pointTitle } from '$lib/taste/map-points';
 	import type { ColorMode, ViewMode } from '$lib/taste/map-points';
@@ -12,6 +12,7 @@
 		colorBy = 'cluster',
 		showNoise = true,
 		selected = null,
+		dataset = 'default',
 		onSelect
 	}: {
 		points: TasteMapPoint[];
@@ -20,12 +21,17 @@
 		colorBy?: ColorMode;
 		showNoise?: boolean;
 		selected?: TasteMapPoint | null;
+		/** Identifies the coordinate space. Changing it is the one thing that
+		 *  re-frames the plot; everything else preserves the viewer's pan/zoom. */
+		dataset?: string;
 		onSelect: (point: TasteMapPoint | null) => void;
 	} = $props();
 
 	let plotEl = $state<HTMLDivElement | null>(null);
 	let Plotly: typeof import('plotly.js-dist-min') | null = null;
 	let resizeObs: ResizeObserver | null = null;
+	let listening = false;
+	let lastSize = '';
 
 	// ── Palettes ──────────────────────────────────────────────────────────
 	const CLUSTER_COLORS = [
@@ -211,6 +217,12 @@
 	function buildPlot() {
 		if (!Plotly || !plotEl) return;
 
+		// WebGL only earns its keep in the tens of thousands. Below that the SVG
+		// renderer is smoother and, unlike scattergl, survives repeated react()
+		// calls without dropping and rebuilding its drag layer mid-gesture.
+		const flatType = points.length > 8000 ? 'scattergl' : 'scatter';
+		const traceType = mode === '3d' ? 'scatter3d' : flatType;
+
 		const { colors, legend, colorbar } = buildColors(points);
 		const indexed = points.map((point, index) => ({ point, index }));
 		const clustered = indexed.filter(({ point }) => !point.is_noise);
@@ -242,7 +254,7 @@
 					align: 'left',
 					namelength: -1
 				},
-				type: mode === '3d' ? 'scatter3d' : 'scattergl',
+				type: traceType,
 				mode: 'markers',
 				showlegend: false
 			};
@@ -301,7 +313,7 @@
 				x: [mode === '3d' ? selected.x : selected.x2],
 				y: [mode === '3d' ? selected.y : selected.y2],
 				...(mode === '3d' ? { z: [selected.z] } : {}),
-				type: mode === '3d' ? 'scatter3d' : 'scattergl',
+				type: traceType,
 				mode: 'markers',
 				hoverinfo: 'skip',
 				showlegend: false,
@@ -319,7 +331,7 @@
 				traces.push({
 					x: [null],
 					y: [null],
-					type: 'scattergl',
+					type: flatType,
 					mode: 'markers',
 					marker: { size: 9, color: entry.color, opacity: 0.9 },
 					name: entry.name,
@@ -339,7 +351,14 @@
 			tickfont: { color: chrome.tick, size: 10 }
 		};
 
+		// Every state change re-runs react() with a fresh layout. Without a stable
+		// uirevision Plotly treats each one as a new figure and re-frames it, which
+		// snapped 2D back mid-drag and threw the 3D camera home on every click.
+		// Keyed on the coordinate space, so only a genuine dataset change re-frames.
+		const uirevision = `${dataset}:${mode}`;
+
 		const layout: Record<string, unknown> = {
+			uirevision,
 			paper_bgcolor: chrome.paper,
 			plot_bgcolor: chrome.paper,
 			font: { color: chrome.tick, size: 11, family: 'ui-sans-serif, system-ui, sans-serif' },
@@ -363,6 +382,9 @@
 		if (mode === '3d') {
 			const sceneAxis = { ...axis, showticklabels: false, backgroundcolor: chrome.paper };
 			layout.scene = {
+				// The camera is preserved by the scene's own uirevision, so the eye
+				// below only frames the first render.
+				uirevision,
 				xaxis: sceneAxis,
 				yaxis: sceneAxis,
 				zaxis: sceneAxis,
@@ -376,7 +398,9 @@
 
 		const config: Record<string, unknown> = {
 			displaylogo: false,
-			responsive: true,
+			// Deliberately not `responsive`: the ResizeObserver below already drives
+			// resizes, and running both had each one's relayout wake the other.
+			responsive: false,
 			scrollZoom: true,
 			displayModeBar: true,
 			modeBarButtonsToRemove: [
@@ -394,12 +418,16 @@
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(Plotly as any).react(plotEl, traces, layout, config);
-		const graph = plotEl as HTMLDivElement & {
-			on?: (name: string, cb: (event: unknown) => void) => void;
-			removeListener?: (name: string, cb: (event: unknown) => void) => void;
-		};
-		graph.removeListener?.('plotly_click', handleClick);
-		graph.on?.('plotly_click', handleClick);
+
+		// react() keeps the div's emitter, so the handler is bound once for the
+		// component's life rather than torn down and re-added on every rebuild.
+		if (!listening) {
+			const graph = plotEl as HTMLDivElement & {
+				on?: (name: string, cb: (event: unknown) => void) => void;
+			};
+			graph.on?.('plotly_click', handleClick);
+			listening = true;
+		}
 	}
 
 	function handleClick(event: unknown) {
@@ -418,11 +446,18 @@
 
 		const el = plotEl;
 		if (el) {
-			resizeObs = new ResizeObserver(() => {
+			resizeObs = new ResizeObserver((entries) => {
 				// The observer can fire once more while the node is being detached — on a
 				// library switch, or when the map is collapsed. Plotly throws on a plot div
 				// that is no longer displayed, so only resize one that is still laid out.
 				if (!Plotly || !el.isConnected || !el.offsetParent) return;
+				// Plotly's own relayout re-notifies this observer. Resizing to a box we
+				// have already drawn would ping-pong with it, which is what made the 2D
+				// plot drift and swallow drags.
+				const box = entries[0]?.contentRect;
+				const size = box ? `${Math.round(box.width)}x${Math.round(box.height)}` : '';
+				if (size === lastSize) return;
+				lastSize = size;
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				(Plotly as any).Plots.resize(el);
 			});
@@ -443,14 +478,18 @@
 	});
 
 	$effect(() => {
-		// Access reactive state to trigger the effect.
+		// These are the only things that should redraw the plot. buildPlot reads each
+		// point's fields, and those are deep reactive proxies from the page — tracking
+		// them would subscribe this effect to hundreds of signals and redraw on reads
+		// it has no business reacting to, so the build itself runs untracked.
 		void mode;
 		void colorBy;
 		void showNoise;
 		void points;
 		void selected;
 		void chrome;
-		if (Plotly) buildPlot();
+		void dataset;
+		if (Plotly) untrack(buildPlot);
 	});
 </script>
 
