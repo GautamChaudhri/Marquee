@@ -81,7 +81,9 @@ def test_build_and_load_map_pca(synthetic_profile):
 def synthetic_tv_profile(tmp_path, monkeypatch):
     """A TV profile carrying both show artwork and season artwork."""
     rng = np.random.default_rng(1)
-    names = [f"Series {i // 3}-{'show' if i % 3 == 0 else f'season0{i % 3}'}.jpg" for i in range(12)]
+    names = [
+        f"Series {i // 3}-{'show' if i % 3 == 0 else f'season0{i % 3}'}.jpg" for i in range(12)
+    ]
     embeddings = rng.standard_normal((len(names), 512)).astype(np.float32)
     embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
     centroid = embeddings.mean(0)
@@ -146,6 +148,21 @@ def test_tv_map_points_carry_series_identity(synthetic_tv_profile):
     assert all(point["season_number"] is None for point in points if point["asset_kind"] == "show")
     # Nothing resolved against the library here, so no artwork is claimed for them.
     assert all(point["poster_url"] is None for point in points)
+
+
+def test_map_poster_urls_use_live_library_routes():
+    """Map detail artwork must use the same public routes as the library views."""
+    from marquee.ml.taste_map import _poster_url
+
+    assert _poster_url("movie", movie_id=11, series_id=None, season_id=None) == (
+        "/api/library/movies/11/poster"
+    )
+    assert _poster_url("show", movie_id=None, series_id=12, season_id=None) == (
+        "/api/library/series/12/poster"
+    )
+    assert _poster_url("season", movie_id=None, series_id=None, season_id=13) == (
+        "/api/library/seasons/13/poster"
+    )
 
 
 def test_map_is_deterministic(synthetic_profile):

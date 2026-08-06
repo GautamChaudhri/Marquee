@@ -228,7 +228,10 @@
 								<span class="mono">{season.episode_file_count ?? 0} eps</span>
 							</div>
 							<PosterThumb
-								title={`${series.title} ${seasonLabel(season.season_number)}`}
+								title={seasonLabel(season.season_number)}
+								imageAlt={`${series.title} ${seasonLabel(season.season_number)} poster`}
+								gradientKey={series.title}
+								fallbackPlacement="center"
 								posterStatus={posterStatusFromSummary(season.poster)}
 								posterUrl={season.poster.has_poster ? getSeasonPosterUrl(season.id) : null}
 							/>

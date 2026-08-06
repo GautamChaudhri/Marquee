@@ -242,15 +242,13 @@
 	}
 </script>
 
-<SectionDivider label="Coverage" note={coverageNote}>
-	{#snippet action()}
-		<a class="row-link" href="/pipeline/movies">Films <Icon name="chevron" size={13} /></a>
-		<a class="row-link" href="/pipeline/tv">Television <Icon name="chevron" size={13} /></a>
-	{/snippet}
-</SectionDivider>
+<SectionDivider label="Coverage" note={coverageNote} />
 
 <div class="row-head">
 	<span class="eyebrow"><Icon name="film" size={14} /> Films</span>
+	<a class="row-link workspace-link" href="/pipeline/movies"
+		>Open Film Workspace <Icon name="chevron" size={13} /></a
+	>
 </div>
 
 <div class="stats" style="--cols:5">
@@ -297,6 +295,9 @@
 
 <div class="row-head">
 	<span class="eyebrow"><Icon name="tv" size={14} /> Television</span>
+	<a class="row-link workspace-link" href="/pipeline/tv"
+		>Open Television Workspace <Icon name="chevron" size={13} /></a
+	>
 </div>
 
 <div class="stats" style="--cols:5">
@@ -515,6 +516,7 @@
 	.row-head {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
 		gap: 12px;
 		margin: 2px 0 7px;
 	}
@@ -537,6 +539,9 @@
 	}
 	.row-link:hover {
 		color: var(--gold);
+	}
+	.workspace-link {
+		margin-left: auto;
 	}
 	.stats {
 		display: grid;

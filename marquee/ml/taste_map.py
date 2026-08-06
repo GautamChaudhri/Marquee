@@ -104,13 +104,13 @@ def _poster_url(
     series_id: int | None,
     season_id: int | None,
 ) -> str | None:
-    """The library artwork a map point stands for, or nothing when it is unresolved."""
+    """Return the live library artwork route for a resolved map point."""
     if kind == "season" and season_id:
-        return f"/api/seasons/{season_id}/poster"
+        return f"/api/library/seasons/{season_id}/poster"
     if kind == "show" and series_id:
-        return f"/api/series/{series_id}/poster"
+        return f"/api/library/series/{series_id}/poster"
     if kind == "movie" and movie_id:
-        return f"/api/movies/{movie_id}/poster"
+        return f"/api/library/movies/{movie_id}/poster"
     return None
 
 
@@ -442,9 +442,7 @@ def build_map(
     )
     # A resolved series carries the genres the TV profile itself never stored, so the
     # cluster names and the genre colouring both work from the same resolved list.
-    genres = (
-        [list(row["genres"] or ()) for row in movie_rows] if is_tv else profile.get("genres")
-    )
+    genres = [list(row["genres"] or ()) for row in movie_rows] if is_tv else profile.get("genres")
     if is_tv and not any(genres):
         genres = None
     names_map = _cluster_names(labels, genres)
@@ -503,7 +501,10 @@ def build_map(
         # what let the map show a season's own artwork and its place in the series.
         payload["asset_kinds"] = unicode_array([str(row["asset_kind"]) for row in movie_rows])
         payload["season_numbers"] = np.asarray(
-            [-1 if row["season_number"] is None else int(row["season_number"]) for row in movie_rows],
+            [
+                -1 if row["season_number"] is None else int(row["season_number"])
+                for row in movie_rows
+            ],
             dtype=np.int64,
         )
         payload["series_ids"] = np.asarray(
@@ -512,9 +513,7 @@ def build_map(
         payload["season_ids"] = np.asarray(
             [int(row["season_id"] or 0) for row in movie_rows], dtype=np.int64
         )
-        payload["years"] = np.asarray(
-            [int(row["year"] or 0) for row in movie_rows], dtype=np.int64
-        )
+        payload["years"] = np.asarray([int(row["year"] or 0) for row in movie_rows], dtype=np.int64)
         payload["tmdb_ids"] = np.asarray(
             [int(row["tmdb_id"] or 0) for row in movie_rows], dtype=np.int64
         )
@@ -603,9 +602,7 @@ def load_map(
         asset_kinds = (
             decode_unicode_list(data["asset_kinds"]) if "asset_kinds" in data.files else None
         )
-        season_numbers = (
-            data["season_numbers"].tolist() if "season_numbers" in data.files else None
-        )
+        season_numbers = data["season_numbers"].tolist() if "season_numbers" in data.files else None
         series_ids = data["series_ids"].tolist() if "series_ids" in data.files else None
         season_ids = data["season_ids"].tolist() if "season_ids" in data.files else None
         method = decode_unicode_scalar(data["projection_method"])

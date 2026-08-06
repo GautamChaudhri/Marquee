@@ -26,6 +26,7 @@
 
 	type RailItem = {
 		key: string;
+		kind: 'show' | 'season';
 		label: string;
 		runId: string;
 		posterUrl: string | null;
@@ -42,6 +43,7 @@
 		if (group.show_run) {
 			items.push({
 				key: 'show',
+				kind: 'show',
 				label: 'Show',
 				runId: group.show_run.run_id,
 				posterUrl:
@@ -54,6 +56,7 @@
 		for (const season of group.season_runs) {
 			items.push({
 				key: `season:${season.season_id}`,
+				kind: 'season',
 				label: seasonLabel(season.season_number),
 				runId: season.run.run_id,
 				posterUrl: season.auto_pick_poster_url,
@@ -149,8 +152,15 @@
 						e.key === 'Enter' && goto(`/pipeline/tv/series/${data.series?.id}?run=${item.runId}`)}
 				>
 					<PosterThumb
-						title={`${data.series.title} ${item.label}`}
-						posterStatus={item.posterUrl ? 'deployed' : 'missing'}
+						title={item.kind === 'season' ? item.label : data.series.title}
+						imageAlt={`${data.series.title} ${item.label} poster`}
+						gradientKey={data.series.title}
+						fallbackPlacement={item.kind === 'season' ? 'center' : 'bottom-left'}
+						posterStatus={item.flaggedNoCandidates
+							? undefined
+							: item.posterUrl
+								? 'deployed'
+								: 'missing'}
 						posterUrl={item.posterUrl}
 					/>
 					<div class="rail-meta">
@@ -160,13 +170,7 @@
 						</div>
 						{#if item.flaggedNoCandidates}
 							<div class="manual-status">
-								<StatusDot tone="bad" size={7} />
-								<div>
-									<span class="manual-title">No survivors</span>
-									<span class="manual-copy"
-										>No candidates survived the objective checks. Re-run this title to try again.</span
-									>
-								</div>
+								<span class="manual-title">No survivors</span>
 							</div>
 						{:else}
 							<div class="sub-row">
@@ -284,26 +288,12 @@
 		border: 1px solid color-mix(in srgb, var(--gold) 35%, var(--line2));
 	}
 	.manual-status {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr);
-		align-items: start;
-		gap: 7px;
 		padding: 1px 0;
-	}
-	.manual-status > div {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
 	}
 	.manual-title {
 		font-size: 12px;
 		font-weight: 700;
 		color: var(--bad);
-	}
-	.manual-copy {
-		font-size: 11px;
-		line-height: 1.35;
-		color: color-mix(in srgb, var(--bad) 72%, var(--muted));
 	}
 	.candidate-count {
 		color: var(--faint);

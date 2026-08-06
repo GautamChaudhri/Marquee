@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import TasteMap from '$lib/components/TasteMap.svelte';
+	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import Icon from '$lib/components/Icon.svelte';
 	import { getExemplarNeighbors, getTasteMap, rebuildTasteMap } from '$lib/api/taste';
 	import { kindLabel, pointTitle, subjectHref } from '$lib/taste/map-points';
@@ -206,9 +207,17 @@
 				</button>
 			</div>
 
-			{#if selected.poster_url}
-				<img class="poster" src={selected.poster_url} alt="" loading="lazy" />
-			{/if}
+			<div class="detail-poster">
+				<PosterThumb
+					title={selected.asset_kind === 'season' && selected.season_number != null
+						? `S${String(selected.season_number).padStart(2, '0')}`
+						: pointTitle(selected)}
+					imageAlt={`${pointTitle(selected)} poster`}
+					gradientKey={selected.name}
+					fallbackPlacement={selected.asset_kind === 'season' ? 'center' : 'bottom-left'}
+					posterUrl={selected.poster_url}
+				/>
+			</div>
 
 			<h2>{pointTitle(selected)}</h2>
 			{#if selected.year}<p class="year">{selected.year}</p>{/if}
@@ -444,13 +453,15 @@
 		background: var(--panel2);
 		color: var(--text);
 	}
-	.poster {
+	.detail-poster {
+		width: 100%;
+		flex: 0 0 auto;
+	}
+	.detail-poster :global(.poster) {
+		box-sizing: border-box;
 		width: 100%;
 		aspect-ratio: 2 / 3;
-		object-fit: cover;
 		border-radius: var(--radius-sm);
-		border: 1px solid var(--line);
-		background: var(--panel2);
 	}
 	.detail h2 {
 		margin: 2px 0 0;

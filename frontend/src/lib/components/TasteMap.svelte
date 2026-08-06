@@ -102,6 +102,18 @@
 				}
 	);
 
+	// Plotly's `react` receives a fresh layout whenever a selected point, colour, or
+	// theme changes. Keep the UI revision stable for one projection so Plotly retains
+	// a user's pan/zoom in 2D and camera orbit in 3D across those updates.
+	const viewRevision = $derived.by(
+		() =>
+			`${mode}:${points
+				.map((point) =>
+					[point.name, point.asset_kind, point.x, point.y, point.z, point.x2, point.y2].join(':')
+				)
+				.join('|')}`
+	);
+
 	function genreColor(genres: string[] | null): string {
 		if (!genres || genres.length === 0) return UNCLASSIFIED;
 		for (const g of genres) if (GENRE_COLORS[g]) return GENRE_COLORS[g];
@@ -343,6 +355,7 @@
 			paper_bgcolor: chrome.paper,
 			plot_bgcolor: chrome.paper,
 			font: { color: chrome.tick, size: 11, family: 'ui-sans-serif, system-ui, sans-serif' },
+			uirevision: viewRevision,
 			margin: { l: 44, r: 20, t: 10, b: 34 },
 			dragmode: mode === '3d' ? 'orbit' : 'pan',
 			hovermode: 'closest',
@@ -363,6 +376,7 @@
 		if (mode === '3d') {
 			const sceneAxis = { ...axis, showticklabels: false, backgroundcolor: chrome.paper };
 			layout.scene = {
+				uirevision: viewRevision,
 				xaxis: sceneAxis,
 				yaxis: sceneAxis,
 				zaxis: sceneAxis,

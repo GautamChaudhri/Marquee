@@ -358,6 +358,7 @@
 								title={placeholder.title}
 								year={placeholder.year}
 								gradientKey={placeholder.gradientKey}
+								fallbackPlacement={placeholder.label === 'Show' ? 'bottom-left' : 'center'}
 							/>
 							<span class="preview-label">{placeholder.label}</span>
 						</div>
@@ -395,7 +396,11 @@
 									<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
 								{:else}
 									<div class="preview-placeholder">
-										<PosterThumb title="No pick" gradientKey={item.series.title} />
+										<PosterThumb
+											title={preview.label === 'Show' ? 'No pick' : preview.label}
+											gradientKey={item.series.title}
+											fallbackPlacement={preview.label === 'Show' ? 'bottom-left' : 'center'}
+										/>
 									</div>
 								{/if}
 								<span class="preview-label">{preview.label}</span>

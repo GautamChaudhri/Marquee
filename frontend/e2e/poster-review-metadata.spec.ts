@@ -17,5 +17,7 @@ test('Television review previews keep each asset candidate state and age togethe
 	await expect(season.locator('.preview-stats')).toContainText('0 candidates');
 	await expect(season.locator('.preview-age')).toHaveText(/just now|\d+[mhd] ago|—/);
 	await expect(season.locator('.preview-stats > span').first()).toHaveClass(/bad/);
+	await expect(season.locator('.preview-placeholder .poster')).toHaveClass(/centered-title/);
+	await expect(season.getByText('No pick')).toHaveCount(0);
 	await expect(card.locator('.preview-tile .dot')).toHaveCount(0);
 });
