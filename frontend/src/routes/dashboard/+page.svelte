@@ -19,7 +19,7 @@
 
 <div class="grid">
 	<StatCard
-		label="Movie coverage"
+		label="Film coverage"
 		value={data.movies?.movies_with_poster ?? 0}
 		sub={`${data.movies?.total_movies ?? 0} total · ${movieCoverage}%`}
 		bar={movieCoverage}
@@ -41,7 +41,7 @@
 	<StatCard
 		label="Review queue"
 		value={(data.movies?.movies_in_review ?? 0) + (data.television?.shows_in_review ?? 0)}
-		sub="movies + television"
+		sub="films + television"
 		tone="gold"
 	/>
 </div>

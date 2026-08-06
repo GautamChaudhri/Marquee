@@ -656,7 +656,7 @@
 						</div>
 						{#if selectedPoint.movie_id != null}
 							<div class="p-row">
-								<span class="p-label">Movie ID</span>
+								<span class="p-label">Film ID</span>
 								<span class="p-val mono">{selectedPoint.movie_id}</span>
 							</div>
 						{/if}

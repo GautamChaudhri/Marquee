@@ -39,7 +39,7 @@
 			short: 'Radarr',
 			secretKey: 'RADARR_API_KEY',
 			urlKey: 'RADARR_URL',
-			description: 'Movie library discovery and synchronization.'
+			description: 'Film library discovery and synchronization.'
 		},
 		sonarr: {
 			title: 'Sonarr',

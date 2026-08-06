@@ -8,11 +8,11 @@ import {
 } from './review-copy';
 
 describe('rejectAllCopy', () => {
-	it('keeps the movie confirmation copy for movie runs', () => {
+	it('keeps the film confirmation copy for movie runs', () => {
 		expect(rejectAllCopy({ mediaType: 'movie' })).toEqual({
 			title: 'Reject all candidates',
 			message:
-				'Records a negative label for the auto-pick and leaves this movie without a chosen poster. You can re-run later.'
+				'Records a negative label for the auto-pick and leaves this film without a chosen poster. You can re-run later.'
 		});
 	});
 

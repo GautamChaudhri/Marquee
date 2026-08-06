@@ -5,7 +5,9 @@
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
 	import Icon from '$lib/components/Icon.svelte';
-	import SectionHeader from '$lib/components/SectionHeader.svelte';
+	import SectionDivider from '$lib/components/SectionDivider.svelte';
+	import CandidateFunnel from '$lib/components/pipeline/CandidateFunnel.svelte';
+	import OcrExecutionPanel from '$lib/components/pipeline/OcrExecutionPanel.svelte';
 	import PosterStatCard from '$lib/components/pipeline/PosterStatCard.svelte';
 	import TextProfilePanel from '$lib/components/pipeline/TextProfilePanel.svelte';
 	import {
@@ -75,8 +77,31 @@
 		tv.seasons_total ? Math.round((tv.seasons_with_poster / tv.seasons_total) * 100) : 0
 	);
 	const tvMissing = $derived(tv.shows_missing_show_poster + tv.seasons_missing_poster);
+	/** Show art and season art rolled into one "Deployed" figure, so the television
+	 *  row has the same five columns as the film row. */
+	const tvDeployed = $derived(tv.shows_with_show_poster + tv.seasons_with_poster);
+	const tvArtTotal = $derived(tv.shows_total + tv.seasons_total);
+	const tvArtPct = $derived(tvArtTotal ? Math.round((tvDeployed / tvArtTotal) * 100) : 0);
 
 	const coverageTone = (pct: number): Tone => (pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
+
+	/** Only a card with work behind it earns the loud treatment — a grid where
+	 *  everything shouts tells you nothing about where to look. */
+	const emphasisFor = (count: number): 'loud' | 'quiet' => (count > 0 ? 'loud' : 'quiet');
+
+	const outstanding = $derived(
+		summary.movies_awaiting_run + summary.movies_in_review + tvMissing + tv.assets_in_review
+	);
+	const coverageNote = $derived(
+		outstanding ? `${outstanding} awaiting attention` : 'everything covered'
+	);
+
+	/** Named on the funnel's text-gate row so the rule sits beside what it removed. */
+	const activeMovieProfile = $derived.by(() => {
+		const scope = data.textProfiles?.scopes.movie;
+		if (!scope) return undefined;
+		return scope.profiles.find((profile) => profile.id === scope.default_id)?.name;
+	});
 
 	async function refreshSummary() {
 		try {
@@ -217,21 +242,19 @@
 	}
 </script>
 
-<SectionHeader title="Poster Pipeline" subtitle="Manage poster selection and restoration" />
+<SectionDivider label="Coverage" note={coverageNote}>
+	{#snippet action()}
+		<a class="row-link" href="/pipeline/movies">Films <Icon name="chevron" size={13} /></a>
+		<a class="row-link" href="/pipeline/tv">Television <Icon name="chevron" size={13} /></a>
+	{/snippet}
+</SectionDivider>
 
 <div class="row-head">
-	<span class="eyebrow"><Icon name="film" size={14} /> Movies</span>
-	<a class="row-link" href="/pipeline/movies">Open workspace <Icon name="chevron" size={13} /></a>
+	<span class="eyebrow"><Icon name="film" size={14} /> Films</span>
 </div>
 
 <div class="stats" style="--cols:5">
-	<PosterStatCard
-		label="Movies"
-		value={summary.total_movies}
-		sub="downloaded"
-		tone="info"
-		icon="film"
-	/>
+	<PosterStatCard label="Films" value={summary.total_movies} tone="purple" icon="film" />
 	<PosterStatCard
 		label="Deployed"
 		value={summary.movies_with_poster}
@@ -246,53 +269,56 @@
 		label="Missing"
 		value={summary.movies_awaiting_run}
 		sub={summary.movies_awaiting_run ? 'awaiting a run' : 'fully covered'}
-		tone={summary.movies_awaiting_run ? 'warn' : 'good'}
+		tone={summary.movies_awaiting_run ? 'bad' : 'good'}
 		icon="alert"
+		href="/pipeline/movies?tab=run"
+		hint={`${summary.movies_awaiting_run} films missing a poster — open the Run queue`}
+		emphasis={emphasisFor(summary.movies_awaiting_run)}
 	/>
 	<PosterStatCard
-		label="In review"
+		label="In Review"
 		value={summary.movies_in_review}
 		sub="awaiting a decision"
 		tone="gold"
 		icon="eye"
+		href="/pipeline/movies?tab=review"
+		hint={`${summary.movies_in_review} films awaiting a decision — open the Review queue`}
+		emphasis={emphasisFor(summary.movies_in_review)}
 	/>
 	<PosterStatCard
 		label="Running"
 		value={summary.running_jobs.length || summary.movies_in_run}
-		sub={summary.running_jobs.length ? 'active jobs' : 'movies in run'}
+		sub={summary.running_jobs.length ? 'active jobs' : 'films in run'}
 		tone="info"
 		icon="refresh"
+		emphasis={emphasisFor(summary.running_jobs.length || summary.movies_in_run)}
 	/>
 </div>
 
 <div class="row-head">
 	<span class="eyebrow"><Icon name="tv" size={14} /> Television</span>
-	<a class="row-link" href="/pipeline/tv">Open workspace <Icon name="chevron" size={13} /></a>
 </div>
 
-<div class="stats" style="--cols:6">
+<div class="stats" style="--cols:5">
 	<PosterStatCard
 		label="Shows"
 		value={tv.shows_total}
-		sub={`${tv.shows_fully_covered} fully covered`}
-		tone="info"
+		sub={`${tv.seasons_total} seasons`}
+		tone="purple"
 		icon="tv"
 	/>
+	<!-- Show art and season art share one card so this row has the same five
+	     columns as the film row, with a bar each so neither coverage is lost. -->
 	<PosterStatCard
-		label="Show art"
-		value={tv.shows_with_show_poster}
-		sub={`${showArtPct}% coverage`}
-		bar={showArtPct}
-		tone={coverageTone(showArtPct)}
-		icon="image"
-	/>
-	<PosterStatCard
-		label="Season art"
-		value={tv.seasons_with_poster}
-		sub={`${seasonArtPct}% of ${tv.seasons_total} seasons`}
-		bar={seasonArtPct}
-		tone={coverageTone(seasonArtPct)}
-		icon="layers"
+		label="Deployed"
+		value={tvDeployed}
+		sub={`of ${tvArtTotal} assets`}
+		bars={[
+			{ label: 'show', value: showArtPct, tone: coverageTone(showArtPct) },
+			{ label: 'season', value: seasonArtPct, tone: coverageTone(seasonArtPct) }
+		]}
+		tone={coverageTone(tvArtPct)}
+		icon="check"
 	/>
 	<PosterStatCard
 		label="Missing"
@@ -301,11 +327,14 @@
 			{ label: 'show', value: tv.shows_missing_show_poster },
 			{ label: 'season', value: tv.seasons_missing_poster }
 		]}
-		tone={tvMissing ? 'warn' : 'good'}
+		tone={tvMissing ? 'bad' : 'good'}
 		icon="alert"
+		href="/pipeline/tv?tab=run"
+		hint={`${tvMissing} television assets missing artwork — open the Run queue`}
+		emphasis={emphasisFor(tvMissing)}
 	/>
 	<PosterStatCard
-		label="In review"
+		label="In Review"
 		value={tv.assets_in_review}
 		breakdown={[
 			{ label: 'shows', value: tv.shows_in_review },
@@ -313,6 +342,9 @@
 		]}
 		tone="gold"
 		icon="eye"
+		href="/pipeline/tv?tab=review"
+		hint={`${tv.assets_in_review} television assets awaiting a decision — open the Review queue`}
+		emphasis={emphasisFor(tv.assets_in_review)}
 	/>
 	<PosterStatCard
 		label="Running"
@@ -320,34 +352,38 @@
 		sub={tv.shows_no_tmdb ? `${tv.shows_no_tmdb} no TMDB match` : 'assets in run'}
 		tone={tv.shows_no_tmdb ? 'low' : 'info'}
 		icon="refresh"
+		emphasis={emphasisFor(tv.shows_no_tmdb || tv.running_jobs.length || tv.assets_in_run)}
 	/>
 </div>
 
-<div class="actions">
-	<a class="workspace" href="/pipeline/movies">
-		<span class="ws-icon film"><Icon name="film" size={18} /></span>
-		<span class="ws-text">
-			<b>Movie workspace</b>
-			<small>
-				{summary.movies_awaiting_run} missing · {summary.movies_in_review} in review
-			</small>
-		</span>
-		<Icon name="chevron" size={16} />
-	</a>
-	<a class="workspace" href="/pipeline/tv">
-		<span class="ws-icon tv"><Icon name="tv" size={18} /></span>
-		<span class="ws-text">
-			<b>TV workspace</b>
-			<small>
-				{tv.shows_missing_show_poster} show + {tv.seasons_missing_poster} season missing · {tv.assets_in_review}
-				in review
-			</small>
-		</span>
-		<Icon name="chevron" size={16} />
-	</a>
-</div>
+{#if data.ocr && data.settings}
+	<!-- Labelled "Hardware", not "Execution": the card below is already called OCR
+	     Execution and carries its own one-line explanation. -->
+	<SectionDivider label="Hardware" />
 
-<TextProfilePanel initial={data.textProfiles} />
+	<OcrExecutionPanel
+		initial={data.ocr}
+		configVersion={data.settings.configuration_version}
+		configuredDevice={String(data.settings.values.OCR_DEVICE ?? 'auto')}
+		configuredWorkers={Number(data.settings.values.OCR_WORKERS ?? 0)}
+	/>
+{/if}
+
+<SectionDivider label="Selection Rules" note="What the pipeline accepts, and what that removes" />
+
+<!-- One card, two halves: the rule, then what it rejected. Split across separate
+     cards they scrolled apart and stopped explaining each other. -->
+<section class="rules">
+	<TextProfilePanel initial={data.textProfiles} flat />
+	<CandidateFunnel
+		movie={data.metrics}
+		tv={data.tvMetrics}
+		activeProfile={activeMovieProfile}
+		flat
+	/>
+</section>
+
+<SectionDivider label="Operations" />
 
 <FeatureActivityPanel
 	scopeKey="feature:pipeline:overview"
@@ -362,14 +398,13 @@
 		<div class="maintenance-title">
 			<span class="maintenance-icon"><Icon name="settings" size={17} /></span>
 			<div>
-				<h2>Poster maintenance</h2>
-				<p>
-					Operational actions stay close to the poster workspace. Configuration now lives in
-					Settings.
-				</p>
+				<h2>Poster Maintenance</h2>
+				<p>Backups, heal scans, and cache cleanup.</p>
 			</div>
 		</div>
-		<a class="pill quiet" href="/settings?tab=posters">Poster settings <Icon name="chevron" size={13} /></a>
+		<a class="pill quiet" href="/settings?tab=posters"
+			>Poster settings <Icon name="chevron" size={13} /></a
+		>
 	</header>
 
 	<div class="maintenance-body">
@@ -380,14 +415,21 @@
 				>
 			</div>
 			<div>
-				<span>Last heal</span><b>{isoDate(summary.last_heal?.last_run)}</b><small
+				<span>Last Heal</span><b>{isoDate(summary.last_heal?.last_run)}</b><small
 					>most recent scan</small
 				>
 			</div>
 			<div>
-				<span>Next heal</span><b>{isoDate(summary.heal_schedule?.next_run_at)}</b><small
+				<span>Next Heal</span><b>{isoDate(summary.heal_schedule?.next_run_at)}</b><small
 					>configured schedule</small
 				>
+			</div>
+			<!-- Sits beside "Clean orphaned cache" so the size is visible before the
+			     destructive click, not discovered by making it. -->
+			<div>
+				<span>Cache</span><b>{bytesH(data.cache?.total_bytes ?? 0)}</b><small>
+					{data.cache ? `${bytesH(data.cache.clearable_bytes)} clearable` : 'size unavailable'}
+				</small>
 			</div>
 		</div>
 		<div class="maintenance-actions">
@@ -403,9 +445,8 @@
 
 	<div class="danger-actions">
 		<div>
-			<b>Contextual cleanup</b>
-			<span>Destructive tools are isolated from configuration and always require confirmation.</span
-			>
+			<b>Destructive Actions</b>
+			<span>Permanent. Each one asks for confirmation first.</span>
 		</div>
 		{#if data.settings?.deployment?.debug}
 			<button class="danger-button" onclick={() => (clearOcrDialogOpen = true)}
@@ -449,7 +490,7 @@
 <ConfirmDialog
 	open={resetDialogOpen}
 	title="Delete all deployed posters?"
-	message="This removes deployed movie posters and marks those movies as missing so the pipeline can run again. Cached candidates and taste artifacts are preserved."
+	message="This removes deployed film posters and marks those films as missing so the pipeline can run again. Cached candidates and taste artifacts are preserved."
 	confirmLabel="Delete deployed posters"
 	cancelLabel="Cancel"
 	tone="bad"
@@ -474,19 +515,18 @@
 	.row-head {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
 		gap: 12px;
-		margin: 4px 0 8px;
+		margin: 2px 0 7px;
 	}
 	.eyebrow {
 		display: inline-flex;
 		align-items: center;
 		gap: 7px;
-		font-size: 11px;
+		font-size: 10.5px;
 		text-transform: uppercase;
 		letter-spacing: 0.07em;
 		font-weight: 700;
-		color: var(--muted);
+		color: var(--faint);
 	}
 	.row-link {
 		display: inline-flex;
@@ -502,69 +542,15 @@
 		display: grid;
 		grid-template-columns: repeat(var(--cols, 5), minmax(0, 1fr));
 		gap: 12px;
-		margin-bottom: 18px;
+		margin-bottom: 14px;
 	}
-	.actions {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: 12px;
-		margin-bottom: 18px;
-	}
-	.workspace {
-		min-height: 72px;
+	/* The shared border that makes the profile rule and its funnel one object. */
+	.rules {
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--panel);
-		color: var(--text);
-		padding: 14px 16px;
-		display: flex;
-		align-items: center;
-		gap: 13px;
-		font-size: 14px;
-		transition:
-			border-color 0.15s ease,
-			background 0.15s ease;
-	}
-	.workspace:hover {
-		border-color: color-mix(in srgb, var(--gold) 40%, var(--line));
-		background: color-mix(in srgb, var(--gold) 5%, var(--panel));
-	}
-	.ws-icon {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 36px;
-		height: 36px;
-		flex: none;
-		border-radius: 9px;
-		color: var(--c);
-		background: color-mix(in srgb, var(--c) 13%, transparent);
-		border: 1px solid color-mix(in srgb, var(--c) 26%, transparent);
-	}
-	.ws-icon.film {
-		--c: var(--gold);
-	}
-	.ws-icon.tv {
-		--c: var(--info);
-	}
-	.ws-text {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-		min-width: 0;
-	}
-	.ws-text b {
-		font-size: 14px;
-		font-weight: 650;
-	}
-	.ws-text small {
-		font-size: 12px;
-		color: var(--muted);
-	}
-	.workspace :global(svg:last-child) {
-		color: var(--faint);
-		flex: none;
+		margin-bottom: 18px;
+		overflow: hidden;
 	}
 	.maintenance-dock {
 		border: 1px solid var(--line);
@@ -614,7 +600,7 @@
 	}
 	.maintenance-facts {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 1px;
 		border: 1px solid var(--line);
 		border-radius: 8px;
@@ -717,8 +703,7 @@
 		}
 	}
 	@media (max-width: 680px) {
-		.stats,
-		.actions {
+		.stats {
 			grid-template-columns: 1fr;
 		}
 		.maintenance-dock > header,

@@ -14,17 +14,18 @@ export function libraryLabel(library: TasteLibrary): string {
 /** What one entry in this library is: a film, or a show. */
 export function subjectNoun(library: TasteLibrary, count = 2): string {
 	if (library === 'tv') return count === 1 ? 'show' : 'shows';
-	return count === 1 ? 'movie' : 'movies';
+	return count === 1 ? 'film' : 'films';
 }
 
 export function subjectNounTitle(library: TasteLibrary): string {
-	return library === 'tv' ? 'Shows' : 'Movies';
+	return library === 'tv' ? 'Shows' : 'Films';
 }
 
+// Keyed by the kind the backend tags an asset with, which is still "movie".
 const ASSET_NOUNS: Record<string, [string, string]> = {
 	show: ['show', 'shows'],
 	season: ['season', 'seasons'],
-	movie: ['movie', 'movies'],
+	movie: ['film', 'films'],
 	unknown: ['poster', 'posters']
 };
 
@@ -47,7 +48,7 @@ export function assetBreakdown(byKind: Record<string, number>): string {
 		.join(' · ');
 }
 
-/** "107 shows" / "1 movie" — a count and its noun, agreeing on number. */
+/** "107 shows" / "1 film" — a count and its noun, agreeing on number. */
 export function countOfSubjects(library: TasteLibrary, count: number): string {
 	return `${count} ${subjectNoun(library, count)}`;
 }

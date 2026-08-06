@@ -16,8 +16,17 @@
 		'projection-room': { title: 'Activity', sub: '' },
 		settings: { title: 'Settings', sub: 'Connections & preferences' }
 	};
+	/** Subtitles for landing pages whose own heading was folded into this bar.
+	 *  Keyed on the exact pathname so workspace sub-routes keep their own <h1>. */
+	const LANDING_SUBS: Record<string, string> = {
+		'/pipeline': 'Manage poster selection and restoration'
+	};
 	const seg = $derived(page.url.pathname.split('/').filter(Boolean)[0] ?? 'dashboard');
-	const routeMeta = $derived(TITLES[seg] ?? { title: 'Marquee', sub: '' });
+	const routeMeta = $derived.by(() => {
+		const base = TITLES[seg] ?? { title: 'Marquee', sub: '' };
+		const landing = LANDING_SUBS[page.url.pathname.replace(/\/$/, '')];
+		return landing ? { ...base, sub: landing } : base;
+	});
 	const meta = $derived(
 		page.data.libraryHeader
 			? {

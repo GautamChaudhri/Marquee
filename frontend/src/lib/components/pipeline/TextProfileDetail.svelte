@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { TextProfile, TextProfileScope } from '$lib/api/text-profiles';
 	import Icon from '$lib/components/Icon.svelte';
-	import { categoriesFor, describeProfile, modeLabel, profileTone } from './text-profile-fields';
+	import { categoriesFor, describeProfile } from './text-profile-fields';
 
 	let {
 		profile,
@@ -23,47 +23,56 @@
 		onDelete: () => void;
 	} = $props();
 
-	const categories = $derived(categoriesFor(scope));
+	/** Only the permitted categories are listed — a wall of struck-through
+	 *  "not allowed" chips said nothing the allow-list does not already say. */
+	const allowed = $derived(categoriesFor(scope).filter((c) => profile.settings[c.key]));
 	const areaPercent = $derived(Math.round(profile.settings.max_residual_area_fraction * 100));
+	const specs = $derived([
+		{ label: 'Residual Boxes', value: `≤ ${profile.settings.max_residual_boxes}`, mono: true },
+		{ label: 'Residual Area', value: `≤ ${areaPercent}%`, mono: true },
+		{
+			label: 'Title Match',
+			value: profile.settings.require_title ? 'Required' : 'Optional',
+			mono: false
+		}
+	]);
 </script>
 
 <div class="detail">
-	<div class="head">
-		<span class="badge {profileTone(profile)}">{profile.name}</span>
-		<span class="tag">{profile.builtin ? 'built-in · read-only' : 'custom'}</span>
-		{#if profile.settings.mode !== 'custom'}
-			<span class="tag mode">{modeLabel(profile)}</span>
-		{/if}
-		{#if isDefault}<span class="tag active">active</span>{/if}
-	</div>
+	<h3 class="detail-head">Profile Details</h3>
 
 	<p class="summary">{describeProfile(profile, scope)}</p>
 
-	<div class="section-label">Allowed text</div>
-	<div class="chips">
-		{#each categories as category (category.key)}
-			<span class="chip" class:on={profile.settings[category.key]} title={category.hint}>
-				<Icon name={profile.settings[category.key] ? 'check' : 'x'} size={12} />
-				{category.label}
-			</span>
-		{/each}
-	</div>
+	<div class="columns">
+		<section>
+			<h4>Allowed Text</h4>
+			{#if allowed.length}
+				<div class="chips">
+					{#each allowed as category (category.key)}
+						<span class="chip" title={category.hint}>
+							<Icon name="check" size={12} />
+							{category.label}
+						</span>
+					{/each}
+				</div>
+			{:else}
+				<p class="none">Nothing — any detected text rejects the poster.</p>
+			{/if}
+		</section>
 
-	<div class="section-label">Tolerances</div>
-	<dl class="specs">
-		<div>
-			<dt>Residual boxes</dt>
-			<dd class="mono">≤ {profile.settings.max_residual_boxes}</dd>
-		</div>
-		<div>
-			<dt>Residual area</dt>
-			<dd class="mono">≤ {areaPercent}%</dd>
-		</div>
-		<div>
-			<dt>Title match</dt>
-			<dd>{profile.settings.require_title ? 'required' : 'optional'}</dd>
-		</div>
-	</dl>
+		<section class="ruled">
+			<h4>Tolerances</h4>
+			<dl class="specs">
+				{#each specs as spec (spec.label)}
+					<div class="spec">
+						<dt>{spec.label}</dt>
+						<span class="leader" aria-hidden="true"></span>
+						<dd class:mono={spec.mono}>{spec.value}</dd>
+					</div>
+				{/each}
+			</dl>
+		</section>
+	</div>
 
 	<div class="actions">
 		<button class="btn" disabled={busy || isDefault} onclick={onActivate}>
@@ -80,73 +89,56 @@
 
 <style>
 	.detail {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		height: 100%;
+		padding: 15px 16px;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--panel2);
-		padding: 14px 15px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		height: 100%;
 	}
-	.head {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-wrap: wrap;
-	}
-	.badge {
-		display: inline-block;
-		padding: 2px 9px;
-		border-radius: 999px;
-		font-size: 12px;
-		font-weight: 600;
-		border: 1px solid transparent;
-	}
-	.badge.blue {
-		color: var(--info);
-		border-color: color-mix(in srgb, var(--info) 35%, transparent);
-		background: color-mix(in srgb, var(--info) 10%, transparent);
-	}
-	.badge.gray {
-		color: var(--muted);
-		border-color: var(--line2);
-		background: var(--panel);
-	}
-	.badge.gold {
-		color: var(--gold);
-		border-color: color-mix(in srgb, var(--gold) 40%, transparent);
-		background: color-mix(in srgb, var(--gold) 8%, transparent);
-	}
-	.tag {
-		font-size: 11px;
+	.detail-head {
+		margin: 0;
 		color: var(--faint);
-	}
-	.tag.mode {
-		border: 1px solid var(--line2);
-		border-radius: 999px;
-		padding: 1px 7px;
-	}
-	.tag.active {
-		color: var(--good);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
 		font-size: 10px;
 		font-weight: 700;
+		letter-spacing: 0.09em;
+		text-transform: uppercase;
 	}
 	.summary {
-		margin: 0;
-		color: var(--muted);
-		font-size: 12.5px;
-		line-height: 1.5;
+		max-width: 70ch;
+		margin: -6px 0 0;
+		color: var(--text);
+		font-size: 13px;
+		line-height: 1.55;
 	}
-	.section-label {
-		font-size: 10px;
-		text-transform: uppercase;
-		letter-spacing: 0.07em;
+	.columns {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+		gap: 24px;
+	}
+	.ruled {
+		padding-left: 24px;
+		border-left: 1px solid var(--line);
+	}
+	@media (max-width: 860px) {
+		.columns {
+			grid-template-columns: 1fr;
+			gap: 16px;
+		}
+		.ruled {
+			padding-left: 0;
+			border-left: none;
+		}
+	}
+	section h4 {
+		margin: 0 0 8px;
 		color: var(--faint);
+		font-size: 10px;
 		font-weight: 700;
-		margin-top: 2px;
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
 	}
 	.chips {
 		display: flex;
@@ -157,50 +149,61 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 5px;
-		padding: 4px 9px;
+		padding: 4px 10px;
+		border: 1px solid color-mix(in srgb, var(--good) 34%, transparent);
 		border-radius: 999px;
-		border: 1px solid var(--line2);
-		background: var(--panel);
-		color: var(--faint);
-		font-size: 11.5px;
-	}
-	.chip.on {
-		color: var(--good);
-		border-color: color-mix(in srgb, var(--good) 38%, transparent);
 		background: color-mix(in srgb, var(--good) 10%, transparent);
+		color: var(--good);
+		font-size: 11.5px;
+		font-weight: 550;
 	}
+	.none {
+		margin: 0;
+		color: var(--muted);
+		font-size: 12.5px;
+	}
+	/* A spec sheet, not a form: dotted leaders and no field chrome, so the
+	   read-only values are never mistaken for editable inputs. */
 	.specs {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 8px;
 		margin: 0;
 	}
-	.specs > div {
-		border: 1px solid var(--line2);
-		border-radius: 8px;
-		background: var(--panel);
-		padding: 7px 9px;
+	.spec {
+		display: flex;
+		align-items: baseline;
+		gap: 8px;
+		padding: 6px 0;
+	}
+	.spec + .spec {
+		border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
 	}
 	dt {
-		font-size: 10.5px;
-		color: var(--faint);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		color: var(--muted);
+		font-size: 12.5px;
+	}
+	.leader {
+		flex: 1;
+		min-width: 12px;
+		border-bottom: 1px dotted var(--faint2);
+		transform: translateY(-4px);
 	}
 	dd {
-		margin: 3px 0 0;
-		font-size: 13px;
+		margin: 0;
 		color: var(--text);
+		font-size: 12.5px;
+		font-weight: 600;
+		white-space: nowrap;
 	}
 	.mono {
 		font-family: var(--font-mono);
 	}
 	.actions {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		gap: 8px;
 		margin-top: auto;
-		padding-top: 4px;
-		flex-wrap: wrap;
+		padding-top: 14px;
+		border-top: 1px solid var(--line);
 	}
 	.btn {
 		border: 1px solid var(--line2);
@@ -229,8 +232,5 @@
 	.btn:disabled {
 		opacity: 0.55;
 		cursor: not-allowed;
-	}
-	.actions .btn:first-child {
-		margin-right: auto;
 	}
 </style>

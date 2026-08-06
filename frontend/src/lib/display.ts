@@ -15,6 +15,7 @@ export type Tone =
 	| 'sampled_widescreen'
 	| 'teal'
 	| 'magenta'
+	| 'purple'
 	| 'review';
 
 /** Per-film deterministic gradient (handoff §1). hash(title) → palette index. */

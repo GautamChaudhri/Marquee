@@ -228,11 +228,11 @@
 	<div class="naming-groups">
 		<section class="naming-group" aria-labelledby="poster-naming-movies">
 			<div class="group-heading">
-				<span id="poster-naming-movies" class="group-label">Movies</span>
+				<span id="poster-naming-movies" class="group-label">Films</span>
 			</div>
 			{@render filenameRail(
 				'MOVIE_POSTER_FORMAT',
-				'Movie poster filename',
+				'Film poster filename',
 				'Use the media filename or a conventional poster name.',
 				MOVIE_PRESETS
 			)}

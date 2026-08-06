@@ -37,6 +37,9 @@
 	--dovi: #b794f6;
 	--teal: #39d5c4;
 	--magenta: #ed8df5;
+	/* Library-scale counts. Same hue as --review/--dovi, kept separate because
+	   those two carry a meaning ("in review", "Dolby Vision") this does not. */
+	--purple: #b794f6;
 	--on-good: #10151c;
 	--on-warn: #16120a;
 	--on-info: #10151c;
@@ -93,6 +96,7 @@
 	--dovi: #7c52e0;
 	--teal: #108f84;
 	--magenta: #b13bbb;
+	--purple: #7c52e0;
 	--on-good: #10151c;
 	--on-warn: #16120a;
 	--on-info: #ffffff;

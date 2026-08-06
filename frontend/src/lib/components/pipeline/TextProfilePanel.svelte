@@ -15,9 +15,16 @@
 	import TextProfileDialog from '$lib/components/pipeline/TextProfileDialog.svelte';
 	import TabBar from '$lib/components/TabBar.svelte';
 	import { toast } from '$lib/toast';
-	import { modeLabel, profileTone, type ProfileDialogMode } from './text-profile-fields';
+	import { profileTone, type ProfileDialogMode } from './text-profile-fields';
 
-	let { initial = null }: { initial?: ScopedTextProfileList | null } = $props();
+	let {
+		initial = null,
+		flat = false
+	}: {
+		initial?: ScopedTextProfileList | null;
+		/** Drop the outer card so a parent can supply one shared border. */
+		flat?: boolean;
+	} = $props();
 
 	const EMPTY_SCOPE = { profiles: [] as TextProfile[], default_id: 'title_only' };
 	let activeScope = $state<TextProfileScope>('movie');
@@ -110,10 +117,10 @@
 	}
 </script>
 
-<section class="tp-card">
+<section class="tp-card" class:flat>
 	<header class="tp-head">
 		<div>
-			<h2>Poster text profiles</h2>
+			<h2>Poster Text Profiles</h2>
 			<p class="sub">Controls what text is allowed on posters the pipeline accepts.</p>
 		</div>
 		<div class="scope-tabs">
@@ -131,7 +138,7 @@
 	<div class="tp-body">
 		<div class="list">
 			<div class="group">
-				<h3>Built-in presets</h3>
+				<h3>Built-in Presets</h3>
 				{#each builtins as profile (profile.id)}
 					<button
 						class="row"
@@ -139,14 +146,13 @@
 						onclick={() => (selectedId = profile.id)}
 					>
 						<span class="badge {profileTone(profile)}">{profile.name}</span>
-						<span class="row-meta">{modeLabel(profile)}</span>
 						{#if profile.id === defaultId}<span class="default-tag">active</span>{/if}
 					</button>
 				{/each}
 			</div>
 
 			<div class="group">
-				<h3>Custom profiles</h3>
+				<h3>Custom Profiles</h3>
 				{#each customs as profile (profile.id)}
 					<button
 						class="row"
@@ -199,7 +205,7 @@
 
 <ConfirmDialog
 	open={pendingDelete !== null}
-	title="Delete text profile"
+	title="Delete Text Profile"
 	message={pendingDelete
 		? `Delete “${pendingDelete.name}”? Titles using it fall back to the scope default.`
 		: ''}
@@ -217,24 +223,33 @@
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--panel);
-		padding: 16px;
 		margin-bottom: 18px;
+		overflow: hidden;
+	}
+	.tp-card.flat {
+		border: 0;
+		border-radius: 0;
+		background: none;
+		margin-bottom: 0;
 	}
 	.tp-head {
 		display: flex;
 		justify-content: space-between;
-		align-items: flex-start;
+		align-items: center;
 		gap: 12px;
 		flex-wrap: wrap;
+		padding: 13px 16px;
+		border-bottom: 1px solid var(--line);
 	}
 	.tp-head h2 {
 		margin: 0;
-		font-size: 15px;
+		font-size: 13px;
+		font-weight: 680;
 	}
 	.sub {
-		margin: 4px 0 0;
+		margin: 2px 0 0;
 		color: var(--muted);
-		font-size: 12px;
+		font-size: 11.5px;
 	}
 	.badge {
 		display: inline-block;
@@ -261,9 +276,9 @@
 	}
 	.tp-body {
 		display: grid;
-		grid-template-columns: 300px minmax(0, 1fr);
+		grid-template-columns: 280px minmax(0, 1fr);
 		gap: 16px;
-		margin-top: 14px;
+		padding: 16px;
 	}
 	@media (max-width: 980px) {
 		.tp-body {
@@ -300,10 +315,6 @@
 	.row.selected {
 		border-color: color-mix(in srgb, var(--gold) 30%, var(--line2));
 		background: var(--panel2);
-	}
-	.row-meta {
-		font-size: 11px;
-		color: var(--faint);
 	}
 	.default-tag {
 		margin-left: auto;

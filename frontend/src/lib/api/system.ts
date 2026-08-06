@@ -173,6 +173,41 @@ export function getStatus(fetch: Fetch): Promise<Record<string, unknown>> {
 	return apiGet<Record<string, unknown>>(fetch, '/system/status');
 }
 
+/** The OCR slice of `/system/status`, typed because the pipeline page renders it. */
+export interface OcrGpu {
+	index: number;
+	name: string;
+	vram_total: number;
+	vram_free: number;
+}
+
+export interface OcrStatus {
+	device: string;
+	configured_workers: number;
+	effective_workers: number;
+	workers: { active: Array<{ pid: number; name: string }>; stale_reaped: unknown[] };
+	plan: {
+		requested: string;
+		gpu_build: boolean;
+		gpus: OcrGpu[];
+		/** What OCR_WORKERS=0 resolves to on this host; null if it could not resolve. */
+		auto_workers: number | null;
+		/** null when the request cannot be satisfied — see `error`. */
+		expected_device: string | null;
+		error: string | null;
+		/** false in auto mode: predicted from the wheel + NVML, not observed. */
+		confirmed: boolean;
+	};
+}
+
+export async function getOcrStatus(fetch: Fetch): Promise<OcrStatus | null> {
+	const status = await getStatus(fetch);
+	const ocr = status.ocr;
+	// Older backends have no `plan`; the panel renders nothing rather than half of itself.
+	if (!ocr || typeof ocr !== 'object' || !('plan' in ocr)) return null;
+	return ocr as OcrStatus;
+}
+
 export function getSettings(fetch: Fetch): Promise<RuntimeSettings> {
 	if (useMocks()) return Promise.resolve(mockSettings());
 	return apiGet<RuntimeSettings>(fetch, '/settings');
