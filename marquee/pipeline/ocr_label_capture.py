@@ -47,6 +47,11 @@ REQUIRED_OCR_SNAPSHOT_KEYS = frozenset(
 )
 
 _CAPTURE_LOCK = threading.Lock()
+_CAPTURE_FOLDER_BY_MEDIA_TYPE = {
+    "movie": "movie-posters",
+    "series": "show-posters",
+    "season": "season-posters",
+}
 
 
 class OcrLabelCaptureError(Exception):
@@ -102,6 +107,42 @@ def _json_safe(obj: object) -> object:
     return obj
 
 
+def _capture_subject(run: PipelineRun, archive: dict[str, object]) -> tuple[str, dict[str, object]]:
+    """Return the immutable asset identity and its dedicated capture folder."""
+    media_type = run.media_type
+    capture_folder = _CAPTURE_FOLDER_BY_MEDIA_TYPE.get(media_type)
+    if capture_folder is None:
+        raise OcrLabelCaptureError(
+            f"Run {run.run_id} has unsupported poster media type {media_type!r}", status_code=422
+        )
+
+    archive_subject = archive.get("subject")
+    subject = archive_subject if isinstance(archive_subject, dict) else {}
+    title = archive.get("title")
+    if not isinstance(title, str) or not title.strip():
+        title = subject.get("title")
+    if not isinstance(title, str) or not title.strip():
+        identifier = (
+            run.movie_id
+            if media_type == "movie"
+            else run.series_id
+            if media_type == "series"
+            else run.season_id
+        )
+        title = f"{media_type}-{identifier if identifier is not None else 'unknown'}"
+
+    return capture_folder, {
+        "media_type": media_type,
+        "title": title,
+        "movie_id": run.movie_id if media_type == "movie" else None,
+        "series_id": run.series_id if media_type in {"series", "season"} else None,
+        "season_id": run.season_id if media_type == "season" else None,
+        "season_number": subject.get("season_number") if media_type == "season" else None,
+        "series_title": subject.get("series_title") if media_type == "season" else None,
+        "tmdb_id": archive.get("tmdb_id"),
+    }
+
+
 def capture_ocr_label(
     run: PipelineRun,
     archive: dict[str, object],
@@ -125,7 +166,8 @@ def capture_ocr_label(
             status_code=404,
         )
 
-    title = str(archive.get("title") or f"movie-{run.movie_id}")
+    capture_folder, subject = _capture_subject(run, archive)
+    title = str(subject["title"])
     image_source = candidate_image if candidate_image and candidate_image.is_file() else None
     log_lines, log_missing_artifacts, log_source_kind = _extract_log_lines(
         archive, candidate, orig_filename
@@ -133,6 +175,7 @@ def capture_ocr_label(
 
     capture_dir = (
         capture_root()
+        / capture_folder
         / f"{_sanitise_filename(title)}__{run.run_id}"
         / label_kind
         / _safe_capture_id(orig_filename)
@@ -145,7 +188,8 @@ def capture_ocr_label(
         missing_artifacts.append("image")
     missing_artifacts.extend(log_missing_artifacts)
 
-    ocr_block = _ocr_diagnostics(candidate)
+    ocr_block = _json_safe(_ocr_diagnostics(candidate))
+    archived_run = _json_safe(archive)
 
     with _CAPTURE_LOCK:
         capture_dir.mkdir(parents=True, exist_ok=True)
@@ -160,11 +204,7 @@ def capture_ocr_label(
         metadata = {
             "label_kind": label_kind,
             "marked_at": datetime.now(UTC).isoformat(),
-            "movie": {
-                "movie_id": archive.get("movie_id"),
-                "title": archive.get("title"),
-                "tmdb_id": archive.get("tmdb_id"),
-            },
+            "subject": subject,
             "run": {
                 "run_id": run.run_id,
                 "status": run.status,
@@ -189,6 +229,12 @@ def capture_ocr_label(
             "missing_artifacts": missing_artifacts,
         }
         safe_metadata = _json_safe(metadata)
+        (capture_dir / "ocr.json").write_text(
+            json.dumps(ocr_block, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        (capture_dir / "pipeline-run.json").write_text(
+            json.dumps(archived_run, indent=2, sort_keys=True), encoding="utf-8"
+        )
         (capture_dir / "capture.json").write_text(
             json.dumps(safe_metadata, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -207,10 +253,8 @@ def capture_ocr_label(
 def clear_ocr_labels() -> dict[str, object]:
     root = capture_root()
     with _CAPTURE_LOCK:
-        run_dirs = [path for path in root.iterdir() if path.is_dir()] if root.exists() else []
-        capture_dirs = (
-            [path for path in root.glob("*/*/*") if path.is_dir()] if root.exists() else []
-        )
+        capture_dirs = [path.parent for path in root.rglob("capture.json") if path.is_file()]
+        run_dirs = {path.parent.parent for path in capture_dirs}
         if root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
@@ -227,10 +271,13 @@ def list_ocr_labels(run_id: str) -> dict[str, object]:
         "false_rejection": [],
         "false_acceptance": [],
     }
-    for capture_path in sorted(capture_root().glob(f"*__{run_id}/*/*/capture.json")):
+    for capture_path in sorted(capture_root().rglob("capture.json")):
         try:
             payload = json.loads(capture_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            continue
+        run = payload.get("run")
+        if not isinstance(run, dict) or run.get("run_id") != run_id:
             continue
         label_kind = payload.get("label_kind")
         candidate = payload.get("candidate")

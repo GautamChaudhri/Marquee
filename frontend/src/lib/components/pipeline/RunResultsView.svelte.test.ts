@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import type { CandidateView, RunResults } from '$lib/api/types';
 import RunResultsView from './RunResultsView.svelte';
@@ -27,7 +27,37 @@ const candidate: CandidateView = {
 	stack_score: null
 };
 
-function run(reviewMode: RunResults['review_mode'], ranked: CandidateView[]): RunResults {
+const completeOcrSnapshot = Object.fromEntries(
+	[
+		'device',
+		'workers',
+		'detail_passes',
+		'max_residual_boxes',
+		'max_residual_area_fraction',
+		'mode',
+		'require_title',
+		'accept_no_text_fallback',
+		'allow_title',
+		'allow_director',
+		'allow_studio',
+		'allow_rating',
+		'allow_tagline',
+		'confidence_threshold',
+		'strip_confidence_threshold',
+		'bottom_confidence_threshold',
+		'fuzzy_cutoff',
+		'title_proximity_pixels',
+		'residual_significant_area_fraction',
+		'residual_significant_width_fraction',
+		'enhance_retry'
+	].map((key) => [key, true])
+);
+
+function run(
+	reviewMode: RunResults['review_mode'],
+	ranked: CandidateView[],
+	mediaType: NonNullable<RunResults['media_type']> = 'movie'
+): RunResults {
 	return {
 		run_id: 'review-run',
 		movie: { id: 1, title: 'Fixture film', tmdb_id: 10 },
@@ -44,17 +74,28 @@ function run(reviewMode: RunResults['review_mode'], ranked: CandidateView[]): Ru
 		suggestion: null,
 		counts: { ranked: ranked.length },
 		stage_timings_s: {},
-		media_type: 'movie'
+		config_snapshot: { ocr: completeOcrSnapshot },
+		media_type: mediaType
 	};
 }
 
-function renderRun(reviewMode: RunResults['review_mode'], ranked: CandidateView[]) {
+function renderRun(
+	reviewMode: RunResults['review_mode'],
+	ranked: CandidateView[],
+	{
+		debugMode = false,
+		mediaType = 'movie'
+	}: {
+		debugMode?: boolean;
+		mediaType?: NonNullable<RunResults['media_type']>;
+	} = {}
+) {
 	return render(RunResultsView, {
 		props: {
 			data: {
-				run: run(reviewMode, ranked),
+				run: run(reviewMode, ranked, mediaType),
 				runId: 'review-run',
-				debugMode: false,
+				debugMode,
 				ocrLabelState: {
 					run_id: 'review-run',
 					labels: { false_rejection: [], false_acceptance: [] }
@@ -96,5 +137,16 @@ describe('RunResultsView review notices', () => {
 
 		expect(screen.queryByText('Manual review')).not.toBeInTheDocument();
 		expect(screen.queryByText('No survivors')).not.toBeInTheDocument();
+	});
+
+	it('allows OCR false-acceptance capture for neutral TV candidates', async () => {
+		renderRun('collecting', [candidate], { debugMode: true, mediaType: 'series' });
+
+		const tile = screen.getByAltText('survivor.jpg').closest('button');
+		expect(tile).not.toBeNull();
+		await fireEvent.click(tile!);
+
+		expect(screen.getByRole('button', { name: 'Mark as OCR false acceptance' })).toBeVisible();
+		expect(screen.getByText('Deploy to the show folder now')).toBeVisible();
 	});
 });

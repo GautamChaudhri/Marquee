@@ -77,6 +77,13 @@
 		})
 	);
 	const debugMode = $derived(Boolean(data.debugMode));
+	const assetLabel = $derived(
+		results?.media_type === 'series'
+			? 'show'
+			: results?.media_type === 'season'
+				? 'season'
+				: 'movie'
+	);
 	const tileSelectable = $derived(Boolean(debugMode || !results?.reviewed));
 	const REQUIRED_OCR_SNAPSHOT_KEYS = [
 		'device',
@@ -426,7 +433,7 @@
 	);
 	const inspectedOcrPanel = $derived(inspected ? ocrInspectorPanel(inspected) : null);
 	const inspectDebugLabelKind = $derived.by<'false_rejection' | 'false_acceptance' | null>(() => {
-		if (!inspected || !debugMode || isCollecting) return null;
+		if (!inspected || !debugMode) return null;
 		if (inspected.rank != null) return 'false_acceptance';
 		return activeStage === 'ocr' ? 'false_rejection' : null;
 	});
@@ -793,14 +800,14 @@
 				{#if !results.reviewed}
 					<label class="toggle">
 						<input type="checkbox" bind:checked={deploy} />
-						Deploy to the movie folder now
+						Deploy to the {assetLabel} folder now
 					</label>
 				{/if}
 
 				{#if debugMode && inspectDebugLabelKind && !hasFullOcrSnapshot}
 					<p class="pick-debug-note">
 						Debug OCR labeling is disabled for this run because its archived OCR snapshot is
-						incomplete. Re-run the movie after the snapshot upgrade first.
+						incomplete. Re-run this {assetLabel} after the snapshot upgrade first.
 					</p>
 				{:else if debugMode && inspectDebugLabelKind}
 					<div class="pick-debug-row">
@@ -1053,8 +1060,7 @@
 		{#if debugMode && !hasFullOcrSnapshot}
 			<div class="dev-hint">
 				Debug OCR labeling is disabled for this run because its archived OCR snapshot is incomplete.
-				Re-run the movie after the snapshot upgrade to capture false rejections or false
-				acceptances.
+				Re-run this {assetLabel} after the snapshot upgrade to capture false rejections or false acceptances.
 			</div>
 		{/if}
 		{#if debugMode && activeStage === 'ocr' && hasFullOcrSnapshot}
