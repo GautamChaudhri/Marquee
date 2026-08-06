@@ -77,6 +77,77 @@ def test_build_and_load_map_pca(synthetic_profile):
     assert {"x", "y", "z", "x2", "y2", "self_knn", "movie_title", "is_noise"} <= set(p)
 
 
+@pytest.fixture
+def synthetic_tv_profile(tmp_path, monkeypatch):
+    """A TV profile carrying both show artwork and season artwork."""
+    rng = np.random.default_rng(1)
+    names = [f"Series {i // 3}-{'show' if i % 3 == 0 else f'season0{i % 3}'}.jpg" for i in range(12)]
+    embeddings = rng.standard_normal((len(names), 512)).astype(np.float32)
+    embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+    centroid = embeddings.mean(0)
+    centroid /= np.linalg.norm(centroid)
+
+    profile_path = tmp_path / "taste_profile.tv.clip-vit-b-32.npz"
+    np.savez(
+        profile_path,
+        embeddings=embeddings,
+        poster_names=unicode_array(names),
+        asset_kinds=unicode_array(
+            ["show" if "-show" in name else "season" for name in names],
+        ),
+        centroid_emb=centroid.astype(np.float32),
+        model_name=unicode_scalar("clip-vit-b-32"),
+    )
+
+    from marquee.config import settings
+
+    monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_TV_PATH", profile_path)
+    monkeypatch.setattr(
+        type(settings),
+        "poster_cache_path",
+        property(lambda self: tmp_path / "cache" / "posters"),
+    )
+
+    from marquee.ml import namespaces, taste_map
+
+    # Namespaces are rebuilt from live pipeline_settings, so the patch above is enough.
+    namespace = namespaces.get_namespace("tv")
+
+    def reduce_with_pca(matrix: np.ndarray, n: int) -> tuple[np.ndarray, str]:
+        return taste_map._pca(matrix, n), "pca"
+
+    monkeypatch.setattr(taste_map, "_reduce", reduce_with_pca)
+    return namespace, names
+
+
+def test_tv_map_keeps_show_and_season_artwork(synthetic_tv_profile):
+    """Seasons are a view of the TV map, so they must survive the build."""
+    from marquee.ml.taste_map import build_map
+
+    namespace, names = synthetic_tv_profile
+    result = build_map(namespace=namespace, generate_thumbnails=False)
+
+    kinds = [point["asset_kind"] for point in result["points"]]
+    assert len(result["points"]) == len(names)
+    assert kinds.count("show") == 4
+    assert kinds.count("season") == 8
+    assert result["summary"]["by_kind"] == {"show": 4, "season": 8}
+
+
+def test_tv_map_points_carry_series_identity(synthetic_tv_profile):
+    """A season point knows which season it is, so the detail panel can name it."""
+    from marquee.ml.taste_map import build_map
+
+    namespace, _names = synthetic_tv_profile
+    points = build_map(namespace=namespace, generate_thumbnails=False)["points"]
+
+    seasons = [point for point in points if point["asset_kind"] == "season"]
+    assert {point["season_number"] for point in seasons} == {1, 2}
+    assert all(point["season_number"] is None for point in points if point["asset_kind"] == "show")
+    # Nothing resolved against the library here, so no artwork is claimed for them.
+    assert all(point["poster_url"] is None for point in points)
+
+
 def test_map_is_deterministic(synthetic_profile):
     from marquee.ml.taste_map import build_map
 

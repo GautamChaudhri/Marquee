@@ -30,6 +30,7 @@ from marquee.core.jobs.handlers_ml import execute_taste_rebuild
 from marquee.core.jobs.handlers_rescan import execute_poster_rescan
 from marquee.core.jobs.ml_publication import MlPublicationError, activate_immutable_artifact
 from marquee.core.jobs.workspaces import AttemptWorkspaceManager
+from marquee.core.rate_limit import RateLimiter
 from marquee.database import _get_engine, _get_session_factory
 from marquee.main import app
 from marquee.ml import publication_catalog
@@ -98,6 +99,30 @@ async def test_ml_routes_submit_generation_snapshots_without_manual_activation(c
     canonical_only = await client.post("/api/taste/retrain")
     assert canonical_only.status_code == 409
     assert "canonical taste evidence" in canonical_only.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_taste_cooldowns_are_scoped_per_library(client, db, monkeypatch) -> None:
+    """Starting film work must never hold television work back, and vice versa.
+
+    The two libraries are independent artifacts with independent coordinators, so a
+    shared cooldown key was the one thing making them exclusive.
+    """
+    # Cooldowns are a no-op under DEBUG, which is how the suite normally runs.
+    monkeypatch.setattr(settings, "DEBUG", False)
+    monkeypatch.setattr(settings, "AUTH_ALLOW_LOCAL", True)
+    # The limiter lives on app state for the process, so this test brings its own
+    # rather than inheriting whatever earlier requests recorded.
+    monkeypatch.setattr(app.state, "op_rate_limiter", RateLimiter())
+
+    for route in ("/api/taste/map/rebuild", "/api/taste/enrich", "/api/taste/residual/retrain"):
+        films = await client.post(route, params={"library": "movies"})
+        assert films.status_code == 202, films.text
+        television = await client.post(route, params={"library": "tv"})
+        assert television.status_code == 202, television.text
+        # The same library twice in a row is still rate limited.
+        again = await client.post(route, params={"library": "movies"})
+        assert again.status_code == 429, again.text
 
 
 @pytest.mark.asyncio

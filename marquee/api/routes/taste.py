@@ -304,8 +304,10 @@ async def retrain_taste(
     """Submit a taste profile rebuild: coordinated for movies, on demand for TV."""
     library = body.library if body else "movies"
     _validate_library(library)
-    enforce_rate_limit(limiter, "taste_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
-    limiter.record("taste_retrain")
+    # Per library: the two profiles are independent artifacts with independent
+    # coordinators, so starting a film rebuild must never hold the TV one back.
+    enforce_rate_limit(limiter, f"taste_retrain:{library}", settings.RATE_TASTE_RETRAIN_SECONDS)
+    limiter.record(f"taste_retrain:{library}")
     if body is not None and body.source == "seeding_bundle":  # TEMPORARY (seeding bundle)
         if library != "movies":
             raise HTTPException(
@@ -368,8 +370,10 @@ async def retrain_ranking_residual(
 ) -> JobSubmissionResponse:
     """Submit held-out evaluation of an immutable bounded residual candidate."""
     _validate_library(library)
-    enforce_rate_limit(limiter, "residual_retrain", settings.RATE_TASTE_RETRAIN_SECONDS)
-    limiter.record("residual_retrain")
+    enforce_rate_limit(
+        limiter, f"residual_retrain:{library}", settings.RATE_TASTE_RETRAIN_SECONDS
+    )
+    limiter.record(f"residual_retrain:{library}")
     from marquee.ml.residual import freeze_residual_evidence  # noqa: PLC0415
 
     events = list(
@@ -537,8 +541,10 @@ async def rebuild_map(
 ) -> JobSubmissionResponse:
     """Submit an immutable taste-map publication job."""
     _validate_library(library)
-    enforce_rate_limit(limiter, "taste_map_rebuild", settings.RATE_TASTE_MAP_REBUILD_SECONDS)
-    limiter.record("taste_map_rebuild")
+    enforce_rate_limit(
+        limiter, f"taste_map_rebuild:{library}", settings.RATE_TASTE_MAP_REBUILD_SECONDS
+    )
+    limiter.record(f"taste_map_rebuild:{library}")
     return await _submit_ml_publication(
         db,
         job_type="taste_map",
@@ -560,8 +566,8 @@ async def enrich_profile(
 ) -> JobSubmissionResponse:
     """Submit immutable taste-profile enrichment publication."""
     _validate_library(library)
-    enforce_rate_limit(limiter, "taste_enrich", settings.RATE_TASTE_ENRICH_SECONDS)
-    limiter.record("taste_enrich")
+    enforce_rate_limit(limiter, f"taste_enrich:{library}", settings.RATE_TASTE_ENRICH_SECONDS)
+    limiter.record(f"taste_enrich:{library}")
     return await _submit_ml_publication(
         db,
         job_type="taste_enrich",

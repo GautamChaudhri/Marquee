@@ -781,11 +781,20 @@ export type PosterBatchOptions = {
 };
 
 // ── Taste map (GET /taste/map) ─────────────────────────────────────────────
+/** What a point stands for: a film poster, a show poster, or one season's poster. */
+export type TasteMapAssetKind = 'movie' | 'show' | 'season';
+
 export interface TasteMapPoint {
 	name: string;
 	movie_title: string;
 	movie_id: number | null;
 	tmdb_id: number | null;
+	asset_kind: TasteMapAssetKind;
+	season_number: number | null;
+	series_id: number | null;
+	season_id: number | null;
+	/** Library artwork this point stands for; null when the subject is unresolved. */
+	poster_url: string | null;
 	x: number;
 	y: number;
 	z: number;
@@ -798,7 +807,6 @@ export interface TasteMapPoint {
 	year: number | null;
 	aesthetic: number | null;
 	colorfulness: number | null;
-	thumb_url: string | null;
 }
 
 export interface TasteMapCluster {
@@ -815,6 +823,7 @@ export interface TasteMapData {
 		unique_movies: number;
 		duplicate_groups: number;
 		noise: number;
+		by_kind?: Partial<Record<TasteMapAssetKind, number>>;
 	};
 	clusters: TasteMapCluster[] | null;
 	outliers: string[];

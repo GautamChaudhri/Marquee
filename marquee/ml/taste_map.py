@@ -50,6 +50,7 @@ _SMALL_PROFILE = 50  # below this, clustering isn't meaningful
 _YEAR = re.compile(r"\((\d{4})\)")
 _YEAR_SUFFIX = re.compile(r"\s*\(\d{4}\)\s*$")
 _DEDUP_SUFFIX = re.compile(r"\s*-\s*\d+$")
+_TV_SUFFIX = re.compile(r"-(?:show|season(\d+))$", re.IGNORECASE)
 
 
 def _map_path(ns: TasteNamespace | None = None) -> Path:
@@ -78,6 +79,39 @@ def _parse_name(name: str) -> tuple[str, int | None]:
     title = _YEAR_SUFFIX.sub("", stem).strip()
     title = _DEDUP_SUFFIX.sub("", title).strip()
     return title, year
+
+
+def _parse_tv_name(name: str) -> tuple[str, str, int | None]:
+    """Series title, asset kind, and season number from a TV exemplar filename.
+
+    Library-scanned TV artwork is named ``<series>-show.jpg`` / ``<series>-seasonNN.jpg``.
+    Profiles built before the identity arrays existed carry only these names, so the
+    filename stays a usable fallback for the whole TV lineage.
+    """
+    stem = Path(name).stem
+    match = _TV_SUFFIX.search(stem)
+    if match is None:
+        return _DEDUP_SUFFIX.sub("", stem).strip(), "show", None
+    series = _DEDUP_SUFFIX.sub("", stem[: match.start()]).strip()
+    season = match.group(1)
+    return (series, "season", int(season)) if season is not None else (series, "show", None)
+
+
+def _poster_url(
+    kind: str,
+    *,
+    movie_id: int | None,
+    series_id: int | None,
+    season_id: int | None,
+) -> str | None:
+    """The library artwork a map point stands for, or nothing when it is unresolved."""
+    if kind == "season" and season_id:
+        return f"/api/seasons/{season_id}/poster"
+    if kind == "show" and series_id:
+        return f"/api/series/{series_id}/poster"
+    if kind == "movie" and movie_id:
+        return f"/api/movies/{movie_id}/poster"
+    return None
 
 
 def _resolve_profile_movie_rows(profile: dict) -> list[dict]:
@@ -136,6 +170,88 @@ def _resolve_profile_movie_rows(profile: dict) -> list[dict]:
             row["movie_title"] = resolved[1]
             row["year"] = row["year"] or resolved[2]
             row["tmdb_id"] = row["tmdb_id"] or resolved[3]
+    return rows
+
+
+def _tv_identity(profile: dict) -> list[tuple[str, str, int | None]]:
+    """Per-exemplar (series title, asset kind, season number).
+
+    The stored identity arrays win where a build recorded them; the filename is the
+    fallback so profiles built before those arrays existed still place seasons.
+    """
+    names: list[str] = profile["poster_names"]
+    kinds = profile.get("asset_kinds") or []
+    titles = profile.get("series_titles") or []
+    seasons = profile.get("season_numbers") or []
+    identity: list[tuple[str, str, int | None]] = []
+    for index, name in enumerate(names):
+        parsed_title, parsed_kind, parsed_season = _parse_tv_name(name)
+        kind = str(kinds[index]) if index < len(kinds) and kinds[index] else parsed_kind
+        title = str(titles[index]) if index < len(titles) and titles[index] else parsed_title
+        season = seasons[index] if index < len(seasons) else None
+        if season is None or int(season) < 0:
+            season = parsed_season
+        identity.append((title, kind, None if season is None else int(season)))
+    return identity
+
+
+def _resolve_profile_series_rows(profile: dict) -> list[dict]:
+    """Same shape as the movie rows, resolved against the series/season tables.
+
+    TV exemplars carry a series title rather than an id, so the ids the detail panel
+    needs to fetch artwork are looked up once here and frozen into the map artifact.
+    """
+    import psycopg  # noqa: PLC0415
+
+    identity = _tv_identity(profile)
+    rows = [
+        {
+            "title": title,
+            "movie_title": title,
+            "movie_id": None,
+            "tmdb_id": None,
+            "year": None,
+            "genres": None,
+            "asset_kind": kind,
+            "season_number": season,
+            "series_id": None,
+            "season_id": None,
+        }
+        for title, kind, season in identity
+    ]
+
+    db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
+    by_title: dict[str, tuple[int, str, int | None, int | None, list | None]] = {}
+    seasons_by_series: dict[tuple[int, int], int] = {}
+    try:
+        with psycopg.connect(db_url) as conn, conn.cursor() as cursor:
+            cursor.execute("SELECT id, title, year, tmdb_id, genres FROM series")
+            for series_id, title, year, tmdb_id, genres in cursor:
+                by_title[str(title).lower()] = (
+                    int(series_id),
+                    str(title),
+                    year or None,
+                    tmdb_id,
+                    genres,
+                )
+            cursor.execute("SELECT id, series_id, season_number FROM seasons")
+            for season_id, series_id, season_number in cursor:
+                seasons_by_series[(int(series_id), int(season_number))] = int(season_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not resolve taste-map series metadata from PostgreSQL", exc_info=True)
+        return rows
+
+    for row in rows:
+        resolved = by_title.get(str(row["title"]).lower())
+        if resolved is None:
+            continue
+        row["series_id"] = resolved[0]
+        row["movie_title"] = resolved[1]
+        row["year"] = resolved[2]
+        row["tmdb_id"] = resolved[3]
+        row["genres"] = resolved[4]
+        if row["season_number"] is not None:
+            row["season_id"] = seasons_by_series.get((resolved[0], int(row["season_number"])))
     return rows
 
 
@@ -303,30 +419,10 @@ def build_map(
     _phase("load", "Loading taste profile…")
     profile = _load_profile_arrays(ns, profile_path=profile_path)
     embeddings = profile["embeddings"]
-    poster_names = profile["poster_names"]
 
-    # D4: for tv, filter exemplars to asset_kind == "show"
-    if ns.library == "tv" and "asset_kinds" in profile:
-        keep = [i for i, kind in enumerate(profile["asset_kinds"]) if kind == "show"]
-        if keep:
-            embeddings = embeddings[keep]
-            poster_names = [poster_names[i] for i in keep]
-            profile["poster_names"] = poster_names
-            if "genres" in profile:
-                profile["genres"] = [profile["genres"][i] for i in keep]
-            for key in (
-                "years",
-                "tmdb_ids",
-                "movie_ids",
-                "movie_titles",
-                "series_titles",
-                "season_numbers",
-                "asset_kinds",
-                "aesthetic",
-                "global_colorfulness",
-            ):
-                if key in profile:
-                    profile[key] = [profile[key][i] for i in keep]
+    # Show and season artwork are projected together: one TV coordinate space is what
+    # makes season art comparable to the show art it sits under. The map carries the
+    # asset kind so a reader can look at either set on its own.
 
     # L2-normalize for cosine-correct projection + barycentric placement.
     embeddings = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-10)
@@ -339,13 +435,33 @@ def build_map(
     _phase("cluster", "Clustering the taste space…")
     labels = _cluster(coords_3d)
     raise_if_cancelled(cancel_event, "taste map build cancelled")
-    genres = profile.get("genres")
-    names_map = _cluster_names(labels, genres)
     self_knn = _self_knn(embeddings, pipeline_settings.K_NEIGHBORS)
-    movie_rows = _resolve_profile_movie_rows(profile)
-    grouped = Counter((row["movie_title"].lower(), row["year"]) for row in movie_rows)
-    unique_movie_count = len(grouped)
-    duplicate_group_count = sum(1 for count in grouped.values() if count > 1)
+    is_tv = ns.library == "tv"
+    movie_rows = (
+        _resolve_profile_series_rows(profile) if is_tv else _resolve_profile_movie_rows(profile)
+    )
+    # A resolved series carries the genres the TV profile itself never stored, so the
+    # cluster names and the genre colouring both work from the same resolved list.
+    genres = (
+        [list(row["genres"] or ()) for row in movie_rows] if is_tv else profile.get("genres")
+    )
+    if is_tv and not any(genres):
+        genres = None
+    names_map = _cluster_names(labels, genres)
+    # A subject is a title; a duplicate is the same artwork slot filled twice. On TV
+    # those differ — one series legitimately contributes a show poster and one poster
+    # per season — so the duplicate key carries the slot, not just the title.
+    subjects = Counter((row["movie_title"].lower(), row["year"]) for row in movie_rows)
+    slots = (
+        Counter(
+            (row["movie_title"].lower(), row["asset_kind"], row["season_number"])
+            for row in movie_rows
+        )
+        if is_tv
+        else subjects
+    )
+    unique_movie_count = len(subjects)
+    duplicate_group_count = sum(1 for count in slots.values() if count > 1)
     noise_count = int(sum(1 for label in labels if int(label) == -1)) if labels is not None else 0
 
     # Explicit outputs are attempt-workspace artifacts and must not mutate live
@@ -382,11 +498,34 @@ def build_map(
         payload["cluster_names"] = unicode_array(
             [f"{cid}:{name}" for cid, name in names_map.items()]
         )
-    if "genres" in profile:
-        payload[GENRES_JSON_KEY] = json_string_array(profile["genres"])
-    for key in ("years", "tmdb_ids"):
-        if key in profile:
-            payload[key] = np.asarray(profile[key], dtype=np.int64)
+    if is_tv:
+        # Frozen at build time so the read path stays a pure artifact load: these are
+        # what let the map show a season's own artwork and its place in the series.
+        payload["asset_kinds"] = unicode_array([str(row["asset_kind"]) for row in movie_rows])
+        payload["season_numbers"] = np.asarray(
+            [-1 if row["season_number"] is None else int(row["season_number"]) for row in movie_rows],
+            dtype=np.int64,
+        )
+        payload["series_ids"] = np.asarray(
+            [int(row["series_id"] or 0) for row in movie_rows], dtype=np.int64
+        )
+        payload["season_ids"] = np.asarray(
+            [int(row["season_id"] or 0) for row in movie_rows], dtype=np.int64
+        )
+        payload["years"] = np.asarray(
+            [int(row["year"] or 0) for row in movie_rows], dtype=np.int64
+        )
+        payload["tmdb_ids"] = np.asarray(
+            [int(row["tmdb_id"] or 0) for row in movie_rows], dtype=np.int64
+        )
+        if genres is not None:
+            payload[GENRES_JSON_KEY] = json_string_array(genres)
+    else:
+        if "genres" in profile:
+            payload[GENRES_JSON_KEY] = json_string_array(profile["genres"])
+        for key in ("years", "tmdb_ids"):
+            if key in profile:
+                payload[key] = np.asarray(profile[key], dtype=np.int64)
     for key in ("aesthetic", "global_colorfulness"):
         if key in profile:
             payload[key] = np.asarray(profile[key], dtype=np.float64)
@@ -461,6 +600,14 @@ def load_map(
         colorfulness = (
             data["global_colorfulness"].tolist() if "global_colorfulness" in data.files else None
         )
+        asset_kinds = (
+            decode_unicode_list(data["asset_kinds"]) if "asset_kinds" in data.files else None
+        )
+        season_numbers = (
+            data["season_numbers"].tolist() if "season_numbers" in data.files else None
+        )
+        series_ids = data["series_ids"].tolist() if "series_ids" in data.files else None
+        season_ids = data["season_ids"].tolist() if "season_ids" in data.files else None
         method = decode_unicode_scalar(data["projection_method"])
         computed_at = decode_unicode_scalar(data["computed_at"])
         unique_movie_count = (
@@ -477,15 +624,32 @@ def load_map(
             int(np.asarray(data["noise_count"]).item()) if "noise_count" in data.files else None
         )
 
+    default_kind = "show" if ns.library == "tv" else "movie"
     points = []
     for i, name in enumerate(names):
         title, parsed_year = _parse_name(name)
         is_noise = labels is not None and int(labels[i]) == -1
+        # Maps built before the kinds were carried held show artwork only, so they
+        # still land in the right view rather than reading as films.
+        kind = str(asset_kinds[i]) if asset_kinds is not None else default_kind
+        season_number = None
+        if season_numbers is not None and int(season_numbers[i]) >= 0:
+            season_number = int(season_numbers[i])
+        series_id = series_ids[i] if series_ids is not None and series_ids[i] else None
+        season_id = season_ids[i] if season_ids is not None and season_ids[i] else None
+        movie_id = movie_ids[i] if movie_ids is not None and movie_ids[i] else None
         points.append(
             {
                 "name": name,
                 "movie_title": movie_titles[i] if movie_titles is not None else title,
-                "movie_id": movie_ids[i] if movie_ids is not None and movie_ids[i] else None,
+                "movie_id": movie_id,
+                "asset_kind": kind,
+                "season_number": season_number,
+                "series_id": series_id,
+                "season_id": season_id,
+                "poster_url": _poster_url(
+                    kind, movie_id=movie_id, series_id=series_id, season_id=season_id
+                ),
                 "x": float(coords_3d[i][0]),
                 "y": float(coords_3d[i][1]),
                 "z": float(coords_3d[i][2]),
@@ -499,7 +663,6 @@ def load_map(
                 "aesthetic": aesthetic[i] if aesthetic is not None else None,
                 "colorfulness": colorfulness[i] if colorfulness is not None else None,
                 "tmdb_id": tmdb_ids[i] if tmdb_ids is not None and tmdb_ids[i] else None,
-                "thumb_url": None,
             }
         )
 
@@ -533,6 +696,7 @@ def load_map(
     if noise_count is None:
         noise_count = sum(1 for point in points if point["is_noise"])
 
+    by_kind = Counter(str(point["asset_kind"]) for point in points)
     return {
         "projection": {"method": method, "computed_at": computed_at},
         "points": points,
@@ -542,6 +706,7 @@ def load_map(
             "unique_movies": unique_movie_count,
             "duplicate_groups": duplicate_group_count or 0,
             "noise": noise_count,
+            "by_kind": dict(by_kind),
         },
         "outliers": outliers,
         "clustering": clusters or None,
