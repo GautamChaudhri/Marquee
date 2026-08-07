@@ -38,7 +38,19 @@ export const TEXT_CATEGORIES: TextCategory[] = [
 	{
 		key: 'allow_season',
 		label: 'Season text',
-		hint: 'Season text such as Season 3 or Part 2.',
+		hint: 'Season numbering such as Season Three, S03, Book 3, or Part 3.',
+		seasonOnly: true
+	},
+	{
+		key: 'allow_season_title',
+		label: 'Season name',
+		hint: 'The official season name from TMDB, such as The Hedge Knight or Water.',
+		seasonOnly: true
+	},
+	{
+		key: 'allow_season_edition',
+		label: 'Season edition text',
+		hint: 'Packaging phrases such as The Complete Second Season.',
 		seasonOnly: true
 	}
 ];

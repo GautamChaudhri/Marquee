@@ -48,6 +48,8 @@ class TextProfileSettings:
     allow_tagline: bool = False
     allow_billing: bool = False
     allow_season: bool = False
+    allow_season_title: bool = False
+    allow_season_edition: bool = False
     max_residual_boxes: int = 0
     max_residual_area_fraction: float = 0.04
     require_title: bool = True
@@ -101,6 +103,12 @@ def _builtin_profiles(scope: str) -> dict[str, TextProfile]:
                     require_title=False,
                 ),
             ),
+            "title_optional": TextProfile(
+                id="title_optional",
+                name="Title Optional",
+                builtin=True,
+                settings=TextProfileSettings(mode="custom", require_title=False),
+            ),
         }
     elif scope == "season":
         return {
@@ -120,6 +128,31 @@ def _builtin_profiles(scope: str) -> dict[str, TextProfile]:
                 name="Title Only",
                 builtin=True,
                 settings=TextProfileSettings(mode="title_only"),
+            ),
+            "title_season_and_name": TextProfile(
+                id="title_season_and_name",
+                name="Title, Season and Name",
+                builtin=True,
+                settings=TextProfileSettings(
+                    mode="custom",
+                    allow_title=True,
+                    allow_season=True,
+                    allow_season_title=True,
+                    require_title=False,
+                ),
+            ),
+            "all_season_text": TextProfile(
+                id="all_season_text",
+                name="All Season Text",
+                builtin=True,
+                settings=TextProfileSettings(
+                    mode="custom",
+                    allow_title=True,
+                    allow_season=True,
+                    allow_season_title=True,
+                    allow_season_edition=True,
+                    require_title=False,
+                ),
             ),
             "textless": TextProfile(
                 id="textless",
@@ -161,6 +194,8 @@ def settings_from_dict(data: dict) -> TextProfileSettings:
         allow_tagline=bool(data.get("allow_tagline", defaults.allow_tagline)),
         allow_billing=bool(data.get("allow_billing", defaults.allow_billing)),
         allow_season=bool(data.get("allow_season", defaults.allow_season)),
+        allow_season_title=bool(data.get("allow_season_title", defaults.allow_season_title)),
+        allow_season_edition=bool(data.get("allow_season_edition", defaults.allow_season_edition)),
         max_residual_boxes=boxes,
         max_residual_area_fraction=area,
         require_title=bool(data.get("require_title", defaults.require_title)),
@@ -409,6 +444,7 @@ class OcrGateContext:
     profile: TextProfile | None = None
     scope: str = "movie"
     season_number: int | None = None
+    season_title: str | None = None
 
     @classmethod
     def from_movie(cls, movie) -> OcrGateContext:
@@ -442,6 +478,7 @@ class OcrGateContext:
             profile=get_active_profile("season", getattr(series, "season_text_profile_id", None)),
             scope="season",
             season_number=season.season_number,
+            season_title=getattr(season, "name", None),
         )
 
     @classmethod

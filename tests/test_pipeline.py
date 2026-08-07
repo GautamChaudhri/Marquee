@@ -357,6 +357,30 @@ def test_ocr_rejects_no_text_per_image(
     assert result.title_bbox is None
 
 
+def test_ocr_accepts_no_text_when_custom_profile_makes_title_optional(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    image_path = tmp_path / "blank.jpg"
+    Image.new("RGB", (500, 750), color="black").save(image_path)
+
+    class EmptyOCR:
+        def predict(self, _image):
+            return []
+
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", EmptyOCR())
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+    result = ocr_filter._process_image(
+        str(image_path),
+        {"blank"},
+        set(),
+        extras={"profile": {"mode": "custom", "require_title": False}},
+    )
+
+    assert result.accepted
+    assert result.reason is None
+
+
 def test_ocr_rejects_text_without_title_match(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1251,6 +1275,130 @@ def _run_ocr_with_boxes(
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
     return ocr_filter._process_image(str(image_path))
+
+
+def test_ocr_season_profile_allows_written_season_and_marks_it_allowed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    image_path = tmp_path / "season-five.jpg"
+    Image.new("RGB", (500, 750), color="navy").save(image_path)
+    monkeypatch.setattr(
+        ocr_filter,
+        "_worker_ocr",
+        _fake_ocr_with_boxes(
+            [
+                _ocr_box("INCEPTION", 80, 420, 380, 480),
+                _ocr_box("SEASON", 80, 540, 220, 590),
+                _ocr_box("FIVE", 235, 540, 360, 590),
+            ]
+        ),
+    )
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", False)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+
+    result = ocr_filter._process_image(
+        str(image_path),
+        {"inception"},
+        set(),
+        title_text="Inception",
+        extras={
+            "profile": {
+                "mode": "custom",
+                "allow_title": True,
+                "allow_season": True,
+                "max_residual_boxes": 0,
+                "max_residual_area_fraction": 0.04,
+                "require_title": False,
+            },
+            "profile_id": "title_season_and_name",
+            "profile_name": "Title, Season and Name",
+            "season_number": 5,
+        },
+    )
+
+    assert result.accepted
+    assert result.diagnostics["profile"] == {
+        "id": "title_season_and_name",
+        "name": "Title, Season and Name",
+        "scope": None,
+        "settings_fingerprint": result.diagnostics["profile"]["settings_fingerprint"],
+    }
+    season_boxes = [
+        box for box in result.diagnostics["detected_boxes"] if box["text"] in {"SEASON", "FIVE"}
+    ]
+    assert {box["category"] for box in season_boxes} == {"season"}
+    assert all(box["is_significant"] for box in season_boxes)
+    assert not any(box["counts_toward_rejection"] for box in season_boxes)
+
+
+def test_ocr_season_semantics_survive_overlapping_multi_pass_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    image_path = tmp_path / "season-five-multipass.jpg"
+    Image.new("RGB", (500, 750), color="navy").save(image_path)
+
+    def detected(text: str, left: float, top: float, right: float, bottom: float):
+        return ocr_filter._DetectedBox(
+            text=text,
+            confidence=0.96,
+            bbox=tuple(tuple(point) for point in _ocr_poly(left, top, right, bottom)),
+        )
+
+    passes = iter(
+        [
+            [
+                detected("30ROCK", 120, 560, 380, 610),
+                detected("SEASON FIVE", 155, 680, 355, 740),
+            ],
+            [],
+            [
+                detected("SEASON", 160, 680, 275, 712),
+                # Its baseline differs enough to defeat the old greedy line group;
+                # spatial overlap with the full phrase must still preserve meaning.
+                detected("FIVE", 278, 726, 350, 750),
+            ],
+        ]
+    )
+    monkeypatch.setattr(ocr_filter, "_worker_ocr", object())
+    monkeypatch.setattr(ocr_filter, "_detect_boxes", lambda *_args, **_kwargs: next(passes))
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DETAIL_PASSES", True)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_ENHANCE_RETRY", False)
+
+    result = ocr_filter._process_image(
+        str(image_path),
+        {"30rock"},
+        set(),
+        title_text="30 Rock",
+        extras={
+            "profile": {
+                "mode": "custom",
+                "allow_title": True,
+                "allow_season": True,
+                "max_residual_boxes": 0,
+                "max_residual_area_fraction": 0.04,
+                "require_title": False,
+            },
+            "profile_id": "title_season_and_name",
+            "profile_name": "Title, Season and Name",
+            "profile_scope": "season",
+            "season_number": 5,
+        },
+    )
+
+    assert result.accepted
+    season_regions = [
+        region
+        for region in result.diagnostics["detected_boxes"]
+        if region["text"] in {"SEASON FIVE", "SEASON", "FIVE"}
+    ]
+    assert {region["category"] for region in season_regions} == {"season"}
+    assert not any(region["counts_toward_rejection"] for region in season_regions)
+    five = next(region for region in season_regions if region["text"] == "FIVE")
+    assert five["semantic_source"] == "overlap_with_phrase"
+    assert five["semantic_span_text"] == "season five"
+    assert result.diagnostics["decision"]["denied_significant_count"] == 0
 
 
 def test_ocr_default_is_strict_title_only(

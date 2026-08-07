@@ -4,6 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 import marquee.core.text_profiles as tp
+from marquee.core.jobs.internal_runner import _ocr_gate_context
 from marquee.core.text_profiles import (
     TextProfileError,
     create_profile,
@@ -19,6 +20,7 @@ from marquee.models import Movie, Series
 from marquee.pipeline.ocr_filter import (
     PosterTextFilter,
     _DetectedBox,
+    _season_category_evidence,
     classify_text_box,
 )
 
@@ -56,7 +58,7 @@ def _box(
 
 def test_builtins_always_present_without_file():
     profiles = load_profiles("movie")
-    assert set(profiles) == {"title_only", "textless"}
+    assert set(profiles) == {"title_only", "textless", "title_optional"}
     assert profiles["title_only"].builtin
     assert profiles["title_only"].is_default
     assert profiles["textless"].settings.mode == "textless"
@@ -65,6 +67,8 @@ def test_builtins_always_present_without_file():
     assert "title_and_season" in profiles_season
     assert profiles_season["title_and_season"].builtin
     assert profiles_season["title_and_season"].is_default
+    assert profiles_season["title_season_and_name"].settings.allow_season_title
+    assert profiles_season["all_season_text"].settings.allow_season_edition
 
 
 def test_create_update_delete_roundtrip():
@@ -157,7 +161,51 @@ def test_poster_text_filter_carries_profile_payload():
     profile = create_profile("movie", "Strict", {"mode": "custom", "allow_tagline": True})
     filt = PosterTextFilter("Dune", profile=profile)
     assert filt.profile_payload["allow_tagline"] is True
-    assert filt.task_extras() == {"profile": filt.profile_payload}
+    assert filt.task_extras() == {
+        "profile": filt.profile_payload,
+        "profile_id": "strict",
+        "profile_name": "Strict",
+        "profile_scope": "movie",
+    }
+
+
+def test_season_profile_snapshot_survives_later_default_changes():
+    from types import SimpleNamespace
+
+    snapshot = load_profiles("season")["title_season_and_name"].to_dict()
+    set_default_profile("season", "title_only")
+
+    context = _ocr_gate_context(
+        {
+            "text_gate": {
+                "scope": "season",
+                "profile_id": "title_only",
+                "profile_snapshot": snapshot,
+            }
+        },
+        SimpleNamespace(media_type="season", season_number=5),
+    )
+
+    assert context.profile is not None
+    assert context.profile.id == "title_season_and_name"
+    assert context.profile.gate_payload()["allow_season"] is True
+    assert context.profile.gate_payload()["allow_season_title"] is True
+
+
+def test_present_malformed_profile_snapshot_fails_instead_of_reloading():
+    from types import SimpleNamespace
+
+    with pytest.raises(ValueError, match="malformed profile snapshot"):
+        _ocr_gate_context(
+            {
+                "text_gate": {
+                    "scope": "season",
+                    "profile_id": "title_season_and_name",
+                    "profile_snapshot": {"id": "title_season_and_name"},
+                }
+            },
+            SimpleNamespace(media_type="season", season_number=5),
+        )
 
 
 # ── Season OCR Classification ─────────────────────────────────────────────
@@ -177,6 +225,210 @@ def test_season_ocr_classification():
         )
         == "season"
     )
+
+
+@pytest.mark.parametrize("text", ["SEASON FIVE", "SEASONFIVE", "FIVE SEASON", "BOOK V"])
+def test_expected_written_season_number_classifies_as_season(text: str):
+    assert (
+        classify_text_box(
+            _box(text),
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+            season_number=5,
+        )
+        == "season"
+    )
+
+
+def test_split_expected_season_phrase_marks_both_fragments_as_season():
+    designator = _box("SEASON", left=10, right=110)
+    number = _box("FIVE", left=120, right=210)
+    number_evidence, _title_evidence, _edition_evidence = _season_category_evidence(
+        [designator, number],
+        image_height=750,
+        season_number=5,
+        season_title=None,
+    )
+    for box in (designator, number):
+        assert (
+            classify_text_box(
+                box,
+                image_w=500,
+                image_h=750,
+                title_box=None,
+                title_tokens=set(),
+                director_tokens=set(),
+                season_number=5,
+                season_number_ids=number_evidence,
+            )
+            == "season"
+        )
+
+
+def test_stacked_expected_season_phrase_marks_both_fragments_as_season():
+    designator = _box("SEASON", left=80, right=220, top=500, bottom=540)
+    number = _box("FIVE", left=105, right=195, top=555, bottom=595)
+    number_evidence, _title_evidence, _edition_evidence = _season_category_evidence(
+        [designator, number],
+        image_width=500,
+        image_height=750,
+        season_number=5,
+        season_title=None,
+    )
+    assert {("season", designator.bbox), ("five", number.bbox)} <= number_evidence
+
+
+@pytest.mark.parametrize(
+    ("number", "text"),
+    [(21, "SEASON TWENTY ONE"), (32, "THIRTY SECOND SEASON"), (25, "BOOK XXV")],
+)
+def test_written_and_roman_season_numbers_above_twenty(number: int, text: str):
+    assert (
+        classify_text_box(
+            _box(text),
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+            season_number=number,
+        )
+        == "season"
+    )
+
+
+@pytest.mark.parametrize("text", ["SEASON", "FIVE", "V"])
+def test_isolated_expected_season_fragment_is_not_sufficient(text: str):
+    assert (
+        classify_text_box(
+            _box(text),
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+            season_number=5,
+        )
+        != "season"
+    )
+
+
+def test_distant_expected_number_is_not_absorbed_by_another_season_phrase():
+    phrase = _box("SEASON FIVE", left=20, right=220, top=80, bottom=120)
+    distant = _box("FIVE", left=350, right=430, top=680, bottom=720)
+    number_evidence, _title_evidence, _edition_evidence = _season_category_evidence(
+        [phrase, distant],
+        image_width=500,
+        image_height=750,
+        season_number=5,
+        season_title=None,
+    )
+    assert ("season five", phrase.bbox) in number_evidence
+    assert ("five", distant.bbox) not in number_evidence
+
+
+def test_wrong_written_season_number_is_not_allowed_as_season_text():
+    assert (
+        classify_text_box(
+            _box("SEASON SIX"),
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+            season_number=5,
+        )
+        != "season"
+    )
+
+
+def test_official_season_name_and_complete_edition_evidence():
+    named = _box("BOOK ONE: WATER", top=100, bottom=140)
+    edition = _box("THE COMPLETE SECOND SEASON", top=200, bottom=240)
+    number_evidence, title_evidence, edition_evidence = _season_category_evidence(
+        [named, edition],
+        image_height=750,
+        season_number=2,
+        season_title="Book One: Water",
+    )
+    assert (
+        classify_text_box(
+            named,
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+            season_number=2,
+            season_number_ids=number_evidence,
+            season_title_ids=title_evidence,
+            season_edition_ids=edition_evidence,
+        )
+        == "season_title"
+    )
+    assert (
+        classify_text_box(
+            edition,
+            image_w=500,
+            image_h=750,
+            title_box=None,
+            title_tokens=set(),
+            director_tokens=set(),
+            season_number=2,
+            season_number_ids=number_evidence,
+            season_title_ids=title_evidence,
+            season_edition_ids=edition_evidence,
+        )
+        == "season_edition"
+    )
+
+
+def test_split_name_and_edition_preserve_profile_category_boundaries():
+    book = _box("BOOK ONE", left=10, right=120, top=100, bottom=140)
+    water = _box("WATER", left=130, right=220, top=100, bottom=140)
+    complete = _box("COMPLETE", left=10, right=110, top=220, bottom=260)
+    second_season = _box("SECOND SEASON", left=120, right=280, top=220, bottom=260)
+    number_evidence, title_evidence, edition_evidence = _season_category_evidence(
+        [book, water, complete, second_season],
+        image_width=500,
+        image_height=750,
+        season_number=1,
+        season_title="Book One: Water",
+    )
+    assert ("book one", book.bbox) in number_evidence
+    assert ("book one", book.bbox) not in title_evidence
+    assert ("water", water.bbox) in title_evidence
+
+    # Re-evaluate the packaging pair for season two: both pieces are governed by
+    # the edition toggle, even though SECOND SEASON is valid numbering by itself.
+    number_evidence, _title_evidence, edition_evidence = _season_category_evidence(
+        [complete, second_season],
+        image_width=500,
+        image_height=750,
+        season_number=2,
+        season_title=None,
+    )
+    assert not number_evidence
+    assert {("complete", complete.bbox), ("second season", second_season.bbox)} <= edition_evidence
+
+
+def test_generic_official_season_name_stays_under_season_toggle():
+    generic = _box("SEASON FIVE")
+    number_evidence, title_evidence, _edition_evidence = _season_category_evidence(
+        [generic],
+        image_width=500,
+        image_height=750,
+        season_number=5,
+        season_title="Season Five",
+    )
+    assert ("season five", generic.bbox) in number_evidence
+    assert not title_evidence
+
+
+def test_legacy_season_patterns_without_expected_number():
 
     box_s01 = _box("s01")
     assert (
@@ -212,7 +464,11 @@ def test_season_ocr_classification():
 async def test_api_crud_and_default(client: AsyncClient):
     listed = (await client.get("/api/text-profiles")).json()
     assert listed["scopes"]["movie"]["default_id"] == "title_only"
-    assert {p["id"] for p in listed["scopes"]["movie"]["profiles"]} == {"title_only", "textless"}
+    assert {p["id"] for p in listed["scopes"]["movie"]["profiles"]} == {
+        "title_only",
+        "textless",
+        "title_optional",
+    }
 
     created = await client.post(
         "/api/text-profiles/movie",

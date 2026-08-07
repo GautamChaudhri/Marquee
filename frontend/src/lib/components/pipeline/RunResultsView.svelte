@@ -17,6 +17,7 @@
 		ocrConfidenceLabel,
 		ocrInspectorPanel,
 		ocrRegionLabel,
+		ocrSemanticSourceLabel,
 		rejectionTag
 	} from '$lib/pipeline/ocr-display';
 	import { flatDisplayRanks } from '$lib/pipeline/rank-display';
@@ -883,6 +884,9 @@
 						<span class="ocr-evidence-state"
 							>{evidence.title_matched ? 'Title matched' : 'Title not matched'}</span
 						>
+						{#if evidence.profile?.name}
+							<span class="ocr-evidence-summary">Profile: {evidence.profile.name}</span>
+						{/if}
 					</div>
 					<div class="ocr-transcript">
 						<span class="ocr-evidence-label">OCR read</span>
@@ -894,12 +898,16 @@
 							<ul>
 								{#each evidence.regions as region, index (`${region.text}:${index}`)}
 									{@const confidence = ocrConfidenceLabel(region.confidence)}
+									{@const semanticSource = ocrSemanticSourceLabel(region)}
 									<li>
 										<span class="ocr-region-kind">{ocrRegionLabel(region)}</span>
 										<code>{region.text}</code>
 										{#if confidence}<span class="ocr-confidence mono">{confidence}</span>{/if}
-										{#if region.is_significant}
+										{#if semanticSource}<span class="ocr-semantic-source">{semanticSource}</span>{/if}
+										{#if region.counts_toward_rejection}
 											<span class="ocr-significant">Counts toward rejection</span>
+										{:else if region.is_significant && region.counts_toward_rejection === false}
+											<span class="ocr-allowed">Allowed by profile</span>
 										{/if}
 									</li>
 								{/each}
@@ -1509,7 +1517,7 @@
 	}
 	.ocr-regions li {
 		display: grid;
-		grid-template-columns: minmax(80px, 110px) minmax(0, 1fr) auto auto;
+		grid-template-columns: minmax(80px, 110px) minmax(0, 1fr) auto auto auto;
 		align-items: baseline;
 		gap: 7px;
 		padding: 5px 7px;
@@ -1532,8 +1540,21 @@
 		color: var(--faint);
 		font-size: 10px;
 	}
+	.ocr-semantic-source {
+		max-width: 180px;
+		overflow: hidden;
+		color: var(--accent);
+		font-size: 10px;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	.ocr-significant {
 		color: var(--warn);
+		font-size: 10px;
+		white-space: nowrap;
+	}
+	.ocr-allowed {
+		color: var(--good);
 		font-size: 10px;
 		white-space: nowrap;
 	}
@@ -1547,7 +1568,11 @@
 		.ocr-regions li {
 			grid-template-columns: minmax(76px, 100px) minmax(0, 1fr) auto;
 		}
-		.ocr-significant {
+		.ocr-semantic-source {
+			grid-column: 2 / -1;
+		}
+		.ocr-significant,
+		.ocr-allowed {
 			grid-column: 2 / -1;
 		}
 	}

@@ -46,6 +46,7 @@ async def _seed_run(
     snapshot: dict[str, object] | None = None,
     valid_candidate_owner: bool = True,
     media_type: str = "movie",
+    candidate_role: str = "rejected_candidate",
 ) -> str:
     movie = None
     series = None
@@ -140,11 +141,10 @@ async def _seed_run(
         size_bytes=len(image),
         checksum=sha256(image).hexdigest(),
         artifact_metadata={
-            "family": (
-                "poster_pipeline_candidate" if valid_candidate_owner else "unrelated_evidence"
-            ),
+            "family": "poster_pipeline" if valid_candidate_owner else "unrelated_evidence",
+            "role": candidate_role,
             "run_id": run_id,
-            "orig_filename": "clean.jpg",
+            "candidate_reference": "clean.jpg",
         },
     )
     db.add(candidate_artifact)
@@ -177,6 +177,18 @@ async def _seed_run(
             }
         ],
     }
+    image_identity = {
+        "reference": "clean.jpg",
+        "artifact_id": candidate_artifact.id,
+        "artifact_storage_key": candidate_artifact.storage_key,
+        "artifact_checksum": candidate_artifact.checksum,
+    }
+    if candidate_role == "rejected_candidate":
+        archive["review_evidence"] = {
+            "candidates": [{**image_identity, "objective_eligible": False}]
+        }
+    else:
+        archive["review"] = {"survivors": [{**image_identity, "objective_eligible": True}]}
     archive_bytes = json.dumps(archive, allow_nan=False).encode()
     archive_key = f"test-artifacts/{job_id}/pipeline-run.json"
     archive_path = Path(settings.DATA_DIR) / archive_key
@@ -252,7 +264,7 @@ async def test_capture_reads_canonical_archive_and_candidate_artifact(client, db
 async def test_capture_keeps_each_poster_kind_in_its_own_analysis_folder(
     client, db, media_type, capture_folder
 ):
-    run_id = await _seed_run(db, media_type=media_type)
+    run_id = await _seed_run(db, media_type=media_type, candidate_role="review_candidate")
 
     response = await client.post(
         "/api/dev/ocr-labels/false-acceptance",
@@ -287,7 +299,7 @@ async def test_capture_rejects_archive_without_complete_ocr_snapshot(client, db)
 
 @pytest.mark.asyncio
 async def test_capture_does_not_read_unowned_candidate_artifact(client, db):
-    run_id = await _seed_run(db, valid_candidate_owner=False)
+    run_id = await _seed_run(db, valid_candidate_owner=False, candidate_role="review_candidate")
     response = await client.post(
         "/api/dev/ocr-labels/false-acceptance",
         json={"run_id": run_id, "orig_filename": "clean.jpg"},
@@ -322,3 +334,62 @@ async def test_list_and_clear_canonical_captures(client, db):
     cleared = await client.post("/api/dev/ocr-labels/clear")
     assert cleared.status_code == 200
     assert cleared.json()["deleted_capture_dirs"] == 1
+
+
+def test_replay_capture_reclassifies_orphaned_multi_pass_season_word(tmp_path: Path):
+    capture_dir = tmp_path / "season-posters" / "30-rock" / "false_rejection" / "candidate"
+    capture_dir.mkdir(parents=True)
+
+    def region(text: str, bbox: list[list[float]], category: str) -> dict[str, object]:
+        return {
+            "text": text,
+            "confidence": 0.96,
+            "bbox": bbox,
+            "geometry_valid": True,
+            "category": category,
+            "is_significant": True,
+        }
+
+    payload = {
+        "label_kind": "false_rejection",
+        "subject": {"media_type": "season", "season_number": 5},
+        "ocr": {
+            "trace": {
+                "image_size": {"width": 500, "height": 750},
+                "season_context": {"number": 5, "title": None},
+                "decision": {
+                    "mode": "custom",
+                    "allow_map": {"season": True, "billing": False, "other": False},
+                    "max_residual_boxes": 0,
+                    "max_residual_area_fraction": 0.04,
+                },
+                "detected_boxes": [
+                    region(
+                        "SEASON FIVE",
+                        [[155, 680], [355, 680], [355, 740], [155, 740]],
+                        "season",
+                    ),
+                    region(
+                        "SEASON",
+                        [[160, 680], [275, 680], [275, 712], [160, 712]],
+                        "other",
+                    ),
+                    region(
+                        "FIVE",
+                        [[278, 726], [350, 726], [350, 750], [278, 750]],
+                        "billing",
+                    ),
+                ],
+            }
+        },
+    }
+    (capture_dir / "capture.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    replay = ocr_label_capture.replay_ocr_label_capture(capture_dir)
+
+    assert replay["replayed_acceptance"] is True
+    assert replay["remaining_denied_count"] == 0
+    assert {change["text"] for change in replay["changed_regions"]} == {"SEASON", "FIVE"}
+    corpus = ocr_label_capture.replay_ocr_label_corpus(tmp_path)
+    assert corpus["errors"] == []
+    assert len(corpus["captures"]) == 1

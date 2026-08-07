@@ -265,19 +265,26 @@ def test_build_results_payload_exposes_compact_ocr_evidence_and_error_details():
                 "text": "DIE HARD",
                 "confidence": 0.98,
                 "category": "title",
+                "semantic_source": None,
+                "semantic_span_text": None,
                 "is_title": True,
                 "is_title_fragment": False,
                 "is_significant": False,
+                "counts_toward_rejection": False,
             },
             {
                 "text": "ONLY IN THEATERS",
                 "confidence": 0.84,
                 "category": "tagline",
+                "semantic_source": None,
+                "semantic_span_text": None,
                 "is_title": False,
                 "is_title_fragment": False,
                 "is_significant": True,
+                "counts_toward_rejection": True,
             },
         ],
+        ocr_text_profile={"id": "title_season_and_name", "name": "Title, Season and Name"},
     )
     archive["candidates"].append(
         {
@@ -322,6 +329,7 @@ def test_build_results_payload_exposes_compact_ocr_evidence_and_error_details():
         "detected_text": "DIE HARD ONLY IN THEATERS",
         "title_matched": True,
         "regions": by_name["c.jpg"]["ocr_display_regions"],
+        "profile": by_name["c.jpg"]["ocr_text_profile"],
         "error": None,
     }
 
@@ -368,9 +376,12 @@ def test_build_results_payload_uses_legacy_ocr_residuals_when_compact_regions_ar
             "text": "TAGLINE ONLY",
             "confidence": 0.74,
             "category": None,
+            "semantic_source": None,
+            "semantic_span_text": None,
             "is_title": False,
             "is_title_fragment": False,
             "is_significant": False,
+            "counts_toward_rejection": None,
         }
     ]
 
@@ -387,6 +398,7 @@ def test_rejected_ocr_candidates_archive_compact_display_regions():
         reason="text_heavy",
         title_bbox=None,
         diagnostics={
+            "profile": {"id": "title_season_and_name", "name": "Title, Season and Name"},
             "detected_boxes": [
                 {
                     "text": "EXAMPLE TITLE",
@@ -395,6 +407,7 @@ def test_rejected_ocr_candidates_archive_compact_display_regions():
                     "is_title": True,
                     "is_title_fragment": False,
                     "is_significant": False,
+                    "counts_toward_rejection": False,
                     "bbox": [[0, 0]],
                 },
                 {
@@ -404,9 +417,10 @@ def test_rejected_ocr_candidates_archive_compact_display_regions():
                     "is_title": False,
                     "is_title_fragment": False,
                     "is_significant": True,
+                    "counts_toward_rejection": False,
                     "bbox": [[0, 0]],
                 },
-            ]
+            ],
         },
     )
 
@@ -417,19 +431,29 @@ def test_rejected_ocr_candidates_archive_compact_display_regions():
             "text": "EXAMPLE TITLE",
             "confidence": 0.97,
             "category": "title",
+            "semantic_source": None,
+            "semantic_span_text": None,
             "is_title": True,
             "is_title_fragment": False,
             "is_significant": False,
+            "counts_toward_rejection": False,
         },
         {
             "text": "ONLY IN THEATERS",
             "confidence": 0.81,
             "category": "tagline",
+            "semantic_source": None,
+            "semantic_span_text": None,
             "is_title": False,
             "is_title_fragment": False,
             "is_significant": True,
+            "counts_toward_rejection": False,
         },
     ]
+    assert record.ocr_text_profile == {
+        "id": "title_season_and_name",
+        "name": "Title, Season and Name",
+    }
 
 
 def test_build_results_payload_with_stacks():

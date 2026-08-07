@@ -14,6 +14,8 @@ export interface TextProfileSettings {
 	allow_tagline: boolean;
 	allow_billing: boolean;
 	allow_season?: boolean;
+	allow_season_title?: boolean;
+	allow_season_edition?: boolean;
 	max_residual_boxes: number;
 	max_residual_area_fraction: number;
 	require_title: boolean;
@@ -57,6 +59,8 @@ export const DEFAULT_PROFILE_SETTINGS: TextProfileSettings = {
 	allow_tagline: false,
 	allow_billing: false,
 	allow_season: false,
+	allow_season_title: false,
+	allow_season_edition: false,
 	max_residual_boxes: 0,
 	max_residual_area_fraction: 0.04,
 	require_title: true

@@ -53,12 +53,22 @@ class MovieDetails:
 
 
 @dataclass
+class TVSeasonDetails:
+    """TMDB identity and display name for one TV season."""
+
+    season_number: int
+    tmdb_id: int | None = None
+    name: str | None = None
+
+
+@dataclass
 class TVDetails:
     """TMDB TV show metadata used to classify poster text."""
 
     director: str | None = None
     production_companies: list[str] = field(default_factory=list)
     tagline: str | None = None
+    seasons: list[TVSeasonDetails] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +344,23 @@ class TMDBClient:
                     companies.append(name)
 
         tagline = str(data.get("tagline") or "").strip() or None
+        seasons: list[TVSeasonDetails] = []
+        for item in data.get("seasons", []):
+            if not isinstance(item, dict) or not isinstance(item.get("season_number"), int):
+                continue
+            raw_id = item.get("id")
+            seasons.append(
+                TVSeasonDetails(
+                    season_number=item["season_number"],
+                    tmdb_id=raw_id if isinstance(raw_id, int) else None,
+                    name=str(item.get("name") or "").strip() or None,
+                )
+            )
         return TVDetails(
             director=director,
             production_companies=companies,
             tagline=tagline,
+            seasons=seasons,
         )
 
     # ── ID Resolution ────────────────────────────────────────────────

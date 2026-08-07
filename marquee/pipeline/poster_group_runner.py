@@ -456,6 +456,8 @@ def _ocr_union(
             director=ctx.member.ocr_gate.director,
             studios=ctx.member.ocr_gate.studios,
             tagline=ctx.member.ocr_gate.tagline,
+            season_number=ctx.member.ocr_gate.season_number,
+            season_title=ctx.member.ocr_gate.season_title,
             profile=ctx.member.ocr_gate.profile,
         )
         extras = tokens.task_extras()

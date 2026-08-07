@@ -14,6 +14,8 @@ const REGION_LABELS: Record<string, string> = {
 	other: 'Other text',
 	rating: 'Rating',
 	season: 'Season',
+	season_edition: 'Season edition',
+	season_title: 'Season name',
 	studio: 'Studio',
 	tagline: 'Tagline',
 	title: 'Title'
@@ -57,4 +59,25 @@ export function ocrRegionLabel(region: OcrEvidenceRegion): string {
 export function ocrConfidenceLabel(confidence: number | null): string | null {
 	if (confidence == null || !Number.isFinite(confidence)) return null;
 	return `${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
+}
+
+export function ocrSemanticSourceLabel(region: OcrEvidenceRegion): string | null {
+	if (!region.semantic_source) return null;
+	const span = region.semantic_span_text?.toUpperCase();
+	switch (region.semantic_source) {
+		case 'direct_phrase':
+			return span ? `Matched ${span}` : 'Matched season phrase';
+		case 'paired_same_line':
+			return span ? `Paired as ${span}` : 'Paired on the same line';
+		case 'paired_stacked':
+			return span ? `Paired as ${span}` : 'Paired vertically';
+		case 'overlap_with_phrase':
+			return span ? `Overlaps ${span}` : 'Overlaps season phrase';
+		case 'same_line_with_phrase':
+			return span ? `Paired with ${span}` : 'Paired with season phrase';
+		case 'stacked_with_phrase':
+			return span ? `Stacked with ${span}` : 'Stacked with season phrase';
+		default:
+			return 'Matched by season context';
+	}
 }

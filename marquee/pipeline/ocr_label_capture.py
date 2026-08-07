@@ -8,12 +8,13 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from marquee.api.results import find_candidate
 from marquee.core.runtime_settings import effective_settings as settings
 from marquee.models import PipelineRun
 from marquee.pipeline.runner import _sanitise_filename
+from marquee.pipeline.types import BoundingBox
 
 LabelKind = Literal["false_rejection", "false_acceptance"]
 
@@ -292,6 +293,148 @@ def list_ocr_labels(run_id: str) -> dict[str, object]:
     }
 
 
+def replay_ocr_label_capture(capture_path: Path) -> dict[str, object]:
+    """Replay season semantics from a saved capture without loading PaddleOCR."""
+    from marquee.pipeline.ocr_filter import (  # noqa: PLC0415 - avoid runner import cycle
+        _DetectedBox,
+        _normalise,
+        _polygon_area,
+        _season_semantic_evidence,
+    )
+
+    source = capture_path / "capture.json" if capture_path.is_dir() else capture_path
+    loaded = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise ValueError("OCR label capture root must be an object")
+    payload: dict[str, object] = loaded
+
+    def object_dict(value: object) -> dict[str, object]:
+        return cast("dict[str, object]", value) if isinstance(value, dict) else {}
+
+    def int_value(value: object, default: int) -> int:
+        return (
+            int(value)
+            if isinstance(value, int | float | str) and not isinstance(value, bool)
+            else default
+        )
+
+    def float_value(value: object, default: float) -> float:
+        return (
+            float(value)
+            if isinstance(value, int | float | str) and not isinstance(value, bool)
+            else default
+        )
+
+    subject = object_dict(payload.get("subject"))
+    ocr = object_dict(payload.get("ocr"))
+    trace = object_dict(ocr.get("trace"))
+    size = object_dict(trace.get("image_size"))
+    season_context = object_dict(trace.get("season_context"))
+    raw_boxes_value = trace.get("detected_boxes")
+    raw_boxes = raw_boxes_value if isinstance(raw_boxes_value, list) else []
+    image_width = int_value(size.get("width"), 1)
+    image_height = int_value(size.get("height"), 1)
+    season_number = season_context.get("number", subject.get("season_number"))
+    season_number = season_number if isinstance(season_number, int) else None
+    season_title = season_context.get("title")
+    season_title = season_title if isinstance(season_title, str) else None
+
+    boxes: list[_DetectedBox] = []
+    raw_by_key: dict[tuple[str, BoundingBox], dict[str, object]] = {}
+    for raw_value in raw_boxes:
+        raw = object_dict(raw_value)
+        text = raw.get("text")
+        if not isinstance(text, str):
+            continue
+        points = raw.get("bbox")
+        if not isinstance(points, list) or len(points) != 4:
+            continue
+        try:
+            bbox = cast(
+                "BoundingBox",
+                tuple((float(point[0]), float(point[1])) for point in points),
+            )
+        except (TypeError, ValueError, IndexError):
+            continue
+        if len(bbox) != 4:
+            continue
+        box = _DetectedBox(
+            text=text,
+            confidence=float_value(raw.get("confidence"), 0.0),
+            bbox=bbox,
+            geometry_valid=bool(raw.get("geometry_valid", True)),
+        )
+        boxes.append(box)
+        raw_by_key[(_normalise(box.text), box.bbox)] = raw
+
+    evidence = _season_semantic_evidence(
+        boxes,
+        image_width=image_width,
+        image_height=image_height,
+        season_number=season_number,
+        season_title=season_title,
+    )
+    decision = object_dict(trace.get("decision"))
+    allow_map = object_dict(decision.get("allow_map"))
+    changed_regions: list[dict[str, object]] = []
+    denied_count = 0
+    denied_area = 0.0
+    image_area = float(image_width * image_height)
+    for box in boxes:
+        key = (_normalise(box.text), box.bbox)
+        raw = raw_by_key[key]
+        semantic = evidence.get(key)
+        previous_value = raw.get("category")
+        previous = previous_value if isinstance(previous_value, str) else "other"
+        category = semantic.category if semantic else previous
+        if semantic and category != previous:
+            changed_regions.append(
+                {
+                    "text": box.text,
+                    "from": previous,
+                    "to": category,
+                    "source": semantic.source,
+                    "span_text": semantic.span_text,
+                }
+            )
+        if raw.get("is_significant") and not bool(allow_map.get(category, False)):
+            denied_count += 1
+            denied_area += _polygon_area(box.bbox) / image_area if image_area > 0 else 0.0
+
+    max_boxes = int_value(decision.get("max_residual_boxes"), 0)
+    max_area = float_value(decision.get("max_residual_area_fraction"), 0.0)
+    return {
+        "capture": str(source),
+        "label_kind": payload.get("label_kind"),
+        "media_type": subject.get("media_type"),
+        "season_number": season_number,
+        "season_title": season_title,
+        "changed_regions": changed_regions,
+        "remaining_denied_count": denied_count,
+        "remaining_denied_area_fraction": denied_area,
+        "replayed_acceptance": (
+            decision.get("mode") == "custom"
+            and denied_count <= max_boxes
+            and denied_area <= max_area
+        ),
+    }
+
+
+def replay_ocr_label_corpus(root: Path | None = None) -> dict[str, object]:
+    """Replay every saved label capture and retain per-file failures in the report."""
+    source_root = root or (settings.data_dir_path / "debug" / "ocr-labels")
+    reports: list[dict[str, object]] = []
+    errors: list[dict[str, str]] = []
+    if not source_root.exists():
+        return {"root": str(source_root), "captures": reports, "errors": errors}
+    for capture_path in sorted(source_root.rglob("capture.json")):
+        try:
+            reports.append(replay_ocr_label_capture(capture_path))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            errors.append({"capture": str(capture_path), "error": f"{type(exc).__name__}: {exc}"})
+    return {"root": str(source_root), "captures": reports, "errors": errors}
+
+
 def _extract_log_lines(
     archive: dict[str, object],
     candidate: dict[str, object],
@@ -345,10 +488,14 @@ def _ocr_diagnostics(candidate: dict[str, object]) -> dict[str, object]:
 def _format_trace_lines(trace: dict[str, object]) -> list[str]:
     """Render the structured OCR trace as a human-readable per-box table + the
     accept/reject decision — this is the 'what OCR saw and did' an LLM reads."""
+
+    def mapping(value: object) -> dict[str, object]:
+        return cast("dict[str, object]", value) if isinstance(value, dict) else {}
+
     lines: list[str] = ["# --- OCR trace (every detected box + the gate decision) ---"]
-    size = trace.get("image_size") or {}
+    size = mapping(trace.get("image_size"))
     passes = trace.get("passes_run") or []
-    retry = trace.get("enhance_retry") or {}
+    retry = mapping(trace.get("enhance_retry"))
     lines.append(
         "image_size={}x{} | passes={} | enhance_retry: triggered={} recovered_text={}".format(
             size.get("width"),
@@ -356,6 +503,18 @@ def _format_trace_lines(trace: dict[str, object]) -> list[str]:
             ",".join(passes) if isinstance(passes, list) else passes,
             retry.get("triggered"),
             retry.get("recovered_text"),
+        )
+    )
+    profile = mapping(trace.get("profile"))
+    season_context = mapping(trace.get("season_context"))
+    lines.append(
+        "profile: id={} name={!r} scope={} fingerprint={} | season: number={} title={!r}".format(
+            profile.get("id"),
+            profile.get("name"),
+            profile.get("scope"),
+            profile.get("settings_fingerprint"),
+            season_context.get("number"),
+            season_context.get("title"),
         )
     )
     title = trace.get("title")
@@ -368,10 +527,10 @@ def _format_trace_lines(trace: dict[str, object]) -> list[str]:
     else:
         lines.append("title: <none matched>")
 
-    decision = trace.get("decision") or {}
+    decision = mapping(trace.get("decision"))
     lines.append(
         "decision: mode={} accepted={} reason={} has_title={} require_title={} "
-        "significant_residual={}/{} significant_area={}/{}".format(
+        "significant_residual={}/{} significant_area={}/{} allowed={} denied={}".format(
             decision.get("mode"),
             decision.get("accepted"),
             decision.get("reason"),
@@ -381,12 +540,17 @@ def _format_trace_lines(trace: dict[str, object]) -> list[str]:
             decision.get("max_residual_boxes"),
             decision.get("significant_area_fraction"),
             decision.get("max_residual_area_fraction"),
+            decision.get("allowed_significant_count"),
+            decision.get("denied_significant_count"),
         )
     )
 
     boxes = trace.get("detected_boxes") or []
     lines.append(f"detected_boxes ({len(boxes) if isinstance(boxes, list) else 0}):")
-    for box in boxes if isinstance(boxes, list) else []:
+    for box_value in boxes if isinstance(boxes, list) else []:
+        box = mapping(box_value)
+        if not box:
+            continue
         flags = []
         if box.get("is_title"):
             flags.append("TITLE")
@@ -398,10 +562,12 @@ def _format_trace_lines(trace: dict[str, object]) -> list[str]:
             flags.append("prox-discounted")
         conf = box.get("confidence")
         lines.append(
-            "  [{}] conf={} cat={} {} text={!r} bbox={}".format(
+            "  [{}] conf={} cat={} semantic={} span={!r} {} text={!r} bbox={}".format(
                 box.get("pass"),
                 f"{conf:.2f}" if isinstance(conf, (int, float)) else conf,
                 box.get("category"),
+                box.get("semantic_source"),
+                box.get("semantic_span_text"),
                 " ".join(flags) if flags else "-",
                 box.get("text"),
                 box.get("bbox"),

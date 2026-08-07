@@ -244,12 +244,14 @@ async def test_text_gate_params_resolve_per_subject(db):
     )
     assert movie_gate["scope"] == "movie"
     assert movie_gate["director"] == "Fincher"
+    assert movie_gate["profile_snapshot"]["id"] == "title_only"
 
     series_gate = await _text_gate_params(
         db, PosterPipelineRequestV1(series_id=series.id, tmdb_id=59659, title="A Show"), "series"
     )
     assert series_gate["scope"] == "show"
     assert series_gate["director"] == "Creator"
+    assert series_gate["profile_snapshot"]["id"] == "title_only"
 
     # A season carries the *series* metadata — a season row has none of its own.
     season_gate = await _text_gate_params(
@@ -259,3 +261,5 @@ async def test_text_gate_params_resolve_per_subject(db):
     )
     assert season_gate["scope"] == "season"
     assert season_gate["director"] == "Creator"
+    assert season_gate["profile_snapshot"]["id"] == "title_season_and_name"
+    assert season_gate["profile_snapshot"]["settings"]["allow_season"] is True

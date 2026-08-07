@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
+import json
 import logging
 import multiprocessing
 import os
@@ -14,6 +16,7 @@ from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
@@ -142,6 +145,25 @@ class _DetectedBox:
     # like Interstellar's teaser are only readable through this pathway — but
     # the coordinates are unusable for geometry decisions.
     geometry_valid: bool = True
+
+
+@dataclass(frozen=True)
+class _SemanticEvidence:
+    """Why an OCR box belongs to an allowed season semantic span."""
+
+    category: str
+    source: str
+    span_text: str
+
+
+@dataclass(frozen=True)
+class _CustomTextDecision:
+    accepted: bool
+    allowed_boxes: tuple[OCRTextBox, ...]
+    denied_boxes: tuple[OCRTextBox, ...]
+    categories: dict[tuple[str, BoundingBox], str]
+    allowed_area_fraction: float
+    denied_area_fraction: float
 
 
 def _normalise(text: str) -> str:
@@ -584,8 +606,7 @@ def paddle_gpu_build() -> bool:
         from importlib.metadata import distributions
 
         return any(
-            (dist.metadata["Name"] or "").lower() == "paddlepaddle-gpu"
-            for dist in distributions()
+            (dist.metadata["Name"] or "").lower() == "paddlepaddle-gpu" for dist in distributions()
         )
     except Exception as exc:  # noqa: BLE001 - a metadata read must never 500 a page
         logger.debug("Could not read Paddle distribution metadata: %s", exc)
@@ -739,6 +760,8 @@ def effective_gate_knobs(profile: dict | None) -> dict:
             "tagline": bool(prof.get("allow_tagline", pipeline_settings.OCR_ALLOW_TAGLINE)),
             "billing": bool(prof.get("allow_billing", pipeline_settings.OCR_ALLOW_BILLING)),
             "season": bool(prof.get("allow_season", pipeline_settings.OCR_ALLOW_SEASON)),
+            "season_title": bool(prof.get("allow_season_title", False)),
+            "season_edition": bool(prof.get("allow_season_edition", False)),
         },
         "max_residual_boxes": int(
             prof.get("max_residual_boxes", pipeline_settings.OCR_MAX_RESIDUAL_BOXES)
@@ -769,8 +792,458 @@ _SEASON_PATTERNS = [
 ]
 
 
-def _is_season_text(text: str) -> bool:
-    return any(pattern.match(text) for pattern in _SEASON_PATTERNS)
+_CARDINALS = {
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+    13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+}
+_ORDINALS = {
+    0: "zeroth",
+    1: "first",
+    2: "second",
+    3: "third",
+    4: "fourth",
+    5: "fifth",
+    6: "sixth",
+    7: "seventh",
+    8: "eighth",
+    9: "ninth",
+    10: "tenth",
+    11: "eleventh",
+    12: "twelfth",
+    13: "thirteenth",
+    14: "fourteenth",
+    15: "fifteenth",
+    16: "sixteenth",
+    17: "seventeenth",
+    18: "eighteenth",
+    19: "nineteenth",
+    20: "twentieth",
+}
+_ROMAN_NUMERALS = (
+    "",
+    "i",
+    "ii",
+    "iii",
+    "iv",
+    "v",
+    "vi",
+    "vii",
+    "viii",
+    "ix",
+    "x",
+    "xi",
+    "xii",
+    "xiii",
+    "xiv",
+    "xv",
+    "xvi",
+    "xvii",
+    "xviii",
+    "xix",
+    "xx",
+)
+_SEASON_DESIGNATORS = {"season", "book", "part", "chapter", "volume", "vol"}
+_TENS = {
+    20: "twenty",
+    30: "thirty",
+    40: "forty",
+    50: "fifty",
+    60: "sixty",
+    70: "seventy",
+    80: "eighty",
+    90: "ninety",
+}
+_TENS_ORDINAL = {
+    20: "twentieth",
+    30: "thirtieth",
+    40: "fortieth",
+    50: "fiftieth",
+    60: "sixtieth",
+    70: "seventieth",
+    80: "eightieth",
+    90: "ninetieth",
+}
+
+
+def _ordinal_suffix(number: int) -> str:
+    if 10 <= number % 100 <= 20:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+
+
+def _cardinal_words(number: int) -> str | None:
+    """English cardinal form for realistic TV season numbers (0-999)."""
+    if number in _CARDINALS:
+        return _CARDINALS[number]
+    if not 0 <= number <= 999:
+        return None
+    if number < 100:
+        tens, remainder = divmod(number, 10)
+        prefix = _TENS.get(tens * 10)
+        return f"{prefix} {_CARDINALS[remainder]}" if prefix and remainder else prefix
+    hundreds, remainder = divmod(number, 100)
+    prefix = f"{_CARDINALS[hundreds]} hundred"
+    suffix = _cardinal_words(remainder) if remainder else None
+    return f"{prefix} {suffix}" if suffix else prefix
+
+
+def _ordinal_words(number: int) -> str | None:
+    """English ordinal form paired with :func:`_cardinal_words`."""
+    if number in _ORDINALS:
+        return _ORDINALS[number]
+    if not 0 <= number <= 999:
+        return None
+    if number < 100:
+        tens, remainder = divmod(number, 10)
+        if not remainder:
+            return _TENS_ORDINAL.get(tens * 10)
+        prefix = _TENS.get(tens * 10)
+        suffix = _ORDINALS.get(remainder)
+        return f"{prefix} {suffix}" if prefix and suffix else None
+    hundreds, remainder = divmod(number, 100)
+    prefix = f"{_CARDINALS[hundreds]} hundred"
+    if not remainder:
+        return f"{prefix}th"
+    suffix = _ordinal_words(remainder)
+    return f"{prefix} {suffix}" if suffix else None
+
+
+def _roman_numeral(number: int) -> str | None:
+    if not 0 < number <= 3999:
+        return None
+    values = (
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    )
+    remainder = number
+    parts: list[str] = []
+    for value, token in values:
+        count, remainder = divmod(remainder, value)
+        parts.extend([token] * count)
+    return "".join(parts)
+
+
+def _season_number_forms(season_number: int) -> set[str]:
+    forms = {str(season_number), f"{season_number}{_ordinal_suffix(season_number)}"}
+    cardinal = _cardinal_words(season_number)
+    ordinal = _ordinal_words(season_number)
+    if cardinal:
+        forms.add(cardinal)
+    if ordinal:
+        forms.add(ordinal)
+    roman = _roman_numeral(season_number)
+    if roman:
+        forms.add(roman)
+    return forms
+
+
+def _is_season_text(text: str, season_number: int | None = None) -> bool:
+    text = _normalise(text)
+    if season_number is None:
+        return any(pattern.match(text) for pattern in _SEASON_PATTERNS)
+
+    forms = _season_number_forms(season_number)
+    compact = _compact_text(text)
+    phrases = {
+        *(f"{designator} {form}" for designator in _SEASON_DESIGNATORS for form in forms),
+        *(f"{form} season" for form in forms),
+        f"s{season_number}",
+        f"s{season_number:02d}",
+    }
+    if text in phrases or compact in {_compact_text(phrase) for phrase in phrases}:
+        return True
+    return text in {"final season", "last season", "the final season", "the last season"}
+
+
+def _is_season_edition_text(text: str, season_number: int | None) -> bool:
+    if season_number is None:
+        return False
+    forms = _season_number_forms(season_number)
+    normalized = _normalise(text)
+    phrases = {
+        *(f"the complete {form} season" for form in forms),
+        *(f"complete {form} season" for form in forms),
+        *(f"the complete season {form}" for form in forms),
+        *(f"complete season {form}" for form in forms),
+    }
+    compact = _compact_text(normalized)
+    return normalized in phrases or compact in {_compact_text(phrase) for phrase in phrases}
+
+
+def _matches_season_title(text: str, season_title: str | None) -> bool:
+    expected = _compact_text(season_title or "")
+    actual = _compact_text(text)
+    if not expected or not actual:
+        return False
+    return actual == expected or difflib.SequenceMatcher(None, actual, expected).ratio() >= 0.82
+
+
+def _box_overlap_fraction(left: BoundingBox, right: BoundingBox) -> float:
+    """Intersection divided by the smaller box, useful for nested OCR passes."""
+    lx1, ly1, lx2, ly2 = _bbox_bounds(left)
+    rx1, ry1, rx2, ry2 = _bbox_bounds(right)
+    intersection = max(0.0, min(lx2, rx2) - max(lx1, rx1)) * max(0.0, min(ly2, ry2) - max(ly1, ry1))
+    smaller = min(
+        max(0.0, lx2 - lx1) * max(0.0, ly2 - ly1), max(0.0, rx2 - rx1) * max(0.0, ry2 - ry1)
+    )
+    return intersection / smaller if smaller > 0 else 0.0
+
+
+def _season_box_relation(
+    left: _DetectedBox,
+    right: _DetectedBox,
+    *,
+    image_width: int,
+    image_height: int,
+) -> str | None:
+    """Return a conservative spatial relation for two pieces of one phrase."""
+    if not left.geometry_valid or not right.geometry_valid:
+        return None
+    if _box_overlap_fraction(left.bbox, right.bbox) >= 0.25:
+        return "overlap"
+
+    lx1, ly1, lx2, ly2 = _bbox_bounds(left.bbox)
+    rx1, ry1, rx2, ry2 = _bbox_bounds(right.bbox)
+    left_height = max(1.0, ly2 - ly1)
+    right_height = max(1.0, ry2 - ry1)
+    left_width = max(1.0, lx2 - lx1)
+    right_width = max(1.0, rx2 - rx1)
+    lcx, lcy = _box_center(left)
+    rcx, rcy = _box_center(right)
+
+    horizontal_gap = max(0.0, max(lx1, rx1) - min(lx2, rx2))
+    same_line = abs(lcy - rcy) <= max(image_height * 0.025, max(left_height, right_height) * 1.25)
+    if same_line and horizontal_gap <= max(
+        image_width * 0.10, max(left_height, right_height) * 3.0
+    ):
+        return "same_line"
+
+    vertical_gap = max(0.0, max(ly1, ry1) - min(ly2, ry2))
+    centered = abs(lcx - rcx) <= max(left_width, right_width) * 0.45
+    if centered and vertical_gap <= max(image_height * 0.05, max(left_height, right_height) * 2.25):
+        return "stacked"
+    return None
+
+
+def _contiguous_tokens(fragment: str, span: str) -> bool:
+    fragment_tokens = _normalise(fragment).split()
+    span_tokens = _normalise(span).split()
+    if not fragment_tokens or len(fragment_tokens) > len(span_tokens):
+        return False
+    width = len(fragment_tokens)
+    return any(
+        span_tokens[index : index + width] == fragment_tokens
+        for index in range(len(span_tokens) - width + 1)
+    )
+
+
+def _season_semantic_category(
+    text: str, *, season_number: int | None, season_title: str | None
+) -> str | None:
+    # A database's official name is often just "Season 5". Keep ordinary numbering
+    # under the less restrictive season toggle; only additional title words become
+    # season-title evidence. Packaging phrases retain their explicit edition toggle.
+    if _is_season_text(text, season_number):
+        return "season"
+    if _is_season_edition_text(text, season_number):
+        return "season_edition"
+    if _matches_season_title(text, season_title):
+        return "season_title"
+    return None
+
+
+def _ordered_semantic_span(
+    members: tuple[_DetectedBox, ...],
+    *,
+    image_width: int,
+    image_height: int,
+) -> tuple[list[_DetectedBox], str] | None:
+    """Order a connected same-line or centered-stacked candidate span."""
+    if len(members) < 2:
+        return None
+    relations = [
+        _season_box_relation(left, right, image_width=image_width, image_height=image_height)
+        for left, right in combinations(members, 2)
+    ]
+    if not any(relations):
+        return None
+
+    centers = [_box_center(box) for box in members]
+    heights = [max(1.0, _bbox_height(box.bbox)) for box in members]
+    widths = [max(1.0, _bbox_width(box.bbox)) for box in members]
+    same_line = max(y for _, y in centers) - min(y for _, y in centers) <= max(
+        image_height * 0.025, max(heights) * 1.25
+    )
+    if same_line:
+        ordered = sorted(members, key=lambda box: _box_center(box)[0])
+        adjacent = [
+            _season_box_relation(left, right, image_width=image_width, image_height=image_height)
+            for left, right in zip(ordered, ordered[1:], strict=False)
+        ]
+        if all(relation in {"same_line", "overlap"} for relation in adjacent):
+            return ordered, "paired_same_line"
+
+    centered = max(x for x, _ in centers) - min(x for x, _ in centers) <= max(widths) * 0.45
+    if centered:
+        ordered = sorted(members, key=lambda box: _box_center(box)[1])
+        adjacent = [
+            _season_box_relation(top, bottom, image_width=image_width, image_height=image_height)
+            for top, bottom in zip(ordered, ordered[1:], strict=False)
+        ]
+        if all(relation in {"stacked", "overlap"} for relation in adjacent):
+            return ordered, "paired_stacked"
+    return None
+
+
+def _season_semantic_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    image_width: int,
+    image_height: int,
+    season_number: int | None,
+    season_title: str | None,
+) -> dict[tuple[str, BoundingBox], _SemanticEvidence]:
+    """Resolve season spans across full, split, stacked, and duplicate OCR reads."""
+    valid = [box for box in boxes if box.geometry_valid and _normalise(box.text)]
+    evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] = {}
+    spans: list[tuple[list[_DetectedBox], str, str, str]] = []
+
+    def key(box: _DetectedBox) -> tuple[str, BoundingBox]:
+        return _normalise(box.text), box.bbox
+
+    def record(members: list[_DetectedBox], category: str, source: str, span_text: str) -> None:
+        semantic = _SemanticEvidence(
+            category=category, source=source, span_text=_normalise(span_text)
+        )
+        # Edition packaging governs every member of its phrase. Generic numbering
+        # remains generic when it is also a fragment of a longer official title.
+        precedence = {"season_title": 1, "season": 2, "season_edition": 3}
+        for member in members:
+            current = evidence.get(key(member))
+            if current is None or precedence[semantic.category] > precedence[current.category]:
+                evidence[key(member)] = semantic
+        spans.append((members, category, source, span_text))
+
+    for box in valid:
+        category = _season_semantic_category(
+            box.text, season_number=season_number, season_title=season_title
+        )
+        if category:
+            record([box], category, "direct_phrase", box.text)
+
+    vocabulary = set(_SEASON_DESIGNATORS) | {"complete", "the", "final", "last"}
+    if season_number is not None:
+        vocabulary.update(
+            token
+            for form in _season_number_forms(season_number)
+            for token in _normalise(form).split()
+        )
+    vocabulary.update(_normalise(season_title or "").split())
+    semantic_candidates = [box for box in valid if set(_normalise(box.text).split()) & vocabulary]
+
+    # Enumerate short spatially coherent spans. Poster phrases are small, while the
+    # five-box ceiling and context vocabulary avoid joining an entire credit block.
+    for width in range(2, min(5, len(semantic_candidates)) + 1):
+        for members in combinations(semantic_candidates, width):
+            ordered_span = _ordered_semantic_span(
+                members, image_width=image_width, image_height=image_height
+            )
+            if ordered_span is None:
+                continue
+            ordered, source = ordered_span
+            joined = " ".join(box.text for box in ordered)
+            category = _season_semantic_category(
+                joined, season_number=season_number, season_title=season_title
+            )
+            if category:
+                record(ordered, category, source, joined)
+
+    # A whole-phrase detection from one pass often overlaps word detections from
+    # another. Project its meaning only to exact contiguous token fragments with a
+    # spatial relation; this fixes SEASON/FIVE without allowing a distant FIVE.
+    for members, category, _source, span_text in list(spans):
+        for candidate in valid:
+            if key(candidate) in evidence or not _contiguous_tokens(candidate.text, span_text):
+                continue
+            relations = [
+                _season_box_relation(
+                    candidate,
+                    member,
+                    image_width=image_width,
+                    image_height=image_height,
+                )
+                for member in members
+            ]
+            relation = next((value for value in relations if value), None)
+            if relation:
+                record(
+                    [candidate],
+                    category,
+                    f"{relation}_with_phrase",
+                    span_text,
+                )
+    return evidence
+
+
+def _season_category_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    image_height: int,
+    season_number: int | None,
+    season_title: str | None,
+    image_width: int | None = None,
+) -> tuple[
+    set[tuple[str, BoundingBox]],
+    set[tuple[str, BoundingBox]],
+    set[tuple[str, BoundingBox]],
+]:
+    """Compatibility projection of the richer season semantic evidence."""
+    resolved_width = image_width or max(
+        (int(_bbox_bounds(box.bbox)[2]) for box in boxes if box.geometry_valid), default=1
+    )
+    evidence = _season_semantic_evidence(
+        boxes,
+        image_width=resolved_width,
+        image_height=image_height,
+        season_number=season_number,
+        season_title=season_title,
+    )
+    number_evidence = {key for key, value in evidence.items() if value.category == "season"}
+    title_evidence = {key for key, value in evidence.items() if value.category == "season_title"}
+    edition_evidence = {
+        key for key, value in evidence.items() if value.category == "season_edition"
+    }
+    return number_evidence, title_evidence, edition_evidence
 
 
 def classify_text_box(
@@ -784,6 +1257,11 @@ def classify_text_box(
     studio_tokens: set[str] | None = None,
     tagline_text: str | None = None,
     billing_band_ids: set[int] | None = None,
+    billing_band_keys: set[tuple[str, BoundingBox]] | None = None,
+    season_number: int | None = None,
+    season_number_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_title_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_edition_ids: set[tuple[str, BoundingBox]] | None = None,
 ) -> str:
     """Classify a detected text box into a semantic category.
 
@@ -801,7 +1279,21 @@ def classify_text_box(
     if title_box is not None and box is title_box:
         return "title"
 
-    if billing_band_ids and id(box) in billing_band_ids:
+    evidence_key = (text, box.bbox)
+    if season_number_ids and evidence_key in season_number_ids:
+        return "season"
+    if season_title_ids and evidence_key in season_title_ids:
+        return "season_title"
+
+    if season_edition_ids and evidence_key in season_edition_ids:
+        return "season_edition"
+
+    if _is_season_text(text, season_number):
+        return "season"
+
+    if (billing_band_ids and id(box) in billing_band_ids) or (
+        billing_band_keys and evidence_key in billing_band_keys
+    ):
         return "billing"
 
     # Director: regex match OR word match against director_tokens.
@@ -819,9 +1311,6 @@ def classify_text_box(
         return "studio"
     if studio_tokens and _matches_allowed(box.text, studio_tokens):
         return "studio"
-
-    if _is_season_text(text):
-        return "season"
 
     compact_tagline = _compact_text(tagline_text or "")
     compact_text = _compact_text(box.text)
@@ -851,6 +1340,70 @@ def classify_text_box(
         return "billing"
 
     return "other"
+
+
+def evaluate_custom_text_profile(
+    significant_residual: Sequence[OCRTextBox],
+    *,
+    allow_map: dict[str, bool],
+    max_residual_boxes: int,
+    max_residual_area_fraction: float,
+    image_width: int,
+    image_height: int,
+    image_area: float,
+    title_box: _DetectedBox | None,
+    title_tokens: set[str],
+    director_tokens: set[str],
+    studio_tokens: set[str] | None = None,
+    tagline_text: str | None = None,
+    billing_band_ids: set[int] | None = None,
+    billing_band_keys: set[tuple[str, BoundingBox]] | None = None,
+    season_number: int | None = None,
+    season_number_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_title_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_edition_ids: set[tuple[str, BoundingBox]] | None = None,
+) -> _CustomTextDecision:
+    """Deterministically evaluate classified residual boxes against a resolved profile."""
+    allowed: list[OCRTextBox] = []
+    denied: list[OCRTextBox] = []
+    categories: dict[tuple[str, BoundingBox], str] = {}
+    for box in significant_residual:
+        source = _DetectedBox(
+            text=box.text,
+            confidence=box.confidence,
+            bbox=box.bbox,
+            geometry_valid=box.geometry_valid,
+        )
+        category = classify_text_box(
+            source,
+            image_w=image_width,
+            image_h=image_height,
+            title_box=title_box,
+            title_tokens=title_tokens,
+            director_tokens=director_tokens,
+            studio_tokens=studio_tokens,
+            tagline_text=tagline_text,
+            billing_band_ids=billing_band_ids,
+            billing_band_keys=billing_band_keys,
+            season_number=season_number,
+            season_number_ids=season_number_ids,
+            season_title_ids=season_title_ids,
+            season_edition_ids=season_edition_ids,
+        )
+        categories[(_normalise(box.text), box.bbox)] = category
+        (allowed if allow_map.get(category, False) else denied).append(box)
+
+    denominator = image_area if image_area > 0 else 1.0
+    allowed_area = sum(box.area for box in allowed) / denominator
+    denied_area = sum(box.area for box in denied) / denominator
+    return _CustomTextDecision(
+        accepted=(len(denied) <= max_residual_boxes and denied_area <= max_residual_area_fraction),
+        allowed_boxes=tuple(allowed),
+        denied_boxes=tuple(denied),
+        categories=categories,
+        allowed_area_fraction=allowed_area,
+        denied_area_fraction=denied_area,
+    )
 
 
 def _as_bbox(
@@ -1057,6 +1610,12 @@ def _build_detected_boxes_trace(
     studio_tokens: set[str] | None,
     tagline_text: str | None,
     billing_band_ids: set[int] | None,
+    season_number: int | None,
+    season_number_ids: set[tuple[str, BoundingBox]] | None,
+    season_title_ids: set[tuple[str, BoundingBox]] | None,
+    season_edition_ids: set[tuple[str, BoundingBox]] | None,
+    season_semantic_evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] | None,
+    rejection_box_keys: set[tuple[str, BoundingBox]],
     image_width: int,
     image_height: int,
     min_big_area: float,
@@ -1068,6 +1627,7 @@ def _build_detected_boxes_trace(
     decision for residual boxes. Read-only — never changes the gate outcome."""
     out: list[dict] = []
     for box in boxes:
+        semantic = (season_semantic_evidence or {}).get((_normalise(box.text), box.bbox))
         evidence = title_evidence.get(id(box))
         is_title = evidence is not None
         is_residual = not is_title
@@ -1084,6 +1644,10 @@ def _build_detected_boxes_trace(
                 studio_tokens=studio_tokens,
                 tagline_text=tagline_text,
                 billing_band_ids=billing_band_ids,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
             )
         )
         if is_residual:
@@ -1106,12 +1670,16 @@ def _build_detected_boxes_trace(
                 "geometry_valid": bool(box.geometry_valid),
                 "pass": pass_by_id.get(id(box), "full"),
                 "category": category,
+                "semantic_source": semantic.source if semantic else None,
+                "semantic_span_text": semantic.span_text if semantic else None,
                 "is_title": is_title,
                 "is_title_fragment": bool(evidence and evidence.is_fragment),
                 "title_match_source": evidence.source if evidence else None,
                 "title_group_text": evidence.group_text if evidence else None,
                 "is_residual": is_residual,
                 "is_significant": is_sig,
+                "counts_toward_rejection": is_sig
+                and (_normalise(box.text), box.bbox) in rejection_box_keys,
                 "significant_reason": sig_reason,
                 "proximity_discounted": discounted,
             }
@@ -1139,6 +1707,13 @@ def _title_match_score(text: str, title_tokens: set[str]) -> float:
             )
         )
     return sum(scores) / len(scores)
+
+
+def _profile_settings_fingerprint(profile: dict | None) -> str | None:
+    if not profile:
+        return None
+    canonical = json.dumps(profile, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _init_worker(
@@ -1252,8 +1827,14 @@ def _process_image(
     raw ``pipeline_settings`` knobs.
     """
     profile: dict | None = (extras or {}).get("profile") or None
-    studio_tokens = set((extras or {}).get("studio_tokens") or ())
+    profile_id = (extras or {}).get("profile_id")
+    profile_name = (extras or {}).get("profile_name")
+    profile_scope = (extras or {}).get("profile_scope")
+    studio_tokens: set[str] = set((extras or {}).get("studio_tokens") or ())
     tagline_text = (extras or {}).get("tagline") or None
+    raw_season_number = (extras or {}).get("season_number")
+    season_number = raw_season_number if isinstance(raw_season_number, int) else None
+    season_title_text = (extras or {}).get("season_title") or None
     using_worker_title_text = title_tokens is None
     if title_tokens is None:
         title_tokens = _worker_title_tokens
@@ -1351,6 +1932,11 @@ def _process_image(
     title_recovery_triggered = False
     title_recovery_recovered = False
     title_recovery_error: str | None = None
+    season_number_ids: set[tuple[str, BoundingBox]] = set()
+    season_title_ids: set[tuple[str, BoundingBox]] = set()
+    season_edition_ids: set[tuple[str, BoundingBox]] = set()
+    season_semantic_evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] = {}
+    rejection_box_keys: set[tuple[str, BoundingBox]] = set()
 
     def _build_state() -> tuple[
         dict[int, _TitleEvidence],
@@ -1360,6 +1946,28 @@ def _process_image(
         float,
         set[int],
     ]:
+        nonlocal season_number_ids, season_title_ids, season_edition_ids
+        nonlocal season_semantic_evidence
+        season_semantic_evidence = _season_semantic_evidence(
+            boxes,
+            image_width=image_width,
+            image_height=image_height,
+            season_number=season_number,
+            season_title=season_title_text,
+        )
+        season_number_ids = {
+            key for key, value in season_semantic_evidence.items() if value.category == "season"
+        }
+        season_title_ids = {
+            key
+            for key, value in season_semantic_evidence.items()
+            if value.category == "season_title"
+        }
+        season_edition_ids = {
+            key
+            for key, value in season_semantic_evidence.items()
+            if value.category == "season_edition"
+        }
         title_evidence = _find_title_evidence(
             boxes,
             title_text=title_text or "",
@@ -1440,15 +2048,20 @@ def _process_image(
         significant_area_fraction: float,
         detected_text_current: str,
     ) -> dict:
+        nonlocal rejection_box_keys
         knobs = effective_gate_knobs(profile)
         text_mode = knobs["mode"]
         allow_title = knobs["allow_map"]["title"]
         max_residual_boxes = knobs["max_residual_boxes"]
         max_residual_area = knobs["max_residual_area_fraction"]
         require_title = knobs["require_title"]
+        allowed_count = 0
+        denied_count = 0
+        allowed_area = 0.0
+        denied_area = 0.0
         if not detected_text_current:
-            accepted = False
-            reason = "no_text"
+            accepted = text_mode == "textless" or (text_mode == "custom" and not require_title)
+            reason = None if accepted else "no_text"
         elif set(detected_text_current.split()) & FORMAT_BLOCKLIST:
             accepted = False
             reason = "format_blocklist"
@@ -1458,37 +2071,39 @@ def _process_image(
             has_residual = len(significant_residual) > 0
             accepted = not has_title and not has_residual
             reason = None if accepted else ("has_title" if has_title else "text_heavy")
+            rejection_box_keys = {(_normalise(box.text), box.bbox) for box in significant_residual}
+            denied_count = len(significant_residual)
+            denied_area = significant_area_fraction
         elif text_mode == "custom":
-            # Classify each significant residual box against the allow toggles.
-            allow_map = knobs["allow_map"]
-            denied_boxes: list[OCRTextBox] = []
-            for box in significant_residual:
-                # Reconstruct the _DetectedBox from the OCRTextBox fields for
-                # classification (OCRTextBox is derived from _DetectedBox).
-                source = _DetectedBox(
-                    text=box.text,
-                    confidence=box.confidence,
-                    bbox=box.bbox,
-                    geometry_valid=box.geometry_valid,
-                )
-                category = classify_text_box(
-                    source,
-                    image_w=image_width,
-                    image_h=image_height,
-                    title_box=title_box,
-                    title_tokens=title_tokens,
-                    director_tokens=director_tokens,
-                    studio_tokens=studio_tokens,
-                    tagline_text=tagline_text,
-                    billing_band_ids=billing_band_ids,
-                )
-                if not allow_map.get(category, False):
-                    denied_boxes.append(box)
+            billing_band_keys = {
+                (_normalise(box.text), box.bbox) for box in boxes if id(box) in billing_band_ids
+            }
+            custom = evaluate_custom_text_profile(
+                significant_residual,
+                allow_map=knobs["allow_map"],
+                max_residual_boxes=max_residual_boxes,
+                max_residual_area_fraction=max_residual_area,
+                image_width=image_width,
+                image_height=image_height,
+                image_area=image_area,
+                title_box=title_box,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_keys=billing_band_keys,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
+            )
+            allowed_count = len(custom.allowed_boxes)
+            denied_count = len(custom.denied_boxes)
+            allowed_area = custom.allowed_area_fraction
+            denied_area = custom.denied_area_fraction
+            rejection_box_keys = {(_normalise(box.text), box.bbox) for box in custom.denied_boxes}
 
-            denied_count = len(denied_boxes)
-            denied_area = sum(b.area for b in denied_boxes) / image_area if image_area > 0 else 0.0
-
-            accepted = denied_count <= max_residual_boxes and denied_area <= max_residual_area
+            accepted = custom.accepted
             reason = None if accepted else "text_heavy"
             # Title gate: if title is denied, require that one is actually present.
             if accepted and not allow_title and title_box is not None:
@@ -1506,6 +2121,9 @@ def _process_image(
                 and significant_area_fraction <= max_residual_area
             )
             reason = None if accepted else "text_heavy"
+            rejection_box_keys = {(_normalise(box.text), box.bbox) for box in significant_residual}
+            denied_count = len(significant_residual)
+            denied_area = significant_area_fraction
             # Title-only target: text that never matches the title (logos, taglines
             # read in isolation) does not make a titled poster. The fallback remains
             # opt-in via OCR_ACCEPT_NO_TEXT and is disabled by default.
@@ -1520,10 +2138,15 @@ def _process_image(
             "has_text": bool(detected_text_current),
             "has_title": title_box is not None,
             "require_title": require_title,
+            "allow_map": knobs["allow_map"],
             "significant_residual_count": len(significant_residual),
             "max_residual_boxes": max_residual_boxes,
             "significant_area_fraction": significant_area_fraction,
             "max_residual_area_fraction": max_residual_area,
+            "allowed_significant_count": allowed_count,
+            "allowed_area_fraction": allowed_area,
+            "denied_significant_count": denied_count,
+            "denied_area_fraction": denied_area,
         }
 
     def _trace(
@@ -1545,6 +2168,16 @@ def _process_image(
             if (evidence := title_evidence.get(id(box))) is not None
         ]
         return {
+            "profile": {
+                "id": profile_id if isinstance(profile_id, str) else None,
+                "name": profile_name if isinstance(profile_name, str) else None,
+                "scope": profile_scope if isinstance(profile_scope, str) else None,
+                "settings_fingerprint": _profile_settings_fingerprint(profile),
+            },
+            "season_context": {
+                "number": season_number,
+                "title": season_title_text,
+            },
             "image_size": {"width": image_width, "height": image_height},
             "passes_run": passes_run,
             "enhance_retry": {
@@ -1568,6 +2201,12 @@ def _process_image(
                 studio_tokens=studio_tokens,
                 tagline_text=tagline_text,
                 billing_band_ids=billing_band_ids,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
+                season_semantic_evidence=season_semantic_evidence,
+                rejection_box_keys=rejection_box_keys,
                 image_width=image_width,
                 image_height=image_height,
                 min_big_area=min_big_area,
@@ -1714,6 +2353,8 @@ class PosterTextFilter:
         studios: list[str] | None = None,
         tagline: str | None = None,
         media_type: str = "movie",
+        season_number: int | None = None,
+        season_title: str | None = None,
         num_workers: int | None = None,
         profile: TextProfile | None = None,
     ):
@@ -1722,6 +2363,11 @@ class PosterTextFilter:
         self.studios = [_normalise(studio) for studio in (studios or []) if _normalise(studio)]
         self.tagline = _normalise(tagline) if tagline else ""
         self.media_type = media_type
+        self.profile_scope = {"series": "show", "show": "show", "season": "season"}.get(
+            media_type, "movie"
+        )
+        self.season_number = season_number
+        self.season_title = _normalise(season_title) if season_title else ""
         # Explicit argument > OCR_WORKERS env > hardware-profile auto-sizing.
         self.num_workers = num_workers or effective_ocr_workers()
         self.title_tokens = set(self.title.split())
@@ -1731,16 +2377,27 @@ class PosterTextFilter:
         # Resolved text profile, serialized as a plain dict so it pickles into
         # spawned worker processes. None → _decide uses pipeline_settings.
         self.profile_payload: dict | None = profile.gate_payload() if profile else None
+        self.profile_id = profile.id if profile else None
+        self.profile_name = profile.name if profile else None
 
     def task_extras(self) -> dict[str, object] | None:
         """Per-task text-gate context for run_ocr_tasks item tuples."""
         extras: dict[str, object] = {}
         if self.profile_payload is not None:
             extras["profile"] = self.profile_payload
+        if self.profile_id:
+            extras["profile_id"] = self.profile_id
+        if self.profile_name:
+            extras["profile_name"] = self.profile_name
+        extras["profile_scope"] = self.profile_scope
         if self.studio_tokens:
             extras["studio_tokens"] = self.studio_tokens
         if self.tagline:
             extras["tagline"] = self.tagline
+        if self.season_number is not None:
+            extras["season_number"] = self.season_number
+        if self.season_title:
+            extras["season_title"] = self.season_title
         return extras or None
 
     def filter_batch(

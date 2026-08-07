@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.core.poster_sources.tmdb import TVDetails
+from marquee.core.poster_sources.tmdb import TVDetails, TVSeasonDetails
 from marquee.core.sync_service import SyncService
 from marquee.core.tv_queries import season_downloaded, series_visible
 from marquee.main import app
@@ -181,6 +181,10 @@ async def test_sync_tv_tmdb_id_resolution_and_enrichment(db: AsyncSession):
         director="Vince Gilligan",
         production_companies=["AMC", "Sony Pictures"],
         tagline="Remember my name",
+        seasons=[
+            TVSeasonDetails(season_number=1, tmdb_id=3572, name="The First Season"),
+            TVSeasonDetails(season_number=2, tmdb_id=3573, name="The Second Season"),
+        ],
     )
 
     svc = SyncService(db, sonarr=sonarr, tmdb=tmdb)
@@ -195,6 +199,25 @@ async def test_sync_tv_tmdb_id_resolution_and_enrichment(db: AsyncSession):
     assert series.director == "Vince Gilligan"
     assert series.production_companies_json == ["AMC", "Sony Pictures"]
     assert series.tagline == "Remember my name"
+    season_one = (
+        await db.execute(
+            select(Season).where(Season.series_id == series.id, Season.season_number == 1)
+        )
+    ).scalar_one()
+    assert season_one.tmdb_id == 3572
+    assert season_one.name == "The First Season"
+
+    # A partial TMDB response must not erase season metadata captured earlier.
+    tmdb.get_tv_details.return_value = TVDetails(
+        director="Vince Gilligan",
+        production_companies=["AMC", "Sony Pictures"],
+        tagline="Remember my name",
+        seasons=[],
+    )
+    await svc.sync_all()
+    await db.refresh(season_one)
+    assert season_one.tmdb_id == 3572
+    assert season_one.name == "The First Season"
 
     # Verify metadata reset if tmdb_id changes on subsequent sync and enrichment fails
     tmdb.get_tv_details.side_effect = Exception("TMDB down")

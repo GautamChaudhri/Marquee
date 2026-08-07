@@ -272,20 +272,47 @@ def _ocr_gate_context(params: dict[str, Any], subject: Any) -> Any:
     Falls back to the subject's own scope when the manifest predates the
     ``text_gate`` params, so an in-flight job still gates a season as a season.
     """
-    from marquee.core.text_profiles import OcrGateContext, get_active_profile  # noqa: PLC0415
+    from marquee.core.text_profiles import (  # noqa: PLC0415
+        OcrGateContext,
+        TextProfile,
+        get_active_profile,
+        settings_from_dict,
+    )
 
     gate = params.get("text_gate") if isinstance(params.get("text_gate"), dict) else {}
     scope = gate.get("scope")
     if scope not in ("movie", "show", "season"):
         scope = {"series": "show", "season": "season"}.get(subject.media_type, "movie")
     studios = gate.get("studios")
+    profile = None
+    has_snapshot = "profile_snapshot" in gate
+    snapshot = gate.get("profile_snapshot")
+    if has_snapshot:
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("settings"), dict):
+            raise ValueError("text gate contains a malformed profile snapshot")
+        try:
+            # The contained runner must use the profile resolved by its host,
+            # rather than reloading a potentially different global default or
+            # edit. Marking this detached copy non-builtin keeps every setting
+            # explicit when it is serialized into OCR workers.
+            profile = TextProfile(
+                id=str(snapshot.get("id") or gate.get("profile_id") or "snapshot"),
+                name=str(snapshot.get("name") or "Profile snapshot"),
+                builtin=False,
+                settings=settings_from_dict(snapshot["settings"]),
+            )
+        except Exception as exc:
+            raise ValueError("text gate contains an invalid profile snapshot") from exc
     return OcrGateContext(
         director=gate.get("director"),
         studios=list(studios) if isinstance(studios, list) else None,
         tagline=gate.get("tagline"),
-        profile=get_active_profile(scope, gate.get("profile_id")),
+        # Only manifests that genuinely predate profile snapshots may reload the
+        # store. A present-but-invalid snapshot must never silently drift.
+        profile=profile if has_snapshot else get_active_profile(scope, gate.get("profile_id")),
         scope=scope,
         season_number=subject.season_number,
+        season_title=gate.get("season_title"),
     )
 
 

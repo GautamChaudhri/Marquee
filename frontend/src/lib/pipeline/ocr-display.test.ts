@@ -1,6 +1,12 @@
 import type { CandidateView, OcrEvidence } from '$lib/api/types';
 import { describe, expect, it } from 'vitest';
-import { ocrConfidenceLabel, ocrInspectorPanel, ocrRegionLabel, rejectionTag } from './ocr-display';
+import {
+	ocrConfidenceLabel,
+	ocrInspectorPanel,
+	ocrRegionLabel,
+	ocrSemanticSourceLabel,
+	rejectionTag
+} from './ocr-display';
 
 const textEvidence: OcrEvidence = {
 	available: true,
@@ -12,19 +18,26 @@ const textEvidence: OcrEvidence = {
 			text: 'EXAMPLE TITLE',
 			confidence: 0.987,
 			category: 'title',
+			semantic_source: null,
+			semantic_span_text: null,
 			is_title: true,
 			is_title_fragment: false,
-			is_significant: false
+			is_significant: false,
+			counts_toward_rejection: false
 		},
 		{
 			text: 'ONLY IN THEATERS',
 			confidence: 0.82,
 			category: 'tagline',
+			semantic_source: null,
+			semantic_span_text: null,
 			is_title: false,
 			is_title_fragment: false,
-			is_significant: true
+			is_significant: true,
+			counts_toward_rejection: true
 		}
 	],
+	profile: { id: 'title_season_and_name', name: 'Title, Season and Name' },
 	error: null
 };
 
@@ -61,6 +74,20 @@ describe('OCR rejection display', () => {
 		expect(rejectionTag(candidate({ rejection_label: 'Format badge' }))).toBe('Format badge');
 	});
 
+	it('labels season categories and explains semantic span evidence', () => {
+		const region = {
+			...textEvidence.regions[1]!,
+			text: 'FIVE',
+			category: 'season',
+			semantic_source: 'overlap_with_phrase',
+			semantic_span_text: 'season five'
+		};
+		expect(ocrRegionLabel(region)).toBe('Season');
+		expect(ocrSemanticSourceLabel(region)).toBe('Overlaps SEASON FIVE');
+		expect(ocrRegionLabel({ ...region, category: 'season_title' })).toBe('Season name');
+		expect(ocrRegionLabel({ ...region, category: 'season_edition' })).toBe('Season edition');
+	});
+
 	it('shows captured OCR text and region details when text was found', () => {
 		const panel = ocrInspectorPanel(candidate());
 		expect(panel).toMatchObject({ kind: 'text', evidence: textEvidence });
@@ -81,6 +108,7 @@ describe('OCR rejection display', () => {
 						detected_text: '',
 						title_matched: false,
 						regions: [],
+						profile: null,
 						error: null
 					}
 				})
@@ -97,9 +125,10 @@ describe('OCR rejection display', () => {
 					available: true,
 					has_text: false,
 					detected_text: '',
-					title_matched: false,
-					regions: [],
-					error: 'PaddleOCR could not initialize'
+						title_matched: false,
+						regions: [],
+						profile: null,
+						error: 'PaddleOCR could not initialize'
 				}
 			})
 		);
@@ -118,6 +147,7 @@ describe('OCR rejection display', () => {
 						detected_text: null,
 						title_matched: false,
 						regions: [],
+						profile: null,
 						error: null
 					}
 				})

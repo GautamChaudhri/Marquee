@@ -240,9 +240,18 @@ def _ocr_display_regions(diagnostics: dict | None) -> list[dict] | None:
                 "category": raw_box.get("category")
                 if isinstance(raw_box.get("category"), str)
                 else None,
+                "semantic_source": raw_box.get("semantic_source")
+                if isinstance(raw_box.get("semantic_source"), str)
+                else None,
+                "semantic_span_text": raw_box.get("semantic_span_text")
+                if isinstance(raw_box.get("semantic_span_text"), str)
+                else None,
                 "is_title": bool(raw_box.get("is_title")),
                 "is_title_fragment": bool(raw_box.get("is_title_fragment")),
                 "is_significant": bool(raw_box.get("is_significant")),
+                "counts_toward_rejection": raw_box.get("counts_toward_rejection")
+                if isinstance(raw_box.get("counts_toward_rejection"), bool)
+                else None,
             }
         )
     return regions
@@ -264,6 +273,16 @@ def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) 
     record.ocr_residual_boxes = [_ocr_box_to_dict(box) for box in result.residual_boxes]
     record.ocr_display_regions = (
         _ocr_display_regions(result.diagnostics) if not result.accepted else None
+    )
+    profile = result.diagnostics.get("profile") if isinstance(result.diagnostics, dict) else None
+    record.ocr_text_profile = (
+        {
+            key: value
+            for key, value in profile.items()
+            if key in {"id", "name"} and isinstance(value, str)
+        }
+        if isinstance(profile, dict)
+        else None
     )
     record.ocr_trace = result.diagnostics if settings.DEBUG else None
 
@@ -967,6 +986,8 @@ def run_sync_stages(
         director=gate_ctx.director,
         studios=gate_ctx.studios,
         tagline=gate_ctx.tagline,
+        season_number=gate_ctx.season_number,
+        season_title=gate_ctx.season_title,
         profile=gate_ctx.profile,
     ).filter_batch(style_survivors, progress=_ocr_tick, pool=ocr_pool)
     ocr_survivors: list[OCRCandidateResult] = []

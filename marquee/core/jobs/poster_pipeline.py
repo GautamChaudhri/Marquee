@@ -39,6 +39,7 @@ from marquee.core.jobs.runner_progress import RunnerProgressBridge
 from marquee.core.jobs.runner_protocol import RunnerRuntimeOptions
 from marquee.core.jobs.runner_runtime import poster_runner_runtime_options
 from marquee.core.pipeline_config import pipeline_settings
+from marquee.core.text_profiles import get_active_profile
 from marquee.ml.residual import baseline_signature
 from marquee.models import Job, JobAttempt, Movie, PipelineRun, Season, Series
 
@@ -153,8 +154,8 @@ async def _text_gate_params(
     """Resolve the OCR text gate for this subject.
 
     The runner is a separate process with no database, so the per-subject
-    metadata is read here and the scope is passed by name — the child reloads
-    the profile itself from the shared store.
+    metadata and effective profile are read here. The child reconstructs this
+    immutable snapshot rather than consulting a potentially changed store.
 
     Scope matters most for seasons: their art prints "SEASON 4", which the
     movie-scoped ``title_only`` profile counts as residual text and rejects
@@ -163,9 +164,12 @@ async def _text_gate_params(
     """
     if media_type == "movie":
         movie = await session.get(Movie, request.movie_id)
+        scope = "movie"
+        profile_id = getattr(movie, "text_profile_id", None)
         return {
-            "scope": "movie",
-            "profile_id": getattr(movie, "text_profile_id", None),
+            "scope": scope,
+            "profile_id": profile_id,
+            "profile_snapshot": get_active_profile(scope, profile_id).to_dict(),
             "director": getattr(movie, "director", None),
             "studios": getattr(movie, "production_companies_json", None),
             "tagline": getattr(movie, "tagline", None),
@@ -174,16 +178,20 @@ async def _text_gate_params(
     if media_type == "series":
         series = await session.get(Series, request.series_id)
         profile_id = getattr(series, "show_text_profile_id", None)
+        scope = "show"
     else:
         season = await session.get(Season, request.season_id)
         series = await session.get(Series, season.series_id) if season else None
         profile_id = getattr(series, "season_text_profile_id", None)
+        scope = "season"
     return {
-        "scope": "show" if media_type == "series" else "season",
+        "scope": scope,
         "profile_id": profile_id,
+        "profile_snapshot": get_active_profile(scope, profile_id).to_dict(),
         "director": getattr(series, "director", None),
         "studios": getattr(series, "production_companies_json", None),
         "tagline": getattr(series, "tagline", None),
+        "season_title": getattr(season, "name", None) if media_type == "season" else None,
     }
 
 

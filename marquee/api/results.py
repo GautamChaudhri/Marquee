@@ -183,9 +183,18 @@ def _ocr_region_views(candidate: dict) -> list[dict]:
                 "category": region.get("category")
                 if isinstance(region.get("category"), str)
                 else None,
+                "semantic_source": region.get("semantic_source")
+                if isinstance(region.get("semantic_source"), str)
+                else None,
+                "semantic_span_text": region.get("semantic_span_text")
+                if isinstance(region.get("semantic_span_text"), str)
+                else None,
                 "is_title": bool(region.get("is_title")),
                 "is_title_fragment": bool(region.get("is_title_fragment")),
                 "is_significant": bool(region.get("is_significant")),
+                "counts_toward_rejection": region.get("counts_toward_rejection")
+                if isinstance(region.get("counts_toward_rejection"), bool)
+                else None,
             }
         )
     return regions
@@ -215,6 +224,9 @@ def _ocr_evidence(candidate: dict) -> dict | None:
         "title_matched": bool(candidate.get("ocr_title_bbox"))
         or any(region["is_title"] for region in regions),
         "regions": regions,
+        "profile": candidate.get("ocr_text_profile")
+        if isinstance(candidate.get("ocr_text_profile"), dict)
+        else None,
         "error": _ocr_error_detail(candidate.get("rejection_reason")),
     }
 

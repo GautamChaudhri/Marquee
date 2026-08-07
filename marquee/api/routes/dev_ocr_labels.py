@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.api.results import find_candidate
+from marquee.api.results import find_review_evidence, find_review_survivor
 from marquee.core.jobs.artifact_service import verify_physical_artifact
 from marquee.core.jobs.pipeline_archives import load_pipeline_archive
 from marquee.database import get_db
@@ -85,8 +85,14 @@ async def _capture(
             raise OcrLabelCaptureError(
                 f"Run {run.run_id} archive is missing or unreadable", status_code=404
             )
-        candidate = find_candidate(archive, orig_filename)
-        artifact_id = candidate.get("artifact_id") if isinstance(candidate, dict) else None
+        evidence = find_review_evidence(archive, orig_filename)
+        survivor = find_review_survivor(archive, orig_filename)
+        image_candidate = evidence if label_kind == "false_rejection" else survivor
+        artifact_id = image_candidate.get("artifact_id") if image_candidate else None
+        artifact_storage_key = (
+            image_candidate.get("artifact_storage_key") if image_candidate else None
+        )
+        artifact_checksum = image_candidate.get("artifact_checksum") if image_candidate else None
         artifact = await db.get(JobArtifact, artifact_id) if isinstance(artifact_id, int) else None
         image_path = None
         metadata = artifact.artifact_metadata if artifact is not None else None
@@ -97,9 +103,12 @@ async def _capture(
             and artifact.job_id == run.job_id
             and artifact.attempt_id == run.attempt_id
             and isinstance(metadata, dict)
-            and metadata.get("family") == "poster_pipeline_candidate"
-            and metadata.get("run_id") == run.run_id
-            and metadata.get("orig_filename") == orig_filename
+            and artifact.storage_key == artifact_storage_key
+            and artifact.checksum == artifact_checksum
+            and metadata.get("family") == "poster_pipeline"
+            and metadata.get("role")
+            == ("rejected_candidate" if label_kind == "false_rejection" else "review_candidate")
+            and metadata.get("candidate_reference") == orig_filename
         ):
             _boundary, stored = await verify_physical_artifact(artifact)
             image_path = stored.root.resolved() / stored.key.value

@@ -106,6 +106,12 @@ def _generate_settings_keyring(output: Path) -> dict[str, object]:
     return {"created": True, "path": str(output), "permissions": "0600"}
 
 
+def _replay_ocr_labels(root: Path | None) -> dict[str, object]:
+    from marquee.pipeline.ocr_label_capture import replay_ocr_label_corpus  # noqa: PLC0415
+
+    return replay_ocr_label_corpus(root)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m marquee.maintenance")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -124,6 +130,8 @@ def main() -> None:
     commands.add_parser("rotate-settings-keyring")
     generate_keyring = commands.add_parser("generate-settings-keyring")
     generate_keyring.add_argument("--output", required=True, type=Path)
+    replay_labels = commands.add_parser("replay-ocr-labels")
+    replay_labels.add_argument("--root", type=Path)
     args = parser.parse_args()
     if args.command == "backup":
         payload = asyncio.run(_backup())
@@ -137,7 +145,9 @@ def main() -> None:
         payload = asyncio.run(_rotate_settings_keyring())
     elif args.command == "generate-settings-keyring":
         payload = _generate_settings_keyring(args.output)
-    else:
+    elif args.command == "replay-ocr-labels":
+        payload = _replay_ocr_labels(args.root)
+    else:  # expire-job-evidence
         payload = asyncio.run(_retention(args.limit))
     print(json.dumps(payload, sort_keys=True))
 

@@ -70,6 +70,11 @@ def _needs_tv_enrichment(series: Series) -> bool:
     )
 
 
+def _needs_tv_season_enrichment(seasons: list[Season]) -> bool:
+    """Whether any present season lacks its TMDB identity or official name."""
+    return any(season.tmdb_id is None or season.name is None for season in seasons)
+
+
 # ---------------------------------------------------------------------------
 # Result types
 # ---------------------------------------------------------------------------
@@ -395,6 +400,7 @@ class SyncService:
                     series.director = None
                     series.production_companies_json = None
                     series.tagline = None
+                tmdb_identity_changed = previous_tmdb_id != series.tmdb_id
 
                 # ── Filesystem ────────────────────────────────────────
                 series.series_path = data.get("path") or ""
@@ -425,6 +431,10 @@ class SyncService:
                     .scalars()
                     .all()
                 )
+                if tmdb_identity_changed:
+                    for season in seasons:
+                        season.tmdb_id = None
+                        season.name = None
                 if any(s.episode_file_count == 0 for s in seasons):
                     episodes = (
                         (
@@ -447,7 +457,7 @@ class SyncService:
                                 s.episode_count = total_episodes
                                 s.episode_file_count = file_episodes
 
-                if _needs_tv_enrichment(series):
+                if _needs_tv_enrichment(series) or _needs_tv_season_enrichment(seasons):
                     enrich_candidates.append(series)
 
             except Exception:
@@ -501,10 +511,20 @@ class SyncService:
     async def _enrich_tv_from_tmdb(self, series_list: list[Series]) -> None:
         """Backfill OCR TV metadata from TMDB without blocking the sync."""
         semaphore = asyncio.Semaphore(5)
+        series_ids = [series.id for series in series_list if series.id is not None]
+        seasons_by_series: dict[int, list[Season]] = {}
+        if series_ids:
+            seasons = (
+                (await self.db.execute(select(Season).where(Season.series_id.in_(series_ids))))
+                .scalars()
+                .all()
+            )
+            for season in seasons:
+                seasons_by_series.setdefault(season.series_id, []).append(season)
 
         async def enrich(series: Series) -> None:
             tmdb_id = series.tmdb_id
-            if tmdb_id is None or not _needs_tv_enrichment(series):
+            if tmdb_id is None:
                 return
             try:
                 async with semaphore:
@@ -521,6 +541,12 @@ class SyncService:
             series.director = details.director
             series.production_companies_json = details.production_companies
             series.tagline = details.tagline
+            season_details = {item.season_number: item for item in details.seasons}
+            for season in seasons_by_series.get(series.id, []):
+                detail = season_details.get(season.season_number)
+                if detail is not None:
+                    season.tmdb_id = detail.tmdb_id
+                    season.name = detail.name
 
         await asyncio.gather(*(enrich(s) for s in series_list))
 

@@ -363,9 +363,12 @@ export interface OcrEvidenceRegion {
 	text: string;
 	confidence: number | null;
 	category: string | null;
+	semantic_source: string | null;
+	semantic_span_text: string | null;
 	is_title: boolean;
 	is_title_fragment: boolean;
 	is_significant: boolean;
+	counts_toward_rejection: boolean | null;
 }
 
 /** Compact, regular-run OCR evidence. The full OCR trace remains DEBUG-only. */
@@ -375,6 +378,7 @@ export interface OcrEvidence {
 	detected_text: string | null;
 	title_matched: boolean;
 	regions: OcrEvidenceRegion[];
+	profile: { id?: string; name?: string } | null;
 	error: string | null;
 }
 

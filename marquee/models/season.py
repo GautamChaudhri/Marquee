@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, UniqueConstraint, func, text
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.database import Base
@@ -31,6 +41,9 @@ class Season(Base, TimestampMixin, ArtworkMixin):
 
     # ── Identity ─────────────────────────────────────────────────────
     season_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str | None] = mapped_column(
+        String(500), nullable=True, comment="Official season name from TMDB"
+    )
     tmdb_id: Mapped[int | None] = mapped_column(
         Integer, nullable=True, comment="TMDB season ID for artwork lookup"
     )

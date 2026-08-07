@@ -109,6 +109,9 @@ class CandidateScore:
     # to surface in the regular results inspector and intentionally omits the
     # large DEBUG-only diagnostic trace.
     ocr_display_regions: list[dict] | None = None
+    # Compact identity of the exact text profile used for this candidate's
+    # OCR pass. This makes profile-resolution decisions auditable in review.
+    ocr_text_profile: dict[str, str] | None = None
     # Full structured OCR trace (every detected box across all passes, the
     # title match, per-box classification + significance reasoning, and the
     # accept/reject math). Only persisted on DEBUG runs — the OCR-label tooling
@@ -153,6 +156,7 @@ class CandidateScore:
             "ocr_title_bbox": self.ocr_title_bbox,
             "ocr_residual_boxes": self.ocr_residual_boxes,
             "ocr_display_regions": self.ocr_display_regions,
+            "ocr_text_profile": self.ocr_text_profile,
             "ocr_trace": self.ocr_trace,
             "stack_id": self.stack_id,
             "stack_rank": self.stack_rank,
