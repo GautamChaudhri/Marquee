@@ -121,6 +121,14 @@ body {
 	height: 100%;
 }
 
+html {
+	/* The page scrollbar appearing and vanishing changed the content width by
+	   10px, which resized anything viewport-sized (the taste map plot) and
+	   toggled the overflow that summoned it — a visible horizontal shimmer.
+	   Reserving the gutter keeps the width constant whether or not we scroll. */
+	scrollbar-gutter: stable;
+}
+
 body {
 	background: var(--ink);
 	color: var(--text);

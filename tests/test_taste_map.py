@@ -165,6 +165,81 @@ def test_map_poster_urls_use_live_library_routes():
     )
 
 
+def test_point_poster_urls_match_real_serving_routes():
+    """The literals above are only worth anything if something actually serves them.
+
+    They are built by string concatenation far from the routers, so this pins them to
+    the mounted paths as well: the test above catches a wrong id going into a URL, this
+    one catches a prefix that no router answers.
+    """
+    import re
+
+    from marquee.main import app
+    from marquee.ml.taste_map import _poster_url
+
+    mounted = {
+        getattr(route, "path", "") for route in app.routes if "GET" in getattr(route, "methods", ())
+    }
+    patterns = [re.compile(re.sub(r"\{[^}]+\}", "[^/]+", path) + "$") for path in mounted]
+
+    urls = [
+        _poster_url("movie", movie_id=7, series_id=None, season_id=None),
+        _poster_url("show", movie_id=None, series_id=7, season_id=None),
+        _poster_url("season", movie_id=None, series_id=7, season_id=9),
+    ]
+    for url in urls:
+        assert url is not None
+        assert any(pattern.match(url) for pattern in patterns), f"{url} is not a served route"
+
+    # Unresolved subjects get nothing rather than a URL that cannot resolve.
+    assert _poster_url("movie", movie_id=None, series_id=None, season_id=None) is None
+    assert _poster_url("season", movie_id=None, series_id=7, season_id=None) is None
+
+
+def test_resolve_map_identity_backfills_database_blind_build(
+    synthetic_profile, tmp_path, monkeypatch
+):
+    """The runner builds maps without database reach, so every identity freezes
+    unresolved and the whole map serves gradient placeholders. The publication
+    handler re-resolves the artifact from the worker; this pins the rewrite."""
+    from marquee.ml import taste_map
+    from marquee.ml.taste_map import build_map, load_map, resolve_map_identity
+
+    map_path = tmp_path / "map.npz"
+    build_map(output=map_path, generate_thumbnails=False)
+    before = load_map(path=map_path)["points"]
+    assert all(point["movie_id"] is None for point in before)
+    assert all(point["poster_url"] is None for point in before)
+
+    def resolved_rows(profile):
+        rows = []
+        for index, name in enumerate(profile["poster_names"]):
+            title, year = taste_map._parse_name(name)
+            rows.append(
+                {
+                    "title": title,
+                    "year": year,
+                    "tmdb_id": 1000 + index,
+                    "movie_id": 500 + index,
+                    "movie_title": title,
+                }
+            )
+        return rows
+
+    monkeypatch.setattr(taste_map, "_resolve_profile_movie_rows", resolved_rows)
+    assert resolve_map_identity(map_path) == 12
+
+    after = load_map(path=map_path)["points"]
+    assert [point["movie_id"] for point in after] == [500 + i for i in range(12)]
+    assert all(
+        point["poster_url"] == f"/api/library/movies/{point['movie_id']}/poster"
+        for point in after
+    )
+    # Untouched arrays survive the rewrite.
+    assert [point["name"] for point in after] == [point["name"] for point in before]
+    assert [point["x"] for point in after] == [point["x"] for point in before]
+
+
 def test_map_is_deterministic(synthetic_profile):
     from marquee.ml.taste_map import build_map
 

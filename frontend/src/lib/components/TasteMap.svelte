@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { theme } from '$lib/theme';
 	import { pointTitle } from '$lib/taste/map-points';
 	import type { ColorMode, ViewMode } from '$lib/taste/map-points';
@@ -12,6 +12,7 @@
 		colorBy = 'cluster',
 		showNoise = true,
 		selected = null,
+		dataset = 'default',
 		onSelect
 	}: {
 		points: TasteMapPoint[];
@@ -20,12 +21,23 @@
 		colorBy?: ColorMode;
 		showNoise?: boolean;
 		selected?: TasteMapPoint | null;
+		/** Identifies the coordinate space, so it must change when the projection is
+		 *  rebuilt as well as when the view switches. Changing it is the one thing that
+		 *  re-frames the plot; everything else preserves the viewer's pan/zoom. */
+		dataset?: string;
 		onSelect: (point: TasteMapPoint | null) => void;
 	} = $props();
 
 	let plotEl = $state<HTMLDivElement | null>(null);
 	let Plotly: typeof import('plotly.js-dist-min') | null = null;
 	let resizeObs: ResizeObserver | null = null;
+	let listening = false;
+	let lastSize = '';
+	let lastUirevision: string | null = null;
+	// The camera the user last orbited/zoomed to, captured from plotly_relayout.
+	// uirevision alone cannot be trusted to keep it across react() calls, so every
+	// same-revision rebuild re-sends this explicitly.
+	let currentCamera: Record<string, unknown> | null = null;
 
 	// ── Palettes ──────────────────────────────────────────────────────────
 	const CLUSTER_COLORS = [
@@ -100,18 +112,6 @@
 					noise: '#3f4452',
 					markerEdge: 'rgba(255,255,255,0.12)'
 				}
-	);
-
-	// Plotly's `react` receives a fresh layout whenever a selected point, colour, or
-	// theme changes. Keep the UI revision stable for one projection so Plotly retains
-	// a user's pan/zoom in 2D and camera orbit in 3D across those updates.
-	const viewRevision = $derived.by(
-		() =>
-			`${mode}:${points
-				.map((point) =>
-					[point.name, point.asset_kind, point.x, point.y, point.z, point.x2, point.y2].join(':')
-				)
-				.join('|')}`
 	);
 
 	function genreColor(genres: string[] | null): string {
@@ -223,6 +223,12 @@
 	function buildPlot() {
 		if (!Plotly || !plotEl) return;
 
+		// WebGL only earns its keep in the tens of thousands. Below that the SVG
+		// renderer is smoother and, unlike scattergl, survives repeated react()
+		// calls without dropping and rebuilding its drag layer mid-gesture.
+		const flatType = points.length > 8000 ? 'scattergl' : 'scatter';
+		const traceType = mode === '3d' ? 'scatter3d' : flatType;
+
 		const { colors, legend, colorbar } = buildColors(points);
 		const indexed = points.map((point, index) => ({ point, index }));
 		const clustered = indexed.filter(({ point }) => !point.is_noise);
@@ -254,7 +260,7 @@
 					align: 'left',
 					namelength: -1
 				},
-				type: mode === '3d' ? 'scatter3d' : 'scattergl',
+				type: traceType,
 				mode: 'markers',
 				showlegend: false
 			};
@@ -307,23 +313,25 @@
 			if (fallback) traces.push(fallback);
 		}
 
-		// The marker that shows which point the detail panel is describing.
-		if (selected) {
-			traces.push({
-				x: [mode === '3d' ? selected.x : selected.x2],
-				y: [mode === '3d' ? selected.y : selected.y2],
-				...(mode === '3d' ? { z: [selected.z] } : {}),
-				type: mode === '3d' ? 'scatter3d' : 'scattergl',
-				mode: 'markers',
-				hoverinfo: 'skip',
-				showlegend: false,
-				marker: {
-					size: mode === '3d' ? 10 : 16,
-					color: 'rgba(0,0,0,0)',
-					line: { width: 2, color: '#ffc24b' }
-				}
-			});
-		}
+		// The marker that shows which point the detail panel is describing. Always
+		// present (empty when nothing is selected): adding or removing a trace
+		// changes the trace count, and Plotly's uirevision matches per-trace UI
+		// state by position — in 3D a count change rebuilds the whole scene and
+		// threw the camera home on every select/deselect.
+		traces.push({
+			x: selected ? [mode === '3d' ? selected.x : selected.x2] : [],
+			y: selected ? [mode === '3d' ? selected.y : selected.y2] : [],
+			...(mode === '3d' ? { z: selected ? [selected.z] : [] } : {}),
+			type: traceType,
+			mode: 'markers',
+			hoverinfo: 'skip',
+			showlegend: false,
+			marker: {
+				size: mode === '3d' ? 10 : 16,
+				color: 'rgba(0,0,0,0)',
+				line: { width: 2, color: '#ffc24b' }
+			}
+		});
 
 		const showLegend = legend.length > 0 && mode === '2d';
 		if (showLegend) {
@@ -331,7 +339,7 @@
 				traces.push({
 					x: [null],
 					y: [null],
-					type: 'scattergl',
+					type: flatType,
 					mode: 'markers',
 					marker: { size: 9, color: entry.color, opacity: 0.9 },
 					name: entry.name,
@@ -340,7 +348,11 @@
 			}
 		}
 
-		const axis = {
+		// Plotly mutates layout axis objects in place — range write-backs and the
+		// uirevision restore run per axis — so each axis must be its own object.
+		// Sharing one reference had the y restore overwrite x (and z overwrite all
+		// of the scene), snapping the view back after every drag.
+		const makeAxis = () => ({
 			title: '',
 			showgrid: true,
 			gridcolor: chrome.grid,
@@ -349,13 +361,19 @@
 			showticklabels: true,
 			tickcolor: chrome.zero,
 			tickfont: { color: chrome.tick, size: 10 }
-		};
+		});
+
+		// Every state change re-runs react() with a fresh layout. Without a stable
+		// uirevision Plotly treats each one as a new figure and re-frames it, which
+		// snapped 2D back mid-drag and threw the 3D camera home on every click.
+		// Keyed on the coordinate space, so only a genuine dataset change re-frames.
+		const uirevision = `${dataset}:${mode}`;
 
 		const layout: Record<string, unknown> = {
+			uirevision,
 			paper_bgcolor: chrome.paper,
 			plot_bgcolor: chrome.paper,
 			font: { color: chrome.tick, size: 11, family: 'ui-sans-serif, system-ui, sans-serif' },
-			uirevision: viewRevision,
 			margin: { l: 44, r: 20, t: 10, b: 34 },
 			dragmode: mode === '3d' ? 'orbit' : 'pan',
 			hovermode: 'closest',
@@ -369,19 +387,32 @@
 				bordercolor: chrome.grid,
 				borderwidth: 1
 			},
-			xaxis: axis,
-			yaxis: axis
+			xaxis: makeAxis(),
+			yaxis: makeAxis()
 		};
 
 		if (mode === '3d') {
-			const sceneAxis = { ...axis, showticklabels: false, backgroundcolor: chrome.paper };
+			const makeSceneAxis = () => ({
+				...makeAxis(),
+				showticklabels: false,
+				backgroundcolor: chrome.paper
+			});
+			// A genuine reframe (dataset or mode change) gets the default eye and
+			// forgets any tracked camera; a same-revision rebuild (selection, theme,
+			// noise toggle) re-sends exactly where the user left the orbit.
+			const reframe = uirevision !== lastUirevision;
+			if (reframe) currentCamera = null;
 			layout.scene = {
-				uirevision: viewRevision,
-				xaxis: sceneAxis,
-				yaxis: sceneAxis,
-				zaxis: sceneAxis,
+				uirevision,
+				xaxis: makeSceneAxis(),
+				yaxis: makeSceneAxis(),
+				zaxis: makeSceneAxis(),
 				bgcolor: chrome.paper,
-				camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } }
+				...(reframe
+					? { camera: { eye: { x: 1.5, y: 1.5, z: 1.2 } } }
+					: currentCamera
+						? { camera: structuredClone(currentCamera) }
+						: {})
 			};
 			delete layout.xaxis;
 			delete layout.yaxis;
@@ -390,7 +421,9 @@
 
 		const config: Record<string, unknown> = {
 			displaylogo: false,
-			responsive: true,
+			// Deliberately not `responsive`: the ResizeObserver below already drives
+			// resizes, and running both had each one's relayout wake the other.
+			responsive: false,
 			scrollZoom: true,
 			displayModeBar: true,
 			modeBarButtonsToRemove: [
@@ -408,18 +441,37 @@
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		(Plotly as any).react(plotEl, traces, layout, config);
-		const graph = plotEl as HTMLDivElement & {
-			on?: (name: string, cb: (event: unknown) => void) => void;
-			removeListener?: (name: string, cb: (event: unknown) => void) => void;
-		};
-		graph.removeListener?.('plotly_click', handleClick);
-		graph.on?.('plotly_click', handleClick);
+		lastUirevision = uirevision;
+
+		// react() keeps the div's emitter, so the handlers are bound once for the
+		// component's life rather than torn down and re-added on every rebuild.
+		if (!listening) {
+			const graph = plotEl as HTMLDivElement & {
+				on?: (name: string, cb: (event: unknown) => void) => void;
+			};
+			graph.on?.('plotly_click', handleClick);
+			graph.on?.('plotly_relayout', handleRelayout);
+			listening = true;
+		}
+	}
+
+	function handleRelayout(event: unknown) {
+		// gl3d reports the settled camera through relayout at the end of an orbit,
+		// zoom, or modebar reset. Deep-copied because Plotly keeps mutating the
+		// object it handed out.
+		const camera = (event as Record<string, unknown> | null)?.['scene.camera'];
+		if (camera && typeof camera === 'object') {
+			currentCamera = structuredClone(camera) as Record<string, unknown>;
+		}
 	}
 
 	function handleClick(event: unknown) {
-		const e = event as { points?: Array<{ customdata?: number; pointIndex?: number }> };
-		const idx = e.points?.[0]?.customdata ?? e.points?.[0]?.pointIndex;
-		if (idx == null) return;
+		// Only the data traces carry customdata (the point's index). The selection
+		// ring and the legend proxies do not, and their pointIndex counts within
+		// their own trace — falling back to it selected an unrelated point.
+		const e = event as { points?: Array<{ customdata?: unknown }> };
+		const idx = e.points?.[0]?.customdata;
+		if (typeof idx !== 'number') return;
 		const point = points[idx];
 		if (point) onSelect(point);
 	}
@@ -432,11 +484,18 @@
 
 		const el = plotEl;
 		if (el) {
-			resizeObs = new ResizeObserver(() => {
+			resizeObs = new ResizeObserver((entries) => {
 				// The observer can fire once more while the node is being detached — on a
 				// library switch, or when the map is collapsed. Plotly throws on a plot div
 				// that is no longer displayed, so only resize one that is still laid out.
 				if (!Plotly || !el.isConnected || !el.offsetParent) return;
+				// Plotly's own relayout re-notifies this observer. Resizing to a box we
+				// have already drawn would ping-pong with it, which is what made the 2D
+				// plot drift and swallow drags.
+				const box = entries[0]?.contentRect;
+				const size = box ? `${Math.round(box.width)}x${Math.round(box.height)}` : '';
+				if (size === lastSize) return;
+				lastSize = size;
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				(Plotly as any).Plots.resize(el);
 			});
@@ -452,19 +511,24 @@
 			  })
 			| null;
 		el?.removeListener?.('plotly_click', handleClick);
+		el?.removeListener?.('plotly_relayout', handleRelayout);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		if (Plotly && plotEl) (Plotly as any).purge(plotEl);
 	});
 
 	$effect(() => {
-		// Access reactive state to trigger the effect.
+		// These are the only things that should redraw the plot. buildPlot reads each
+		// point's fields, and those are deep reactive proxies from the page — tracking
+		// them would subscribe this effect to hundreds of signals and redraw on reads
+		// it has no business reacting to, so the build itself runs untracked.
 		void mode;
 		void colorBy;
 		void showNoise;
 		void points;
 		void selected;
 		void chrome;
-		if (Plotly) buildPlot();
+		void dataset;
+		if (Plotly) untrack(buildPlot);
 	});
 </script>
 
@@ -473,8 +537,12 @@
 <style>
 	.plot {
 		width: 100%;
-		height: 100%;
-		min-height: 320px;
+		/* Height is purely distributed flex space, never content-derived: Plotly
+		   writes an explicit pixel height into its inner container, and any rule
+		   that lets that feed back into this element's size (height: 100% against
+		   an auto-sized ancestor) turns each redraw into another growth step. */
+		flex: 1 1 0;
+		min-height: 0;
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
 		background: var(--ink);

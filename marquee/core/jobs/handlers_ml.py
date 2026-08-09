@@ -474,7 +474,7 @@ async def _publish_native_taste_map(
     )
     from marquee.core.jobs.runner_protocol import RunnerOperation  # noqa: PLC0415
     from marquee.ml.namespaces import get_namespace  # noqa: PLC0415
-    from marquee.ml.taste_map import load_map  # noqa: PLC0415
+    from marquee.ml.taste_map import load_map, resolve_map_identity  # noqa: PLC0415
 
     if context.cancellation.cancel_called:
         raise asyncio.CancelledError
@@ -513,6 +513,10 @@ async def _publish_native_taste_map(
 
     await _bridge_stage(bridge, "validating")
     map_path = workspace_dir / "map.npz"
+    # The runner is deliberately database-blind, so the identity arrays it froze
+    # are unresolved and every point would serve a null poster_url. Resolve them
+    # here, where the worker has database access, before the artifact registers.
+    await asyncio.to_thread(resolve_map_identity, map_path, namespace=get_namespace(library))
     loaded = load_map(namespace=get_namespace(library), path=map_path)
     if not loaded.get("points"):
         raise RuntimeError("taste map production loader returned no points")

@@ -104,7 +104,12 @@ def _poster_url(
     series_id: int | None,
     season_id: int | None,
 ) -> str | None:
-    """Return the live library artwork route for a resolved map point."""
+    """The live library artwork route for a map point, or nothing when it is unresolved.
+
+    Whether that subject currently has a poster on disk is deliberately not baked in:
+    the map artifact outlives deployments, so the caller renders a fallback if the
+    serving route 404s rather than trusting a frozen answer.
+    """
     if kind == "season" and season_id:
         return f"/api/library/seasons/{season_id}/poster"
     if kind == "show" and series_id:
@@ -143,12 +148,11 @@ def _resolve_profile_movie_rows(profile: dict) -> list[dict]:
         with psycopg.connect(db_url) as conn, conn.cursor() as cursor:
             cursor.execute("SELECT id, title, year, tmdb_id FROM movies")
             for movie_id, title, year, tmdb_id in cursor:
-                by_id[int(movie_id)] = (int(movie_id), str(title), year, tmdb_id)
+                entry = (int(movie_id), str(title), year, tmdb_id)
+                by_id[int(movie_id)] = entry
                 if tmdb_id:
-                    by_tmdb[int(tmdb_id)] = (int(movie_id), str(title), year, tmdb_id)
-                by_title.setdefault(str(title).lower(), []).append(
-                    (int(movie_id), str(title), year, tmdb_id)
-                )
+                    by_tmdb[int(tmdb_id)] = entry
+                by_title.setdefault(str(title).lower(), []).append(entry)
     except Exception:  # noqa: BLE001
         logger.warning("Could not resolve taste-map movie metadata from PostgreSQL", exc_info=True)
         return rows
@@ -253,6 +257,74 @@ def _resolve_profile_series_rows(profile: dict) -> list[dict]:
         if row["season_number"] is not None:
             row["season_id"] = seasons_by_series.get((resolved[0], int(row["season_number"])))
     return rows
+
+
+def resolve_map_identity(map_path: Path, *, namespace: TasteNamespace | None = None) -> int:
+    """Re-resolve a built map artifact's library identity in place.
+
+    The internal runner builds maps inside a scrubbed environment with no database
+    reach, so the identity arrays it froze (``movie_ids``, ``series_ids``, …) are
+    all unresolved and every point serves a null ``poster_url``. The publication
+    handler calls this from the worker — which does have database access — before
+    the artifact is registered. Returns the number of resolved points.
+    """
+    ns = namespace or get_namespace("movies")
+    ensure_safe_artifact(map_path, "taste_map")
+    with load_npz_safe(map_path) as data:
+        payload: dict[str, np.ndarray] = {key: np.asarray(data[key]) for key in data.files}
+
+    names = decode_unicode_list(payload["poster_names"])
+    count = len(names)
+    pseudo_profile: dict = {"poster_names": names}
+    for key in ("years", "tmdb_ids", "movie_ids", "season_numbers"):
+        if key in payload:
+            pseudo_profile[key] = payload[key].tolist()
+    for key in ("movie_titles", "asset_kinds"):
+        if key in payload:
+            pseudo_profile[key] = decode_unicode_list(payload[key])
+    if ns.library == "tv":
+        # The TV resolver reads series titles under this key; the map stores the
+        # per-point display titles there.
+        pseudo_profile["series_titles"] = pseudo_profile.pop("movie_titles", [])
+        rows = _resolve_profile_series_rows(pseudo_profile)
+    else:
+        rows = _resolve_profile_movie_rows(pseudo_profile)
+
+    payload["movie_ids"] = np.asarray(
+        [int(row["movie_id"] or 0) for row in rows], dtype=np.int64
+    )
+    payload["movie_titles"] = unicode_array([str(row["movie_title"]) for row in rows])
+    payload["years"] = np.asarray([int(row["year"] or 0) for row in rows], dtype=np.int64)
+    payload["tmdb_ids"] = np.asarray([int(row["tmdb_id"] or 0) for row in rows], dtype=np.int64)
+    if ns.library == "tv":
+        payload["series_ids"] = np.asarray(
+            [int(row["series_id"] or 0) for row in rows], dtype=np.int64
+        )
+        payload["season_ids"] = np.asarray(
+            [int(row["season_id"] or 0) for row in rows], dtype=np.int64
+        )
+        genres = [list(row["genres"] or ()) for row in rows]
+        if any(genres):
+            payload[GENRES_JSON_KEY] = json_string_array(genres)
+            if "cluster_labels" in payload:
+                # The runner named clusters without genre reach; redo it now that
+                # the genres are known.
+                names_map = _cluster_names(payload["cluster_labels"], genres)
+                payload["cluster_names"] = unicode_array(
+                    [f"{cid}:{name}" for cid, name in names_map.items()]
+                )
+        resolved = sum(1 for row in rows if row["series_id"])
+    else:
+        resolved = sum(1 for row in rows if row["movie_id"])
+
+    save_npz_atomic(map_path, payload)
+    logger.info(
+        "TASTE MAP | resolved library identity for %d/%d points (%s)",
+        resolved,
+        count,
+        ns.library,
+    )
+    return resolved
 
 
 # ---------------------------------------------------------------------------

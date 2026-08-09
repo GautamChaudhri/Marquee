@@ -187,6 +187,7 @@
 				{colorBy}
 				{showNoise}
 				{selected}
+				dataset={`${view}:${mapData?.projection.computed_at ?? ''}`}
 				onSelect={select}
 			/>
 		{/if}
@@ -363,17 +364,20 @@
 	.workspace {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) 300px;
+		/* minmax(0, 1fr): the row is distributed space, never content-sized. An
+		   auto row would grow to fit whatever height Plotly last drew, which then
+		   resizes Plotly taller — the loop that stretched this page downward. */
+		grid-template-rows: minmax(0, 1fr);
 		gap: 14px;
-		height: calc(100vh - 232px);
+		height: calc(100vh - 240px);
+		height: calc(100dvh - 240px);
 		min-height: 460px;
 	}
 	.stage {
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
-	}
-	.stage :global(.plot) {
-		flex: 1;
+		min-height: 0;
 	}
 	.stage-meta {
 		margin: 8px 2px 0;
@@ -423,6 +427,7 @@
 		flex-direction: column;
 		gap: 10px;
 		padding: 14px;
+		min-height: 0;
 		overflow-y: auto;
 		background: var(--panel);
 		border: 1px solid var(--line);
@@ -577,10 +582,16 @@
 	@media (max-width: 900px) {
 		.workspace {
 			grid-template-columns: minmax(0, 1fr);
+			grid-template-rows: none;
 			height: auto;
+			min-height: 0;
 		}
+		/* The stacked layout is content-sized, so the plot needs a definite height
+		   of its own here — flex: 1 against an auto container is self-referential. */
 		.stage :global(.plot) {
-			min-height: 420px;
+			flex: none;
+			height: 60vh;
+			min-height: 320px;
 		}
 	}
 </style>
