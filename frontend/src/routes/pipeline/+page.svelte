@@ -83,6 +83,13 @@
 	const tvArtTotal = $derived(tv.shows_total + tv.seasons_total);
 	const tvArtPct = $derived(tvArtTotal ? Math.round((tvDeployed / tvArtTotal) * 100) : 0);
 
+	/* Exact counts rather than the rounded percentage: 99.6% coverage displays as 100
+	   and would put a tick on a row that still has work left in it. */
+	const filmsFullyDeployed = $derived(
+		summary.total_movies > 0 && summary.movies_with_poster === summary.total_movies
+	);
+	const tvFullyDeployed = $derived(tvArtTotal > 0 && tvDeployed === tvArtTotal);
+
 	const coverageTone = (pct: number): Tone => (pct >= 90 ? 'good' : pct >= 70 ? 'warn' : 'bad');
 
 	/** Only a card with work behind it earns the loud treatment — a grid where
@@ -242,24 +249,63 @@
 	}
 </script>
 
+<!-- Both rows wear the same head: what the row covers, anything blocking it, and the
+     way into its workspace. No figures live here — every number on this screen is
+     stated once, by the card that owns it. -->
+{#snippet rowHead(row: {
+	icon: string;
+	title: string;
+	href: string;
+	linkLabel: string;
+	warn?: { text: string; href: string };
+})}
+	<div class="row-head">
+		<span class="eyebrow"><Icon name={row.icon} size={14} /> {row.title}</span>
+		{#if row.warn}
+			<a class="row-warn" href={row.warn.href}>
+				<Icon name="alert" size={11} />
+				{row.warn.text}
+			</a>
+		{/if}
+		<a class="row-link workspace-link" href={row.href}>
+			{row.linkLabel}
+			<Icon name="chevron" size={13} />
+		</a>
+	</div>
+{/snippet}
+
 <SectionDivider label="Coverage" note={coverageNote} />
 
-<div class="row-head">
-	<span class="eyebrow"><Icon name="film" size={14} /> Films</span>
-	<a class="row-link workspace-link" href="/pipeline/movies"
-		>Open Film Workspace <Icon name="chevron" size={13} /></a
-	>
-</div>
+{@render rowHead({
+	icon: 'film',
+	title: 'Films',
+	href: '/pipeline/movies',
+	linkLabel: 'Open Film Workspace'
+})}
 
-<div class="stats" style="--cols:5">
-	<PosterStatCard label="Films" value={summary.total_movies} tone="purple" icon="film" />
+<div class="stats" style="--cols:4">
+	<!-- Labelled "Assets" in both rows: a film needs one poster, a show or season one
+	     piece of artwork, so the two rows count the same unit and can be compared. -->
+	<PosterStatCard
+		label="Assets"
+		value={summary.total_movies}
+		sub="in library"
+		tone="purple"
+		icon="film"
+	/>
+	<!-- Deployed is always green and Missing always red: the tone names which metric
+	     you are reading, so the row can be scanned by colour. How healthy the number
+	     is comes from the meter and the dimming of a zero, not from recolouring.
+	     The icon is the exception that earns its place — a tick only once the row is
+	     genuinely complete, an alert or an eye only while there is something to do. -->
 	<PosterStatCard
 		label="Deployed"
 		value={summary.movies_with_poster}
 		sub={`${deployedPct}% coverage`}
 		bar={deployedPct}
-		tone={coverageTone(deployedPct)}
-		icon="check"
+		barTone={coverageTone(deployedPct)}
+		tone="good"
+		icon={filmsFullyDeployed ? 'check' : undefined}
 	/>
 	<!-- movies_awaiting_run, not movies_missing_poster: the same predicate the
 	     workspace Run tab lists, so this count and that list always agree. -->
@@ -267,8 +313,8 @@
 		label="Missing"
 		value={summary.movies_awaiting_run}
 		sub={summary.movies_awaiting_run ? 'awaiting a run' : 'fully covered'}
-		tone={summary.movies_awaiting_run ? 'bad' : 'good'}
-		icon="alert"
+		tone="bad"
+		icon={summary.movies_awaiting_run ? 'alert' : undefined}
 		href="/pipeline/movies?tab=run"
 		hint={`${summary.movies_awaiting_run} films missing a poster — open the Run queue`}
 		emphasis={emphasisFor(summary.movies_awaiting_run)}
@@ -278,58 +324,72 @@
 		value={summary.movies_in_review}
 		sub="awaiting a decision"
 		tone="gold"
-		icon="eye"
+		icon={summary.movies_in_review ? 'eye' : undefined}
 		href="/pipeline/movies?tab=review"
 		hint={`${summary.movies_in_review} films awaiting a decision — open the Review queue`}
 		emphasis={emphasisFor(summary.movies_in_review)}
 	/>
-	<PosterStatCard
-		label="Running"
-		value={summary.running_jobs.length || summary.movies_in_run}
-		sub={summary.running_jobs.length ? 'active jobs' : 'films in run'}
-		tone="info"
-		icon="refresh"
-		emphasis={emphasisFor(summary.running_jobs.length || summary.movies_in_run)}
-	/>
 </div>
 
-<div class="row-head">
-	<span class="eyebrow"><Icon name="tv" size={14} /> Television</span>
-	<a class="row-link workspace-link" href="/pipeline/tv"
-		>Open Television Workspace <Icon name="chevron" size={13} /></a
-	>
-</div>
+{@render rowHead({
+	icon: 'tv',
+	title: 'Television',
+	href: '/pipeline/tv',
+	linkLabel: 'Open Television Workspace',
+	warn: tv.shows_no_tmdb
+		? { text: `${tv.shows_no_tmdb} without a TMDB match`, href: '/pipeline/tv?tab=run' }
+		: undefined
+})}
 
-<div class="stats" style="--cols:5">
+<!-- Every television card counts the same unit — an asset is one show's artwork or
+     one season's — and carries the show/season split beneath the combined figure,
+     so the five cards share one denominator and can be read against each other. -->
+<div class="stats" style="--cols:4">
 	<PosterStatCard
-		label="Shows"
-		value={tv.shows_total}
-		sub={`${tv.seasons_total} seasons`}
+		label="Assets"
+		value={tvArtTotal}
+		sub="in library"
+		split={[
+			{ label: 'Shows', value: tv.shows_total },
+			{ label: 'Seasons', value: tv.seasons_total }
+		]}
 		tone="purple"
 		icon="tv"
 	/>
-	<!-- Show art and season art share one card so this row has the same five
-	     columns as the film row, with a bar each so neither coverage is lost. -->
+	<!-- The one card where the split is a proportion rather than a count, so it keeps
+	     its meters — reading out how many are deployed, with the fill carrying how far
+	     that is through the shows and seasons the row has. -->
 	<PosterStatCard
 		label="Deployed"
 		value={tvDeployed}
-		sub={`of ${tvArtTotal} assets`}
+		sub={`${tvArtPct}% coverage`}
 		bars={[
-			{ label: 'show', value: showArtPct, tone: coverageTone(showArtPct) },
-			{ label: 'season', value: seasonArtPct, tone: coverageTone(seasonArtPct) }
+			{
+				label: 'Shows',
+				value: showArtPct,
+				display: tv.shows_with_show_poster,
+				tone: coverageTone(showArtPct)
+			},
+			{
+				label: 'Seasons',
+				value: seasonArtPct,
+				display: tv.seasons_with_poster,
+				tone: coverageTone(seasonArtPct)
+			}
 		]}
-		tone={coverageTone(tvArtPct)}
-		icon="check"
+		tone="good"
+		icon={tvFullyDeployed ? 'check' : undefined}
 	/>
 	<PosterStatCard
 		label="Missing"
 		value={tvMissing}
-		breakdown={[
-			{ label: 'show', value: tv.shows_missing_show_poster },
-			{ label: 'season', value: tv.seasons_missing_poster }
+		sub={tvMissing ? 'awaiting a run' : 'fully covered'}
+		split={[
+			{ label: 'Shows', value: tv.shows_missing_show_poster },
+			{ label: 'Seasons', value: tv.seasons_missing_poster }
 		]}
-		tone={tvMissing ? 'bad' : 'good'}
-		icon="alert"
+		tone="bad"
+		icon={tvMissing ? 'alert' : undefined}
 		href="/pipeline/tv?tab=run"
 		hint={`${tvMissing} television assets missing artwork — open the Run queue`}
 		emphasis={emphasisFor(tvMissing)}
@@ -337,23 +397,16 @@
 	<PosterStatCard
 		label="In Review"
 		value={tv.assets_in_review}
-		breakdown={[
-			{ label: 'shows', value: tv.shows_in_review },
-			{ label: 'seasons', value: tv.seasons_in_review }
+		sub="awaiting a decision"
+		split={[
+			{ label: 'Shows', value: tv.shows_in_review },
+			{ label: 'Seasons', value: tv.seasons_in_review }
 		]}
 		tone="gold"
-		icon="eye"
+		icon={tv.assets_in_review ? 'eye' : undefined}
 		href="/pipeline/tv?tab=review"
 		hint={`${tv.assets_in_review} television assets awaiting a decision — open the Review queue`}
 		emphasis={emphasisFor(tv.assets_in_review)}
-	/>
-	<PosterStatCard
-		label="Running"
-		value={tv.running_jobs.length || tv.assets_in_run}
-		sub={tv.shows_no_tmdb ? `${tv.shows_no_tmdb} no TMDB match` : 'assets in run'}
-		tone={tv.shows_no_tmdb ? 'low' : 'info'}
-		icon="refresh"
-		emphasis={emphasisFor(tv.shows_no_tmdb || tv.running_jobs.length || tv.assets_in_run)}
 	/>
 </div>
 
@@ -517,7 +570,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 12px;
+		flex-wrap: wrap;
+		gap: 8px 12px;
 		margin: 2px 0 7px;
 	}
 	.eyebrow {
@@ -542,6 +596,25 @@
 	}
 	.workspace-link {
 		margin-left: auto;
+	}
+	/* A blocker, not a metric: these shows cannot run at all until they are matched,
+	   so it earns a place in the head instead of recolouring a card about something
+	   else. Small coloured text is pulled toward the foreground colour so it clears
+	   the contrast floor in both themes. */
+	.row-warn {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 2px 9px;
+		border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent);
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--warn) 10%, transparent);
+		color: color-mix(in srgb, var(--warn) 58%, var(--text));
+		font-size: 11px;
+		font-weight: 600;
+	}
+	.row-warn:hover {
+		background: color-mix(in srgb, var(--warn) 18%, transparent);
 	}
 	.stats {
 		display: grid;

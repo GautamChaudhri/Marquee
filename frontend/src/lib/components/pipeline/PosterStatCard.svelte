@@ -8,9 +8,10 @@
 		value,
 		sub,
 		bar,
+		barTone,
 		tone = 'gold',
 		icon,
-		breakdown,
+		split,
 		bars,
 		href,
 		hint,
@@ -20,11 +21,17 @@
 		value: string | number;
 		sub?: string;
 		bar?: number;
+		/** Health of the bar, when that differs from the card's identity tone — a
+		 *  Deployed card stays green even while the coverage it reports is poor. */
+		barTone?: Tone;
 		tone?: Tone;
 		icon?: string;
-		breakdown?: { label: string; value: string | number }[];
-		/** Several named coverage bars in one card, each with its own percentage. */
-		bars?: { label: string; value: number; tone?: Tone }[];
+		/** The card's figure broken into named parts, carried at full size beneath it —
+		 *  a television count is only useful once you know how it divides. */
+		split?: { label: string; value: number }[];
+		/** Several named coverage bars in one card. `value` is the percentage the bar
+		 *  fills to; `display` is what the row reads out, when a count says more. */
+		bars?: { label: string; value: number; tone?: Tone; display?: string | number }[];
 		/** When set the whole card becomes a link into the matching workspace tab. */
 		href?: string;
 		/** Accessible name for the link — say where it goes, not just what it counts. */
@@ -35,6 +42,7 @@
 	} = $props();
 
 	const isZero = $derived(value === 0 || value === '0');
+	const hasMeta = $derived(Boolean(split?.length || bar != null || bars?.length));
 </script>
 
 <svelte:element
@@ -56,24 +64,36 @@
 	</div>
 	<div class="value">{value}</div>
 	{#if sub}<div class="sub">{sub}</div>{/if}
-	{#if breakdown?.length}
-		<div class="breakdown">
-			{#each breakdown as part, i (part.label)}
-				{#if i > 0}<span class="dot">·</span>{/if}
-				<span class="part"><b>{part.value}</b> {part.label}</span>
-			{/each}
-		</div>
-	{/if}
-	{#if bar != null}<div class="bar"><ProgressBar value={bar} {tone} /></div>{/if}
-	{#if bars?.length}
-		<div class="bars">
-			{#each bars as row (row.label)}
-				<div class="bar-row">
-					<span class="bar-label">{row.label}</span>
-					<span class="bar-pct">{row.value}%</span>
+	<!-- The split and the meters sit at the foot of the card, so a row of cards
+	     shares one baseline however tall the tallest card grows. -->
+	{#if hasMeta}
+		<div class="meta">
+			{#if bar != null}
+				<div class="bar"><ProgressBar value={bar} tone={barTone ?? tone} /></div>
+			{/if}
+			{#if bars?.length}
+				<div class="bars">
+					{#each bars as row (row.label)}
+						<div class="bar-row">
+							<span class="bar-label">{row.label}</span>
+							<span class="bar-read" style="--p:{toneVar(row.tone ?? tone)}"
+								>{row.display ?? `${row.value}%`}</span
+							>
+						</div>
+						<ProgressBar value={row.value} tone={row.tone ?? tone} height={5} />
+					{/each}
 				</div>
-				<ProgressBar value={row.value} tone={row.tone ?? tone} height={5} />
-			{/each}
+			{/if}
+			{#if split?.length}
+				<div class="split">
+					{#each split as part (part.label)}
+						<div class="split-cell" class:zero={part.value === 0}>
+							<div class="split-value">{part.value}</div>
+							<div class="split-label">{part.label}</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{/if}
 	{#if href}<span class="go" aria-hidden="true"><Icon name="chevron" size={13} /></span>{/if}
@@ -86,6 +106,8 @@
 		position: relative;
 		isolation: isolate;
 		overflow: hidden;
+		display: flex;
+		flex-direction: column;
 		background: var(--panel);
 		border: 1px solid color-mix(in srgb, var(--c) 16%, var(--line));
 		border-radius: var(--radius);
@@ -124,9 +146,12 @@
 		border-color: color-mix(in srgb, var(--c) 45%, var(--line));
 	}
 	.card.linked {
-		display: block;
 		color: inherit;
 		cursor: pointer;
+	}
+	/* Keeps the last column clear of the chevron parked in the bottom-right corner. */
+	.card.linked .split-cell:last-child {
+		padding-right: 24px;
 	}
 	/* The chevron is the only affordance distinguishing a link card from a plain
 	   one, so it brightens on hover instead of appearing only then. */
@@ -154,11 +179,19 @@
 		height: 3px;
 		background: linear-gradient(90deg, var(--c), color-mix(in srgb, var(--c) 25%, transparent));
 	}
+	/* Tone is what the card *measures*, not how alarmed to be: Missing stays red so
+	   the row reads by colour, but an empty Missing card fades rather than shouts. */
+	.card.zero .rail {
+		opacity: 0.4;
+	}
+	/* Holds the chip's height whether or not a chip is showing, so labels and values
+	   stay on one line across the row as icons come and go. */
 	.top {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 8px;
+		min-height: 24px;
 	}
 	.label {
 		font-size: 11px;
@@ -213,22 +246,36 @@
 		color: var(--muted);
 		margin-top: 3px;
 	}
-	.breakdown {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		gap: 5px;
-		margin-top: 5px;
-		font-size: 11.5px;
+	.meta {
+		margin-top: auto;
+		padding-top: 6px;
+	}
+	/* The split is a second reading of the same figure, not a footnote to it: same
+	   size, same face, divided into its parts across the foot of the card. */
+	.split {
+		display: grid;
+		grid-auto-flow: column;
+		grid-auto-columns: minmax(0, 1fr);
+		gap: 16px;
+		padding-top: 12px;
+	}
+	.split-value {
+		font-family: var(--font-mono);
+		font-size: 26px;
+		font-weight: 600;
+		line-height: 1.1;
+		color: var(--text);
+	}
+	.split-cell.zero .split-value {
 		color: var(--faint);
 	}
-	.breakdown b {
-		color: var(--muted);
-		font-family: var(--font-mono);
+	.split-label {
+		margin-top: 3px;
+		font-size: 10.5px;
 		font-weight: 600;
-	}
-	.dot {
-		color: var(--line2);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--muted);
 	}
 	.bar {
 		margin-top: 10px;
@@ -247,12 +294,20 @@
 	.bar-row:not(:first-child) {
 		margin-top: 5px;
 	}
+	/* Named like the split's labels, since both are the same idea: which part of the
+	   figure above this row accounts for. */
 	.bar-label {
+		font-size: 10.5px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
 		color: var(--muted);
-		font-size: 11px;
 	}
-	.bar-pct {
-		color: var(--text);
-		font: 600 11px/1 var(--font-mono);
+	/* The readout carries the health reading the green card deliberately doesn't;
+	   pulled toward the foreground so small coloured text stays legible in both themes. */
+	.bar-read {
+		--p: var(--text);
+		color: color-mix(in srgb, var(--p) 70%, var(--text));
+		font: 600 13px/1 var(--font-mono);
 	}
 </style>
