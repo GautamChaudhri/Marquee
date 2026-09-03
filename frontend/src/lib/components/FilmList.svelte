@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { posterThumbUrl } from '$lib/api/poster-urls';
 	import type { MovieListItem } from '$lib/api/types';
 	import { deriveFilmArtworkStatus } from '$lib/library-artwork';
 	import GenreSummary from './GenreSummary.svelte';
@@ -41,7 +42,7 @@
 							<PosterThumb
 								title={movie.title}
 								imageAlt={`${movie.title} poster`}
-								posterUrl={movie.poster_url}
+								posterUrl={posterThumbUrl(movie.poster_url)}
 								fallbackPlacement="bottom-left"
 							/>
 						</div>

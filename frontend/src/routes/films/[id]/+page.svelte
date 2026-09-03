@@ -3,7 +3,7 @@
 	import { page } from '$app/state';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
-	import { deleteMoviePoster } from '$lib/api/library';
+	import { deleteMoviePoster, posterThumbUrl } from '$lib/api/library';
 	import { setMovieTextProfile, type TextProfile } from '$lib/api/text-profiles';
 	import { posterStatusMeta, toneVar } from '$lib/display';
 	import { ApiError } from '$lib/api/client';
@@ -206,7 +206,8 @@
 					title={movie.title}
 					year={movie.year}
 					posterStatus={movie.poster_status}
-					posterUrl={movie.poster_url}
+					posterUrl={posterThumbUrl(movie.poster_url)}
+					eager
 				/>
 			</div>
 
@@ -359,7 +360,13 @@
 						<a class="review-summary" href={`/pipeline/runs/${latest.run_id}`}>
 							{#if latest.auto_pick}
 								<div class="rs-poster">
-									<img src={latest.auto_pick.poster_url} alt="Auto-pick" />
+									<img
+										src={latest.auto_pick.poster_url}
+										alt="Auto-pick"
+										loading="lazy"
+										decoding="async"
+										onerror={(e) => ((e.currentTarget as HTMLImageElement).hidden = true)}
+									/>
 								</div>
 							{/if}
 							<div class="rs-body">

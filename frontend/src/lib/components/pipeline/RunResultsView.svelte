@@ -722,7 +722,7 @@
 			)[1]}"
 		>
 			{#if inspected}
-				<img src={inspected.poster_url} alt="Inspected poster" />
+				<img src={inspected.poster_url} alt="Inspected poster" decoding="async" fetchpriority="high" />
 				<button
 					class="maximize-btn"
 					title="Maximize"
@@ -1236,7 +1236,7 @@
 		<button class="lightbox-close" aria-label="Close" onclick={() => (lightboxOpen = false)}>
 			<Icon name="x" size={22} />
 		</button>
-		<img src={inspected.poster_url} alt="Maximized poster" />
+		<img src={inspected.poster_url} alt="Maximized poster" decoding="async" fetchpriority="high" />
 	</div>
 {/if}
 

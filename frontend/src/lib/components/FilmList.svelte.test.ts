@@ -67,7 +67,7 @@ describe('FilmList', () => {
 
 		expect(screen.getByRole('img', { name: 'Film 1 poster' })).toHaveAttribute(
 			'src',
-			'/api/library/movies/1/poster'
+			'/api/library/movies/1/poster?w=400'
 		);
 		const previews = container.querySelectorAll('.poster-preview .poster');
 		expect(previews).toHaveLength(2);

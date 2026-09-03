@@ -13,7 +13,8 @@ const series: SeriesListItem = {
 		has_poster: true,
 		ai_selected: false,
 		user_approved: true,
-		deployed_at: '2026-08-01T12:00:00Z'
+		deployed_at: '2026-08-01T12:00:00Z',
+		version: 'v1feedbeef'
 	},
 	review_pending: false,
 	downloaded_seasons: 1,
@@ -30,7 +31,8 @@ const series: SeriesListItem = {
 				has_poster: false,
 				ai_selected: false,
 				user_approved: false,
-				deployed_at: null
+				deployed_at: null,
+				version: null
 			}
 		}
 	]

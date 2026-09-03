@@ -4,6 +4,7 @@
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import StatusDot from '$lib/components/StatusDot.svelte';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+	import { getSeriesPosterUrl, posterThumbUrl } from '$lib/api/poster-urls';
 	import { approveTvAuto, resetSeriesPosters } from '$lib/api/pipeline-tv';
 	import { toast } from '$lib/toast';
 	import type { PageData } from './$types';
@@ -48,7 +49,9 @@
 				runId: group.show_run.run_id,
 				posterUrl:
 					group.show_run.auto_pick_poster_url ??
-					(data.series?.poster.has_poster ? `/api/library/series/${data.series.id}/poster` : null),
+					(data.series?.poster.has_poster
+						? posterThumbUrl(getSeriesPosterUrl(data.series.id, data.series.poster.version))
+						: null),
 				status: group.show_run.status,
 				score: group.show_run.counts?.ranked ?? null
 			});

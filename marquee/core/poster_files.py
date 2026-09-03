@@ -46,6 +46,22 @@ def verify_jpeg_file(fileobj: BinaryIO) -> None:
         fileobj.seek(0)
 
 
+def verify_jpeg_magic(fileobj: BinaryIO) -> None:
+    """Serve-path check: JPEG SOI marker only.
+
+    The full ``verify_jpeg_file`` decode runs when a poster is deployed or
+    adopted; re-proving the whole image on every GET made each poster request
+    pay for a PIL parse. The magic bytes are enough to keep the route from
+    ever labelling non-JPEG content as ``image/jpeg``.
+    """
+    try:
+        header = fileobj.read(3)
+    finally:
+        fileobj.seek(0)
+    if header != b"\xff\xd8\xff":
+        raise PathValidationError("Poster content is not a JPEG image")
+
+
 def is_jpeg_path(path: Path) -> bool:
     try:
         with path.open("rb") as fileobj:

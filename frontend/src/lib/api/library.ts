@@ -60,13 +60,7 @@ export function syncLibraries(fetch: Fetch): Promise<JobSubmissionResponse> {
 	return apiSend(fetch, 'POST', '/sync/all', undefined);
 }
 
-export function getSeriesPosterUrl(id: number): string {
-	return `/api/library/series/${id}/poster`;
-}
-
-export function getSeasonPosterUrl(id: number): string {
-	return `/api/library/seasons/${id}/poster`;
-}
+export { getSeasonPosterUrl, getSeriesPosterUrl, posterThumbUrl } from './poster-urls';
 
 export function deleteSeriesPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
 	return apiSend(fetch, 'DELETE', `/library/series/${id}/poster`, undefined, {

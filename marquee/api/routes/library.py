@@ -6,9 +6,10 @@ filters and poster surfaces work from persisted data rather than scanning.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +17,7 @@ from marquee.api.job_submission import submission_response
 from marquee.api.library_serializers import (
     enrich_movie,
     poster_status_filter,
+    poster_version,
 )
 from marquee.core.jobs.poster_submission import submit_poster_leaf
 from marquee.core.jobs.submission import IdempotencyConflictError, SubmissionError
@@ -42,6 +44,7 @@ def _poster_summary(entity) -> dict:
         "ai_selected": bool(entity.poster_ai_selected),
         "user_approved": bool(entity.poster_user_approved),
         "deployed_at": entity.poster_deployed_at.isoformat() if entity.poster_deployed_at else None,
+        "version": poster_version(entity),
     }
 
 
@@ -63,22 +66,65 @@ def _season_summary(season: Season) -> dict:
     }
 
 
-def _serve_subject_poster(subject, *, media_type: str):
+async def _serve_subject_poster(
+    subject,
+    *,
+    media_type: str,
+    request: Request | None = None,
+    v: str | None = None,
+    w: int | None = None,
+):
+    """Serve a deployed poster, or its ``w``-wide derivative, with cache policy.
+
+    A URL carrying the poster's *current* version token is immutable — the
+    token changes when the deployed bytes change, so the browser may keep it
+    forever. Any other URL (stale token, or none) revalidates on every use:
+    one conditional round-trip that 304s while the poster is unchanged.
+    """
     from marquee.core.filesystem import (  # noqa: PLC0415
         FilesystemBoundaryError,
         boundary_for_roots,
     )
     from marquee.core.path_utils import safe_translate_and_validate  # noqa: PLC0415
-    from marquee.core.poster_files import verify_jpeg_file  # noqa: PLC0415
+    from marquee.core.poster_files import verify_jpeg_magic  # noqa: PLC0415
+    from marquee.core.poster_thumbs import THUMB_WIDTHS, get_or_build_thumbnail  # noqa: PLC0415
+
+    if w is not None and w not in THUMB_WIDTHS:
+        raise HTTPException(status_code=422, detail=f"Unsupported poster width {w}")
+
+    version = poster_version(subject.entity)
+    if v is not None and version is not None and v == version:
+        cache_control = "public, max-age=31536000, immutable"
+    else:
+        cache_control = "public, no-cache"
+    if_none_match = request.headers.get("if-none-match") if request is not None else None
 
     try:
         folder = safe_translate_and_validate(subject.folder_raw, source=subject.path_source)
         boundary = boundary_for_roots({"subject": folder}, purpose="poster-serve")
         classified = boundary.classify(subject.entity.poster_path, require_file=True)
+        etag = version
+        if w is not None and version is not None:
+            # Blocking work (PIL decode on first build) stays off the event loop.
+            thumb = await asyncio.to_thread(
+                get_or_build_thumbnail,
+                boundary,
+                classified,
+                kind=subject.media_type,
+                subject_id=subject.id,
+                version=version,
+                width=w,
+            )
+            if thumb is not None:
+                boundary, classified = thumb
+                etag = f"{version}-w{w}"
         return boundary.response(
             classified,
             media_type=media_type,
-            validator=verify_jpeg_file,
+            validator=verify_jpeg_magic,
+            cache_control=cache_control,
+            etag=etag,
+            if_none_match=if_none_match,
         )
     except (FilesystemBoundaryError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="Poster file not found on disk") from exc
@@ -204,13 +250,21 @@ async def list_movies(
 
 
 @router.get("/movies/{movie_id}/poster")
-async def get_movie_poster(movie_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_movie_poster(
+    movie_id: int,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    v: str | None = None,
+    w: int | None = None,
+):
     movie = (
         await db.execute(select(Movie).where(Movie.id == movie_id, Movie.is_present.is_(True)))
     ).scalar_one_or_none()
     if movie is None or not movie.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
-    return _serve_subject_poster(PosterSubject.from_movie(movie), media_type="image/jpeg")
+    return await _serve_subject_poster(
+        PosterSubject.from_movie(movie), media_type="image/jpeg", request=request, v=v, w=w
+    )
 
 
 @router.get("/movies/{movie_id}")
@@ -433,17 +487,31 @@ async def delete_movie_poster(
 
 
 @router.get("/series/{series_id}/poster")
-async def get_series_poster(series_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_series_poster(
+    series_id: int,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    v: str | None = None,
+    w: int | None = None,
+):
     series = (
         await db.execute(select(Series).where(Series.id == series_id, series_visible()))
     ).scalar_one_or_none()
     if series is None or not series.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
-    return _serve_subject_poster(PosterSubject.from_series(series), media_type="image/jpeg")
+    return await _serve_subject_poster(
+        PosterSubject.from_series(series), media_type="image/jpeg", request=request, v=v, w=w
+    )
 
 
 @router.get("/seasons/{season_id}/poster")
-async def get_season_poster(season_id: int, db: Annotated[AsyncSession, Depends(get_db)]):
+async def get_season_poster(
+    season_id: int,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    v: str | None = None,
+    w: int | None = None,
+):
     row = (
         await db.execute(
             select(Season, Series)
@@ -453,8 +521,12 @@ async def get_season_poster(season_id: int, db: Annotated[AsyncSession, Depends(
     ).one_or_none()
     if row is None or not row.Season.poster_path:
         raise HTTPException(status_code=404, detail="No poster available")
-    return _serve_subject_poster(
-        PosterSubject.from_season(row.Season, row.Series), media_type="image/jpeg"
+    return await _serve_subject_poster(
+        PosterSubject.from_season(row.Season, row.Series),
+        media_type="image/jpeg",
+        request=request,
+        v=v,
+        w=w,
     )
 
 

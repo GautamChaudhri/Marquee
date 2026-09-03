@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { posterThumbUrl } from '$lib/api/poster-urls';
 	import type { MovieListItem } from '$lib/api/types';
 	import { deriveFilmArtworkStatus } from '$lib/library-artwork';
 	import { libraryPosterSize } from '$lib/theme';
@@ -18,7 +19,11 @@
 			title={m.title}
 			aria-label={`Open ${m.title}, ${m.year}. ${artwork.accessibleLabel}`}
 		>
-			<PosterThumb title={m.title} imageAlt={`${m.title} poster`} posterUrl={m.poster_url} />
+			<PosterThumb
+				title={m.title}
+				imageAlt={`${m.title} poster`}
+				posterUrl={posterThumbUrl(m.poster_url)}
+			/>
 			<div class="cap" aria-hidden="true">
 				<StatusDot tone={artwork.tone} title={artwork.label} />
 				<span>{m.year}</span>

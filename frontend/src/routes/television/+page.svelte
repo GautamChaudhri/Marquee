@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { getSeriesPosterUrl, posterThumbUrl } from '$lib/api/poster-urls';
 	import Icon from '$lib/components/Icon.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import SeriesTable from '$lib/components/SeriesTable.svelte';
@@ -147,7 +148,9 @@
 					<PosterThumb
 						title={series.title}
 						imageAlt={`${series.title} show poster`}
-						posterUrl={series.poster.has_poster ? `/api/library/series/${series.id}/poster` : null}
+						posterUrl={series.poster.has_poster
+							? posterThumbUrl(getSeriesPosterUrl(series.id, series.poster.version))
+							: null}
 					/>
 				</div>
 				<div class="cap" aria-hidden="true">

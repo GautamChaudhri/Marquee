@@ -9,7 +9,8 @@
 		deleteSeasonPoster,
 		deleteSeriesPoster,
 		getSeasonPosterUrl,
-		getSeriesPosterUrl
+		getSeriesPosterUrl,
+		posterThumbUrl
 	} from '$lib/api/library';
 	import { runSeries, useShowPoster } from '$lib/api/pipeline-tv';
 	import {
@@ -169,7 +170,10 @@
 				title={series.title}
 				year={series.year}
 				posterStatus={posterStatusFromSummary(series.poster)}
-				posterUrl={series.poster.has_poster ? getSeriesPosterUrl(series.id) : null}
+				posterUrl={series.poster.has_poster
+					? posterThumbUrl(getSeriesPosterUrl(series.id, series.poster.version))
+					: null}
+				eager
 			/>
 			<div class="chips">
 				<div class="chip">
@@ -233,7 +237,9 @@
 								gradientKey={series.title}
 								fallbackPlacement="center"
 								posterStatus={posterStatusFromSummary(season.poster)}
-								posterUrl={season.poster.has_poster ? getSeasonPosterUrl(season.id) : null}
+								posterUrl={season.poster.has_poster
+									? posterThumbUrl(getSeasonPosterUrl(season.id, season.poster.version))
+									: null}
 							/>
 							<div class="season-actions">
 								<button class="btn-ghost" onclick={() => goto(`/pipeline/tv/series/${series.id}`)}>

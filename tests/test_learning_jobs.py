@@ -424,7 +424,13 @@ async def test_poster_pipeline_writes_canonical_pipeline_run_projection(
         )
     assert refreshed.status_code == 200
     assert refreshed.json()["poster_status"] == "approved"
-    assert refreshed.json()["poster_url"] == f"/api/library/movies/{movie.id}/poster"
+    # Deploy recorded the poster hash, so the serialized URL carries the
+    # cache-version token derived from it.
+    assert movie.poster_sha256 is not None
+    assert (
+        refreshed.json()["poster_url"]
+        == f"/api/library/movies/{movie.id}/poster?v={movie.poster_sha256[:16]}"
+    )
     assert candidate_response.status_code == 200
     assert candidate_response.content.startswith(b"\xff\xd8")
     assert rejected_response.status_code == 200

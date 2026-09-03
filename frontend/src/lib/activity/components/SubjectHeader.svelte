@@ -18,7 +18,7 @@
 <header class:compact class="subject-header">
 	<div class="artwork" class:wide aria-hidden="true">
 		{#if artworkUrl}
-			<img src={artworkUrl} alt="" />
+			<img src={artworkUrl} alt="" loading="lazy" decoding="async" />
 		{:else}
 			<span>{fallback}</span>
 		{/if}

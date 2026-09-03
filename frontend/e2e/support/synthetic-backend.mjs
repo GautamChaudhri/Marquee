@@ -10,11 +10,14 @@ const DETAIL_JOB_ID = 'detail00000000000000000000000001';
 const ONBOARDING_JOB_ID = 'onboarding00000000000000000001';
 const ONBOARDING_RUN_ID = 'onboardingreview000000000000001';
 const now = '2026-07-16T12:00:00Z';
+// Full-body library-poster responses served, read by the caching specs.
+let posterBodyServes = 0;
 const posterSummary = (hasPoster) => ({
 	has_poster: hasPoster,
 	ai_selected: false,
 	user_approved: hasPoster,
-	deployed_at: hasPoster ? now : null
+	deployed_at: hasPoster ? now : null,
+	version: hasPoster ? 'synthetic0001' : null
 });
 const seasonSummary = (seriesId, seasonNumber, hasPoster) => ({
 	id: seriesId * 100 + seasonNumber,
@@ -81,7 +84,7 @@ const libraryMovies = [
 		resolution: '1080p',
 		poster_status: 'deployed',
 		review_pending: false,
-		poster_url: '/api/library/movies/8301/poster',
+		poster_url: '/api/library/movies/8301/poster?v=synthetic0001',
 		media_file_id: 8301
 	},
 	{
@@ -96,7 +99,7 @@ const libraryMovies = [
 		resolution: '2160p',
 		poster_status: 'review',
 		review_pending: true,
-		poster_url: '/api/library/movies/8302/poster',
+		poster_url: '/api/library/movies/8302/poster?v=synthetic0001',
 		media_file_id: 8302
 	},
 	{
@@ -126,7 +129,7 @@ const libraryMovies = [
 		resolution: '1080p',
 		poster_status: 'approved',
 		review_pending: false,
-		poster_url: '/api/library/movies/8304/poster',
+		poster_url: '/api/library/movies/8304/poster?v=synthetic0001',
 		media_file_id: 8304
 	}
 ];
@@ -968,12 +971,35 @@ const server = createServer((req, res) => {
 		);
 		return;
 	}
+	// Observability for the caching specs: a poster fetched from the browser
+	// cache never reaches this server, so this counter is the ground truth for
+	// "the revisit re-downloaded nothing".
+	if (path === '/__test/poster-body-serves') {
+		json(res, 200, { count: posterBodyServes });
+		return;
+	}
 	const libraryPoster = path.match(/^\/api\/library\/(movies|series|seasons)\/(\d+)\/poster$/);
 	if (libraryPoster) {
 		const [, kind, id] = libraryPoster;
 		const label = kind === 'movies' ? 'FILM' : kind === 'series' ? 'SHOW' : `S${id.slice(-2)}`;
 		const accent = kind === 'series' ? '#5eead4' : '#fbbf24';
-		res.writeHead(200, { 'content-type': 'image/svg+xml' });
+		// Mirror the real caching policy: URLs presenting the current version
+		// token are immutable, everything else revalidates via ETag, and a
+		// matching If-None-Match gets a bodiless 304.
+		const version = url.searchParams.get('v');
+		const cacheControl =
+			version === 'synthetic0001' ? 'public, max-age=31536000, immutable' : 'public, no-cache';
+		if ((req.headers['if-none-match'] ?? '').includes('"synthetic0001"')) {
+			res.writeHead(304, { etag: '"synthetic0001"', 'cache-control': cacheControl });
+			res.end();
+			return;
+		}
+		posterBodyServes += 1;
+		res.writeHead(200, {
+			'content-type': 'image/svg+xml',
+			etag: '"synthetic0001"',
+			'cache-control': cacheControl
+		});
 		res.end(
 			`<svg xmlns="http://www.w3.org/2000/svg" width="640" height="960"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#17243d"/><stop offset="1" stop-color="#080d16"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><circle cx="320" cy="390" r="150" fill="none" stroke="${accent}" stroke-width="10" opacity=".72"/><text x="320" y="420" text-anchor="middle" fill="${accent}" font-family="system-ui" font-size="72" font-weight="700">${label}</text><text x="320" y="850" text-anchor="middle" fill="#f5f5f4" font-family="system-ui" font-size="28">Marquee fixture</text></svg>`
 		);

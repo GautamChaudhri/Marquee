@@ -27,6 +27,7 @@ from marquee.api.job_submission import (
     reused_submission_response,
     submission_response,
 )
+from marquee.api.library_serializers import library_poster_url
 from marquee.api.results import poster_url
 from marquee.api.routes.jobs import job_summary
 from marquee.api.routes.pipeline import (
@@ -403,9 +404,7 @@ async def tv_run_queue(db: Annotated[AsyncSession, Depends(get_db)]):
                     "title": series.title,
                     "year": series.year,
                     "tmdb_id": series.tmdb_id,
-                    "poster_url": (
-                        f"/api/library/series/{series.id}/poster" if series.poster_path else None
-                    ),
+                    "poster_url": library_poster_url("series", series),
                 },
                 "show_poster_missing": show_poster_missing,
                 "missing_seasons": [
@@ -986,9 +985,7 @@ async def tv_review_queue(
             )
             show_entry = {**_run_summary(show_run), "auto_pick_poster_url": show_auto_pick_url}
 
-        display_poster_url = show_auto_pick_url or (
-            f"/api/library/series/{series.id}/poster" if series.poster_path else None
-        )
+        display_poster_url = show_auto_pick_url or library_poster_url("series", series)
         items.append(
             {
                 "series": {

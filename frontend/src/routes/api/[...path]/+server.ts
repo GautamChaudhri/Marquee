@@ -116,9 +116,17 @@ const handler: RequestHandler = async ({ request, params, url, fetch }) => {
 	}
 
 	const respHeaders = new Headers(res.headers);
-	respHeaders.delete('content-encoding');
-	respHeaders.delete('content-length');
-	return new Response(res.body, { status: res.status, headers: respHeaders });
+	// fetch() transparently decompressed the body only when the backend
+	// compressed it; otherwise the upstream Content-Length is still accurate
+	// and keeping it lets the browser plan image decode and show progress.
+	if (respHeaders.has('content-encoding')) {
+		respHeaders.delete('content-encoding');
+		respHeaders.delete('content-length');
+	}
+	// Null-body statuses (304 from poster revalidation, 204) must not carry a
+	// body stream — undici rejects the Response outright if they do.
+	const body = res.status === 304 || res.status === 204 ? null : res.body;
+	return new Response(body, { status: res.status, headers: respHeaders });
 };
 
 export const GET = handler;

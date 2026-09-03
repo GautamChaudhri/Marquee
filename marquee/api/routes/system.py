@@ -71,7 +71,22 @@ def _cache_stats() -> dict:
             if entry.is_file() and entry.name.endswith(".jpg"):
                 count += 1
                 total_bytes += entry.stat().st_size
-    return {"posters": count, "bytes": total_bytes}
+    thumb_count = thumb_bytes = 0
+    thumbs = settings.poster_thumbs_path
+    if thumbs.is_dir():
+        for kind_dir in os.scandir(thumbs):
+            if not kind_dir.is_dir():
+                continue
+            for entry in os.scandir(kind_dir.path):
+                if entry.is_file() and entry.name.endswith(".jpg"):
+                    thumb_count += 1
+                    thumb_bytes += entry.stat().st_size
+    return {
+        "posters": count,
+        "bytes": total_bytes,
+        "thumbs": thumb_count,
+        "thumb_bytes": thumb_bytes,
+    }
 
 
 def _ocr_status() -> dict:

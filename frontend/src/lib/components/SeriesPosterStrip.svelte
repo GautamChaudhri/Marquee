@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { getSeasonPosterUrl, getSeriesPosterUrl, posterThumbUrl } from '$lib/api/poster-urls';
 	import type { SeriesListItem } from '$lib/api/types';
 	import PosterThumb from './PosterThumb.svelte';
 
@@ -25,7 +26,9 @@
 			year={series.year}
 			imageAlt={`${series.title} show poster`}
 			gradientKey={series.title}
-			posterUrl={series.poster.has_poster ? `/api/library/series/${series.id}/poster` : null}
+			posterUrl={series.poster.has_poster
+				? posterThumbUrl(getSeriesPosterUrl(series.id, series.poster.version))
+				: null}
 		/>
 		<span>Show</span>
 	</div>
@@ -38,7 +41,9 @@
 				imageAlt={`${series.title} ${label} poster`}
 				gradientKey={series.title}
 				fallbackPlacement="center"
-				posterUrl={season.poster.has_poster ? `/api/library/seasons/${season.id}/poster` : null}
+				posterUrl={season.poster.has_poster
+					? posterThumbUrl(getSeasonPosterUrl(season.id, season.poster.version))
+					: null}
 			/>
 			<span>{label}</span>
 		</div>

@@ -36,6 +36,16 @@
 			.join(' · ')
 	);
 	let imgFailed = $state(false);
+	let attemptedUrl = $state<string | null | undefined>(undefined);
+
+	$effect(() => {
+		// The tile can be recycled for another stack after re-ranking; give a
+		// new URL a fresh attempt instead of retaining a previous failure.
+		if (representative.poster_url !== attemptedUrl) {
+			attemptedUrl = representative.poster_url;
+			imgFailed = false;
+		}
+	});
 </script>
 
 <div
@@ -61,6 +71,8 @@
 			<img
 				src={representative.poster_url}
 				alt={representative.orig_filename}
+				loading="lazy"
+				decoding="async"
 				onerror={() => (imgFailed = true)}
 			/>
 		{/if}

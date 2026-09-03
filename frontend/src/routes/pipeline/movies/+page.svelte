@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+	import { posterThumbUrl } from '$lib/api/poster-urls';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import PosterLibraryToggle from '$lib/components/PosterLibraryToggle.svelte';
@@ -512,7 +513,7 @@
 								<PosterThumb
 									title={m.title}
 									year={m.year}
-									posterUrl={m.poster_url}
+									posterUrl={posterThumbUrl(m.poster_url)}
 									centerTitle={false}
 								/>
 							</div>

@@ -228,7 +228,12 @@
 			<div class="candidate-grid">
 				{#each review.candidates as candidate (candidate.candidate_id)}
 					<article class="candidate-card">
-						<img src={candidate.image_url} alt={`Poster choice from ${candidate.source}`} />
+						<img
+							src={candidate.image_url}
+							alt={`Poster choice from ${candidate.source}`}
+							loading="lazy"
+							decoding="async"
+						/>
 						<div class="candidate-copy">
 							<h3>Poster choice</h3>
 							<p><strong>Source:</strong> {candidate.source}</p>

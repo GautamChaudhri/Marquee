@@ -10810,6 +10810,38 @@
               "title": "Movie Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "v",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "V"
+            }
+          },
+          {
+            "in": "query",
+            "name": "w",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "W"
+            }
           }
         ],
         "responses": {
@@ -10896,6 +10928,38 @@
             "schema": {
               "title": "Season Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "v",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "V"
+            }
+          },
+          {
+            "in": "query",
+            "name": "w",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "W"
             }
           }
         ],
@@ -11077,6 +11141,38 @@
             "schema": {
               "title": "Series Id",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "v",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "V"
+            }
+          },
+          {
+            "in": "query",
+            "name": "w",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "W"
             }
           }
         ],

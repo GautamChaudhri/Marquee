@@ -55,6 +55,16 @@
 	const isRanked = $derived(kind === 'ranked');
 	const isAutoPick = $derived(isRanked && isPersistedAutoPick);
 	let imgFailed = $state(false);
+	let attemptedUrl = $state<string | null | undefined>(undefined);
+
+	$effect(() => {
+		// Tiles are recycled across filter/tab changes; a new URL deserves a
+		// fresh load attempt instead of a retained failure.
+		if (candidate.poster_url !== attemptedUrl) {
+			attemptedUrl = candidate.poster_url;
+			imgFailed = false;
+		}
+	});
 
 	const reason = $derived(rejectionTag(candidate));
 	const reasonDetail = $derived(candidate.rejection_explanation ?? reason);
@@ -87,6 +97,7 @@
 				src={candidate.poster_url}
 				alt={candidate.orig_filename}
 				loading="lazy"
+				decoding="async"
 				onerror={() => (imgFailed = true)}
 			/>
 		{/if}

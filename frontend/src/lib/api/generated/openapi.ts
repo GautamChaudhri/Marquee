@@ -6052,7 +6052,10 @@ export interface operations {
 	};
 	get_movie_poster_api_library_movies__movie_id__poster_get: {
 		parameters: {
-			query?: never;
+			query?: {
+				v?: string | null;
+				w?: number | null;
+			};
 			header?: never;
 			path: {
 				movie_id: number;
@@ -6116,7 +6119,10 @@ export interface operations {
 	};
 	get_season_poster_api_library_seasons__season_id__poster_get: {
 		parameters: {
-			query?: never;
+			query?: {
+				v?: string | null;
+				w?: number | null;
+			};
 			header?: never;
 			path: {
 				season_id: number;
@@ -6243,7 +6249,10 @@ export interface operations {
 	};
 	get_series_poster_api_library_series__series_id__poster_get: {
 		parameters: {
-			query?: never;
+			query?: {
+				v?: string | null;
+				w?: number | null;
+			};
 			header?: never;
 			path: {
 				series_id: number;

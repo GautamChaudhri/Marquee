@@ -35,7 +35,8 @@ from marquee.api.results import (
 )
 from marquee.api.routes.jobs import job_summary
 from marquee.core.configuration_cache import configuration_provider
-from marquee.core.jobs.artifact_service import ArtifactError, verify_physical_artifact
+from marquee.core.filesystem import FilesystemBoundaryError
+from marquee.core.jobs.artifact_service import ArtifactError, physical_artifact_file
 from marquee.core.jobs.batches import BatchScope, create_fixed_batch
 from marquee.core.jobs.contracts import TriggerKind
 from marquee.core.jobs.mutation_documents import (
@@ -274,8 +275,16 @@ async def _serve_candidate_artifact(
     orig_filename: str,
     *,
     role: str,
+    if_none_match: str | None = None,
 ):
-    """Serve one archived candidate image after re-proving its whole identity."""
+    """Serve one archived candidate image after re-proving its identity.
+
+    Identity is the nine-field cross-check below plus a size match against the
+    artifact record at serve time; the full content hash is proven once at
+    write time, not per GET — these images sit on every review grid, and run
+    evidence is immutable, so the response also carries an immutable cache
+    policy keyed on the stored checksum.
+    """
     artifact_id = candidate.get("artifact_id")
     if not isinstance(artifact_id, int):
         raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
@@ -299,16 +308,24 @@ async def _serve_candidate_artifact(
     ):
         raise HTTPException(status_code=404, detail="Candidate artifact unavailable")
     try:
-        boundary, classified = await verify_physical_artifact(artifact)
-    except ArtifactError as exc:
+        boundary, classified = physical_artifact_file(artifact)
+        return boundary.response(
+            classified,
+            media_type="image/jpeg",
+            cache_control="public, max-age=31536000, immutable",
+            etag=artifact.checksum,
+            if_none_match=if_none_match,
+            expected_size=artifact.size_bytes,
+        )
+    except (ArtifactError, FilesystemBoundaryError) as exc:
         raise HTTPException(status_code=404, detail="Candidate artifact unavailable") from exc
-    return boundary.response(classified)
 
 
 @router.get("/runs/{run_id}/posters/{orig_filename}")
 async def get_run_poster(
     run_id: str,
     orig_filename: str,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
     """Serve a candidate's image file from inside the run's working dir."""
@@ -316,11 +333,12 @@ async def get_run_poster(
     archive = await load_pipeline_archive(db, run)
     if archive is None:
         raise HTTPException(status_code=404, detail="Run archive unavailable")
+    if_none_match = request.headers.get("if-none-match")
 
     candidate = find_review_survivor(archive, orig_filename)
     if candidate is not None:
         return await _serve_candidate_artifact(
-            db, run, candidate, orig_filename, role="review_candidate"
+            db, run, candidate, orig_filename, role="review_candidate", if_none_match=if_none_match
         )
 
     # Not eligible for selection, but the review UI still shows it in the
@@ -329,7 +347,7 @@ async def get_run_poster(
     rejected = find_review_evidence(archive, orig_filename)
     if rejected is not None:
         return await _serve_candidate_artifact(
-            db, run, rejected, orig_filename, role="rejected_candidate"
+            db, run, rejected, orig_filename, role="rejected_candidate", if_none_match=if_none_match
         )
 
     raise HTTPException(

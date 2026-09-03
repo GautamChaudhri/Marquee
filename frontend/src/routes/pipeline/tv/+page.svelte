@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { SvelteMap, SvelteSet } from 'svelte/reactivity';
+	import { posterThumbUrl } from '$lib/api/poster-urls';
 	import FeatureActivityPanel from '$lib/activity/components/FeatureActivityPanel.svelte';
 	import type { JobSnapshotResponse } from '$lib/activity/types';
 	import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
@@ -393,7 +394,13 @@
 						{#each previews as preview (preview.label)}
 							<div class="preview-tile" title={preview.label}>
 								{#if preview.url}
-									<img src={preview.url} alt={`${item.series.title} ${preview.label} poster`} />
+									<img
+										src={preview.url}
+										alt={`${item.series.title} ${preview.label} poster`}
+										loading="lazy"
+										decoding="async"
+										onerror={(e) => ((e.currentTarget as HTMLImageElement).hidden = true)}
+									/>
 								{:else}
 									<div class="preview-placeholder">
 										<PosterThumb
@@ -422,7 +429,7 @@
 						<PosterThumb
 							title={item.series.title}
 							year={item.series.year}
-							posterUrl={item.display_poster_url}
+							posterUrl={posterThumbUrl(item.display_poster_url)}
 						/>
 					</div>
 				{/if}

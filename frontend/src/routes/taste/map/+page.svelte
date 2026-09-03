@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { posterThumbUrl } from '$lib/api/poster-urls';
 	import TasteMap from '$lib/components/TasteMap.svelte';
 	import PosterThumb from '$lib/components/PosterThumb.svelte';
 	import Icon from '$lib/components/Icon.svelte';
@@ -216,7 +217,7 @@
 					imageAlt={`${pointTitle(selected)} poster`}
 					gradientKey={selected.name}
 					fallbackPlacement={selected.asset_kind === 'season' ? 'center' : 'bottom-left'}
-					posterUrl={selected.poster_url}
+					posterUrl={posterThumbUrl(selected.poster_url)}
 				/>
 			</div>
 

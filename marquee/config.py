@@ -418,6 +418,15 @@ class Settings(BaseSettings):
         return self._data_child_path(self.POSTER_STAGING_DIR)
 
     @property
+    def poster_thumbs_path(self) -> Path:
+        """Serving-side thumbnail derivatives of deployed posters.
+
+        Filenames embed the poster's version token, so a redeploy naturally
+        misses the old derivative; stale siblings are removed on regeneration.
+        """
+        return self.data_dir_path / "cache" / "thumbs"
+
+    @property
     def runs_archive_path(self) -> Path:
         """Where per-run pipeline_run.json copies are archived by run_id.
 

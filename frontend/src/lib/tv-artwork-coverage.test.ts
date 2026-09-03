@@ -6,7 +6,8 @@ const poster = (hasPoster: boolean): PosterSummary => ({
 	has_poster: hasPoster,
 	ai_selected: false,
 	user_approved: hasPoster,
-	deployed_at: hasPoster ? '2026-08-01T12:00:00Z' : null
+	deployed_at: hasPoster ? '2026-08-01T12:00:00Z' : null,
+	version: hasPoster ? 'v1feedbeef' : null
 });
 
 const season = (seasonNumber: number, hasPoster: boolean): SeasonSummary => ({

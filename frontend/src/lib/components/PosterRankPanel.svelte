@@ -136,7 +136,15 @@
 			<div class="cell" animate:flip={{ duration: FLIP_MS }}>
 				<div class="card" aria-label={item.label || item.key} style="--c0:{g[0]}; --c1:{g[1]}">
 					<div class="art">
-						<img src={item.posterUrl} alt={item.label} draggable="false" />
+						<!-- On failure the card's gradient stands in for the image. -->
+						<img
+							src={item.posterUrl}
+							alt={item.label}
+							draggable="false"
+							loading="lazy"
+							decoding="async"
+							onerror={(e) => ((e.currentTarget as HTMLImageElement).hidden = true)}
+						/>
 						<span class="pos mono">{i + 1}</span>
 						{#if item.filenames.length > 1}
 							<span class="badge mono">{item.filenames.length}</span>
@@ -178,7 +186,14 @@
 						style="--c0:{g[0]}; --c1:{g[1]}"
 					>
 						<div class="art">
-							<img src={item.posterUrl} alt={item.label} draggable="false" />
+							<img
+								src={item.posterUrl}
+								alt={item.label}
+								draggable="false"
+								loading="lazy"
+								decoding="async"
+								onerror={(e) => ((e.currentTarget as HTMLImageElement).hidden = true)}
+							/>
 							{#if item.filenames.length > 1}
 								<span class="badge mono">{item.filenames.length}</span>
 							{/if}

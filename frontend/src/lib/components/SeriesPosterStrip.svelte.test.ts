@@ -7,7 +7,8 @@ const poster = (hasPoster: boolean): PosterSummary => ({
 	has_poster: hasPoster,
 	ai_selected: false,
 	user_approved: hasPoster,
-	deployed_at: hasPoster ? '2026-08-01T12:00:00Z' : null
+	deployed_at: hasPoster ? '2026-08-01T12:00:00Z' : null,
+	version: hasPoster ? 'v1feedbeef' : null
 });
 
 const season = (id: number, number: number, hasPoster: boolean): SeasonSummary => ({
@@ -48,13 +49,14 @@ describe('SeriesPosterStrip', () => {
 	it('uses deployed poster endpoints and gradient fallbacks with deliberate copy placement', () => {
 		const { container } = render(SeriesPosterStrip, { props: { series } });
 
+		// Version token → immutable caching; w=400 → the grid-weight derivative.
 		expect(screen.getByAltText('Signal House show poster')).toHaveAttribute(
 			'src',
-			'/api/library/series/42/poster'
+			'/api/library/series/42/poster?v=v1feedbeef&w=400'
 		);
 		expect(screen.getByAltText('Signal House S02 poster')).toHaveAttribute(
 			'src',
-			'/api/library/seasons/202/poster'
+			'/api/library/seasons/202/poster?v=v1feedbeef&w=400'
 		);
 		expect(screen.getAllByText('S00')).toHaveLength(2);
 		expect(container.querySelectorAll('.poster.plain-fallback')).toHaveLength(0);

@@ -13,7 +13,8 @@
 		centerTitle = false,
 		rounded = true,
 		fallbackStyle = 'gradient',
-		fallbackPlacement
+		fallbackPlacement,
+		eager = false
 	}: {
 		title: string;
 		year?: number | null;
@@ -30,6 +31,9 @@
 		fallbackStyle?: 'gradient' | 'plain';
 		/** Position fallback copy independently from deployed-image alt text. */
 		fallbackPlacement?: 'bottom-left' | 'center' | 'hidden';
+		/** Load immediately at high priority — for the page's focal poster only;
+		 *  grids stay lazy so offscreen rows don't compete for connections. */
+		eager?: boolean;
 	} = $props();
 
 	const g = $derived(gradientFor(gradientKey));
@@ -37,6 +41,7 @@
 	const placement = $derived(fallbackPlacement ?? (centerTitle ? 'center' : 'bottom-left'));
 
 	let imgFailed = $state(false);
+	let imgLoaded = $state(false);
 	let attemptedPosterUrl = $state<string | null | undefined>(undefined);
 	const showImg = $derived(!!posterUrl && !imgFailed);
 
@@ -46,8 +51,15 @@
 		if (posterUrl !== attemptedPosterUrl) {
 			attemptedPosterUrl = posterUrl;
 			imgFailed = false;
+			imgLoaded = false;
 		}
 	});
+
+	// A cache-complete image can finish before Svelte attaches the onload
+	// listener; the action catches that case so the fade-in still resolves.
+	function trackLoad(node: HTMLImageElement) {
+		if (node.complete && node.naturalWidth > 0) imgLoaded = true;
+	}
 </script>
 
 <div
@@ -59,7 +71,18 @@
 	style="--c0:{g[0]}; --c1:{g[1]}; --accent:{g[2]}"
 >
 	{#if showImg}
-		<img src={posterUrl} alt={imageAlt} class="cover" onerror={() => (imgFailed = true)} />
+		<img
+			src={posterUrl}
+			alt={imageAlt}
+			class="cover"
+			class:loaded={imgLoaded}
+			loading={eager ? 'eager' : 'lazy'}
+			fetchpriority={eager ? 'high' : undefined}
+			decoding="async"
+			use:trackLoad
+			onload={() => (imgLoaded = true)}
+			onerror={() => (imgFailed = true)}
+		/>
 	{/if}
 	{#if status}
 		<div class="badges"><StatusDot tone={status.tone} title={status.label} /></div>
@@ -93,12 +116,19 @@
 	.poster.plain-fallback {
 		background: var(--ink2);
 	}
+	/* The gradient behind stays visible until the image has pixels, then a short
+	   fade replaces the old white pop-in. */
 	.cover {
 		position: absolute;
 		inset: 0;
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
+		opacity: 0;
+		transition: opacity 160ms ease-out;
+	}
+	.cover.loaded {
+		opacity: 1;
 	}
 	.badges {
 		display: flex;

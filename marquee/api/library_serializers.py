@@ -39,6 +39,21 @@ def resolution_label(width: int | None, height: int | None) -> str | None:
     return "SD"
 
 
+def poster_version(entity: Any) -> str | None:
+    """Cache-validator token for a deployed poster (any ``PosterMixin`` entity).
+
+    The sha prefix changes exactly when the deployed bytes change, which lets
+    poster URLs carry ``?v=`` and be cached immutably. Sync-adopted posters may
+    predate hashing — they fall back to the deploy timestamp, or to ``None``,
+    which the serving route degrades to ETag revalidation instead.
+    """
+    if entity.poster_sha256:
+        return entity.poster_sha256[:16]
+    if entity.poster_deployed_at:
+        return str(int(entity.poster_deployed_at.timestamp()))
+    return None
+
+
 def poster_status(movie: Movie) -> str:
     """Derive the poster lifecycle state from the ``poster_*`` artwork columns.
 
@@ -79,6 +94,20 @@ def poster_status_filter(value: str) -> ColumnElement[bool] | None:
     return None
 
 
+def library_poster_url(kind: str, entity: Any) -> str | None:
+    """Versioned poster URL for a library entity (``movies``/``series``/``seasons``).
+
+    Carrying ``?v=`` lets the serving route mark the response immutable — the
+    token changes with the deployed bytes, so a redeploy mints a new URL and
+    the browser cache never goes stale.
+    """
+    if not entity.poster_path:
+        return None
+    version = poster_version(entity)
+    suffix = f"?v={version}" if version else ""
+    return f"/api/library/{kind}/{entity.id}/poster{suffix}"
+
+
 def enrich_movie(movie: Movie, media_file: Any | None, *, review_pending: bool = False) -> dict:
     """Assemble a list/detail item dict with derived display fields."""
     return {
@@ -93,6 +122,6 @@ def enrich_movie(movie: Movie, media_file: Any | None, *, review_pending: bool =
         "resolution": resolution_label(movie.video_width, movie.video_height),
         "poster_status": poster_status(movie),
         "review_pending": review_pending,
-        "poster_url": f"/api/library/movies/{movie.id}/poster" if movie.poster_path else None,
+        "poster_url": library_poster_url("movies", movie),
         "media_file_id": media_file.id if media_file else None,
     }

@@ -184,6 +184,9 @@ export interface PosterSummary {
 	ai_selected: boolean;
 	user_approved: boolean;
 	deployed_at: string | null;
+	/** Cache token — changes when the deployed bytes change. Null for
+	 *  sync-adopted posters that were never hashed. */
+	version: string | null;
 }
 
 export type SeasonPosterStatus = 'complete' | 'partial' | 'missing';
