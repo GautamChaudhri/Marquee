@@ -115,7 +115,7 @@ ml = [
     "paddlepaddle>=3.0; sys_platform == 'darwin'",
     "paddleocr>=3.0",
     "onnx>=1.16",
-    "torch>=2.0",
+    "torch>=2.13.0",
     "torchvision>=0.15",
     "transformers>=4.40",
     "tqdm>=4.65",
