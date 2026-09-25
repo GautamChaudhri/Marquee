@@ -37,7 +37,7 @@ dependencies = [
     # include_router() with lazy `_IncludedRouter` wrappers, changing the
     # `app.routes` introspection the route-ordering tests rely on. The app is
     # certified against the 0.136.x line.
-    "fastapi>=0.115,<0.137",
+    "fastapi>=0.140.13,<0.141",
     "uvicorn[standard]>=0.32,<1.0",
     # Data validation
     "pydantic>=2.10,<3.0",
