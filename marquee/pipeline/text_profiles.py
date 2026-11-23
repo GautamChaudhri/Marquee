@@ -17,12 +17,12 @@ import os
 import re
 import threading
 from dataclasses import asdict, dataclass, field, replace
-from pathlib import Path
+
+from marquee.config import settings
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_PROFILES_PATH = _PROJECT_ROOT / "data" / "text_profiles.json"
+_PROFILES_PATH = settings.text_profiles_path
 
 _lock = threading.Lock()
 

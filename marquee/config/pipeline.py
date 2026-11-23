@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_ML_DIR = _PROJECT_ROOT / "marquee" / "ml"
-_MODELS_DIR = _ML_DIR / "models"
-_DATA_DIR = _PROJECT_ROOT / "data"
-_DATA_ML_DIR = _DATA_DIR / "ml"
-_ENV_FILE = None if os.environ.get("MARQUEE_INTERNAL_RUNNER") == "1" else _PROJECT_ROOT / ".env"
+from marquee.config.app import ENV_FILE, REPO_ROOT, settings
+
+# Path defaults come from Settings, so every runtime file lives under DATA_DIR.
+_MODELS_DIR = settings.models_dir
+_DATA_DIR = settings.DATA_DIR
+_DATA_ML_DIR = settings.ml_dir
 
 _TMDB_SIZES = {"w92", "w154", "w185", "w342", "w500", "w780", "original"}
 
@@ -77,7 +76,7 @@ class PipelineSettings(BaseSettings):
     FACE_MODEL_PATH: Path = _MODELS_DIR / "scrfd_500m_bnkps.onnx"
     TASTE_PROFILE_PATH: Path = _DATA_ML_DIR / "taste_profile.clip-vit-b-32.npz"
     TASTE_PROFILE_TV_PATH: Path = _DATA_ML_DIR / "taste_profile.tv.clip-vit-b-32.npz"
-    EMBEDDING_CACHE_DIR: Path = _PROJECT_ROOT / "data" / "cache" / "embeddings"
+    EMBEDDING_CACHE_DIR: Path = settings.embedding_cache_dir
 
     # ── Extended features (recs 1-6) ─────────────────────────────────
     # DINOv2 second style opinion: "auto" enables it on GPU tiers (cuda,
@@ -349,7 +348,7 @@ class PipelineSettings(BaseSettings):
     FACE_NMS_THRESHOLD: float = 0.4
 
     model_config = SettingsConfigDict(
-        env_file=_ENV_FILE,
+        env_file=ENV_FILE,
         env_file_encoding="utf-8",
         env_file_override=False,
         env_prefix="",
@@ -381,7 +380,7 @@ class PipelineSettings(BaseSettings):
         ):
             path = getattr(self, field_name)
             if not path.is_absolute():
-                setattr(self, field_name, (_PROJECT_ROOT / path).resolve())
+                setattr(self, field_name, (REPO_ROOT / path).resolve())
 
         if self.K_NEIGHBORS < 1:
             raise ValueError("K_NEIGHBORS must be at least 1")
