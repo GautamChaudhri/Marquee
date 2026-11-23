@@ -15,9 +15,9 @@ from marquee.ml.artifact_codec import (
     unicode_array,
     unicode_scalar,
 )
-from marquee.ml.taste_map import load_map
 from marquee.ml.taste_store import NumpyTasteStore
 from marquee.ml.zeroshot import ZeroShotAxes
+from marquee.taste.map import load_map
 
 
 def test_codec_roundtrip_helpers():
@@ -103,11 +103,11 @@ def test_legacy_taste_map_migrates_and_loads(tmp_path, monkeypatch):
     )
 
     from marquee.config import settings
-    from marquee.core.pipeline_config import pipeline_settings
+    from marquee.config.pipeline import pipeline_settings
 
     monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", profile_path)
     monkeypatch.setattr(
-        type(settings), "poster_cache_path", property(lambda self: tmp_path / "cache" / "posters")
+        type(settings), "poster_cache_dir", property(lambda self: tmp_path / "cache" / "posters")
     )
 
     result = load_map()
