@@ -27,6 +27,7 @@ def test_relative_data_dir_resolves_against_repo_root() -> None:
 def test_runtime_paths_derive_from_data_dir(tmp_path: Path) -> None:
     settings = _settings(DATA_DIR=tmp_path)
     assert settings.models_dir == tmp_path / "models"
+    assert settings.model_manifest_path == tmp_path / "models" / "manifest.json"
     assert settings.ml_dir == tmp_path / "ml"
     assert settings.embedding_cache_dir == tmp_path / "cache" / "embeddings"
     assert settings.poster_cache_dir == tmp_path / "cache" / "posters"

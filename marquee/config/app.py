@@ -85,6 +85,10 @@ class Settings(BaseSettings):
         return self.DATA_DIR / "models"
 
     @property
+    def model_manifest_path(self) -> Path:
+        return self.models_dir / "manifest.json"
+
+    @property
     def ml_dir(self) -> Path:
         return self.DATA_DIR / "ml"
 
