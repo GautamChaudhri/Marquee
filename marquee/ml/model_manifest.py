@@ -4,7 +4,8 @@
 relative to the data directory, its size, its SHA-256, where it came from, the tool versions
 that built it, and when. A model folder (the OCR weights) gets one digest computed over its
 files' relative paths and their SHA-256s, so adding, removing, renaming, or changing any file
-inside it changes the digest.
+inside it changes the digest. Hidden files and folders are left out: downloaders keep their
+bookkeeping there (lock files, ``.cache/``), and it is not part of the model.
 
 :func:`verify` re-hashes what the manifest lists and returns every entry that is missing or
 no longer matches. The manifest is written atomically so a crash never leaves half a file.
@@ -82,11 +83,17 @@ def sha256_file(path: Path) -> str:
 
 
 def _folder_files(folder: Path) -> list[Path]:
-    return sorted(p for p in folder.rglob("*") if p.is_file())
+    """Every visible file under ``folder``; nothing below a hidden file or folder."""
+    return sorted(
+        path
+        for path in folder.rglob("*")
+        if path.is_file()
+        and not any(part.startswith(".") for part in path.relative_to(folder).parts)
+    )
 
 
 def folder_digest(folder: Path) -> tuple[str, int]:
-    """(digest, total size) over every file under ``folder``.
+    """(digest, total size) over every visible file under ``folder``.
 
     The digest is the SHA-256 of one ``<relative path>\\0<file sha256>\\n`` line per file,
     in sorted path order.

@@ -71,6 +71,17 @@ def test_folder_digest_changes_on_rename(data_dir: Path) -> None:
     assert after != before
 
 
+def test_folder_digest_ignores_hidden_bookkeeping(data_dir: Path) -> None:
+    folder = data_dir / "models" / "paddlex" / "official_models" / "det"
+    before = folder_digest(folder)
+
+    (folder / ".gitattributes").write_text("*.safetensors filter=lfs")
+    (folder / ".cache" / "huggingface" / "download").mkdir(parents=True)
+    (folder / ".cache" / "huggingface" / "download" / "x.lock").write_text("")
+
+    assert folder_digest(folder) == before
+
+
 def test_describe_missing_path_raises(data_dir: Path) -> None:
     with pytest.raises(FileNotFoundError):
         describe(data_dir, data_dir / "models" / "absent.onnx", item="x", source="y")
