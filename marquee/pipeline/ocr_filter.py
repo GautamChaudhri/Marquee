@@ -1,0 +1,2749 @@
+"""Three-pass PaddleOCR text gate with title and residual box emission."""
+
+from __future__ import annotations
+
+import difflib
+import hashlib
+import json
+import logging
+import multiprocessing
+import os
+import queue
+import re
+import sys
+import time
+from collections.abc import Callable, Sequence
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
+from functools import lru_cache
+from itertools import combinations
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, NoReturn
+
+import numpy as np
+from PIL import Image
+
+from marquee.core.pipeline_config import pipeline_settings
+
+if TYPE_CHECKING:
+    from marquee.core.text_profiles import TextProfile
+from marquee.ml.hardware import effective_ocr_omp_threads, effective_ocr_workers
+from marquee.pipeline.types import BoundingBox, OCRCandidateResult, OCRTextBox
+
+
+@dataclass
+class OcrPool:
+    """Handle to a running pool of PaddleOCR worker processes.
+
+    Created by ``PosterTextFilter.start_ocr_pool()`` — workers are already
+    loaded and ready to accept tasks.  Feed them once with ``run_ocr_tasks()``
+    (which consumes the workers) and release the queues with ``stop_ocr_pool()``.
+    """
+
+    workers: list[Any]
+    task_queue: Any
+    result_queue: Any
+
+    @property
+    def worker_count(self) -> int:
+        return len(self.workers)
+
+
+class OcrPoolTeardownError(RuntimeError):
+    """OCR workers or queues could not be certified as fully released."""
+
+
+type _OcrTask = (
+    tuple[Path, set[str], set[str]]
+    | tuple[Path, str, set[str], set[str]]
+    | tuple[Path, str, set[str], set[str], dict[str, object] | None]
+)
+
+
+logger = logging.getLogger(__name__)
+
+FORMAT_BLOCKLIST: frozenset[str] = frozenset(
+    {
+        "4k",
+        "uhd",
+        "hdr",
+        "bluray",
+        "blu",
+        "ray",
+        "dolby",
+        "atmos",
+        "imax",
+        "dts",
+        "hevc",
+        "remux",
+        "1080p",
+        "2160p",
+        "720p",
+        "ultra",
+        "cinerama",
+        "panavision",
+        "metrocolor",
+    }
+)
+STUDIO_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "paramount",
+        "warner",
+        "bros",
+        "disney",
+        "universal",
+        "sony",
+        "columbia",
+        "lionsgate",
+        "mgm",
+        "netflix",
+        "a24",
+        "focus",
+        "features",
+        "dreamworks",
+        "pixar",
+        "searchlight",
+        "miramax",
+        "orion",
+        "touchstone",
+        "blumhouse",
+        "legendary",
+    }
+)
+TOP_STRIP_FRACTION = 0.18
+_DIGIT_WORDS = {
+    "1": "one",
+    "2": "two",
+    "3": "three",
+    "4": "four",
+    "5": "five",
+    "6": "six",
+    "7": "seven",
+    "8": "eight",
+    "9": "nine",
+}
+
+_worker_ocr = None
+_worker_title_text = ""
+_worker_title_tokens: set[str] = set()
+_worker_director_tokens: set[str] = set()
+_WORKER_READY = "ready"
+_WORKER_RESULT = "result"
+_WORKER_INIT_ERROR = "init_error"
+_WORKER_POLL_SECONDS = 0.5
+_WORKER_SHUTDOWN_SECONDS = 15.0
+_active_worker_pids: dict[int, str] = {}
+
+
+@dataclass(frozen=True)
+class _DetectedBox:
+    text: str
+    confidence: float
+    bbox: BoundingBox
+    # False when the polygon came back in a rotated frame (vertical-textline
+    # reads, e.g. stacked title letters). The TEXT is real — vertical titles
+    # like Interstellar's teaser are only readable through this pathway — but
+    # the coordinates are unusable for geometry decisions.
+    geometry_valid: bool = True
+
+
+@dataclass(frozen=True)
+class _SemanticEvidence:
+    """Why an OCR box belongs to an allowed season semantic span."""
+
+    category: str
+    source: str
+    span_text: str
+
+
+@dataclass(frozen=True)
+class _CustomTextDecision:
+    accepted: bool
+    allowed_boxes: tuple[OCRTextBox, ...]
+    denied_boxes: tuple[OCRTextBox, ...]
+    categories: dict[tuple[str, BoundingBox], str]
+    allowed_area_fraction: float
+    denied_area_fraction: float
+
+
+def _normalise(text: str) -> str:
+    text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    return " ".join(text.split())
+
+
+@dataclass(frozen=True)
+class _TitleEvidence:
+    source: str
+    group_text: str
+    is_fragment: bool
+
+
+def _compact_text(text: str) -> str:
+    return _normalise(text).replace(" ", "")
+
+
+def _bbox_bounds(bbox: BoundingBox) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in bbox]
+    ys = [p[1] for p in bbox]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bbox_width(bbox: BoundingBox) -> float:
+    left, _, right, _ = _bbox_bounds(bbox)
+    return right - left
+
+
+def _bbox_height(bbox: BoundingBox) -> float:
+    _, top, _, bottom = _bbox_bounds(bbox)
+    return bottom - top
+
+
+def _bbox_union(boxes: list[_DetectedBox]) -> BoundingBox:
+    left = min(min(p[0] for p in box.bbox) for box in boxes)
+    top = min(min(p[1] for p in box.bbox) for box in boxes)
+    right = max(max(p[0] for p in box.bbox) for box in boxes)
+    bottom = max(max(p[1] for p in box.bbox) for box in boxes)
+    return ((left, top), (right, top), (right, bottom), (left, bottom))
+
+
+def _box_center(box: _DetectedBox) -> tuple[float, float]:
+    return sum(p[0] for p in box.bbox) / 4, sum(p[1] for p in box.bbox) / 4
+
+
+def _reading_order(box: _DetectedBox) -> tuple[float, float]:
+    x_center, y_center = _box_center(box)
+    return y_center, x_center
+
+
+def _is_ordered_subsequence(needle: str, haystack: str) -> bool:
+    if not needle:
+        return False
+    position = 0
+    for char in needle:
+        position = haystack.find(char, position)
+        if position < 0:
+            return False
+        position += 1
+    return True
+
+
+def _compact_matches_title(
+    compact: str,
+    *,
+    title_compact: str,
+    title_token_compacts: set[str],
+    allow_letter_cluster: bool = False,
+) -> bool:
+    if len(compact) < 2 or (not title_compact and not title_token_compacts):
+        return False
+    if compact == title_compact or compact in title_token_compacts:
+        return True
+    if len(compact) >= 3 and title_compact and compact in title_compact:
+        return True
+
+    fuzzy_cutoff = max(0.72, pipeline_settings.OCR_FUZZY_CUTOFF)
+    for token in title_token_compacts:
+        if len(token) < 3:
+            continue
+        if len(compact) >= 3 and len(compact) <= len(token) and compact in token:
+            return True
+        if (
+            len(compact) >= 3
+            and 0.40 <= len(compact) / len(token) <= 1.10
+            and difflib.SequenceMatcher(None, compact, token).ratio() >= fuzzy_cutoff
+        ):
+            return True
+        if (
+            len(compact) >= 4
+            and len(compact) / len(token) >= 0.55
+            and len(compact) <= len(token)
+            and _is_ordered_subsequence(compact, token)
+        ):
+            return True
+
+    if title_compact and len(compact) >= 4:
+        if (
+            0.35 <= len(compact) / len(title_compact) <= 1.15
+            and difflib.SequenceMatcher(None, compact, title_compact).ratio() >= fuzzy_cutoff
+        ):
+            return True
+        if len(compact) / len(title_compact) >= 0.35 and _is_ordered_subsequence(
+            compact, title_compact
+        ):
+            return True
+
+    if allow_letter_cluster:
+        haystacks = {title_compact, *title_token_compacts}
+        for haystack in haystacks:
+            if len(compact) < 3 or len(haystack) < 3:
+                continue
+            if len(compact) / len(haystack) < 0.50:
+                continue
+            if len(compact) > len(haystack) + 1:
+                continue
+            if _is_ordered_subsequence(compact, haystack):
+                return True
+            if len(compact) / len(haystack) >= 0.75 and difflib.SequenceMatcher(
+                None, compact, haystack
+            ).ratio() >= max(0.80, fuzzy_cutoff):
+                return True
+    return False
+
+
+def _same_line_groups(boxes: list[_DetectedBox], image_height: int) -> list[list[_DetectedBox]]:
+    groups: list[list[_DetectedBox]] = []
+    for box in sorted((b for b in boxes if b.geometry_valid), key=_reading_order):
+        _, y_center = _box_center(box)
+        height = max(1.0, _bbox_height(box.bbox))
+        for group in groups:
+            centers = [_box_center(existing)[1] for existing in group]
+            heights = [max(1.0, _bbox_height(existing.bbox)) for existing in group]
+            group_center = sum(centers) / len(centers)
+            threshold = max(image_height * 0.018, max([height, *heights]) * 0.70)
+            if abs(y_center - group_center) <= threshold:
+                group.append(box)
+                break
+        else:
+            groups.append([box])
+    return groups
+
+
+# Spaced/stylized title bands. PaddleOCR splits a widely letter-spaced title
+# ("A L I E N", big red "R U N") into one box per glyph. Those per-letter boxes
+# rarely re-assemble through text matching, and left as residuals each large
+# glyph trips the geometry-significance rule (big_area) — so a single stray
+# title letter rejects the poster, or no title forms at all. _letter_band_evidence
+# folds a wide, tall row (or a stacked pair of rows) of short high-confidence
+# boxes into the title when their letters cover a title token. Coverage is
+# order-independent, so it tolerates the scrambled reading order and misreads
+# ("3"/"7"/"P") that defeat the sequence matchers above.
+_BAND_MIN_BOXES = 3
+_BAND_MIN_WIDTH_FRACTION = 0.18
+_BAND_MIN_GLYPH_HEIGHT_FRACTION = 0.035
+_BAND_MAX_MEMBER_CHARS = 4
+_BAND_LETTER_COVERAGE = 0.55
+_BAND_LETTER_PRECISION = 0.55
+# High-precision rescue: when nearly every large glyph in the band belongs to the
+# title (taglines mix in off-title letters and miss this bar), a band that only
+# covers part of a heavily-misread title is still unmistakably the title.
+_BAND_HIGH_PRECISION = 0.80
+_BAND_HIGH_PRECISION_COVERAGE = 0.40
+_BAND_MERGE_GAP_RATIO = 1.2
+_TOP_BILLING_MIN_BOXES = 3
+_TOP_BILLING_MIN_WIDTH_FRACTION = 0.28
+_TOP_BILLING_MAX_HEIGHT_FRACTION = 0.055
+_TOP_BILLING_MAX_HEIGHT_RATIO = 1.8
+
+
+def _band_letters(boxes: list[_DetectedBox]) -> set[str]:
+    return {ch for box in boxes for ch in _compact_text(box.text) if ch.isalpha()}
+
+
+def _coverage_precision(letters: set[str], target: str) -> tuple[float, float]:
+    """Order-independent overlap of *letters* with the alphabetic letters of
+    *target*. Returns (coverage, precision): how much of the title the band
+    covers, and how much of the band belongs to the title."""
+    target_letters = {ch for ch in target if ch.isalpha()}
+    if not target_letters or not letters:
+        return 0.0, 0.0
+    overlap = letters & target_letters
+    return len(overlap) / len(target_letters), len(overlap) / len(letters)
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def _letter_band_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    title_compact: str,
+    title_token_compacts: set[str],
+    image_width: int,
+    image_height: int,
+) -> dict[int, _TitleEvidence]:
+    conf_thr = pipeline_settings.OCR_CONFIDENCE_THRESHOLD
+    members = [
+        box
+        for box in boxes
+        if box.geometry_valid
+        and box.confidence >= conf_thr
+        and 1 <= len(_compact_text(box.text)) <= _BAND_MAX_MEMBER_CHARS
+    ]
+    if len(members) < _BAND_MIN_BOXES:
+        return {}
+    targets = [t for t in (title_compact, *title_token_compacts) if len(t) >= 2]
+    if not targets:
+        return {}
+
+    groups = _same_line_groups(members, image_height)
+    groups.sort(key=lambda g: sum(_box_center(b)[1] for b in g) / len(g))
+
+    # Candidate bands: each line on its own, plus runs of vertically adjacent
+    # lines (a stacked title like "ALIEN" over "ROMULUS"). Only merge lines whose
+    # vertical gap is within ~1 glyph height so the title never fuses with a
+    # distant credits block.
+    candidates: list[list[_DetectedBox]] = list(groups)
+    for i in range(len(groups) - 1):
+        run = list(groups[i])
+        for j in range(i + 1, len(groups)):
+            run_bottom = _bbox_bounds(_bbox_union(run))[3]
+            next_top = _bbox_bounds(_bbox_union(groups[j]))[1]
+            median_h = _median([_bbox_height(b.bbox) for b in (*run, *groups[j])])
+            if next_top - run_bottom > _BAND_MERGE_GAP_RATIO * median_h:
+                break
+            run = [*run, *groups[j]]
+            candidates.append(list(run))
+
+    evidence: dict[int, _TitleEvidence] = {}
+    for band in candidates:
+        if len(band) < _BAND_MIN_BOXES:
+            continue
+        if _bbox_width(_bbox_union(band)) < image_width * _BAND_MIN_WIDTH_FRACTION:
+            continue
+        if _median([_bbox_height(b.bbox) for b in band]) < (
+            image_height * _BAND_MIN_GLYPH_HEIGHT_FRACTION
+        ):
+            continue
+        letters = _band_letters(band)
+        if not letters:
+            continue
+        coverage, precision = max(
+            (_coverage_precision(letters, t) for t in targets), key=lambda cp: cp[0]
+        )
+        strong = coverage >= _BAND_LETTER_COVERAGE and precision >= _BAND_LETTER_PRECISION
+        high_precision = (
+            precision >= _BAND_HIGH_PRECISION and coverage >= _BAND_HIGH_PRECISION_COVERAGE
+        )
+        if strong or high_precision:
+            group_text = " ".join(b.text for b in sorted(band, key=lambda b: _box_center(b)[0]))
+            for box in band:
+                evidence.setdefault(
+                    id(box),
+                    _TitleEvidence(source="letter_band", group_text=group_text, is_fragment=True),
+                )
+    return evidence
+
+
+def _find_title_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    title_text: str,
+    title_tokens: set[str],
+    image_width: int,
+    image_height: int,
+) -> dict[int, _TitleEvidence]:
+    title_compact = _compact_text(title_text)
+    token_compacts = {_compact_text(token) for token in title_tokens if _compact_text(token)}
+    evidence: dict[int, _TitleEvidence] = {}
+
+    for box in boxes:
+        compact = _compact_text(box.text)
+        if _matches_allowed(box.text, title_tokens) or _compact_matches_title(
+            compact,
+            title_compact=title_compact,
+            title_token_compacts=token_compacts,
+        ):
+            evidence[id(box)] = _TitleEvidence(
+                source="box",
+                group_text=box.text,
+                is_fragment=not _matches_allowed(box.text, title_tokens),
+            )
+
+    for group in _same_line_groups(boxes, image_height):
+        ordered = sorted(group, key=lambda box: _box_center(box)[0])
+        for start in range(len(ordered)):
+            stop_limit = min(len(ordered), start + 8)
+            for stop in range(start + 2, stop_limit + 1):
+                window = ordered[start:stop]
+                compact_parts = [_compact_text(box.text) for box in window]
+                compact = "".join(compact_parts)
+                if not compact:
+                    continue
+                all_short = all(len(part) <= 2 for part in compact_parts if part)
+                window_width = _bbox_width(_bbox_union(window))
+                allow_letter_cluster = all_short and window_width >= image_width * 0.18
+                if not _compact_matches_title(
+                    compact,
+                    title_compact=title_compact,
+                    title_token_compacts=token_compacts,
+                    allow_letter_cluster=allow_letter_cluster,
+                ):
+                    continue
+                group_text = " ".join(box.text for box in window)
+                for box in window:
+                    evidence[id(box)] = _TitleEvidence(
+                        source="line_window",
+                        group_text=group_text,
+                        is_fragment=True,
+                    )
+
+    # Spaced-title band: absorb whole rows of large glyphs that cover a title
+    # token but never matched as text. Existing per-box / line-window matches win.
+    for box_id, band_evidence in _letter_band_evidence(
+        boxes,
+        title_compact=title_compact,
+        title_token_compacts=token_compacts,
+        image_width=image_width,
+        image_height=image_height,
+    ).items():
+        evidence.setdefault(box_id, band_evidence)
+    return evidence
+
+
+def _detect_top_billing_bands(
+    boxes: list[_DetectedBox],
+    *,
+    image_width: int,
+    image_height: int,
+) -> set[int]:
+    candidates = [
+        box
+        for box in boxes
+        if box.geometry_valid
+        and box.confidence >= pipeline_settings.OCR_STRIP_CONFIDENCE_THRESHOLD
+        and _box_center(box)[1] <= image_height * TOP_STRIP_FRACTION
+        and _compact_text(box.text)
+    ]
+    if len(candidates) < _TOP_BILLING_MIN_BOXES:
+        return set()
+
+    billing_ids: set[int] = set()
+    for group in _same_line_groups(candidates, image_height):
+        meaningful = [
+            box for box in group if not (set(_normalise(box.text).split()) & FORMAT_BLOCKLIST)
+        ]
+        if len(meaningful) < _TOP_BILLING_MIN_BOXES:
+            continue
+        union = _bbox_union(meaningful)
+        if _bbox_width(union) < image_width * _TOP_BILLING_MIN_WIDTH_FRACTION:
+            continue
+        heights = [max(1.0, _bbox_height(box.bbox)) for box in meaningful]
+        if _median(heights) > image_height * _TOP_BILLING_MAX_HEIGHT_FRACTION:
+            continue
+        if max(heights) / min(heights) > _TOP_BILLING_MAX_HEIGHT_RATIO:
+            continue
+        billing_ids.update(id(box) for box in meaningful)
+    return billing_ids
+
+
+def _synthetic_title_box(
+    boxes: list[_DetectedBox],
+    *,
+    fallback_text: str,
+) -> _DetectedBox | None:
+    if not boxes:
+        return None
+    ordered = sorted(boxes, key=_reading_order)
+    text = _normalise(" ".join(box.text for box in ordered)) or fallback_text
+    confidence = max(box.confidence for box in boxes)
+    return _DetectedBox(
+        text=text,
+        confidence=confidence,
+        bbox=_bbox_union(boxes),
+        geometry_valid=all(box.geometry_valid for box in boxes),
+    )
+
+
+def _add_digit_words(tokens: set[str]) -> None:
+    for digit, word in _DIGIT_WORDS.items():
+        if digit in tokens:
+            tokens.add(word)
+        if word in tokens:
+            tokens.add(digit)
+
+
+def _resolve_ocr_device(
+    *, paddle_cuda_available: bool, cuda_diagnostic: str = "no usable CUDA device or driver"
+) -> str:
+    requested = pipeline_settings.OCR_DEVICE
+    if requested == "cpu":
+        return "cpu"
+    if requested == "gpu":
+        if not paddle_cuda_available:
+            raise RuntimeError(
+                "OCR_DEVICE=gpu requested but Paddle CUDA is unusable: " + cuda_diagnostic
+            )
+        return "gpu:0"
+    return "gpu:0" if paddle_cuda_available else "cpu"
+
+
+def _paddle_cuda_probe(*, allow_import: bool = False) -> tuple[bool, str]:
+    if not allow_import and "paddle" not in sys.modules:
+        return False, "Paddle is not imported in this process"
+    try:
+        import paddle
+
+        if not paddle.device.is_compiled_with_cuda():
+            return False, "Paddle is not compiled with CUDA"
+        device_count = paddle.device.cuda.device_count()
+        if device_count <= 0:
+            return False, "Paddle reports zero usable CUDA devices (driver unavailable or hidden)"
+        # A CUDA-enabled wheel is not enough: deployed drivers can be absent or
+        # unusable. This isolated worker probe is intentionally tiny.
+        cuda_device = paddle.CUDAPlace(0)
+        paddle.zeros([1], dtype="float32", device=cuda_device)
+        paddle.device.synchronize(cuda_device)
+    except Exception as exc:
+        return False, f"Paddle CUDA probe failed: {type(exc).__name__}: {exc}"
+    return True, f"Paddle CUDA device 0 is usable ({device_count} detected)"
+
+
+def paddle_cuda_available(*, allow_import: bool = False) -> bool:
+    return _paddle_cuda_probe(allow_import=allow_import)[0]
+
+
+@lru_cache(maxsize=1)
+def paddle_gpu_build() -> bool:
+    """Whether the installed Paddle wheel is the CUDA build.
+
+    A cheap stand-in for the real CUDA probe: importing paddle costs seconds, so
+    an API process that only wants to *describe* the OCR device reads the wheel
+    name instead. The in-worker probe in ``_load_ocr`` still has the final word.
+    """
+    try:
+        from importlib.metadata import distributions
+
+        return any(
+            (dist.metadata["Name"] or "").lower() == "paddlepaddle-gpu" for dist in distributions()
+        )
+    except Exception as exc:  # noqa: BLE001 - a metadata read must never 500 a page
+        logger.debug("Could not read Paddle distribution metadata: %s", exc)
+        return False
+
+
+def ocr_device_plan() -> dict[str, Any]:
+    """Describe the device the next OCR run will use, without importing paddle.
+
+    Resolution deliberately goes through ``_resolve_ocr_device`` — the same
+    function ``_load_ocr`` calls — so an operator-facing readout can never
+    disagree with what the pool actually does.
+    """
+    from marquee.core.system_metrics import gpu_inventory
+    from marquee.ml.hardware import detect_hardware
+
+    requested = pipeline_settings.OCR_DEVICE
+    gpus = gpu_inventory()
+    gpu_build = paddle_gpu_build()
+    # What OCR_WORKERS=0 resolves to. `effective_workers` cannot stand in for this:
+    # once an explicit count is stored it returns that instead, and the UI still
+    # needs to know which number means "auto".
+    try:
+        auto_workers = detect_hardware().ocr_workers
+    except Exception as exc:  # noqa: BLE001 - an explicit unavailable provider raises
+        logger.debug("Could not resolve the auto OCR worker count: %s", exc)
+        auto_workers = None
+    plan: dict[str, Any] = {
+        "requested": requested,
+        "gpu_build": gpu_build,
+        "gpus": gpus,
+        "auto_workers": auto_workers,
+        "expected_device": None,
+        "error": None,
+        # "auto" defers to a run-time CUDA probe this process will not pay for,
+        # so auto is a prediction from the wheel plus NVML — not an observation.
+        "confirmed": requested in ("cpu", "gpu"),
+    }
+    try:
+        plan["expected_device"] = _resolve_ocr_device(
+            paddle_cuda_available=gpu_build and bool(gpus)
+        )
+    except RuntimeError as exc:
+        # OCR_DEVICE=gpu with no usable card: report it rather than guessing, because
+        # every run will fail here until the operator changes the setting.
+        plan["error"] = str(exc)
+    return plan
+
+
+def active_worker_status() -> dict:
+    alive: list[dict[str, object]] = []
+    stale: list[dict[str, object]] = []
+    for pid, name in list(_active_worker_pids.items()):
+        entry = {"pid": pid, "name": name}
+        if _pid_alive(pid):
+            alive.append(entry)
+        else:
+            stale.append(entry)
+            _active_worker_pids.pop(pid, None)
+    return {"active": alive, "stale_reaped": stale}
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _register_worker(worker: Any) -> None:
+    if worker.pid is None:
+        return
+    _active_worker_pids[int(worker.pid)] = worker.name
+    logger.info("OCR worker started: name=%s pid=%s", worker.name, worker.pid)
+
+
+def _unregister_worker(worker: Any) -> None:
+    if worker.pid is None:
+        return
+    _active_worker_pids.pop(int(worker.pid), None)
+    logger.info(
+        "OCR worker exited: name=%s pid=%s exitcode=%s",
+        worker.name,
+        worker.pid,
+        worker.exitcode,
+    )
+
+
+def _load_ocr() -> object:
+    from paddleocr import PaddleOCR
+
+    # engine="paddle_dynamic" uses eager execution (safetensors weights) instead of
+    # the static Paddle Inference API, which has a PIR+oneDNN bug on Intel 13th-gen CPUs.
+    # paddle_dynamic works identically on macOS, Linux CPU, and Linux GPU.
+    # PP-OCRv5_mobile_det is used instead of the default server_det because the server
+    # model is ~15× slower in dynamic mode on CPU with no meaningful accuracy improvement
+    # for the title-detection task. On GPU the difference is smaller but mobile is still
+    # the better choice for throughput across many workers.
+    cuda_available, cuda_diagnostic = _paddle_cuda_probe(allow_import=True)
+    device = _resolve_ocr_device(
+        paddle_cuda_available=cuda_available, cuda_diagnostic=cuda_diagnostic
+    )
+    if pipeline_settings.OCR_DEVICE == "auto" and not cuda_available:
+        logger.warning("Paddle CUDA auto probe failed; falling back to CPU: %s", cuda_diagnostic)
+    logger.info("Loading PaddleOCR on device=%s", device)
+    return PaddleOCR(
+        use_textline_orientation=True,
+        lang="en",
+        device=device,
+        engine="paddle_dynamic",
+        text_detection_model_name="PP-OCRv5_mobile_det",
+        text_det_box_thresh=0.3,
+        text_det_unclip_ratio=2.0,
+    )
+
+
+def _polygon_area(bbox: BoundingBox) -> float:
+    points = np.asarray(bbox, dtype=np.float32)
+    x = points[:, 0]
+    y = points[:, 1]
+    return float(abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1))) / 2)
+
+
+_RATING_PATTERN = re.compile(
+    r"\b(rated\s+)?(g|pg|pg-13|nc-17|r|nr|unrated|not\s*rated)\b",
+    re.IGNORECASE,
+)
+
+
+def effective_gate_knobs(profile: dict | None) -> dict:
+    """Resolve the text-gate knobs from an injected profile payload.
+
+    A text profile (resolved per movie by the runner and pickled into the OCR
+    workers) wins over the raw ``pipeline_settings`` knobs; any key the
+    profile omits falls back to the live setting, so built-in presets pin only
+    the mode while the advanced knobs keep working.
+    """
+    prof = profile or {}
+    return {
+        "mode": prof.get("mode") or pipeline_settings.OCR_TEXT_MODE,
+        "allow_map": {
+            "title": bool(prof.get("allow_title", pipeline_settings.OCR_ALLOW_TITLE)),
+            "director": bool(prof.get("allow_director", pipeline_settings.OCR_ALLOW_DIRECTOR)),
+            "studio": bool(prof.get("allow_studio", pipeline_settings.OCR_ALLOW_STUDIO)),
+            "rating": bool(prof.get("allow_rating", pipeline_settings.OCR_ALLOW_RATING)),
+            "tagline": bool(prof.get("allow_tagline", pipeline_settings.OCR_ALLOW_TAGLINE)),
+            "billing": bool(prof.get("allow_billing", pipeline_settings.OCR_ALLOW_BILLING)),
+            "season": bool(prof.get("allow_season", pipeline_settings.OCR_ALLOW_SEASON)),
+            "season_title": bool(prof.get("allow_season_title", False)),
+            "season_edition": bool(prof.get("allow_season_edition", False)),
+        },
+        "max_residual_boxes": int(
+            prof.get("max_residual_boxes", pipeline_settings.OCR_MAX_RESIDUAL_BOXES)
+        ),
+        "max_residual_area_fraction": float(
+            prof.get(
+                "max_residual_area_fraction",
+                pipeline_settings.OCR_MAX_RESIDUAL_AREA_FRACTION,
+            )
+        ),
+        "require_title": bool(prof.get("require_title", pipeline_settings.OCR_REQUIRE_TITLE)),
+    }
+
+
+_SEASON_PATTERNS = [
+    re.compile(r"^season\s*\d{1,3}$"),
+    re.compile(r"^s\d{1,2}$"),
+    re.compile(r"^\d{1,2}(?:st|nd|rd|th)?\s+season$"),
+    re.compile(r"^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+season$"),
+    re.compile(r"^season\s+(?:one|two|three|four|five|six|seven|eight|nine|ten)$"),
+    re.compile(r"^(?:the\s+)?(?:final|last)\s+season$"),
+    re.compile(r"^part\s+(?:\d{1,2}|one|two|three|four|five|six)$"),
+    re.compile(r"^vol(?:ume)?\s*\d{1,2}$"),
+    re.compile(r"^book\s+\w+$"),
+    re.compile(r"^chapter\s+\w+$"),
+    re.compile(r"^[ivxlc]{1,4}$"),
+    re.compile(r"^\d{1,2}$"),
+]
+
+
+_CARDINALS = {
+    0: "zero",
+    1: "one",
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "eleven",
+    12: "twelve",
+    13: "thirteen",
+    14: "fourteen",
+    15: "fifteen",
+    16: "sixteen",
+    17: "seventeen",
+    18: "eighteen",
+    19: "nineteen",
+    20: "twenty",
+}
+_ORDINALS = {
+    0: "zeroth",
+    1: "first",
+    2: "second",
+    3: "third",
+    4: "fourth",
+    5: "fifth",
+    6: "sixth",
+    7: "seventh",
+    8: "eighth",
+    9: "ninth",
+    10: "tenth",
+    11: "eleventh",
+    12: "twelfth",
+    13: "thirteenth",
+    14: "fourteenth",
+    15: "fifteenth",
+    16: "sixteenth",
+    17: "seventeenth",
+    18: "eighteenth",
+    19: "nineteenth",
+    20: "twentieth",
+}
+_ROMAN_NUMERALS = (
+    "",
+    "i",
+    "ii",
+    "iii",
+    "iv",
+    "v",
+    "vi",
+    "vii",
+    "viii",
+    "ix",
+    "x",
+    "xi",
+    "xii",
+    "xiii",
+    "xiv",
+    "xv",
+    "xvi",
+    "xvii",
+    "xviii",
+    "xix",
+    "xx",
+)
+_SEASON_DESIGNATORS = {"season", "book", "part", "chapter", "volume", "vol"}
+_TENS = {
+    20: "twenty",
+    30: "thirty",
+    40: "forty",
+    50: "fifty",
+    60: "sixty",
+    70: "seventy",
+    80: "eighty",
+    90: "ninety",
+}
+_TENS_ORDINAL = {
+    20: "twentieth",
+    30: "thirtieth",
+    40: "fortieth",
+    50: "fiftieth",
+    60: "sixtieth",
+    70: "seventieth",
+    80: "eightieth",
+    90: "ninetieth",
+}
+
+
+def _ordinal_suffix(number: int) -> str:
+    if 10 <= number % 100 <= 20:
+        return "th"
+    return {1: "st", 2: "nd", 3: "rd"}.get(number % 10, "th")
+
+
+def _cardinal_words(number: int) -> str | None:
+    """English cardinal form for realistic TV season numbers (0-999)."""
+    if number in _CARDINALS:
+        return _CARDINALS[number]
+    if not 0 <= number <= 999:
+        return None
+    if number < 100:
+        tens, remainder = divmod(number, 10)
+        prefix = _TENS.get(tens * 10)
+        return f"{prefix} {_CARDINALS[remainder]}" if prefix and remainder else prefix
+    hundreds, remainder = divmod(number, 100)
+    prefix = f"{_CARDINALS[hundreds]} hundred"
+    suffix = _cardinal_words(remainder) if remainder else None
+    return f"{prefix} {suffix}" if suffix else prefix
+
+
+def _ordinal_words(number: int) -> str | None:
+    """English ordinal form paired with :func:`_cardinal_words`."""
+    if number in _ORDINALS:
+        return _ORDINALS[number]
+    if not 0 <= number <= 999:
+        return None
+    if number < 100:
+        tens, remainder = divmod(number, 10)
+        if not remainder:
+            return _TENS_ORDINAL.get(tens * 10)
+        prefix = _TENS.get(tens * 10)
+        suffix = _ORDINALS.get(remainder)
+        return f"{prefix} {suffix}" if prefix and suffix else None
+    hundreds, remainder = divmod(number, 100)
+    prefix = f"{_CARDINALS[hundreds]} hundred"
+    if not remainder:
+        return f"{prefix}th"
+    suffix = _ordinal_words(remainder)
+    return f"{prefix} {suffix}" if suffix else None
+
+
+def _roman_numeral(number: int) -> str | None:
+    if not 0 < number <= 3999:
+        return None
+    values = (
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    )
+    remainder = number
+    parts: list[str] = []
+    for value, token in values:
+        count, remainder = divmod(remainder, value)
+        parts.extend([token] * count)
+    return "".join(parts)
+
+
+def _season_number_forms(season_number: int) -> set[str]:
+    forms = {str(season_number), f"{season_number}{_ordinal_suffix(season_number)}"}
+    cardinal = _cardinal_words(season_number)
+    ordinal = _ordinal_words(season_number)
+    if cardinal:
+        forms.add(cardinal)
+    if ordinal:
+        forms.add(ordinal)
+    roman = _roman_numeral(season_number)
+    if roman:
+        forms.add(roman)
+    return forms
+
+
+def _is_season_text(text: str, season_number: int | None = None) -> bool:
+    text = _normalise(text)
+    if season_number is None:
+        return any(pattern.match(text) for pattern in _SEASON_PATTERNS)
+
+    forms = _season_number_forms(season_number)
+    compact = _compact_text(text)
+    phrases = {
+        *(f"{designator} {form}" for designator in _SEASON_DESIGNATORS for form in forms),
+        *(f"{form} season" for form in forms),
+        f"s{season_number}",
+        f"s{season_number:02d}",
+    }
+    if text in phrases or compact in {_compact_text(phrase) for phrase in phrases}:
+        return True
+    return text in {"final season", "last season", "the final season", "the last season"}
+
+
+def _is_season_edition_text(text: str, season_number: int | None) -> bool:
+    if season_number is None:
+        return False
+    forms = _season_number_forms(season_number)
+    normalized = _normalise(text)
+    phrases = {
+        *(f"the complete {form} season" for form in forms),
+        *(f"complete {form} season" for form in forms),
+        *(f"the complete season {form}" for form in forms),
+        *(f"complete season {form}" for form in forms),
+    }
+    compact = _compact_text(normalized)
+    return normalized in phrases or compact in {_compact_text(phrase) for phrase in phrases}
+
+
+def _matches_season_title(text: str, season_title: str | None) -> bool:
+    expected = _compact_text(season_title or "")
+    actual = _compact_text(text)
+    if not expected or not actual:
+        return False
+    return actual == expected or difflib.SequenceMatcher(None, actual, expected).ratio() >= 0.82
+
+
+def _box_overlap_fraction(left: BoundingBox, right: BoundingBox) -> float:
+    """Intersection divided by the smaller box, useful for nested OCR passes."""
+    lx1, ly1, lx2, ly2 = _bbox_bounds(left)
+    rx1, ry1, rx2, ry2 = _bbox_bounds(right)
+    intersection = max(0.0, min(lx2, rx2) - max(lx1, rx1)) * max(0.0, min(ly2, ry2) - max(ly1, ry1))
+    smaller = min(
+        max(0.0, lx2 - lx1) * max(0.0, ly2 - ly1), max(0.0, rx2 - rx1) * max(0.0, ry2 - ry1)
+    )
+    return intersection / smaller if smaller > 0 else 0.0
+
+
+def _season_box_relation(
+    left: _DetectedBox,
+    right: _DetectedBox,
+    *,
+    image_width: int,
+    image_height: int,
+) -> str | None:
+    """Return a conservative spatial relation for two pieces of one phrase."""
+    if not left.geometry_valid or not right.geometry_valid:
+        return None
+    if _box_overlap_fraction(left.bbox, right.bbox) >= 0.25:
+        return "overlap"
+
+    lx1, ly1, lx2, ly2 = _bbox_bounds(left.bbox)
+    rx1, ry1, rx2, ry2 = _bbox_bounds(right.bbox)
+    left_height = max(1.0, ly2 - ly1)
+    right_height = max(1.0, ry2 - ry1)
+    left_width = max(1.0, lx2 - lx1)
+    right_width = max(1.0, rx2 - rx1)
+    lcx, lcy = _box_center(left)
+    rcx, rcy = _box_center(right)
+
+    horizontal_gap = max(0.0, max(lx1, rx1) - min(lx2, rx2))
+    same_line = abs(lcy - rcy) <= max(image_height * 0.025, max(left_height, right_height) * 1.25)
+    if same_line and horizontal_gap <= max(
+        image_width * 0.10, max(left_height, right_height) * 3.0
+    ):
+        return "same_line"
+
+    vertical_gap = max(0.0, max(ly1, ry1) - min(ly2, ry2))
+    centered = abs(lcx - rcx) <= max(left_width, right_width) * 0.45
+    if centered and vertical_gap <= max(image_height * 0.05, max(left_height, right_height) * 2.25):
+        return "stacked"
+    return None
+
+
+def _contiguous_tokens(fragment: str, span: str) -> bool:
+    fragment_tokens = _normalise(fragment).split()
+    span_tokens = _normalise(span).split()
+    if not fragment_tokens or len(fragment_tokens) > len(span_tokens):
+        return False
+    width = len(fragment_tokens)
+    return any(
+        span_tokens[index : index + width] == fragment_tokens
+        for index in range(len(span_tokens) - width + 1)
+    )
+
+
+def _season_semantic_category(
+    text: str, *, season_number: int | None, season_title: str | None
+) -> str | None:
+    # A database's official name is often just "Season 5". Keep ordinary numbering
+    # under the less restrictive season toggle; only additional title words become
+    # season-title evidence. Packaging phrases retain their explicit edition toggle.
+    if _is_season_text(text, season_number):
+        return "season"
+    if _is_season_edition_text(text, season_number):
+        return "season_edition"
+    if _matches_season_title(text, season_title):
+        return "season_title"
+    return None
+
+
+def _ordered_semantic_span(
+    members: tuple[_DetectedBox, ...],
+    *,
+    image_width: int,
+    image_height: int,
+) -> tuple[list[_DetectedBox], str] | None:
+    """Order a connected same-line or centered-stacked candidate span."""
+    if len(members) < 2:
+        return None
+    relations = [
+        _season_box_relation(left, right, image_width=image_width, image_height=image_height)
+        for left, right in combinations(members, 2)
+    ]
+    if not any(relations):
+        return None
+
+    centers = [_box_center(box) for box in members]
+    heights = [max(1.0, _bbox_height(box.bbox)) for box in members]
+    widths = [max(1.0, _bbox_width(box.bbox)) for box in members]
+    same_line = max(y for _, y in centers) - min(y for _, y in centers) <= max(
+        image_height * 0.025, max(heights) * 1.25
+    )
+    if same_line:
+        ordered = sorted(members, key=lambda box: _box_center(box)[0])
+        adjacent = [
+            _season_box_relation(left, right, image_width=image_width, image_height=image_height)
+            for left, right in zip(ordered, ordered[1:], strict=False)
+        ]
+        if all(relation in {"same_line", "overlap"} for relation in adjacent):
+            return ordered, "paired_same_line"
+
+    centered = max(x for x, _ in centers) - min(x for x, _ in centers) <= max(widths) * 0.45
+    if centered:
+        ordered = sorted(members, key=lambda box: _box_center(box)[1])
+        adjacent = [
+            _season_box_relation(top, bottom, image_width=image_width, image_height=image_height)
+            for top, bottom in zip(ordered, ordered[1:], strict=False)
+        ]
+        if all(relation in {"stacked", "overlap"} for relation in adjacent):
+            return ordered, "paired_stacked"
+    return None
+
+
+def _season_semantic_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    image_width: int,
+    image_height: int,
+    season_number: int | None,
+    season_title: str | None,
+) -> dict[tuple[str, BoundingBox], _SemanticEvidence]:
+    """Resolve season spans across full, split, stacked, and duplicate OCR reads."""
+    valid = [box for box in boxes if box.geometry_valid and _normalise(box.text)]
+    evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] = {}
+    spans: list[tuple[list[_DetectedBox], str, str, str]] = []
+
+    def key(box: _DetectedBox) -> tuple[str, BoundingBox]:
+        return _normalise(box.text), box.bbox
+
+    def record(members: list[_DetectedBox], category: str, source: str, span_text: str) -> None:
+        semantic = _SemanticEvidence(
+            category=category, source=source, span_text=_normalise(span_text)
+        )
+        # Edition packaging governs every member of its phrase. Generic numbering
+        # remains generic when it is also a fragment of a longer official title.
+        precedence = {"season_title": 1, "season": 2, "season_edition": 3}
+        for member in members:
+            current = evidence.get(key(member))
+            if current is None or precedence[semantic.category] > precedence[current.category]:
+                evidence[key(member)] = semantic
+        spans.append((members, category, source, span_text))
+
+    for box in valid:
+        category = _season_semantic_category(
+            box.text, season_number=season_number, season_title=season_title
+        )
+        if category:
+            record([box], category, "direct_phrase", box.text)
+
+    vocabulary = set(_SEASON_DESIGNATORS) | {"complete", "the", "final", "last"}
+    if season_number is not None:
+        vocabulary.update(
+            token
+            for form in _season_number_forms(season_number)
+            for token in _normalise(form).split()
+        )
+    vocabulary.update(_normalise(season_title or "").split())
+    semantic_candidates = [box for box in valid if set(_normalise(box.text).split()) & vocabulary]
+
+    # Enumerate short spatially coherent spans. Poster phrases are small, while the
+    # five-box ceiling and context vocabulary avoid joining an entire credit block.
+    for width in range(2, min(5, len(semantic_candidates)) + 1):
+        for members in combinations(semantic_candidates, width):
+            ordered_span = _ordered_semantic_span(
+                members, image_width=image_width, image_height=image_height
+            )
+            if ordered_span is None:
+                continue
+            ordered, source = ordered_span
+            joined = " ".join(box.text for box in ordered)
+            category = _season_semantic_category(
+                joined, season_number=season_number, season_title=season_title
+            )
+            if category:
+                record(ordered, category, source, joined)
+
+    # A whole-phrase detection from one pass often overlaps word detections from
+    # another. Project its meaning only to exact contiguous token fragments with a
+    # spatial relation; this fixes SEASON/FIVE without allowing a distant FIVE.
+    for members, category, _source, span_text in list(spans):
+        for candidate in valid:
+            if key(candidate) in evidence or not _contiguous_tokens(candidate.text, span_text):
+                continue
+            relations = [
+                _season_box_relation(
+                    candidate,
+                    member,
+                    image_width=image_width,
+                    image_height=image_height,
+                )
+                for member in members
+            ]
+            relation = next((value for value in relations if value), None)
+            if relation:
+                record(
+                    [candidate],
+                    category,
+                    f"{relation}_with_phrase",
+                    span_text,
+                )
+    return evidence
+
+
+def _season_category_evidence(
+    boxes: list[_DetectedBox],
+    *,
+    image_height: int,
+    season_number: int | None,
+    season_title: str | None,
+    image_width: int | None = None,
+) -> tuple[
+    set[tuple[str, BoundingBox]],
+    set[tuple[str, BoundingBox]],
+    set[tuple[str, BoundingBox]],
+]:
+    """Compatibility projection of the richer season semantic evidence."""
+    resolved_width = image_width or max(
+        (int(_bbox_bounds(box.bbox)[2]) for box in boxes if box.geometry_valid), default=1
+    )
+    evidence = _season_semantic_evidence(
+        boxes,
+        image_width=resolved_width,
+        image_height=image_height,
+        season_number=season_number,
+        season_title=season_title,
+    )
+    number_evidence = {key for key, value in evidence.items() if value.category == "season"}
+    title_evidence = {key for key, value in evidence.items() if value.category == "season_title"}
+    edition_evidence = {
+        key for key, value in evidence.items() if value.category == "season_edition"
+    }
+    return number_evidence, title_evidence, edition_evidence
+
+
+def classify_text_box(
+    box: _DetectedBox,
+    *,
+    image_w: int,
+    image_h: int,
+    title_box: _DetectedBox | None,
+    title_tokens: set[str],
+    director_tokens: set[str],
+    studio_tokens: set[str] | None = None,
+    tagline_text: str | None = None,
+    billing_band_ids: set[int] | None = None,
+    billing_band_keys: set[tuple[str, BoundingBox]] | None = None,
+    season_number: int | None = None,
+    season_number_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_title_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_edition_ids: set[tuple[str, BoundingBox]] | None = None,
+) -> str:
+    """Classify a detected text box into a semantic category.
+
+    Returns one of: ``title``, ``director``, ``rating``, ``studio``,
+    ``tagline``, ``billing``, ``other``.
+
+    See design 18 §4 for the full classification spec.
+    """
+    text = _normalise(box.text)
+    words = set(text.split())
+    if not words:
+        return "other"
+
+    # Title: already matched via _matches_allowed against title_tokens.
+    if title_box is not None and box is title_box:
+        return "title"
+
+    evidence_key = (text, box.bbox)
+    if season_number_ids and evidence_key in season_number_ids:
+        return "season"
+    if season_title_ids and evidence_key in season_title_ids:
+        return "season_title"
+
+    if season_edition_ids and evidence_key in season_edition_ids:
+        return "season_edition"
+
+    if _is_season_text(text, season_number):
+        return "season"
+
+    if (billing_band_ids and id(box) in billing_band_ids) or (
+        billing_band_keys and evidence_key in billing_band_keys
+    ):
+        return "billing"
+
+    # Director: regex match OR word match against director_tokens.
+    if re.search(r"directed\s+by", box.text, re.IGNORECASE):
+        return "director"
+    if director_tokens and _contains_director_tokens(box.text, director_tokens):
+        return "director"
+
+    # Rating: MPAA-ish certification marks.
+    if _RATING_PATTERN.search(text):
+        return "rating"
+
+    # Studio: any word in the known studio keyword set.
+    if words & STUDIO_KEYWORDS:
+        return "studio"
+    if studio_tokens and _matches_allowed(box.text, studio_tokens):
+        return "studio"
+
+    compact_tagline = _compact_text(tagline_text or "")
+    compact_text = _compact_text(box.text)
+    if (
+        compact_tagline
+        and compact_text
+        and difflib.SequenceMatcher(None, compact_text, compact_tagline).ratio() >= 0.70
+    ):
+        return "tagline"
+
+    # Tagline heuristic: not any of the above, short-ish, roughly centered,
+    # upper/mid zone — promotional text.
+    y_center = sum(p[1] for p in box.bbox) / 4
+    y_center_frac = y_center / image_h
+    x_center = sum(p[0] for p in box.bbox) / 4
+    x_center_frac = x_center / image_w
+    word_count = len(words)
+    is_centered = 0.30 < x_center_frac < 0.70
+    is_upper_mid = 0.05 < y_center_frac < 0.65
+    is_short = word_count <= 8
+    if is_centered and is_upper_mid and is_short:
+        return "tagline"
+
+    # Billing: dense small bottom-zone text — only classify as billing
+    # when the box is unambiguously in the bottom region.
+    if y_center_frac > 0.85:
+        return "billing"
+
+    return "other"
+
+
+def evaluate_custom_text_profile(
+    significant_residual: Sequence[OCRTextBox],
+    *,
+    allow_map: dict[str, bool],
+    max_residual_boxes: int,
+    max_residual_area_fraction: float,
+    image_width: int,
+    image_height: int,
+    image_area: float,
+    title_box: _DetectedBox | None,
+    title_tokens: set[str],
+    director_tokens: set[str],
+    studio_tokens: set[str] | None = None,
+    tagline_text: str | None = None,
+    billing_band_ids: set[int] | None = None,
+    billing_band_keys: set[tuple[str, BoundingBox]] | None = None,
+    season_number: int | None = None,
+    season_number_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_title_ids: set[tuple[str, BoundingBox]] | None = None,
+    season_edition_ids: set[tuple[str, BoundingBox]] | None = None,
+) -> _CustomTextDecision:
+    """Deterministically evaluate classified residual boxes against a resolved profile."""
+    allowed: list[OCRTextBox] = []
+    denied: list[OCRTextBox] = []
+    categories: dict[tuple[str, BoundingBox], str] = {}
+    for box in significant_residual:
+        source = _DetectedBox(
+            text=box.text,
+            confidence=box.confidence,
+            bbox=box.bbox,
+            geometry_valid=box.geometry_valid,
+        )
+        category = classify_text_box(
+            source,
+            image_w=image_width,
+            image_h=image_height,
+            title_box=title_box,
+            title_tokens=title_tokens,
+            director_tokens=director_tokens,
+            studio_tokens=studio_tokens,
+            tagline_text=tagline_text,
+            billing_band_ids=billing_band_ids,
+            billing_band_keys=billing_band_keys,
+            season_number=season_number,
+            season_number_ids=season_number_ids,
+            season_title_ids=season_title_ids,
+            season_edition_ids=season_edition_ids,
+        )
+        categories[(_normalise(box.text), box.bbox)] = category
+        (allowed if allow_map.get(category, False) else denied).append(box)
+
+    denominator = image_area if image_area > 0 else 1.0
+    allowed_area = sum(box.area for box in allowed) / denominator
+    denied_area = sum(box.area for box in denied) / denominator
+    return _CustomTextDecision(
+        accepted=(len(denied) <= max_residual_boxes and denied_area <= max_residual_area_fraction),
+        allowed_boxes=tuple(allowed),
+        denied_boxes=tuple(denied),
+        categories=categories,
+        allowed_area_fraction=allowed_area,
+        denied_area_fraction=denied_area,
+    )
+
+
+def _as_bbox(
+    polygon: np.ndarray,
+    *,
+    scale: float = 1.0,
+    y_offset: float = 0.0,
+) -> BoundingBox:
+    points = np.asarray(polygon, dtype=np.float32).reshape(4, 2)
+    points[:, 0] /= scale
+    points[:, 1] = points[:, 1] / scale + y_offset
+    return tuple((float(x), float(y)) for x, y in points)  # type: ignore[return-value]
+
+
+def _detect_boxes(
+    ocr: object,
+    image: np.ndarray,
+    confidence: float,
+    *,
+    scale: float = 1.0,
+    y_offset: float = 0.0,
+) -> list[_DetectedBox]:
+    try:
+        import paddle
+    except ModuleNotFoundError:
+        paddle = None
+
+    grad_context = paddle.no_grad() if paddle is not None else nullcontext()
+    with grad_context:
+        result = ocr.predict(image)
+    if not result:
+        return []
+    height, width = image.shape[0], image.shape[1]
+    first = result[0]
+    texts = first.get("rec_texts", [])
+    scores = first.get("rec_scores", [])
+    polygons = first.get("rec_polys", [])
+    boxes: list[_DetectedBox] = []
+    for text, score, polygon in zip(texts, scores, polygons, strict=False):
+        if float(score) < confidence:
+            continue
+        # Vertical-textline reads come back with coordinates in a rotated
+        # frame — outside the analyzed image. The text itself is real
+        # (vertical titles are only readable through this pathway) but the
+        # geometry is unusable for size/position decisions.
+        points = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+        geometry_valid = bool(
+            points[:, 0].min() >= -2
+            and points[:, 0].max() <= width + 2
+            and points[:, 1].min() >= -2
+            and points[:, 1].max() <= height + 2
+        )
+        boxes.append(
+            _DetectedBox(
+                text=str(text),
+                confidence=float(score),
+                bbox=_as_bbox(polygon, scale=scale, y_offset=y_offset),
+                geometry_valid=geometry_valid,
+            )
+        )
+    return boxes
+
+
+def _bbox_iou(left: BoundingBox, right: BoundingBox) -> float:
+    lx1, lx2 = min(p[0] for p in left), max(p[0] for p in left)
+    ly1, ly2 = min(p[1] for p in left), max(p[1] for p in left)
+    rx1, rx2 = min(p[0] for p in right), max(p[0] for p in right)
+    ry1, ry2 = min(p[1] for p in right), max(p[1] for p in right)
+    ix1, iy1 = max(lx1, rx1), max(ly1, ry1)
+    ix2, iy2 = min(lx2, rx2), min(ly2, ry2)
+    intersection = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    union = (lx2 - lx1) * (ly2 - ly1) + (rx2 - rx1) * (ry2 - ry1) - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def _dedupe_boxes(boxes: list[_DetectedBox]) -> list[_DetectedBox]:
+    kept: list[_DetectedBox] = []
+    for candidate in sorted(boxes, key=lambda box: box.confidence, reverse=True):
+        normalized = _normalise(candidate.text)
+        duplicate = any(
+            normalized == _normalise(existing.text)
+            and _bbox_iou(candidate.bbox, existing.bbox) >= 0.5
+            for existing in kept
+        )
+        if not duplicate:
+            kept.append(candidate)
+    return kept
+
+
+def _matches_allowed(text: str, allowed_tokens: set[str]) -> bool:
+    words = set(_normalise(text).split())
+    if not words:
+        return False
+    for word in words:
+        if _word_matches_token(word, allowed_tokens):
+            continue
+        return False
+    return True
+
+
+def _word_matches_token(word: str, allowed_tokens: set[str]) -> bool:
+    """Return True if *word* is explainable by any token in *allowed_tokens*.
+
+    Checks (in order):
+    1. Exact match
+    2. Fuzzy similarity ≥ OCR_FUZZY_CUTOFF (catches garbled reads like "latef")
+    3. A title token is a substring of the word (e.g. "reloaded" inside "thereloaded")
+    4. The word is a substring of a title token (e.g. "redem" inside "redemption")
+    """
+    if word in allowed_tokens:
+        return True
+    cutoff = pipeline_settings.OCR_FUZZY_CUTOFF
+    if difflib.get_close_matches(word, allowed_tokens, n=1, cutoff=cutoff):
+        return True
+    if any(token in word for token in allowed_tokens if len(token) >= 3):
+        return True
+    return any(word in token for token in allowed_tokens if len(word) >= 3)
+
+
+def _contains_director_tokens(text: str, director_tokens: set[str]) -> bool:
+    words = _normalise(text).split()
+    if not words or not director_tokens:
+        return False
+    tokens = {token for token in director_tokens if len(token) > 2} or set(director_tokens)
+    matched = sum(
+        1 for token in tokens if any(_word_matches_token(word, {token}) for word in words)
+    )
+    required = max(1, (len(tokens) + 1) // 2)
+    return len(words) <= len(tokens) + 5 and matched >= required
+
+
+def _is_significant_residual_word(word: str, allowed_tokens: set[str]) -> bool:
+    """Return True if *word* is unambiguously non-title and long enough to matter.
+
+    A word must be ≥ 4 characters AND not composed solely of digits to be
+    considered significant.  Pure-digit strings (catalog numbers, years, VHS
+    labels) are noise, not promotional text.
+    """
+    if _word_matches_token(word, allowed_tokens):
+        return False
+    return len(word) >= 4 and not word.isdigit()
+
+
+def _bbox_center_distance(b1: BoundingBox, b2: BoundingBox) -> float:
+    """Euclidean distance (pixels) between the centres of two bounding boxes."""
+    c1x = sum(p[0] for p in b1) / 4
+    c1y = sum(p[1] for p in b1) / 4
+    c2x = sum(p[0] for p in b2) / 4
+    c2y = sum(p[1] for p in b2) / 4
+    return ((c1x - c2x) ** 2 + (c1y - c2y) ** 2) ** 0.5
+
+
+def _residual_significance(
+    box: _DetectedBox | OCRTextBox,
+    *,
+    title_box: _DetectedBox | None,
+    min_big_area: float,
+    min_big_width: float,
+    prox: float,
+    all_tokens: set[str],
+) -> tuple[bool, str | None, bool]:
+    """Decide whether one residual (non-title) box is "significant" text.
+
+    Returns ``(is_significant, reason, proximity_discounted)`` where reason is
+    ``big_area`` / ``big_width`` / ``word_level`` / ``None``. This is the single
+    source of truth for the residual-significance rule — used both by the live
+    gate decision and by the OCR trace builder so they can never drift.
+    """
+    xs = [p[0] for p in box.bbox]
+    area = _polygon_area(box.bbox)
+    # A lone glyph is title/design typography, never a promotional text block, so
+    # it must not be "significant" on size alone — this is what spaced titles
+    # ("A L I E N", "R U N") shed when a stray letter escapes the title band.
+    # Multi-char garble ("mm" from "70MM", "4K") stays subject to the geometry
+    # rule so genuine format/junk text is still caught.
+    box_is_big = (
+        len(_compact_text(box.text)) >= 2
+        and box.geometry_valid
+        and box.confidence >= pipeline_settings.OCR_CONFIDENCE_THRESHOLD
+        and (area >= min_big_area or (max(xs) - min(xs)) >= min_big_width)
+    )
+    if (
+        not box_is_big
+        and title_box is not None
+        and _bbox_center_distance(box.bbox, title_box.bbox) <= prox
+    ):
+        return False, None, True
+    if box_is_big:
+        return True, ("big_area" if area >= min_big_area else "big_width"), False
+    words_in_box = _normalise(box.text).split()
+    if any(_is_significant_residual_word(w, all_tokens) for w in words_in_box):
+        return True, "word_level", False
+    return False, None, False
+
+
+def _build_detected_boxes_trace(
+    boxes: list[_DetectedBox],
+    *,
+    title_box: _DetectedBox | None,
+    title_evidence: dict[int, _TitleEvidence],
+    all_tokens: set[str],
+    title_tokens: set[str],
+    director_tokens: set[str],
+    studio_tokens: set[str] | None,
+    tagline_text: str | None,
+    billing_band_ids: set[int] | None,
+    season_number: int | None,
+    season_number_ids: set[tuple[str, BoundingBox]] | None,
+    season_title_ids: set[tuple[str, BoundingBox]] | None,
+    season_edition_ids: set[tuple[str, BoundingBox]] | None,
+    season_semantic_evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] | None,
+    rejection_box_keys: set[tuple[str, BoundingBox]],
+    image_width: int,
+    image_height: int,
+    min_big_area: float,
+    min_big_width: float,
+    prox: float,
+    pass_by_id: dict[int, str],
+) -> list[dict]:
+    """Per-box trace: what OCR read, how it was classified, and the significance
+    decision for residual boxes. Read-only — never changes the gate outcome."""
+    out: list[dict] = []
+    for box in boxes:
+        semantic = (season_semantic_evidence or {}).get((_normalise(box.text), box.bbox))
+        evidence = title_evidence.get(id(box))
+        is_title = evidence is not None
+        is_residual = not is_title
+        category = (
+            "title"
+            if is_title
+            else classify_text_box(
+                box,
+                image_w=image_width,
+                image_h=image_height,
+                title_box=title_box,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_ids=billing_band_ids,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
+            )
+        )
+        if is_residual:
+            is_sig, sig_reason, discounted = _residual_significance(
+                box,
+                title_box=title_box,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                all_tokens=all_tokens,
+            )
+        else:
+            is_sig, sig_reason, discounted = False, None, False
+        out.append(
+            {
+                "text": box.text,
+                "confidence": float(box.confidence),
+                "bbox": [[float(x), float(y)] for x, y in box.bbox],
+                "area": _polygon_area(box.bbox),
+                "geometry_valid": bool(box.geometry_valid),
+                "pass": pass_by_id.get(id(box), "full"),
+                "category": category,
+                "semantic_source": semantic.source if semantic else None,
+                "semantic_span_text": semantic.span_text if semantic else None,
+                "is_title": is_title,
+                "is_title_fragment": bool(evidence and evidence.is_fragment),
+                "title_match_source": evidence.source if evidence else None,
+                "title_group_text": evidence.group_text if evidence else None,
+                "is_residual": is_residual,
+                "is_significant": is_sig,
+                "counts_toward_rejection": is_sig
+                and (_normalise(box.text), box.bbox) in rejection_box_keys,
+                "significant_reason": sig_reason,
+                "proximity_discounted": discounted,
+            }
+        )
+    return out
+
+
+def _enhance_contrast(image: np.ndarray) -> np.ndarray:
+    """Return a contrast-boosted copy of *image* to help OCR find low-contrast text."""
+    from PIL import ImageEnhance
+
+    return np.asarray(ImageEnhance.Contrast(Image.fromarray(image)).enhance(2.0))
+
+
+def _title_match_score(text: str, title_tokens: set[str]) -> float:
+    words = set(_normalise(text).split())
+    if not words:
+        return 0.0
+    scores = []
+    for word in words:
+        scores.append(
+            max(
+                (difflib.SequenceMatcher(None, word, token).ratio() for token in title_tokens),
+                default=0.0,
+            )
+        )
+    return sum(scores) / len(scores)
+
+
+def _profile_settings_fingerprint(profile: dict | None) -> str | None:
+    if not profile:
+        return None
+    canonical = json.dumps(profile, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _init_worker(
+    title_tokens: set[str],
+    director_tokens: set[str],
+    title_text: str = "",
+) -> None:
+    global _worker_ocr, _worker_title_text, _worker_title_tokens, _worker_director_tokens
+    _worker_title_text = _normalise(title_text) if title_text else " ".join(sorted(title_tokens))
+    _worker_title_tokens = title_tokens
+    _worker_director_tokens = director_tokens
+    # Idempotent on the model load: the taste trainer re-initializes the
+    # tokens once per exemplar (every poster has a different title) and must
+    # not reload PaddleOCR 430 times. Workers only ever call this once.
+    if _worker_ocr is None:
+        _worker_ocr = _load_ocr()
+
+
+def _exit_worker(result_queue: Any, exit_code: int) -> NoReturn:
+    """Flush pending messages without invoking Paddle's native destructors."""
+    result_queue.close()
+    result_queue.join_thread()
+    os._exit(exit_code)
+
+
+def _worker_main(
+    task_queue: Any,
+    result_queue: Any,
+    title_tokens: set[str],
+    director_tokens: set[str],
+    omp_threads: int = 0,
+) -> NoReturn:
+    # Grow GPU memory on demand instead of pre-reserving most of the card, so
+    # OCR workers can start even when other GPU jobs are resident (set before
+    # paddle is imported in this spawned process).
+    os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
+    if omp_threads > 0:
+        # Must be set before paddle is imported: workers x threads ~= cores,
+        # otherwise every worker spawns one thread per core and they thrash.
+        os.environ.setdefault("OMP_NUM_THREADS", str(omp_threads))
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", str(omp_threads))
+    try:
+        _init_worker(title_tokens, director_tokens)
+    except BaseException as exc:
+        result_queue.put(
+            (
+                _WORKER_INIT_ERROR,
+                os.getpid(),
+                f"{type(exc).__name__}: {exc}",
+            )
+        )
+        task_queue.cancel_join_thread()
+        _exit_worker(result_queue, 1)
+
+    result_queue.put((_WORKER_READY, os.getpid(), None))
+    while True:
+        task = task_queue.get()
+        if task is None:
+            break
+        task_extras: dict | None = None
+        if len(task) == 6:
+            (
+                index,
+                path_string,
+                task_title_text,
+                task_title_tokens,
+                task_director_tokens,
+                task_extras,
+            ) = task
+        elif len(task) == 5:
+            index, path_string, task_title_text, task_title_tokens, task_director_tokens = task
+        else:
+            index, path_string, task_title_tokens, task_director_tokens = task
+            task_title_text = " ".join(sorted(task_title_tokens))
+        result_queue.put(
+            (
+                _WORKER_RESULT,
+                index,
+                _process_image(
+                    path_string,
+                    task_title_tokens,
+                    task_director_tokens,
+                    title_text=task_title_text,
+                    extras=task_extras,
+                ),
+            )
+        )
+
+    task_queue.cancel_join_thread()
+    _exit_worker(result_queue, 0)
+
+
+def _process_image(
+    path_string: str,
+    title_tokens: set[str] | None = None,
+    director_tokens: set[str] | None = None,
+    *,
+    title_text: str | None = None,
+    extras: dict | None = None,
+) -> OCRCandidateResult:
+    """Detect text and decide accept/reject against this image's own title.
+
+    Title/director tokens are passed per call so a single worker pool can serve
+    many movies in one batch — the expensive PaddleOCR model load stays
+    once-per-worker while the cheap title matching varies per task. When omitted
+    they fall back to the worker-global tokens (the single-movie / test path).
+
+    ``extras`` carries the optional per-movie text-gate context: a resolved
+    text profile dict (``TextProfileSettings`` as a plain dict — must survive
+    pickling into worker processes). When absent, ``_decide`` falls back to the
+    raw ``pipeline_settings`` knobs.
+    """
+    profile: dict | None = (extras or {}).get("profile") or None
+    profile_id = (extras or {}).get("profile_id")
+    profile_name = (extras or {}).get("profile_name")
+    profile_scope = (extras or {}).get("profile_scope")
+    studio_tokens: set[str] = set((extras or {}).get("studio_tokens") or ())
+    tagline_text = (extras or {}).get("tagline") or None
+    raw_season_number = (extras or {}).get("season_number")
+    season_number = raw_season_number if isinstance(raw_season_number, int) else None
+    season_title_text = (extras or {}).get("season_title") or None
+    using_worker_title_text = title_tokens is None
+    if title_tokens is None:
+        title_tokens = _worker_title_tokens
+    if director_tokens is None:
+        director_tokens = _worker_director_tokens
+    if title_text is None:
+        title_text = (
+            _worker_title_text if using_worker_title_text else " ".join(sorted(title_tokens))
+        )
+    title_text = _normalise(title_text) if title_text else " ".join(sorted(title_tokens))
+    path = Path(path_string)
+    if _worker_ocr is None:
+        return OCRCandidateResult(path, False, "", "ocr_error", None)
+    try:
+        image = np.asarray(Image.open(path).convert("RGB"))
+        height = image.shape[0]
+        strip_rows = max(1, int(height * TOP_STRIP_FRACTION))
+        full = _detect_boxes(
+            _worker_ocr,
+            image,
+            pipeline_settings.OCR_CONFIDENCE_THRESHOLD,
+        )
+        top: list[_DetectedBox] = []
+        bottom: list[_DetectedBox] = []
+        if pipeline_settings.OCR_DETAIL_PASSES:
+            # 2x upscale like the bottom strip: small header credits
+            # ("CHRISTOPHER NOLAN'S") are routinely invisible at native w500.
+            top_image = np.asarray(
+                Image.fromarray(image[:strip_rows]).resize(
+                    (image.shape[1] * 2, strip_rows * 2),
+                    Image.Resampling.LANCZOS,
+                )
+            )
+            top = _detect_boxes(
+                _worker_ocr,
+                top_image,
+                pipeline_settings.OCR_STRIP_CONFIDENCE_THRESHOLD,
+                scale=2.0,
+            )
+            bottom_image = np.asarray(
+                Image.fromarray(image[height - strip_rows :]).resize(
+                    (image.shape[1] * 2, strip_rows * 2),
+                    Image.Resampling.LANCZOS,
+                )
+            )
+            bottom = _detect_boxes(
+                _worker_ocr,
+                bottom_image,
+                pipeline_settings.OCR_BOTTOM_CONFIDENCE_THRESHOLD,
+                scale=2.0,
+                y_offset=height - strip_rows,
+            )
+    except Exception as exc:
+        logger.warning("OCR failed for %s: %s", path.name, exc)
+        return OCRCandidateResult(path, False, "", f"ocr_error: {exc}", None)
+
+    # Track which detection pass each surviving box came from (object identity
+    # is preserved through _dedupe_boxes) so the trace can attribute every read.
+    image_height, image_width = int(image.shape[0]), int(image.shape[1])
+    image_area = float(image_height * image_width)
+    min_big_area = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_AREA_FRACTION * image_area
+    min_big_width = pipeline_settings.OCR_RESIDUAL_SIGNIFICANT_WIDTH_FRACTION * image_width
+    prox = pipeline_settings.OCR_TITLE_PROXIMITY_PIXELS
+    pass_by_id: dict[int, str] = {}
+    for _b in full:
+        pass_by_id.setdefault(id(_b), "full")
+    for _b in top:
+        pass_by_id.setdefault(id(_b), "top")
+    for _b in bottom:
+        pass_by_id.setdefault(id(_b), "bottom")
+    passes_run = ["full"] + (["top", "bottom"] if pipeline_settings.OCR_DETAIL_PASSES else [])
+    retry_triggered = False
+
+    boxes = _dedupe_boxes(full + top + bottom)
+    detected_text = _normalise(" ".join(box.text for box in boxes))
+
+    # RC-1 fix: before giving up, retry on a contrast-enhanced image.
+    # Many stylized title fonts (embossed, low-contrast, metallic) are
+    # invisible to the base model but emerge after a 2× contrast boost.
+    if not detected_text and pipeline_settings.OCR_ENHANCE_RETRY:
+        retry_triggered = True
+        passes_run.append("enhance_retry")
+        enhanced = _enhance_contrast(image)
+        retry_boxes = _detect_boxes(
+            _worker_ocr,
+            enhanced,
+            pipeline_settings.OCR_CONFIDENCE_THRESHOLD,
+        )
+        if retry_boxes:
+            boxes = _dedupe_boxes(retry_boxes)
+            for _b in boxes:
+                pass_by_id[id(_b)] = "retry"
+            detected_text = _normalise(" ".join(box.text for box in boxes))
+
+    title_recovery_triggered = False
+    title_recovery_recovered = False
+    title_recovery_error: str | None = None
+    season_number_ids: set[tuple[str, BoundingBox]] = set()
+    season_title_ids: set[tuple[str, BoundingBox]] = set()
+    season_edition_ids: set[tuple[str, BoundingBox]] = set()
+    season_semantic_evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] = {}
+    rejection_box_keys: set[tuple[str, BoundingBox]] = set()
+
+    def _build_state() -> tuple[
+        dict[int, _TitleEvidence],
+        _DetectedBox | None,
+        list[OCRTextBox],
+        list[OCRTextBox],
+        float,
+        set[int],
+    ]:
+        nonlocal season_number_ids, season_title_ids, season_edition_ids
+        nonlocal season_semantic_evidence
+        season_semantic_evidence = _season_semantic_evidence(
+            boxes,
+            image_width=image_width,
+            image_height=image_height,
+            season_number=season_number,
+            season_title=season_title_text,
+        )
+        season_number_ids = {
+            key for key, value in season_semantic_evidence.items() if value.category == "season"
+        }
+        season_title_ids = {
+            key
+            for key, value in season_semantic_evidence.items()
+            if value.category == "season_title"
+        }
+        season_edition_ids = {
+            key
+            for key, value in season_semantic_evidence.items()
+            if value.category == "season_edition"
+        }
+        title_evidence = _find_title_evidence(
+            boxes,
+            title_text=title_text or "",
+            title_tokens=title_tokens,
+            image_width=image_width,
+            image_height=image_height,
+        )
+        billing_band_ids = _detect_top_billing_bands(
+            boxes,
+            image_width=image_width,
+            image_height=image_height,
+        )
+        title_boxes = [box for box in boxes if id(box) in title_evidence]
+        title_box = _synthetic_title_box(
+            title_boxes,
+            fallback_text=title_text or " ".join(sorted(title_tokens)),
+        )
+        all_tokens = title_tokens | director_tokens
+        residual = [
+            OCRTextBox(
+                text=box.text,
+                confidence=box.confidence,
+                bbox=box.bbox,
+                area=_polygon_area(box.bbox),
+                geometry_valid=box.geometry_valid,
+            )
+            for box in boxes
+            if id(box) not in title_evidence
+        ]
+
+        # RC-2 + RC-3 + RC-4 fix: evaluate significance at the *word* level, not
+        # the box level.  A box that mixes title words with noise fragments (e.g.
+        # "1917 ll6l") used to fail the box-level _matches_allowed check entirely,
+        # causing the title words inside to trigger significant_residual.  Now:
+        #   • title-evidence fragments are removed from residuals first
+        #   • each residual word is individually classified against tokens
+        #   • pure-digit strings (catalog numbers, scan labels) are not significant
+        #   • SMALL boxes whose centre lies within OCR_TITLE_PROXIMITY_PIXELS of
+        #     the title bbox are treated as OCR fragments of the title and skipped
+        #   • a box past the geometry thresholds (area/width fraction) is
+        #     significant no matter what the recognizer read out of it — garbled
+        #     reads of big text ("70MM" -> "mm") must not slip the word rule
+        # Geometry significance only trusts confident, geometrically valid
+        # detections: the low-confidence strip passes (0.50-0.65) routinely
+        # hallucinate big boxes on imagery (truck grilles, ferns), and rotated-frame
+        # vertical reads shed garbled title-edge fragments at high confidence — both
+        # must stay subject to the word rule. Small artifacts within
+        # OCR_TITLE_PROXIMITY_PIXELS of the title are discounted as title noise. The
+        # rule lives in _residual_significance (shared with the trace builder).
+        significant_residual = [
+            box
+            for box in residual
+            if _residual_significance(
+                box,
+                title_box=title_box,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                all_tokens=all_tokens,
+            )[0]
+        ]
+        significant_area_fraction = (
+            sum(box.area for box in significant_residual) / image_area if image_area > 0 else 0.0
+        )
+        return (
+            title_evidence,
+            title_box,
+            residual,
+            significant_residual,
+            significant_area_fraction,
+            billing_band_ids,
+        )
+
+    def _decide(
+        *,
+        title_box: _DetectedBox | None,
+        significant_residual: list[OCRTextBox],
+        significant_area_fraction: float,
+        detected_text_current: str,
+    ) -> dict:
+        nonlocal rejection_box_keys
+        knobs = effective_gate_knobs(profile)
+        text_mode = knobs["mode"]
+        allow_title = knobs["allow_map"]["title"]
+        max_residual_boxes = knobs["max_residual_boxes"]
+        max_residual_area = knobs["max_residual_area_fraction"]
+        require_title = knobs["require_title"]
+        allowed_count = 0
+        denied_count = 0
+        allowed_area = 0.0
+        denied_area = 0.0
+        if not detected_text_current:
+            accepted = text_mode == "textless" or (text_mode == "custom" and not require_title)
+            reason = None if accepted else "no_text"
+        elif set(detected_text_current.split()) & FORMAT_BLOCKLIST:
+            accepted = False
+            reason = "format_blocklist"
+        elif text_mode == "textless":
+            # Accept only if NO title AND no significant residual.
+            has_title = title_box is not None
+            has_residual = len(significant_residual) > 0
+            accepted = not has_title and not has_residual
+            reason = None if accepted else ("has_title" if has_title else "text_heavy")
+            rejection_box_keys = {(_normalise(box.text), box.bbox) for box in significant_residual}
+            denied_count = len(significant_residual)
+            denied_area = significant_area_fraction
+        elif text_mode == "custom":
+            billing_band_keys = {
+                (_normalise(box.text), box.bbox) for box in boxes if id(box) in billing_band_ids
+            }
+            custom = evaluate_custom_text_profile(
+                significant_residual,
+                allow_map=knobs["allow_map"],
+                max_residual_boxes=max_residual_boxes,
+                max_residual_area_fraction=max_residual_area,
+                image_width=image_width,
+                image_height=image_height,
+                image_area=image_area,
+                title_box=title_box,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_keys=billing_band_keys,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
+            )
+            allowed_count = len(custom.allowed_boxes)
+            denied_count = len(custom.denied_boxes)
+            allowed_area = custom.allowed_area_fraction
+            denied_area = custom.denied_area_fraction
+            rejection_box_keys = {(_normalise(box.text), box.bbox) for box in custom.denied_boxes}
+
+            accepted = custom.accepted
+            reason = None if accepted else "text_heavy"
+            # Title gate: if title is denied, require that one is actually present.
+            if accepted and not allow_title and title_box is not None:
+                accepted = False
+                reason = "has_title"
+            # Title requirement: if title is required but absent (and no title box).
+            if accepted and allow_title and title_box is None and require_title:
+                accepted = False
+                reason = "no_title"
+        else:
+            # title_only (default): require title; reject significant residual
+            # above the count/area thresholds.
+            accepted = (
+                len(significant_residual) <= max_residual_boxes
+                and significant_area_fraction <= max_residual_area
+            )
+            reason = None if accepted else "text_heavy"
+            rejection_box_keys = {(_normalise(box.text), box.bbox) for box in significant_residual}
+            denied_count = len(significant_residual)
+            denied_area = significant_area_fraction
+            # Title-only target: text that never matches the title (logos, taglines
+            # read in isolation) does not make a titled poster. The fallback remains
+            # opt-in via OCR_ACCEPT_NO_TEXT and is disabled by default.
+            if accepted and title_box is None and require_title:
+                accepted = False
+                reason = "no_title"
+
+        return {
+            "mode": text_mode,
+            "accepted": accepted,
+            "reason": reason,
+            "has_text": bool(detected_text_current),
+            "has_title": title_box is not None,
+            "require_title": require_title,
+            "allow_map": knobs["allow_map"],
+            "significant_residual_count": len(significant_residual),
+            "max_residual_boxes": max_residual_boxes,
+            "significant_area_fraction": significant_area_fraction,
+            "max_residual_area_fraction": max_residual_area,
+            "allowed_significant_count": allowed_count,
+            "allowed_area_fraction": allowed_area,
+            "denied_significant_count": denied_count,
+            "denied_area_fraction": denied_area,
+        }
+
+    def _trace(
+        *,
+        title_box: _DetectedBox | None,
+        title_evidence: dict[int, _TitleEvidence],
+        decision: dict,
+    ) -> dict:
+        """Assemble the JSON-native OCR trace from the current detection state."""
+        title_fragments = [
+            {
+                "text": box.text,
+                "bbox": [[float(x), float(y)] for x, y in box.bbox],
+                "source": evidence.source,
+                "group_text": evidence.group_text,
+                "is_fragment": evidence.is_fragment,
+            }
+            for box in boxes
+            if (evidence := title_evidence.get(id(box))) is not None
+        ]
+        return {
+            "profile": {
+                "id": profile_id if isinstance(profile_id, str) else None,
+                "name": profile_name if isinstance(profile_name, str) else None,
+                "scope": profile_scope if isinstance(profile_scope, str) else None,
+                "settings_fingerprint": _profile_settings_fingerprint(profile),
+            },
+            "season_context": {
+                "number": season_number,
+                "title": season_title_text,
+            },
+            "image_size": {"width": image_width, "height": image_height},
+            "passes_run": passes_run,
+            "enhance_retry": {
+                "triggered": retry_triggered,
+                "recovered_text": bool(detected_text),
+            },
+            "title_recovery": {
+                "enabled": pipeline_settings.OCR_TITLE_RECOVERY_ENABLED,
+                "triggered": title_recovery_triggered,
+                "recovered_title": title_recovery_recovered,
+                "confidence_threshold": (pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD),
+                "error": title_recovery_error,
+            },
+            "detected_boxes": _build_detected_boxes_trace(
+                boxes,
+                title_box=title_box,
+                title_evidence=title_evidence,
+                all_tokens=title_tokens | director_tokens,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_ids=billing_band_ids,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
+                season_semantic_evidence=season_semantic_evidence,
+                rejection_box_keys=rejection_box_keys,
+                image_width=image_width,
+                image_height=image_height,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                pass_by_id=pass_by_id,
+            ),
+            "title": (
+                {
+                    "text": title_box.text,
+                    "bbox": [[float(x), float(y)] for x, y in title_box.bbox],
+                    "match_score": _title_match_score(title_box.text, title_tokens),
+                    "fragments": title_fragments,
+                }
+                if title_box is not None
+                else None
+            ),
+            "decision": decision,
+        }
+
+    (
+        title_evidence,
+        title_box,
+        residual,
+        significant_residual,
+        significant_area_fraction,
+        billing_band_ids,
+    ) = _build_state()
+    decision = _decide(
+        title_box=title_box,
+        significant_residual=significant_residual,
+        significant_area_fraction=significant_area_fraction,
+        detected_text_current=detected_text,
+    )
+
+    if (
+        pipeline_settings.OCR_TITLE_RECOVERY_ENABLED
+        and not decision["accepted"]
+        and decision["reason"] in {"no_text", "no_title"}
+        and not significant_residual
+    ):
+        title_recovery_triggered = True
+        passes_run.append("title_recovery")
+        try:
+            enhanced = _enhance_contrast(image)
+            recovery_image = np.asarray(
+                Image.fromarray(enhanced).resize(
+                    (image_width * 2, image_height * 2),
+                    Image.Resampling.LANCZOS,
+                )
+            )
+            recovery_boxes = _dedupe_boxes(
+                _detect_boxes(
+                    _worker_ocr,
+                    recovery_image,
+                    pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD,
+                    scale=2.0,
+                )
+            )
+            recovery_evidence = _find_title_evidence(
+                recovery_boxes,
+                title_text=title_text or "",
+                title_tokens=title_tokens,
+                image_width=image_width,
+                image_height=image_height,
+            )
+            recovered_title_boxes = [box for box in recovery_boxes if id(box) in recovery_evidence]
+            if recovered_title_boxes:
+                title_recovery_recovered = True
+                for box in recovered_title_boxes:
+                    pass_by_id[id(box)] = "title_recovery"
+                boxes = _dedupe_boxes(boxes + recovered_title_boxes)
+                detected_text = _normalise(" ".join(box.text for box in boxes))
+                (
+                    title_evidence,
+                    title_box,
+                    residual,
+                    significant_residual,
+                    significant_area_fraction,
+                    billing_band_ids,
+                ) = _build_state()
+                decision = _decide(
+                    title_box=title_box,
+                    significant_residual=significant_residual,
+                    significant_area_fraction=significant_area_fraction,
+                    detected_text_current=detected_text,
+                )
+        except Exception as exc:
+            title_recovery_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("OCR title recovery failed for %s: %s", path.name, exc)
+
+    return OCRCandidateResult(
+        image_path=path,
+        accepted=decision["accepted"],
+        detected_text=detected_text,
+        reason=decision["reason"],
+        title_bbox=title_box.bbox if title_box else None,
+        residual_boxes=residual,
+        diagnostics=_trace(
+            title_box=title_box,
+            title_evidence=title_evidence,
+            decision=decision,
+        ),
+    )
+
+
+def apply_no_text_fallback(
+    results: list[OCRCandidateResult],
+) -> list[OCRCandidateResult]:
+    """Rescue no_text/no_title posters ONLY when the opt-in fallback is enabled.
+
+    Textless posters must never compete against titled ones (project target:
+    title-only text). The default is to keep no_text/no_title rejected; when
+    ``OCR_ACCEPT_NO_TEXT`` is manually enabled, apply this over one subject's
+    result subset, never over a multi-subject collection.
+    """
+    if not pipeline_settings.OCR_ACCEPT_NO_TEXT:
+        return results
+    if any(result.accepted for result in results):
+        return results
+    rescuable = [result for result in results if result.reason in ("no_text", "no_title")]
+    if not rescuable:
+        return results
+    logger.warning(
+        "OCR FALLBACK | zero titled survivors — rescuing %d textless/"
+        "no-title poster(s) as last resort",
+        len(rescuable),
+    )
+    rescued_paths = {result.image_path for result in rescuable}
+    return [
+        replace(result, accepted=True, reason=f"{result.reason}_fallback")
+        if result.image_path in rescued_paths
+        else result
+        for result in results
+    ]
+
+
+class PosterTextFilter:
+    def __init__(
+        self,
+        title: str,
+        *,
+        director: str | None = None,
+        studios: list[str] | None = None,
+        tagline: str | None = None,
+        media_type: str = "movie",
+        season_number: int | None = None,
+        season_title: str | None = None,
+        num_workers: int | None = None,
+        profile: TextProfile | None = None,
+    ):
+        self.title = _normalise(title)
+        self.director = _normalise(director) if director else ""
+        self.studios = [_normalise(studio) for studio in (studios or []) if _normalise(studio)]
+        self.tagline = _normalise(tagline) if tagline else ""
+        self.media_type = media_type
+        self.profile_scope = {"series": "show", "show": "show", "season": "season"}.get(
+            media_type, "movie"
+        )
+        self.season_number = season_number
+        self.season_title = _normalise(season_title) if season_title else ""
+        # Explicit argument > OCR_WORKERS env > hardware-profile auto-sizing.
+        self.num_workers = num_workers or effective_ocr_workers()
+        self.title_tokens = set(self.title.split())
+        _add_digit_words(self.title_tokens)
+        self.director_tokens = set(self.director.split())
+        self.studio_tokens = {token for studio in self.studios for token in studio.split()}
+        # Resolved text profile, serialized as a plain dict so it pickles into
+        # spawned worker processes. None → _decide uses pipeline_settings.
+        self.profile_payload: dict | None = profile.gate_payload() if profile else None
+        self.profile_id = profile.id if profile else None
+        self.profile_name = profile.name if profile else None
+
+    def task_extras(self) -> dict[str, object] | None:
+        """Per-task text-gate context for run_ocr_tasks item tuples."""
+        extras: dict[str, object] = {}
+        if self.profile_payload is not None:
+            extras["profile"] = self.profile_payload
+        if self.profile_id:
+            extras["profile_id"] = self.profile_id
+        if self.profile_name:
+            extras["profile_name"] = self.profile_name
+        extras["profile_scope"] = self.profile_scope
+        if self.studio_tokens:
+            extras["studio_tokens"] = self.studio_tokens
+        if self.tagline:
+            extras["tagline"] = self.tagline
+        if self.season_number is not None:
+            extras["season_number"] = self.season_number
+        if self.season_title:
+            extras["season_title"] = self.season_title
+        return extras or None
+
+    def filter_batch(
+        self,
+        paths: list[Path],
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        pool: OcrPool | None = None,
+    ) -> list[OCRCandidateResult]:
+        """Single-movie batch: every poster matched against this movie's title.
+
+        ``pool`` is an already-warm pool started earlier (see ``start_ocr_pool``)
+        so its PaddleOCR load overlapped the download phase instead of stalling
+        this stage. Ownership stays with the caller — running the tasks consumes
+        the pool's workers, but releasing the queues is the starter's job. With
+        no pool this falls back to starting and stopping a private one.
+        """
+        if not paths:
+            return []
+        extras = self.task_extras()
+        items = [
+            (path, self.title, self.title_tokens, self.director_tokens, extras) for path in paths
+        ]
+        if pool is not None:
+            results = self.run_ocr_tasks(pool, items, progress=progress)
+        else:
+            results = self.run_ocr_batch(items, num_workers=self.num_workers, progress=progress)
+        # Safe here because a filter_batch call is by definition one subject:
+        # the rescue must never reach across to another subject's posters.
+        results = apply_no_text_fallback(results)
+        logger.info(
+            "OCR complete: %d accepted, %d rejected",
+            sum(result.accepted for result in results),
+            sum(not result.accepted for result in results),
+        )
+        return results
+
+    # ── Pool lifecycle (for preloading ahead of the OCR stage) ────────────
+
+    @staticmethod
+    def start_ocr_pool(num_workers: int | None = None) -> OcrPool:
+        """Spawn OCR workers and block until every one has loaded PaddleOCR.
+
+        Call this early — the orchestrator starts it before the download phase
+        so the model load overlaps network I/O instead of stalling the OCR
+        stage. The returned ``OcrPool`` is **single-use**: pass it to
+        ``run_ocr_tasks`` once, then release it with ``stop_ocr_pool``.
+
+        Startup is atomic. If process creation, worker registration, or model
+        readiness fails, every process and queue created so far is cleaned up
+        before the original exception is re-raised.
+        """
+        wanted = num_workers or effective_ocr_workers()
+        worker_count = max(1, wanted)
+        omp_threads = effective_ocr_omp_threads(worker_count)
+        context = multiprocessing.get_context("spawn")
+        task_queue = context.Queue()
+        result_queue = context.Queue()
+        pool = OcrPool(workers=[], task_queue=task_queue, result_queue=result_queue)
+        try:
+            for index in range(worker_count):
+                worker = context.Process(
+                    target=_worker_main,
+                    args=(task_queue, result_queue, set(), set(), omp_threads),
+                    name=f"poster-ocr-{index + 1}",
+                )
+                pool.workers.append(worker)
+            for worker in pool.workers:
+                worker.start()
+                _register_worker(worker)
+            PosterTextFilter._wait_for_workers_ready(result_queue, pool.workers)
+        except BaseException as startup_error:
+            try:
+                PosterTextFilter.stop_ocr_pool(pool)
+            except BaseException as cleanup_error:
+                raise OcrPoolTeardownError(
+                    "OCR pool startup failed and cleanup could not be certified "
+                    f"({type(startup_error).__name__}: {startup_error}; "
+                    f"{type(cleanup_error).__name__}: {cleanup_error})"
+                ) from cleanup_error
+            raise
+        logger.info("OCR pool started: %d worker(s)", worker_count)
+        return pool
+
+    @staticmethod
+    def run_ocr_tasks(
+        pool: OcrPool,
+        items: Sequence[_OcrTask],
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        on_item: Callable[[int], None] | None = None,
+    ) -> list[OCRCandidateResult]:
+        """Feed *items* to a ready pool and collect per-item results in order.
+
+        The pool must have been created by ``start_ocr_pool`` and its workers
+        must still be alive. This **consumes** the pool: a shutdown sentinel is
+        queued per worker and the workers are joined before returning, so it can
+        be called once. Release the queues afterwards with ``stop_ocr_pool``.
+
+        ``on_item`` receives the *index* of each item as it completes, which is
+        what lets a grouped caller attribute a pooled batch back to the subject
+        that contributed the image. It fires before ``progress`` so the counter
+        it maintains is already current when the aggregate sample is taken.
+        """
+        if not items:
+            return []
+
+        for index, item in enumerate(items):
+            extras: dict[str, object] | None = None
+            if len(item) == 5:
+                path, title_text, title_tokens, director_tokens, extras = item
+            elif len(item) == 4:
+                path, title_text, title_tokens, director_tokens = item
+            else:
+                path, title_tokens, director_tokens = item
+                title_text = " ".join(sorted(title_tokens))
+            pool.task_queue.put(
+                (index, str(path), title_text, title_tokens, director_tokens, extras)
+            )
+        for _ in pool.workers:
+            pool.task_queue.put(None)
+
+        ordered_results: list[OCRCandidateResult | None] = [None] * len(items)
+        remaining = len(items)
+        while remaining:
+            message_type, key, payload = PosterTextFilter._get_worker_message(
+                pool.result_queue, pool.workers
+            )
+            if message_type == _WORKER_RESULT:
+                ordered_results[key] = payload
+                remaining -= 1
+                if on_item is not None:
+                    on_item(key)
+                if progress is not None:
+                    progress(len(items) - remaining, len(items))
+            elif message_type == _WORKER_INIT_ERROR:
+                raise RuntimeError(f"OCR worker {key} failed to initialize: {payload}")
+
+        PosterTextFilter._join_workers(pool.workers)
+        results = [result for result in ordered_results if result is not None]
+        logger.info("OCR tasks ran %d image(s) over %d worker(s)", len(results), pool.worker_count)
+        return results
+
+    @staticmethod
+    def stop_ocr_pool(pool: OcrPool) -> None:
+        """Shut down worker processes and release queues.
+
+        Safe to call from any thread and safe to call more than once. All cleanup
+        steps are attempted even if an earlier one fails; a teardown failure is
+        raised after the remaining resources have been handled.
+        """
+        failures: list[tuple[str, BaseException]] = []
+        cleanup_steps = (
+            ("workers", lambda: PosterTextFilter._stop_workers(pool.workers)),
+            ("task queue", lambda: PosterTextFilter._close_queue(pool.task_queue)),
+            ("result queue", lambda: PosterTextFilter._close_queue(pool.result_queue)),
+        )
+        for label, cleanup in cleanup_steps:
+            try:
+                cleanup()
+            except BaseException as exc:
+                failures.append((label, exc))
+        if failures:
+            details = "; ".join(f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures)
+            raise OcrPoolTeardownError(f"OCR pool teardown failed ({details})") from failures[0][1]
+        logger.info("OCR pool stopped: %d worker(s)", pool.worker_count)
+
+    @staticmethod
+    def run_ocr_batch(
+        items: Sequence[_OcrTask],
+        *,
+        num_workers: int | None = None,
+        progress: Callable[[int, int], None] | None = None,
+        on_item: Callable[[int], None] | None = None,
+    ) -> list[OCRCandidateResult]:
+        """Run OCR over many OCR task items in one private worker pool.
+
+        Starts and tears down the pool on the spot. Prefer handing
+        ``filter_batch`` a pool started earlier when there is useful work to
+        overlap with model loading.
+
+        Items may carry different titles. The no-text fallback is deliberately
+        not applied here; callers apply it to each subject's own result subset.
+        """
+        if not items:
+            return []
+
+        pool = PosterTextFilter.start_ocr_pool(num_workers)
+        try:
+            results = PosterTextFilter.run_ocr_tasks(
+                pool, items, progress=progress, on_item=on_item
+            )
+        except BaseException:
+            try:
+                PosterTextFilter.stop_ocr_pool(pool)
+            except BaseException:
+                logger.exception("OCR pool teardown failed while preserving OCR failure")
+            raise
+        else:
+            PosterTextFilter.stop_ocr_pool(pool)
+            return results
+
+    @staticmethod
+    def _apply_no_text_fallback(
+        results: list[OCRCandidateResult],
+    ) -> list[OCRCandidateResult]:
+        """Back-compat shim — see module-level ``apply_no_text_fallback``."""
+        return apply_no_text_fallback(results)
+
+    @staticmethod
+    def _wait_for_workers_ready(result_queue: Any, workers: list[Any]) -> None:
+        ready_workers = 0
+        while ready_workers < len(workers):
+            message_type, key, payload = PosterTextFilter._get_worker_message(
+                result_queue,
+                workers,
+            )
+            if message_type == _WORKER_READY:
+                ready_workers += 1
+            elif message_type == _WORKER_INIT_ERROR:
+                raise RuntimeError(f"OCR worker {key} failed to initialize: {payload}")
+
+    @staticmethod
+    def _get_worker_message(result_queue: Any, workers: list[Any]) -> tuple[Any, ...]:
+        while True:
+            try:
+                return result_queue.get(timeout=_WORKER_POLL_SECONDS)
+            except queue.Empty:
+                failed = [worker for worker in workers if worker.exitcode not in (None, 0)]
+                if failed:
+                    details = ", ".join(f"{worker.name}={worker.exitcode}" for worker in failed)
+                    raise RuntimeError(f"OCR worker exited unexpectedly: {details}") from None
+                if all(worker.exitcode is not None for worker in workers):
+                    raise RuntimeError("OCR workers exited before returning all results") from None
+
+    @staticmethod
+    def _join_workers(workers: list[Any]) -> None:
+        deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
+        for worker in workers:
+            worker.join(max(0.0, deadline - time.monotonic()))
+
+        hung = [worker for worker in workers if worker.is_alive()]
+        if hung:
+            logger.warning(
+                "Forcing shutdown of unresponsive OCR workers: %s",
+                ", ".join(worker.name for worker in hung),
+            )
+            for worker in hung:
+                worker.terminate()
+            for worker in hung:
+                worker.join()
+            details = ", ".join(
+                f"{worker.name}=pid:{worker.pid} exit:{worker.exitcode}" for worker in hung
+            )
+            raise RuntimeError(f"OCR worker forced shutdown: {details}")
+
+        failed = [worker for worker in workers if worker not in hung and worker.exitcode != 0]
+        if failed:
+            details = ", ".join(f"{worker.name}={worker.exitcode}" for worker in failed)
+            raise RuntimeError(f"OCR worker shutdown failed: {details}")
+        for worker in workers:
+            if worker.pid is not None and _pid_alive(worker.pid):
+                raise RuntimeError(f"OCR worker survived shutdown: {worker.name}=pid:{worker.pid}")
+            _unregister_worker(worker)
+
+    @staticmethod
+    def _stop_workers(workers: list[Any]) -> None:
+        failures: list[str] = []
+
+        for worker in workers:
+            try:
+                if worker.is_alive():
+                    logger.warning(
+                        "Terminating live OCR worker during cleanup: name=%s pid=%s",
+                        worker.name,
+                        worker.pid,
+                    )
+                    worker.terminate()
+            except BaseException as exc:
+                failures.append(f"{worker.name} terminate: {type(exc).__name__}: {exc}")
+
+        deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
+        for worker in workers:
+            if worker.pid is None:
+                continue
+            try:
+                worker.join(max(0.0, deadline - time.monotonic()))
+            except BaseException as exc:
+                failures.append(f"{worker.name} join: {type(exc).__name__}: {exc}")
+
+        hung: list[Any] = []
+        for worker in workers:
+            if worker.pid is None:
+                continue
+            try:
+                if worker.is_alive():
+                    hung.append(worker)
+            except BaseException as exc:
+                failures.append(f"{worker.name} liveness check: {type(exc).__name__}: {exc}")
+                hung.append(worker)
+
+        if hung:
+            logger.warning(
+                "Killing OCR workers that survived terminate: %s",
+                ", ".join(worker.name for worker in hung),
+            )
+            for worker in hung:
+                try:
+                    killer = getattr(worker, "kill", worker.terminate)
+                    killer()
+                except BaseException as exc:
+                    failures.append(f"{worker.name} kill: {type(exc).__name__}: {exc}")
+            deadline = time.monotonic() + _WORKER_SHUTDOWN_SECONDS
+            for worker in hung:
+                try:
+                    worker.join(max(0.0, deadline - time.monotonic()))
+                except BaseException as exc:
+                    failures.append(f"{worker.name} post-kill join: {type(exc).__name__}: {exc}")
+
+        for worker in workers:
+            if worker.pid is None:
+                continue
+            try:
+                survived = worker.is_alive() or _pid_alive(worker.pid)
+            except BaseException as exc:
+                failures.append(f"{worker.name} final liveness check: {type(exc).__name__}: {exc}")
+                survived = True
+            if survived:
+                failures.append(f"{worker.name} survived cleanup (pid:{worker.pid})")
+                continue
+            _unregister_worker(worker)
+
+        if failures:
+            raise RuntimeError("OCR worker cleanup failed: " + "; ".join(failures))
+
+    @staticmethod
+    def _close_queue(worker_queue: Any) -> None:
+        worker_queue.close()
+        worker_queue.join_thread()
+
+    def is_acceptable(self, path: Path) -> OCRCandidateResult:
+        _init_worker(self.title_tokens, self.director_tokens, self.title)
+        return _process_image(
+            str(path),
+            self.title_tokens,
+            self.director_tokens,
+            title_text=self.title,
+            extras=self.task_extras(),
+        )

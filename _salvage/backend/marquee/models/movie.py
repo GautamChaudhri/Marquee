@@ -1,0 +1,102 @@
+"""Movie model — one row per film in the user's library."""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, DateTime, Index, Integer, String, Text, func, text
+from sqlalchemy.orm import Mapped, mapped_column
+
+from marquee.database import Base
+from marquee.models.base import ArtworkMixin, TimestampMixin
+
+
+class Movie(Base, TimestampMixin, ArtworkMixin):
+    """A movie identified by Radarr or standalone filesystem scan.
+
+    Poster retrieval uses ``tmdb_id`` as the universal lookup key.
+    """
+
+    __tablename__ = "movies"
+
+    # ── Primary Key ──────────────────────────────────────────────────
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+
+    # ── Identity ─────────────────────────────────────────────────────
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    year: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
+    imdb_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # ── Genres ───────────────────────────────────────────────────────
+    # JSON array synced from Radarr (e.g. ["Action", "Thriller"]). Powers
+    # label-diversity tracking (design 09) and the taste map (design 11).
+    genres: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+    # ── Filesystem ───────────────────────────────────────────────────
+    folder_path: Mapped[str] = mapped_column(Text, nullable=False)
+    movie_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── Encoded video ────────────────────────────────────────────────
+    # Populated from Radarr movieFile.mediaInfo during sync; drives the
+    # resolution label on library surfaces.
+    video_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    video_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    container: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, comment="Container/extension: matroska, mp4, ..."
+    )
+
+    # ── Origin ───────────────────────────────────────────────────────
+    radarr_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True, nullable=True)
+
+    is_present: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true"), index=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    # ── TMDB-enriched metadata (OCR text-gate classification) ─────────
+    director: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+        comment=(
+            "Director name from TMDB movie credits — used by the text gate "
+            "to identify director-credit text on posters."
+        ),
+    )
+    production_companies_json: Mapped[list[str] | None] = mapped_column(
+        JSON,
+        nullable=True,
+        comment=(
+            "Production company names from TMDB — used by the text gate to "
+            "identify studio branding text on posters (e.g. 'Marvel Studios')."
+        ),
+    )
+    tagline: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment=(
+            "Movie tagline from TMDB — used by the text gate to allow "
+            "matching promotional text on posters."
+        ),
+    )
+    text_profile_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        comment="Optional per-movie text-profile override for the OCR text gate.",
+    )
+
+    # ── Indexes ──────────────────────────────────────────────────────
+    __table_args__ = (
+        Index(
+            "ix_movies_missing_poster",
+            "id",
+            postgresql_where=text("poster_path IS NULL"),
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Movie(id={self.id}, title={self.title!r}, tmdb_id={self.tmdb_id})>"

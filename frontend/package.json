@@ -1,0 +1,60 @@
+{
+	"name": "frontend",
+	"private": true,
+	"version": "0.1.0",
+	"license": "GPL-3.0-only",
+	"type": "module",
+	"scripts": {
+		"dev": "vite dev",
+		"build": "vite build",
+		"bundle:check": "node scripts/check-bundle-budget.mjs",
+		"api:export": "cd .. && rtk .venv/bin/python scripts/export_openapi.py",
+		"api:check": "cd .. && rtk .venv/bin/python scripts/export_openapi.py --check",
+		"api:generate": "openapi-typescript ../design/api-schema.json -o src/lib/api/generated/openapi.ts && prettier --write src/lib/api/generated/openapi.ts",
+		"api:generate:check": "npm run api:generate && rtk git diff --exit-code -- src/lib/api/generated/openapi.ts",
+		"preview": "vite preview",
+		"prepare": "svelte-kit sync || echo ''",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"lint": "prettier --check . && eslint .",
+		"format": "prettier --write .",
+		"test:unit": "vitest run",
+		"test:unit:watch": "vitest",
+		"test:e2e": "playwright test",
+		"test:visual": "playwright test --config=playwright.visual.config.ts",
+		"test": "npm run test:unit && npm run test:e2e"
+	},
+	"devDependencies": {
+		"@axe-core/playwright": "4.12.1",
+		"@eslint/js": "^10.0.1",
+		"@playwright/test": "1.61.1",
+		"@sveltejs/adapter-node": "^5.5.4",
+		"@sveltejs/kit": "^2.63.0",
+		"@sveltejs/vite-plugin-svelte": "^7.1.2",
+		"@testing-library/jest-dom": "6.9.1",
+		"@testing-library/svelte": "5.4.2",
+		"@testing-library/user-event": "14.6.1",
+		"@types/node": "^22",
+		"eslint": "^10.4.1",
+		"eslint-config-prettier": "^10.1.8",
+		"eslint-plugin-svelte": "^3.19.0",
+		"globals": "^17.6.0",
+		"jsdom": "29.1.1",
+		"openapi-typescript": "7.13.0",
+		"prettier": "^3.8.3",
+		"prettier-plugin-svelte": "^4.1.0",
+		"svelte": "^5.56.1",
+		"svelte-check": "^4.6.0",
+		"typescript": "5.9.3",
+		"typescript-eslint": "^8.60.1",
+		"vite": "^8.0.16",
+		"vitest": "4.1.10"
+	},
+	"dependencies": {
+		"plotly.js-dist-min": "^3.6.0",
+		"svelte-dnd-action": "^0.9.70"
+	},
+	"overrides": {
+		"cookie": "0.7.2"
+	}
+}

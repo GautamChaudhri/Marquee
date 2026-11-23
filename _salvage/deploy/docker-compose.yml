@@ -1,0 +1,185 @@
+# Marquee — poster pipeline.
+#
+# PostgreSQL is the sole source of truth. API, worker, and scheduler are separate
+# services so a GPU-bound poster run never occupies Uvicorn.
+#
+# Topology: caddy is the only published origin. It forwards to marquee-web, whose
+# SvelteKit server proxies /api/* to marquee-api with the API key attached, so the
+# key never reaches a browser. marquee-api's own port is bound to loopback for
+# tooling that carries its own key.
+#
+# NVIDIA: add the GPU reservation with
+#   docker compose -f docker/docker-compose.yml -f docker/compose.nvidia.yml up -d
+x-marquee-environment: &marquee-environment
+  DB_URL: postgresql+asyncpg://marquee@postgres:5432/marquee
+  POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+  MARQUEE_ENVIRONMENT: ${MARQUEE_ENVIRONMENT:-production}
+  MARQUEE_PROCESS_ROLE: api
+  EXECUTION_PROVIDER: ${EXECUTION_PROVIDER:-auto}
+  JOB_EMBEDDED_WORKERS: "false"
+  DATA_PATH_CEILING: /app/data
+  MEDIA_PATH_CEILINGS: "${MEDIA_PATH_CEILINGS:-[]}"
+  JOB_RUNNER_UID: "${JOB_RUNNER_UID:-65532}"
+  JOB_RUNNER_GID: "${JOB_RUNNER_GID:-65532}"
+
+x-marquee: &marquee
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    args:
+      MARQUEE_HW: ${MARQUEE_HW:-cpu}
+  image: marquee:${MARQUEE_HW:-cpu}
+  environment:
+    <<: *marquee-environment
+    # Dedicated marquee-worker / marquee-scheduler services run the job runtime,
+    # so the API must NOT spawn its own embedded workers. (Only the API process
+    # reads this flag; worker/scheduler/migrate ignore it.)
+    JOB_EMBEDDED_WORKERS: "false"
+  volumes:
+    - marquee-data:/app/data
+    - ../marquee/ml/models:/app/marquee/ml/models:ro
+    # Poster deployment writes artwork into the movie/series folder, so the
+    # worker needs these read-write. Add site-specific mounts here.
+    # - /mnt/media/movies:/movies
+    # - /mnt/media/tv:/tv
+  secrets:
+    - source: postgres_password
+      target: postgres_password
+      uid: "0"
+      gid: "0"
+      mode: 0400
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: marquee
+      POSTGRES_USER: marquee
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - source: postgres_password
+        target: postgres_password
+        uid: "0"
+        gid: "0"
+        mode: 0400
+    volumes:
+      - marquee-postgres:/var/lib/postgresql/data
+    ports:
+      # Loopback only — lets a locally-run uvicorn or psql connect without
+      # exposing PostgreSQL to the LAN. Containers use the `postgres` hostname.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquee -d marquee"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    <<: *marquee
+    command: ["python", "-m", "marquee.db_migration"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: migration
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  marquee-api:
+    <<: *marquee
+    command: ["uvicorn", "marquee.main:app", "--host", "0.0.0.0", "--port", "3165", "--no-access-log"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: api
+      JOB_EMBEDDED_WORKERS: "false"
+      API_KEY_FILE: /run/secrets/marquee_api_key
+    secrets:
+      - source: postgres_password
+        target: postgres_password
+        uid: "0"
+        gid: "0"
+        mode: 0400
+      - source: marquee_api_key
+        target: marquee_api_key
+        uid: "0"
+        gid: "0"
+        mode: 0400
+    ports:
+      # Loopback only. Public traffic arrives through caddy -> marquee-web.
+      - "127.0.0.1:3165:3165"
+    healthcheck:
+      # Liveness, not readiness: a transient dependency blip must not restart a
+      # healthy container.
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:3165/health/live').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  marquee-worker:
+    <<: *marquee
+    command: ["python", "-m", "marquee.core.jobs.pgqueuer_worker"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: worker
+    # Only workers own accelerator work; keeping the GPU off API/scheduler is
+    # intentional. See compose.nvidia.yml.
+
+  marquee-scheduler:
+    <<: *marquee
+    command: ["python", "-m", "marquee.core.jobs.pgqueuer_scheduler"]
+    environment:
+      <<: *marquee-environment
+      MARQUEE_PROCESS_ROLE: scheduler
+
+  marquee-web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+    image: marquee-web:latest
+    environment:
+      MARQUEE_API_URL: http://marquee-api:3165
+      MARQUEE_API_KEY_FILE: /run/secrets/marquee_api_key
+      PUBLIC_USE_MOCKS: "false"
+    secrets:
+      - source: marquee_api_key
+        target: marquee_api_key
+        uid: "0"
+        gid: "0"
+        mode: 0400
+    depends_on:
+      marquee-api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${MARQUEE_BIND_ADDRESS:-127.0.0.1}:${MARQUEE_HTTP_PORT:-8080}:80"
+      - "${MARQUEE_BIND_ADDRESS:-127.0.0.1}:${MARQUEE_HTTPS_PORT:-8443}:443"
+    environment:
+      MARQUEE_SITE_ADDRESS: ${MARQUEE_SITE_ADDRESS:-:80}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - marquee-web
+    restart: unless-stopped
+
+volumes:
+  marquee-data:
+  marquee-postgres:
+  caddy-data:
+  caddy-config:
+
+secrets:
+  postgres_password:
+    environment: POSTGRES_PASSWORD
+  marquee_api_key:
+    environment: API_KEY

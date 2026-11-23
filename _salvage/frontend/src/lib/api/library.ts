@@ -1,0 +1,75 @@
+import { env } from '$env/dynamic/public';
+import { randomUuid } from '$lib/uuid';
+import { apiGet, apiSend, type Fetch } from './client';
+import { mockMovieDetail, mockMovies } from './mock';
+import type {
+	MovieDetail,
+	MovieListItem,
+	MovieQuery,
+	LibraryPage,
+	SeriesDetail,
+	SeriesListItem
+} from './types';
+import type { components } from './generated/openapi';
+
+type JobSubmissionResponse = components['schemas']['JobSubmissionResponse'];
+
+const useMocks = () => env.PUBLIC_USE_MOCKS === 'true';
+
+export function listMovies(
+	fetch: Fetch,
+	params: MovieQuery = {}
+): Promise<LibraryPage<MovieListItem>> {
+	if (useMocks()) return Promise.resolve(mockMovies(params));
+	return apiGet<LibraryPage<MovieListItem>>(
+		fetch,
+		'/library/movies',
+		params as Record<string, unknown>
+	);
+}
+
+export function getMovie(fetch: Fetch, id: number): Promise<MovieDetail> {
+	if (useMocks()) return Promise.resolve(mockMovieDetail(id));
+	return apiGet<MovieDetail>(fetch, `/library/movies/${id}`);
+}
+
+export function deleteMoviePoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
+	if (useMocks()) throw new Error('Poster reset jobs are unavailable in mock mode');
+	return apiSend(fetch, 'DELETE', `/library/movies/${id}/poster`, undefined, {
+		'Idempotency-Key': `poster_reset:${randomUuid()}`
+	});
+}
+
+export function listSeries(
+	fetch: Fetch,
+	params: { page?: number; page_size?: number } = {}
+): Promise<LibraryPage<SeriesListItem>> {
+	return apiGet<LibraryPage<SeriesListItem>>(fetch, '/library/series', params);
+}
+
+export function getSeries(fetch: Fetch, id: number): Promise<SeriesDetail> {
+	return apiGet<SeriesDetail>(fetch, `/library/series/${id}`);
+}
+
+/**
+ * Kick off a full library synchronization. An in-flight sync is reused rather
+ * than starting a second one, so the caller may get back an existing job.
+ */
+export function syncLibraries(fetch: Fetch): Promise<JobSubmissionResponse> {
+	if (useMocks()) throw new Error('Library sync is unavailable in mock mode');
+	return apiSend(fetch, 'POST', '/sync/all', undefined);
+}
+
+export { getSeasonPosterUrl, getSeriesPosterUrl, posterThumbUrl } from './poster-urls';
+
+export function deleteSeriesPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
+	return apiSend(fetch, 'DELETE', `/library/series/${id}/poster`, undefined, {
+		'Idempotency-Key': `poster_reset:${randomUuid()}`
+	});
+}
+
+export function deleteSeasonPoster(fetch: Fetch, id: number): Promise<JobSubmissionResponse> {
+	return apiSend(fetch, 'DELETE', `/library/seasons/${id}/poster`, undefined, {
+		'Idempotency-Key': `poster_reset:${randomUuid()}`
+	});
+}

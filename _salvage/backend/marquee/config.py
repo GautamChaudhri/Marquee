@@ -1,0 +1,864 @@
+"""Centralised application configuration.
+
+All settings are loaded from environment variables and/or a ``.env`` file.
+Pydantic-settings handles type coercion, validation, and defaults.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import socket
+import stat
+from pathlib import Path
+from typing import Literal
+from urllib.parse import quote, urlsplit, urlunsplit
+
+from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# ---------------------------------------------------------------------------
+# Locate the .env file next to pyproject.toml (project root)
+# ---------------------------------------------------------------------------
+ENV_FILE = (
+    None
+    if os.environ.get("MARQUEE_INTERNAL_RUNNER") == "1"
+    else Path(__file__).parent.parent / ".env"
+)
+
+
+def _read_bootstrap_secret(path: Path) -> str:
+    file_stat = path.stat()
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("bootstrap secret must be a regular file")
+    if file_stat.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise ValueError("bootstrap secret must not be group- or world-writable")
+    if file_stat.st_size > 64 * 1024:
+        raise ValueError("bootstrap secret file is too large")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise ValueError("bootstrap secret file is empty")
+    return value
+
+
+class PathMapping(BaseModel):
+    """One Arr-visible root and its corresponding Marquee-visible root."""
+
+    arr_path: str = Field(min_length=1, max_length=4096)
+    marquee_path: str = Field(min_length=1, max_length=4096)
+
+    model_config = {"extra": "forbid"}
+
+
+class Settings(BaseSettings):
+    """Application-wide settings."""
+
+    # ------------------------------------------------------------------
+    # Application
+    # ------------------------------------------------------------------
+    APP_NAME: str = "Marquee"
+    MARQUEE_ENVIRONMENT: Literal["development", "test", "production"] = "production"
+    MARQUEE_PROCESS_ROLE: Literal["api", "worker", "scheduler", "migration", "test"] = "api"
+    HOST: str = "0.0.0.0"
+    PORT: int = 3165
+    DEBUG: bool = False
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"  # "text" | "json" — switch point for structured logging
+
+    # ------------------------------------------------------------------
+    # Security / Authentication
+    #
+    # A single static API key guards every endpoint (except /health).
+    # Send it as ``Authorization: Bearer <key>`` or ``X-Api-Key: <key>``.
+    # The query form is retained only for Radarr/Sonarr webhook compatibility.
+    #
+    #   DEBUG=true                → auth is bypassed entirely (local dev).
+    #   DEBUG=false + API_KEY set → key required (loopback may be exempt).
+    #   DEBUG=false + no API_KEY  → protected endpoints fail closed (503).
+    # ------------------------------------------------------------------
+    API_KEY: str | None = Field(
+        default=None,
+        description="Static API key required on all endpoints except /health. "
+        'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(32))".',
+    )
+    API_KEY_FILE: Path | None = Field(
+        default=None,
+        description="Docker-secret file containing the bootstrap API key.",
+    )
+    MARQUEE_SETTINGS_KEYRING_FILE: Path | None = Field(
+        default=None,
+        description=(
+            "Docker-secret keyring used to encrypt UI-managed integration credentials. "
+            "The file stays outside PostgreSQL and is never returned by the API."
+        ),
+    )
+    AUTH_ALLOW_LOCAL: bool = Field(
+        default=True,
+        description="When true, loopback requests (127.0.0.1/::1) skip the API key "
+        "even outside DEBUG. Tailscale (100.64.0.0/10) and LAN addresses always "
+        "require the key.",
+    )
+    AUTH_BRUTE_LOCKOUT_ATTEMPTS: int = Field(
+        default=10,
+        description="Failed auth attempts from one IP within AUTH_BRUTE_WINDOW_SECONDS "
+        "before that IP is locked out.",
+    )
+    AUTH_BRUTE_WINDOW_SECONDS: int = Field(
+        default=60,
+        description="Rolling window (seconds) used to count auth failures per IP.",
+    )
+    AUTH_BRUTE_LOCKOUT_SECONDS: int = Field(
+        default=300,
+        description="How long (seconds) a locked-out IP must wait before retrying.",
+    )
+
+    # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+    DB_URL: str = "postgresql+asyncpg://marquee:marquee@postgres:5432/marquee"
+    POSTGRES_PASSWORD_FILE: Path | None = Field(
+        default=None,
+        description="Docker-secret file containing the PostgreSQL password.",
+    )
+    DB_LOCK_TIMEOUT_MS: int = Field(
+        default=10_000,
+        ge=0,
+        description="PostgreSQL lock wait timeout in milliseconds; 0 disables it.",
+    )
+    DB_IDLE_TXN_TIMEOUT_MS: int = Field(
+        default=300_000,
+        ge=0,
+        description="PostgreSQL idle-in-transaction timeout in milliseconds; 0 disables it.",
+    )
+    DB_API_POOL_SIZE: int = Field(default=10, ge=1, le=64)
+    DB_API_MAX_OVERFLOW: int = Field(default=5, ge=0, le=32)
+    DB_WORKER_POOL_SIZE: int = Field(default=2, ge=1, le=16)
+    DB_WORKER_MAX_OVERFLOW: int = Field(default=1, ge=0, le=16)
+    DB_SCHEDULER_POOL_SIZE: int = Field(default=1, ge=1, le=8)
+    DB_SCHEDULER_MAX_OVERFLOW: int = Field(default=1, ge=0, le=8)
+    DB_MIGRATION_CONNECTIONS: int = Field(default=1, ge=1, le=4)
+    DB_DEPLOYMENT_MAX_CONNECTIONS: int = Field(default=32, ge=1, le=256)
+    HEALTH_READY_TIMEOUT_SECONDS: float = Field(default=2.0, ge=0.1, le=30.0)
+    HEALTH_STARTUP_ATTEMPTS: int = Field(default=3, ge=1, le=30)
+    HEALTH_STARTUP_RETRY_SECONDS: float = Field(default=1.0, ge=0.0, le=30.0)
+    DATA_PATH_CEILING: str | None = Field(
+        default=None,
+        description=(
+            "Deployment-owned filesystem ceiling for data, cache, staging, backup, and "
+            "metrics paths. Defaults to the bootstrap DATA_DIR during migration."
+        ),
+    )
+    DATA_DIR: str = "data"
+    # Cold-start onboarding ("Rank Test") is built and covered but off by default:
+    # it seeds the taste profile on a fresh install, which is not the flow while the
+    # poster engine is still under active development. Flipping this to true restores
+    # the whole flow — the frontend banner keys off the endpoint being reachable.
+    ONBOARDING_ENABLED: bool = Field(
+        default=False,
+        description="Expose the cold-start onboarding endpoints (/api/onboarding/*). "
+        "Off by default; the flow is retained but does not fire.",
+    )
+    # Standalone dev: the API auto-spawns the worker + scheduler as child
+    # processes so nothing has to be started by hand.  The Compose topology runs
+    # dedicated worker/scheduler services, so it sets this false on the API.
+    JOB_EMBEDDED_WORKERS: bool = Field(
+        default=True,
+        description="Auto-spawn the job worker + scheduler as supervised child "
+        "processes from the API. Set false when dedicated worker/scheduler "
+        "services run separately (e.g. docker-compose).",
+    )
+    JOB_EMBEDDED_WORKER_COUNT: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="How many embedded worker processes to spawn. Resource caps "
+        "already serialize GPU/write work, so one is usually enough.",
+    )
+    JOB_WORKER_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_WORKER_NODE_ID: str = Field(
+        default_factory=socket.gethostname, min_length=1, max_length=100
+    )
+    JOB_RUNNER_UID: int | None = Field(
+        default=None,
+        ge=1,
+        le=2_147_483_647,
+        description="Deployment-owned UID used only by contained runner subprocesses.",
+    )
+    JOB_RUNNER_GID: int | None = Field(
+        default=None,
+        ge=1,
+        le=2_147_483_647,
+        description="Deployment-owned GID used only by contained runner subprocesses.",
+    )
+    JOB_CONTROL_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_NETWORK_CONCURRENCY: int = Field(default=4, ge=1, le=32)
+    JOB_CPU_CONCURRENCY: int = Field(default=2, ge=1, le=32)
+    JOB_MEDIA_READ_CONCURRENCY: int = Field(default=2, ge=1, le=32)
+    JOB_MEDIA_WRITE_CONCURRENCY: int = Field(default=1, ge=1, le=32)
+    JOB_GPU_CONCURRENCY: int = Field(default=1, ge=1, le=32)
+    JOB_MAINTENANCE_CONCURRENCY: int = Field(default=1, ge=1, le=32)
+    JOB_SAFETY_GATE_CONNECTIONS: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        description="Dedicated advisory-lock sessions budgeted per worker process.",
+    )
+    JOB_PGQUEUER_BATCH_SIZE: int = Field(default=2, ge=1, le=16)
+    JOB_PGQUEUER_HEARTBEAT_SECONDS: float = Field(default=60.0, ge=1.0, le=3600.0)
+    JOB_PGQUEUER_DEQUEUE_SECONDS: float = Field(default=10.0, ge=0.05, le=300.0)
+    JOB_RUNTIME_HEARTBEAT_SECONDS: float = Field(default=10.0, ge=1.0, le=300.0)
+    JOB_RUNTIME_EXPIRY_SECONDS: float = Field(default=30.0, ge=3.0, le=900.0)
+    JOB_RUNTIME_QUERY_LIMIT: int = Field(default=100, ge=1, le=500)
+    JOB_PRODUCTION_SCHEDULES_ENABLED: bool = False
+    JOB_WORKER_ENTRYPOINTS: str = Field(
+        default="control,network,cpu,media_read,media_write,gpu,maintenance",
+        description="Comma-separated PgQueuer execution classes this worker may advertise.",
+    )
+    JOB_POLL_SECONDS: float = Field(default=0.5, ge=0.05, le=30.0)
+    JOB_ADMISSION_TIMEOUT_SECONDS: float = Field(default=30.0, ge=0.1, le=3600.0)
+    JOB_PROCESS_COOPERATIVE_SECONDS: float = Field(default=2.0, ge=0.05, le=300.0)
+    JOB_PROCESS_TERM_SECONDS: float = Field(default=5.0, ge=0.05, le=300.0)
+    JOB_INTENT_MONITOR_SECONDS: float = Field(default=30.0, ge=1.0, le=3600.0)
+    JOB_INTENT_MONITOR_BATCH_SIZE: int = Field(default=25, ge=1, le=100)
+    JOB_EVENT_LISTENER_CONNECTIONS: int = Field(
+        default=1,
+        ge=1,
+        le=1,
+        description="Exactly one dedicated event-listener connection per API instance.",
+    )
+    JOB_EVENT_CLIENT_QUEUE_SIZE: int = Field(default=128, ge=8, le=4096)
+    JOB_EVENT_TAIL_BATCH_SIZE: int = Field(default=256, ge=1, le=2000)
+    JOB_EVENT_REPLAY_LIMIT: int = Field(default=128, ge=1, le=4096)
+    JOB_EVENT_REPAIR_SECONDS: float = Field(default=1.0, ge=0.1, le=30.0)
+    JOB_EVENT_RECONNECT_SECONDS: float = Field(default=1.0, ge=0.1, le=30.0)
+    JOB_EVENT_KEEPALIVE_SECONDS: float = Field(default=15.0, ge=1.0, le=120.0)
+    JOB_LOG_CAP_BYTES: int = Field(
+        default=100 * 1024 * 1024,
+        ge=100 * 1024 * 1024,
+        le=100 * 1024 * 1024,
+    )
+    JOB_LOG_RETENTION_DAYS: int = Field(default=30, ge=30, le=30)
+    JOB_LOG_QUEUE_SIZE: int = Field(default=1024, ge=64, le=8192)
+    JOB_LOG_MESSAGE_CHARS: int = Field(default=4096, ge=256, le=16_384)
+    JOB_LOG_METADATA_LINES: int = Field(default=256, ge=16, le=4096)
+    JOB_LOG_STREAM_POLL_SECONDS: float = Field(default=0.25, ge=0.05, le=5.0)
+    JOB_LOG_STREAM_QUEUE_SIZE: int = Field(default=64, ge=8, le=1024)
+    JOB_ARTIFACT_VIRTUAL_MAX_BYTES: int = Field(default=1024 * 1024, ge=64 * 1024, le=1024 * 1024)
+    JOB_ARTIFACT_STRING_CHARS: int = Field(default=16_384, ge=256, le=16_384)
+    JOB_ARTIFACT_EVENT_LIMIT: int = Field(default=1000, ge=1, le=1000)
+    JOB_HEARTBEAT_SECONDS: int = Field(default=10, ge=1, le=300)
+    JOB_LEASE_SECONDS: int = Field(default=60, ge=10, le=3600)
+    JOB_SHUTDOWN_GRACE_SECONDS: int = Field(default=30, ge=1, le=600)
+    JOB_ENCODE_STALL_SECONDS: int = Field(
+        default=120,
+        ge=30,
+        description="Maximum seconds a tracked encode may go without emitting progress.",
+    )
+    JOB_CANCEL_FORCE_SECONDS: int = Field(
+        default=30,
+        ge=1,
+        description="Seconds before recovery force-finalizes a requested cancellation.",
+    )
+    JOB_MAX_RUNTIME_SECONDS: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        description="Maximum runtime for any job (seconds). Jobs exceeding this "
+        "are terminated to prevent hung workers from blocking resources.",
+    )
+    JOB_MEDIA_MAX_RUNTIME_SECONDS: int = Field(
+        default=21600,
+        ge=60,
+        le=86400,
+        description="Maximum runtime for long media mutation jobs (seconds).",
+    )
+    JOB_GPU_SLOTS: int = Field(default=1, ge=0, le=8)
+    JOB_MEDIA_READ_SLOTS: int = Field(default=2, ge=1, le=16)
+    JOB_MEDIA_WRITE_SLOTS: int = Field(default=1, ge=1, le=8)
+    JOB_NETWORK_SLOTS: int = Field(default=4, ge=1, le=32)
+    JOB_RETENTION_DAYS: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description=(
+            "Days to retain terminal canonical jobs and their durable evidence before the "
+            "daily job_retention_purge job deletes them."
+        ),
+    )
+    # Filesystem the dashboard disk gauge reports on. Defaults to the volume
+    # holding DATA_DIR; point it at the media volume for a more useful number.
+    METRICS_DISK_PATH: str | None = None
+    METRICS_SAMPLE_INTERVAL_SECONDS: int = Field(
+        default=15,
+        ge=5,
+        le=300,
+        description="Seconds between host-telemetry samples written to "
+        "system_metrics_samples by the background sampler. Not a Job — never "
+        "visible in job history.",
+    )
+    METRICS_RETENTION_DAYS: int = Field(
+        default=14,
+        ge=1,
+        le=365,
+        description="Days to retain system_metrics_samples rows before the "
+        "daily system_metrics_purge job deletes them. Independent of "
+        "JOB_RETENTION_DAYS.",
+    )
+
+    @property
+    def _project_root(self) -> Path:
+        """Absolute path to the project root (parent of marquee/ package)."""
+        return Path(__file__).parent.parent
+
+    @property
+    def db_url_resolved(self) -> str:
+        """PostgreSQL connection URL used by every Marquee runtime role."""
+        if self.POSTGRES_PASSWORD_FILE is None:
+            return self.DB_URL
+        password = _read_bootstrap_secret(self.POSTGRES_PASSWORD_FILE)
+        parsed = urlsplit(self.DB_URL)
+        username = parsed.username or "marquee"
+        host_part = parsed.netloc.rsplit("@", 1)[-1]
+        netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{host_part}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+    @property
+    def db_pool_budget(self) -> tuple[int, int]:
+        """Return the SQLAlchemy base/overflow budget for this process role."""
+        if self.MARQUEE_PROCESS_ROLE == "worker":
+            return self.DB_WORKER_POOL_SIZE, self.DB_WORKER_MAX_OVERFLOW
+        if self.MARQUEE_PROCESS_ROLE == "scheduler":
+            return self.DB_SCHEDULER_POOL_SIZE, self.DB_SCHEDULER_MAX_OVERFLOW
+        return self.DB_API_POOL_SIZE, self.DB_API_MAX_OVERFLOW
+
+    @property
+    def deployment_connection_budget(self) -> int:
+        """Maximum connections for one API, configured workers, scheduler, and migration."""
+        api = self.DB_API_POOL_SIZE + self.DB_API_MAX_OVERFLOW + self.JOB_EVENT_LISTENER_CONNECTIONS
+        worker = (
+            self.DB_WORKER_POOL_SIZE
+            + self.DB_WORKER_MAX_OVERFLOW
+            + 1
+            + self.JOB_SAFETY_GATE_CONNECTIONS
+        )
+        scheduler = self.DB_SCHEDULER_POOL_SIZE + self.DB_SCHEDULER_MAX_OVERFLOW + 1
+        return (
+            api
+            + self.JOB_EMBEDDED_WORKER_COUNT * worker
+            + scheduler
+            + self.DB_MIGRATION_CONNECTIONS
+        )
+
+    @model_validator(mode="after")
+    def load_api_key_file(self) -> Settings:
+        if self.API_KEY_FILE is not None:
+            self.API_KEY = _read_bootstrap_secret(self.API_KEY_FILE)
+        return self
+
+    @model_validator(mode="after")
+    def validate_connection_budget(self) -> Settings:
+        if (self.JOB_RUNNER_UID is None) != (self.JOB_RUNNER_GID is None):
+            raise ValueError("JOB_RUNNER_UID and JOB_RUNNER_GID must be configured together")
+        if self.deployment_connection_budget > self.DB_DEPLOYMENT_MAX_CONNECTIONS:
+            raise ValueError(
+                "configured role connection budget exceeds DB_DEPLOYMENT_MAX_CONNECTIONS"
+            )
+        if self.JOB_EVENT_REPLAY_LIMIT > self.JOB_EVENT_CLIENT_QUEUE_SIZE:
+            raise ValueError("JOB_EVENT_REPLAY_LIMIT cannot exceed the client queue size")
+        if self.JOB_PGQUEUER_BATCH_SIZE > self.JOB_WORKER_CONCURRENCY:
+            raise ValueError("JOB_PGQUEUER_BATCH_SIZE cannot exceed JOB_WORKER_CONCURRENCY")
+        if self.JOB_SAFETY_GATE_CONNECTIONS < self.JOB_WORKER_CONCURRENCY:
+            raise ValueError("JOB_SAFETY_GATE_CONNECTIONS cannot be below JOB_WORKER_CONCURRENCY")
+        return self
+
+    @property
+    def data_dir_path(self) -> Path:
+        """Absolute path to the runtime data directory."""
+        path = self._project_root / self.DATA_DIR
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _data_child_path(self, value: str) -> Path:
+        """Resolve one data-owned path, including the legacy ``data/`` prefix."""
+
+        path = Path(value)
+        if not path.is_absolute():
+            parts = path.parts[1:] if path.parts and path.parts[0] == "data" else path.parts
+            path = self.data_dir_path.joinpath(*parts)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def job_log_redaction_secrets(self) -> tuple[str, ...]:
+        """Return bounded configured credential values without logging their sources."""
+        values = (
+            self.API_KEY,
+            self.db_url_resolved,
+            self.TMDB_READ_ACCESS_TOKEN,
+            self.RADARR_API_KEY,
+            self.SONARR_API_KEY,
+        )
+        return tuple(sorted({value for value in values if value}, key=len, reverse=True))
+
+    @property
+    def metrics_disk_path(self) -> Path:
+        """Filesystem path the dashboard disk gauge reports on."""
+        if self.METRICS_DISK_PATH:
+            return self._data_child_path(self.METRICS_DISK_PATH)
+        return self.data_dir_path
+
+    @property
+    def poster_cache_path(self) -> Path:
+        """Absolute path to the poster cache directory."""
+        return self._data_child_path(self.POSTER_CACHE_DIR)
+
+    @property
+    def poster_staging_path(self) -> Path:
+        """Absolute path to the staging directory for downloaded candidates."""
+        return self._data_child_path(self.POSTER_STAGING_DIR)
+
+    @property
+    def poster_thumbs_path(self) -> Path:
+        """Serving-side thumbnail derivatives of deployed posters.
+
+        Filenames embed the poster's version token, so a redeploy naturally
+        misses the old derivative; stale siblings are removed on regeneration.
+        """
+        return self.data_dir_path / "cache" / "thumbs"
+
+    @property
+    def runs_archive_path(self) -> Path:
+        """Where per-run pipeline_run.json copies are archived by run_id.
+
+        Survives re-runs of the same movie (the data/runs/work/<title>/
+        working dir is overwritten on re-run; this archive is not).
+        """
+        return self.data_dir_path / "runs" / "archive"
+
+    @property
+    def runs_work_path(self) -> Path:
+        """Where live pipeline working output for each movie is written."""
+        return self.data_dir_path / "runs" / "work"
+
+    # ------------------------------------------------------------------
+    # Internal Backups
+    # ------------------------------------------------------------------
+    BACKUP_INTERVAL_HOURS: int = Field(
+        default=24,
+        validation_alias=AliasChoices("BACKUP_INTERVAL_HOURS", "MARQUEE_BACKUP_INTERVAL_HOURS"),
+        description="Hours between automatic backups. Set to 0 to disable scheduled backups.",
+    )
+    BACKUP_RETENTION_DAYS: int = Field(
+        default=7,
+        validation_alias=AliasChoices("BACKUP_RETENTION_DAYS", "MARQUEE_BACKUP_RETENTION_DAYS"),
+        description="Number of daily backup directories to retain after rotation.",
+    )
+    BACKUP_INITIAL_DELAY_SECONDS: int = Field(
+        default=300,
+        validation_alias=AliasChoices(
+            "BACKUP_INITIAL_DELAY_SECONDS", "MARQUEE_BACKUP_INITIAL_DELAY_SECONDS"
+        ),
+        description="Seconds to wait after startup before the first scheduled backup.",
+    )
+    BACKUP_DIR: str = Field(
+        default="data/backups",
+        validation_alias=AliasChoices("BACKUP_DIR", "MARQUEE_BACKUP_DIR"),
+        description="Directory for internal backup artifacts.",
+    )
+
+    @property
+    def backup_dir_path(self) -> Path:
+        """Absolute path to the internal backup directory."""
+        return self._data_child_path(self.BACKUP_DIR)
+
+    # ------------------------------------------------------------------
+    # CORS (for web UI development in Phase 6)
+    # ------------------------------------------------------------------
+    CORS_ORIGINS: list[str] = Field(
+        default=["http://localhost:5173", "http://localhost:3000"],
+        description="Allowed origins for CORS. Add your web UI dev server here.",
+    )
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+    SHUTDOWN_TIMEOUT_SECONDS: int = Field(
+        default=10,
+        description="Max seconds to wait for clients to disconnect during shutdown.",
+    )
+
+    # ------------------------------------------------------------------
+    # TMDB
+    # ------------------------------------------------------------------
+    TMDB_READ_ACCESS_TOKEN: str | None = Field(
+        default=None,
+        description="TMDB API v3 Read Access Token (Bearer token)",
+    )
+
+    @property
+    def tmdb_configured(self) -> bool:
+        return bool(self.TMDB_READ_ACCESS_TOKEN)
+
+    # ------------------------------------------------------------------
+    # Fanart.tv
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # TheTVDB
+    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Radarr
+    # ------------------------------------------------------------------
+    RADARR_URL: str | None = Field(
+        default=None,
+        description="Radarr base URL (e.g. http://localhost:7878)",
+    )
+    RADARR_INSTANCE_NAME: str = Field(
+        default="Radarr",
+        min_length=1,
+        max_length=80,
+        pattern=r".*\S.*",
+        description="Human-readable name for the single connected Radarr instance.",
+    )
+    RADARR_API_KEY: str | None = Field(
+        default=None,
+        description="Radarr API key",
+    )
+
+    @property
+    def radarr_configured(self) -> bool:
+        return bool(self.RADARR_URL and self.RADARR_API_KEY)
+
+    # ------------------------------------------------------------------
+    # Sonarr
+    # ------------------------------------------------------------------
+    SONARR_URL: str | None = Field(
+        default=None,
+        description="Sonarr base URL (e.g. http://localhost:8989)",
+    )
+    SONARR_INSTANCE_NAME: str = Field(
+        default="Sonarr",
+        min_length=1,
+        max_length=80,
+        pattern=r".*\S.*",
+        description="Human-readable name for the single connected Sonarr instance.",
+    )
+    SONARR_API_KEY: str | None = Field(
+        default=None,
+        description="Sonarr API key",
+    )
+
+    @property
+    def sonarr_configured(self) -> bool:
+        return bool(self.SONARR_URL and self.SONARR_API_KEY)
+
+    # ------------------------------------------------------------------
+    # Radarr Path Mapping (cross-host / Docker setups)
+    #
+    # Radarr reports paths using its own mount namespace.  When Marquee
+    # runs on a different machine with different volume mounts, these
+    # settings translate Radarr paths to local filesystem paths.
+    #
+    # Example:
+    #   Radarr sees:  /plunder/movies/Dune (2021)/
+    #   Marquee sees: /Volumes/PLUNDER/Media/Movies/Dune (2021)/
+    #   → RADARR_PATH_PREFIX=/plunder/movies
+    #     RADARR_MEDIA_PATH=/Volumes/PLUNDER/Media/Movies
+    # ------------------------------------------------------------------
+    RADARR_PATH_PREFIX: str | None = Field(
+        default=None,
+        description="Path prefix used by Radarr (e.g. /plunder/movies)",
+    )
+    RADARR_MEDIA_PATH: str | None = Field(
+        default=None,
+        description="Corresponding path prefix as mounted in Marquee "
+        "(e.g. /Volumes/PLUNDER/Media/Movies)",
+    )
+    RADARR_PATH_MAPPINGS: list[PathMapping] | None = Field(
+        default=None,
+        description=(
+            "Optional Radarr-to-Marquee path mappings. When configured, these replace the "
+            "legacy RADARR_PATH_PREFIX and RADARR_MEDIA_PATH pair."
+        ),
+    )
+
+    @property
+    def radarr_path_mappings(self) -> list[PathMapping]:
+        """Return the configured mappings, falling back to the legacy single pair."""
+        if self.RADARR_PATH_MAPPINGS is not None:
+            return self.RADARR_PATH_MAPPINGS
+        if self.RADARR_PATH_PREFIX and self.RADARR_MEDIA_PATH:
+            return [
+                PathMapping(
+                    arr_path=self.RADARR_PATH_PREFIX,
+                    marquee_path=self.RADARR_MEDIA_PATH,
+                )
+            ]
+        return []
+
+    @property
+    def radarr_path_configured(self) -> bool:
+        return bool(self.radarr_path_mappings)
+
+    @staticmethod
+    def _translate_path_mappings(arr_path: str, mappings: list[PathMapping]) -> str:
+        """Translate using the most-specific matching Arr path first."""
+        if not arr_path:
+            return arr_path
+        for mapping in sorted(
+            mappings, key=lambda item: len(item.arr_path.rstrip("/")), reverse=True
+        ):
+            prefix = mapping.arr_path.rstrip("/") or "/"
+            if arr_path == prefix:
+                return mapping.marquee_path
+            if prefix == "/" or arr_path.startswith(f"{prefix}/"):
+                suffix = arr_path if prefix == "/" else arr_path[len(prefix) :]
+                return f"{mapping.marquee_path.rstrip('/')}{suffix}"
+        return arr_path
+
+    def translate_radarr_path(self, arr_path: str) -> str:
+        """Translate a path from Radarr's mount namespace to Marquee's.
+
+        Returns the path untranslated if no mapping is configured or the
+        path doesn't start with the configured prefix (caller should log).
+        """
+        return self._translate_path_mappings(arr_path, self.radarr_path_mappings)
+
+    # ------------------------------------------------------------------
+    # Sonarr Path Mapping
+    #
+    # Same pattern as Radarr — translate Sonarr paths to local filesystem.
+    #
+    # Example:
+    #   Sonarr sees:  /plunder/tv/Breaking Bad/
+    #   Marquee sees: /Volumes/PLUNDER/Media/TV/Breaking Bad/
+    #   → SONARR_PATH_PREFIX=/plunder/tv
+    #     SONARR_MEDIA_PATH=/Volumes/PLUNDER/Media/TV
+    # ------------------------------------------------------------------
+    SONARR_PATH_PREFIX: str | None = Field(
+        default=None,
+        description="Path prefix used by Sonarr (e.g. /plunder/tv)",
+    )
+    SONARR_MEDIA_PATH: str | None = Field(
+        default=None,
+        description="Corresponding path prefix as mounted in Marquee "
+        "(e.g. /Volumes/PLUNDER/Media/TV)",
+    )
+    SONARR_PATH_MAPPINGS: list[PathMapping] | None = Field(
+        default=None,
+        description=(
+            "Optional Sonarr-to-Marquee path mappings. When configured, these replace the "
+            "legacy SONARR_PATH_PREFIX and SONARR_MEDIA_PATH pair."
+        ),
+    )
+
+    @property
+    def sonarr_path_mappings(self) -> list[PathMapping]:
+        """Return the configured mappings, falling back to the legacy single pair."""
+        if self.SONARR_PATH_MAPPINGS is not None:
+            return self.SONARR_PATH_MAPPINGS
+        if self.SONARR_PATH_PREFIX and self.SONARR_MEDIA_PATH:
+            return [
+                PathMapping(
+                    arr_path=self.SONARR_PATH_PREFIX,
+                    marquee_path=self.SONARR_MEDIA_PATH,
+                )
+            ]
+        return []
+
+    @property
+    def sonarr_path_configured(self) -> bool:
+        return bool(self.sonarr_path_mappings)
+
+    def translate_sonarr_path(self, arr_path: str) -> str:
+        """Translate a path from Sonarr's mount namespace to Marquee's.
+
+        Returns the path untranslated if no mapping is configured or the
+        path doesn't start with the configured prefix (caller should log).
+        """
+        return self._translate_path_mappings(arr_path, self.sonarr_path_mappings)
+
+    # ------------------------------------------------------------------
+    # Path Validation — Media Roots
+    #
+    # ``effective_media_roots`` auto-derives allowed roots from the
+    # configured Radarr/Sonarr media paths plus any manual overrides in
+    # MEDIA_ROOTS.  Roots are resolved to their canonical path so symlink
+    # aliases don't defeat the check.
+    #
+    # An empty logical-root set fails closed at filesystem boundaries.
+    # ------------------------------------------------------------------
+    MEDIA_ROOTS: list[str] = Field(
+        default=[],
+        description="Logical media root directories. Radarr/Sonarr media paths are "
+        "automatically included. Every root must remain below a deployment ceiling.",
+    )
+    MEDIA_PATH_CEILINGS: list[str] = Field(
+        default=[],
+        description=(
+            "Deployment-owned canonical media path ceilings. During migration, empty uses "
+            "the bootstrap MEDIA_ROOTS and Arr media paths; an empty result fails closed."
+        ),
+    )
+
+    @property
+    def effective_media_roots(self) -> list[Path]:
+        """Canonical set of allowed root directories.
+
+        Built from configured Radarr/Sonarr Marquee paths and any manual
+        ``MEDIA_ROOTS`` entries. Each is resolved to
+        its real path so symlinks don't break the ``startswith`` check.
+        """
+        roots: set[Path] = set()
+        candidates = [
+            *self.MEDIA_ROOTS,
+            *(mapping.marquee_path for mapping in self.radarr_path_mappings),
+            *(mapping.marquee_path for mapping in self.sonarr_path_mappings),
+        ]
+        for raw in candidates:
+            if not raw:
+                continue
+            with contextlib.suppress(OSError, RuntimeError):  # unresolvable → skip
+                roots.add(Path(raw).resolve())
+
+        return sorted(roots)
+
+    # ------------------------------------------------------------------
+    # Sync
+    # ------------------------------------------------------------------
+    SYNC_INTERVAL_MINUTES: int = Field(
+        default=15,
+        description="Minutes between periodic *arr syncs",
+    )
+    SYNC_COOLDOWN_SECONDS: int = Field(
+        default=300,
+        description="Minimum seconds between manual sync triggers (rate limit). "
+        "Default 300 = 5 minutes.",
+    )
+    HEAL_INTERVAL_MINUTES: int = Field(
+        default=30,
+        description="Minutes between self-healing poster existence scans",
+    )
+    HEAL_ENABLED: bool = Field(
+        default=True,
+        description="Run the periodic self-heal poster existence scan.",
+    )
+    HEAL_RECENT_DEPLOY_GRACE_MINUTES: int = Field(
+        default=10,
+        description="Skip heal-restoring movies deployed within this window — "
+        "the scan runs in the worker process, so a time window (not a lock) "
+        "is what prevents it racing a concurrent deploy from the API process.",
+    )
+
+    # ------------------------------------------------------------------
+    # Request size cap
+    # ------------------------------------------------------------------
+    MAX_REQUEST_BODY_BYTES: int = Field(
+        default=1_048_576,
+        description="Maximum Content-Length for any request body (bytes). Default 1 MB. "
+        "Raise only if file-upload endpoints are added.",
+    )
+
+    # ------------------------------------------------------------------
+    # Pipeline Performance Tuning
+    # ------------------------------------------------------------------
+    PIPELINE_CACHE_EXTRACTOR: bool = Field(
+        default=False,
+        description="Keep CLIP/DINOv2 models loaded in GPU memory between runs. "
+        "Set true for back-to-back poster runs (faster), false to share GPU with "
+        "other jobs (more flexible).",
+    )
+
+    # ------------------------------------------------------------------
+    # Rate Limiting — cooldowns for expensive endpoints (skipped when DEBUG)
+    # ------------------------------------------------------------------
+    RATE_PIPELINE_RUN_SECONDS: int = Field(
+        default=15, description="Per-movie cooldown between poster-pipeline runs."
+    )
+    RATE_TASTE_RETRAIN_SECONDS: int = Field(
+        default=60, description="Cooldown between ranking-residual retrains."
+    )
+    RATE_TASTE_MAP_REBUILD_SECONDS: int = Field(
+        default=300, description="Cooldown between taste-map rebuilds."
+    )
+    RATE_TASTE_ENRICH_SECONDS: int = Field(
+        default=600, description="Cooldown between profile-enrichment runs."
+    )
+
+    # ------------------------------------------------------------------
+    # Webhooks (Radarr/Sonarr → poster restoration)
+    # ------------------------------------------------------------------
+    WEBHOOK_DRY_RUN: bool = Field(
+        default=False,
+        description="Log + record webhook events without touching the filesystem.",
+    )
+
+    # ------------------------------------------------------------------
+    # Poster cache and staging
+    # ------------------------------------------------------------------
+    POSTER_CACHE_DIR: str = Field(
+        default="data/cache/posters",
+        description="Directory for cached posters, keyed by TMDB ID",
+    )
+    POSTER_STAGING_DIR: str = Field(
+        default="data/staging",
+        description="Temporary directory for downloaded poster candidates",
+    )
+
+    # ------------------------------------------------------------------
+    # Poster Filename Formats
+    #
+    # Template variables:
+    #   {movie_basename} — movie filename without extension (movies only)
+    #   {season}         — season number (seasons only)
+    #   {season:02d}     — zero-padded season number (seasons only)
+    # ------------------------------------------------------------------
+    MOVIE_POSTER_FORMAT: str = Field(
+        default="poster.jpg",
+        description="Filename for movie posters. Use {movie_basename} "
+        "to derive from the media file (e.g. '{movie_basename}.jpg').",
+    )
+    SERIES_POSTER_FORMAT: str = Field(
+        default="show.jpg",
+        description="Filename for TV series posters.",
+    )
+    SEASON_POSTER_FORMAT: str = Field(
+        default="season{season:02d}.jpg",
+        description="Filename for season posters. {season} = season number. "
+        "Example: 'season{season:02d}.jpg' → 'season01.jpg'",
+    )
+
+    # ------------------------------------------------------------------
+    # Poster Restoration
+    # ------------------------------------------------------------------
+    POSTER_RESTORE_METHOD: Literal["download", "local"] = Field(
+        default="download",
+        description="Preferred source when restoring a missing poster. "
+        "'download': cache → TMDB re-download → local backup. "
+        "'local': local backup → cache → TMDB re-download.",
+    )
+    POSTER_BACKUP_DIR: str = Field(
+        default="data/backups/posters",
+        description="Directory for local poster backups (one .jpg per movie, "
+        "keyed by movie ID). Written on every deploy; preferred restore "
+        "source when POSTER_RESTORE_METHOD='local'.",
+    )
+
+    @property
+    def poster_backup_path(self) -> Path:
+        """Absolute path to the local poster backup directory."""
+        return self._data_child_path(self.POSTER_BACKUP_DIR)
+
+    # ------------------------------------------------------------------
+    # Pydantic metadata
+    # ------------------------------------------------------------------
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        env_file_override=False,
+        extra="ignore",
+    )
+
+
+# Environment/restart-owned singleton. Database-owned values are resolved by
+# the versioned configuration provider and never applied by mutating this object.
+settings = Settings()
