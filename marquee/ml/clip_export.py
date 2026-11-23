@@ -14,8 +14,6 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 if TYPE_CHECKING:
     import torch
 
@@ -83,22 +81,3 @@ def quantize_int8(model_path: Path, output_path: Path) -> None:
         "AI_MODEL=clip-vit-b-32-int8 and rebuild the taste profile:\n"
         "       marquee taste seed --reuse"
     )
-
-
-def verify_export(model_path: Path) -> None:
-    import onnx
-    import onnxruntime as ort
-
-    onnx.checker.check_model(str(model_path))
-    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-    input_name = session.get_inputs()[0].name
-    first_dim = session.get_inputs()[0].shape[0]
-    batch = 2 if not isinstance(first_dim, int) else first_dim
-    output = session.run(
-        None,
-        {input_name: np.zeros((batch, 3, 224, 224), dtype=np.float32)},
-    )[0]
-    if output.shape != (batch, 512):
-        raise RuntimeError(f"Unexpected CLIP output shape: {output.shape}")
-    dynamic = "dynamic batch" if not isinstance(first_dim, int) else f"fixed batch {first_dim}"
-    print(f"[INFO] ONNX verification passed: ({batch}, 3, 224, 224) -> ({batch}, 512) [{dynamic}]")
