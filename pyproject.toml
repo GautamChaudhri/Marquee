@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "marquee"
 dynamic = ["version"]
 description = "Poster artwork selection for Radarr and Sonarr media libraries"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
@@ -131,6 +132,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = ["--import-mode=importlib"]
+# PaddlePaddle warns on import when the ccache compiler cache is absent; irrelevant here.
+filterwarnings = ["ignore:No ccache found:UserWarning"]
 markers = [
     "models: needs model files under data/models; skipped when they are absent",
     "gpu: needs a CUDA GPU",

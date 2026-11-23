@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (Python 3.12, CPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    env:
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install system libraries
+        # PaddleOCR requires the full OpenCV build, which links against libGL.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgl1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.13.9"
+          enable-cache: true
+
+      - name: Install dependencies
+        # The CPU extra: no GPU here. The lockfile must be current.
+        run: uv sync --locked --extra cpu --group dev
+
+      - name: Ruff lint
+        run: uv run --no-sync ruff check .
+
+      - name: Ruff format
+        run: uv run --no-sync ruff format --check .
+
+      - name: Layering contracts
+        run: uv run --no-sync lint-imports
+
+      - name: Tests
+        # No GPU, no model files, and no database on the runner.
+        run: uv run --no-sync pytest -rsxX -m "not gpu and not models and not db"
