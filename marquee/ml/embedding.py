@@ -30,7 +30,7 @@ def create_onnx_session(
     path = Path(model_path or pipeline_settings.CLIP_MODEL_PATH)
     if not path.exists():
         raise FileNotFoundError(
-            f"CLIP ONNX model not found: {path}. Run `python -m marquee.ml.clip_export` first."
+            f"CLIP ONNX model not found: {path}. Build it with `marquee models fetch`."
         )
     return _create_hardware_session(path, execution_provider=execution_provider)
 

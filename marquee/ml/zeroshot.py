@@ -11,9 +11,8 @@ fed through exemplar calibration: the taste profile's distribution of each
 axis tells the scorer which side — and how far along it — the user actually
 prefers, so no manual "I like illustrated" config is ever needed.
 
-Build the artifact once (needs torch + transformers, the export-only deps):
-
-    python -m marquee.ml.zeroshot
+Build the artifact with ``marquee models fetch`` (needs the export tools: torch and
+transformers).
 
 At runtime only numpy is needed; a missing artifact disables the axes with
 a logged warning instead of failing the run.
@@ -105,7 +104,7 @@ class ZeroShotAxes:
         if not artifact.exists():
             logger.warning(
                 "ZEROSHOT | axes artifact missing (%s) — style axes disabled. "
-                "Build it once with: python -m marquee.ml.zeroshot",
+                "Build it with: marquee models fetch",
                 artifact,
             )
             return None
@@ -117,7 +116,7 @@ class ZeroShotAxes:
             if not expected.startswith(stored_model) and not stored_model.startswith(expected):
                 logger.warning(
                     "ZEROSHOT | axes artifact model %r does not match %r — "
-                    "style axes disabled. Rebuild with: python -m marquee.ml.zeroshot",
+                    "style axes disabled. Rebuild with: marquee models fetch --force zeroshot",
                     stored_model,
                     expected,
                 )
@@ -176,7 +175,3 @@ def build_axes(output: Path | None = None) -> Path:
     )
     logger.info("Saved %d axes to %s", len(names), output_path)
     return output_path
-
-
-if __name__ == "__main__":
-    build_axes()

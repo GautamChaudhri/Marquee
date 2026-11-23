@@ -98,8 +98,8 @@ class PipelineSettings(BaseSettings):
     # Minimum non-NaN exemplar samples before a feature is calibrated;
     # below this the fixed normalization fallback is used.
     CALIBRATION_MIN_SAMPLES: int = 20
-    # Zero-shot CLIP axes artifact (text-prompt directions). Built once via
-    # `python -m marquee.ml.zeroshot`; skipped with a warning if absent.
+    # Zero-shot CLIP axes artifact (text-prompt directions). Built by
+    # `marquee models fetch`; skipped with a warning if absent.
     ZEROSHOT_AXES_PATH: Path = _DATA_ML_DIR / "zeroshot_axes.clip-vit-b-32.npz"
     # Residual artifacts are supplied only through immutable publication staging.
     SCORER: str = "auto"

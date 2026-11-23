@@ -10,11 +10,8 @@ optional: if it is missing the features are skipped with a logged warning
 (this is an enhancement, not core infrastructure — only failures that
 break every candidate abort a run).
 
-Export the ONNX model once (~5MB, needs the `ultralytics` package):
-
-    pip install ultralytics
-    yolo export model=yolo11n.pt format=onnx dynamic=True
-    mv yolo11n.onnx marquee/ml/models/
+Build the ONNX model (~11MB) with ``marquee models fetch``, which runs the Ultralytics
+exporter in its own isolated environment (dynamic axes, no NMS).
 
 The decoder below handles the standard YOLOv8/11 detection output
 (1, 84, N): 4 xywh rows + 80 COCO class scores, no baked-in NMS.
@@ -63,7 +60,7 @@ class PersonDetector:
             if not self.model_path.exists():
                 raise FileNotFoundError(
                     f"Person detector model not found: {self.model_path}. "
-                    "Export it with: yolo export model=yolo11n.pt format=onnx dynamic=True"
+                    "Build it with `marquee models fetch`."
                 )
             self._session = create_onnx_session(
                 self.model_path,

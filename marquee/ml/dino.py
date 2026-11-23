@@ -12,9 +12,8 @@ Activation is hardware-tiered: ``DINO_ENABLED=auto`` turns it on for GPU
 tiers (cuda / openvino-gpu / coreml) and off for CPU-only hosts, where the
 extra ~200-300ms/poster is not worth it. The decision is logged every run.
 
-Export the ONNX model once (needs torch, downloads ~88MB from Meta):
-
-    python -m marquee.ml.dino
+Build the ONNX model with ``marquee models fetch`` (needs the export tools; it
+downloads ~88MB from Meta once).
 """
 
 from __future__ import annotations
@@ -104,7 +103,7 @@ class DinoImageEncoder:
             if not self._model_path.exists():
                 raise FileNotFoundError(
                     f"DINOv2 ONNX model not found: {self._model_path}. "
-                    "Export it once with `python -m marquee.ml.dino`."
+                    "Build it with `marquee models fetch`."
                 )
             self._session = create_onnx_session(
                 self._model_path,
@@ -202,7 +201,3 @@ def export_dino_onnx(output: Path | None = None) -> torch.nn.Module:
         raise RuntimeError(f"Unexpected DINOv2 output shape: {out.shape}")
     logger.info("ONNX verification passed: (2, 3, 224, 224) -> %s", out.shape)
     return wrapper
-
-
-if __name__ == "__main__":
-    export_dino_onnx()

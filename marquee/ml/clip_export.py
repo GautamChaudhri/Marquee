@@ -1,23 +1,20 @@
-"""One-time export of OpenAI CLIP ViT-B/32 to ONNX.
+"""One-time export of OpenAI CLIP ViT-B/32 to ONNX (``marquee models fetch`` calls it).
 
 Exports with a dynamic batch axis so the pipeline can batch candidates
-through one session.run (the big GPU win). ``--quantize`` additionally emits
-a dynamically-quantized INT8 model (~4x smaller, ~2-3x faster on CPU-only
-hosts like an Intel N150). INT8 embeddings live in a slightly different
-space: set ``AI_MODEL=clip-vit-b-32-int8`` and rebuild the taste profile
-with that model before using it.
+through one session.run (the big GPU win). ``quantize_int8`` makes a
+dynamically-quantized INT8 model (~4x smaller, ~2-3x faster on CPU-only
+hosts). INT8 embeddings live in a slightly different space: set
+``AI_MODEL=clip-vit-b-32-int8`` and rebuild the taste profile with that
+model before using it.
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-
-from marquee.config.pipeline import pipeline_settings
 
 if TYPE_CHECKING:
     import torch
@@ -84,7 +81,7 @@ def quantize_int8(model_path: Path, output_path: Path) -> None:
     print(
         "[NOTE] INT8 embeddings are a distinct space. Set "
         "AI_MODEL=clip-vit-b-32-int8 and rebuild the taste profile:\n"
-        "       python -m marquee.taste.trainer"
+        "       marquee taste seed --reuse"
     )
 
 
@@ -105,34 +102,3 @@ def verify_export(model_path: Path) -> None:
         raise RuntimeError(f"Unexpected CLIP output shape: {output.shape}")
     dynamic = "dynamic batch" if not isinstance(first_dim, int) else f"fixed batch {first_dim}"
     print(f"[INFO] ONNX verification passed: ({batch}, 3, 224, 224) -> ({batch}, 512) [{dynamic}]")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=pipeline_settings.CLIP_MODEL_PATH,
-    )
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument(
-        "--quantize",
-        action="store_true",
-        help="Also emit an INT8-quantized model alongside the FP32 export",
-    )
-    args = parser.parse_args()
-
-    if args.output.exists() and not args.force:
-        print(f"[INFO] Model already exists: {args.output}")
-    else:
-        export_vision_onnx(args.output)
-    verify_export(args.output)
-
-    if args.quantize:
-        int8_path = args.output.with_name(f"{args.output.stem}-int8.onnx")
-        quantize_int8(args.output, int8_path)
-        verify_export(int8_path)
-
-
-if __name__ == "__main__":
-    main()

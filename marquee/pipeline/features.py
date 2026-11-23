@@ -210,13 +210,13 @@ class FeatureExtractor:
             if not self.dino_encoder.available:
                 logger.error(
                     "DINO | requested but model file missing (%s) — dino_knn "
-                    "disabled for this run. Export with: python -m marquee.ml.dino",
+                    "disabled for this run. Build it with: marquee models fetch",
                     self.dino_encoder._model_path,
                 )
             elif not getattr(self.taste_store, "has_dino", False):
                 logger.error(
                     "DINO | model present but taste profile has no DINOv2 "
-                    "embeddings — rebuild it: python -m marquee.taste.trainer"
+                    "embeddings — rebuild it: marquee taste seed --reuse"
                 )
             elif self.taste_store.dino_model_name != self.dino_encoder.model_name:
                 logger.error(
@@ -254,7 +254,7 @@ class FeatureExtractor:
             else:
                 logger.warning(
                     "PERSON | model missing (%s) — person features skipped. "
-                    "Export with: yolo export model=yolo11n.pt format=onnx dynamic=True",
+                    "Build it with: marquee models fetch",
                     self.person_detector.model_path,
                 )
 
@@ -273,7 +273,7 @@ class FeatureExtractor:
                 logger.warning(
                     "CALIBRATION | taste profile has no feature distributions — "
                     "taste_typicality disabled. Rebuild the profile: "
-                    "python -m marquee.taste.trainer"
+                    "marquee taste seed --reuse"
                 )
             else:
                 self._calibration = calibration

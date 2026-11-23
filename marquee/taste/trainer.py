@@ -27,7 +27,6 @@ what you like, not diluted by what you don't.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import logging
 import re
@@ -498,40 +497,6 @@ def rebuild_profile(
     return _run_build(args)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--training-dir", type=Path, default=None)
-    parser.add_argument(
-        "--negative-dir",
-        type=Path,
-        default=None,
-        help=(
-            "Directory of disliked posters. Defaults to the namespace's negative_dir "
-            "when it exists."
-        ),
-    )
-    parser.add_argument("--model", type=Path, default=pipeline_settings.CLIP_MODEL_PATH)
-    parser.add_argument("--output", type=Path, default=None)
-    parser.add_argument(
-        "--skip-ocr",
-        action="store_true",
-        help="Skip OCR title-geometry measurement (the slow part, ~0.4s/poster)",
-    )
-    parser.add_argument(
-        "--skip-dino",
-        action="store_true",
-        help="Skip DINOv2 embeddings even if the model file exists",
-    )
-    args = parser.parse_args()
-    # Movies only, deliberately: the TV profile is built by scanning deployed
-    # artwork (the library scan listed in SALVAGE.md) through the taste_rebuild job, so a
-    # flat-directory CLI build for TV would produce an unattributable profile.
-    args.namespace = get_namespace("movies")
-    if args.output is None:
-        args.output = args.namespace.profile_path
-    _run_build(args)
-
-
 def _run_build(args) -> Path:
     ns = getattr(args, "namespace", None) or get_namespace("movies")
     negative_dir = args.negative_dir
@@ -612,7 +577,7 @@ def _run_build(args) -> Path:
     elif not dino_encoder.available:
         print(
             "[WARN] DINOv2 model not found — profile will have no dino_knn "
-            "support. Export it with: python -m marquee.ml.dino"
+            "support. Build it with: marquee models fetch"
         )
     else:
         dino_embeddings, dino_kept = extract_embeddings(
@@ -749,7 +714,3 @@ def _run_build(args) -> Path:
         message=f"Taste profile rebuild completed in {elapsed:.1f}s.",
     )
     return Path(args.output)
-
-
-if __name__ == "__main__":
-    main()

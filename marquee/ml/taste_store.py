@@ -148,8 +148,7 @@ class NumpyTasteStore(TasteStore):
             return
         if not self.profile_path.exists():
             raise FileNotFoundError(
-                f"Taste profile not found: {self.profile_path}. "
-                "Rebuild it with `python -m marquee.taste.trainer`."
+                f"Taste profile not found: {self.profile_path}. Build it with `marquee taste seed`."
             )
         _kind = (
             "taste_profile_tv" if "taste_profile_tv" in self.profile_path.name else "taste_profile"
@@ -344,7 +343,7 @@ class NumpyTasteStore(TasteStore):
         if self._dino_embeddings is None:
             raise RuntimeError(
                 "Taste profile has no DINOv2 embeddings — rebuild it with "
-                "`python -m marquee.taste.trainer` after exporting the model."
+                "`marquee taste seed --reuse` after `marquee models fetch`."
             )
         dim = self._dino_embeddings.shape[1]
         return self._contrastive_knn(
