@@ -31,6 +31,16 @@ def test_media_root_missing_or_empty_fails(tmp_path: Path) -> None:
     assert "empty" in doctor._describe_root(tmp_path)[1]
 
 
+def test_media_roots_are_movie_roots_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(doctor.settings, "MOVIE_ROOTS", [])
+    result = doctor.check_media_roots()
+    assert (result.status, result.detail) == ("FAIL", "MOVIE_ROOTS is unset")
+
+    _make_library(tmp_path)
+    monkeypatch.setattr(doctor.settings, "MOVIE_ROOTS", [tmp_path])
+    assert "(3 folders)" in doctor.check_media_roots().detail
+
+
 def test_run_with_timeout_gives_up_on_a_hung_call() -> None:
     import threading
 

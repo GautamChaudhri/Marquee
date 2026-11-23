@@ -51,13 +51,10 @@ class Settings(BaseSettings):
 
     # Comma-separated in the environment.
     MOVIE_ROOTS: Annotated[list[Path], NoDecode] = Field(default_factory=list)
-    TV_ROOTS: Annotated[list[Path], NoDecode] = Field(default_factory=list)
 
     TMDB_READ_ACCESS_TOKEN: SecretStr | None = None
     RADARR_URL: str | None = None
     RADARR_API_KEY: SecretStr | None = None
-    SONARR_URL: str | None = None
-    SONARR_API_KEY: SecretStr | None = None
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
@@ -66,7 +63,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @field_validator("MOVIE_ROOTS", "TV_ROOTS", mode="before")
+    @field_validator("MOVIE_ROOTS", mode="before")
     @classmethod
     def _split_roots(cls, value: Any) -> Any:
         if isinstance(value, str):

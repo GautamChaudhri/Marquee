@@ -47,7 +47,6 @@ def _secret_values() -> list[str]:
         "POSTGRES_PASSWORD",
         "TMDB_READ_ACCESS_TOKEN",
         "RADARR_API_KEY",
-        "SONARR_API_KEY",
     ):
         secret = getattr(settings, field)
         if secret is not None and secret.get_secret_value():
@@ -79,12 +78,9 @@ def check_python() -> CheckResult:
 _OPTIONAL_SETTINGS = (
     "POSTGRES_PASSWORD",
     "MOVIE_ROOTS",
-    "TV_ROOTS",
     "TMDB_READ_ACCESS_TOKEN",
     "RADARR_URL",
     "RADARR_API_KEY",
-    "SONARR_URL",
-    "SONARR_API_KEY",
 )
 
 
@@ -354,9 +350,9 @@ def _describe_root(root: Path) -> tuple[Status, str]:
 
 
 def check_media_roots() -> CheckResult:
-    roots = [*settings.MOVIE_ROOTS, *settings.TV_ROOTS]
+    roots = settings.MOVIE_ROOTS
     if not roots:
-        return CheckResult("Media roots", "FAIL", "MOVIE_ROOTS and TV_ROOTS are unset")
+        return CheckResult("Media roots", "FAIL", "MOVIE_ROOTS is unset")
     statuses: list[Status] = []
     details: list[str] = []
     for root in roots:
@@ -423,10 +419,6 @@ def check_radarr() -> CheckResult:
     return _arr_check("Radarr", settings.RADARR_URL, settings.RADARR_API_KEY)
 
 
-def check_sonarr() -> CheckResult:
-    return _arr_check("Sonarr", settings.SONARR_URL, settings.SONARR_API_KEY)
-
-
 CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_python,
     check_settings,
@@ -442,7 +434,6 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_media_roots,
     check_tmdb,
     check_radarr,
-    check_sonarr,
 )
 
 

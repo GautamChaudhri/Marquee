@@ -14,10 +14,23 @@ def _settings(**values: object) -> Settings:
 
 def test_media_roots_split_on_commas(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MOVIE_ROOTS", "/media/movies, /media/more-movies")
-    monkeypatch.setenv("TV_ROOTS", "/media/tv")
     settings = Settings(_env_file=None)
     assert [Path("/media/movies"), Path("/media/more-movies")] == settings.MOVIE_ROOTS
-    assert [Path("/media/tv")] == settings.TV_ROOTS
+
+
+def test_stale_tv_and_sonarr_lines_are_ignored(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "MOVIE_ROOTS=/media/movies\n"
+        "TV_ROOTS=/media/tv\n"
+        "SONARR_URL=http://sonarr.example:8989\n"
+        "SONARR_API_KEY=sonarr-secret\n",
+        encoding="utf-8",
+    )
+    settings = Settings(_env_file=env_file)
+    assert [Path("/media/movies")] == settings.MOVIE_ROOTS
+    for name in ("TV_ROOTS", "SONARR_URL", "SONARR_API_KEY"):
+        assert not hasattr(settings, name)
 
 
 def test_relative_data_dir_resolves_against_repo_root() -> None:

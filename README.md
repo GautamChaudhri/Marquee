@@ -60,7 +60,7 @@ uv sync --extra nvidia
 
 # 2. Configure. Every setting is listed, with a comment, in .env.example.
 cp .env.example .env
-#    then edit .env: database password, media roots, TMDB token, Radarr and Sonarr keys
+#    then edit .env: database password, movie roots, TMDB token, Radarr URL and key
 
 # 3. Start PostgreSQL (published on 127.0.0.1 only).
 docker compose up -d
@@ -107,8 +107,8 @@ movies that share a title, `--tmdb-id` skips the library lookup, and `--json` pr
 summary as JSON.
 
 `marquee doctor` prints one line per check (Python, settings, data directory, models, model
-manifest, taste profile, ONNX Runtime, GPU, OCR, database, media roots, TMDB, Radarr,
-Sonarr) with `PASS`, `WARN`, or `FAIL`, and exits non-zero if anything fails. `--json`
+manifest, taste profile, ONNX Runtime, GPU, OCR, database, media roots, TMDB, Radarr)
+with `PASS`, `WARN`, or `FAIL`, and exits non-zero if anything fails. `--json`
 prints the same report as JSON. It never writes to a media folder and never prints a secret.
 
 Use `uv sync --extra nvidia` (or `--extra cpu`) whenever you sync: a plain `uv sync` removes
