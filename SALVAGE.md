@@ -16,7 +16,7 @@ rebuild has to attach before any of it runs.
 | Question | Decision |
 |---|---|
 | Job manager | Rebuild small: our own Postgres-table queue, one worker, GPU slot of 1, ML in a child process |
-| Taste seed | Posters already in the library folders become weak "liked" examples; rankings outweigh them |
+| Taste seed | Each movie folder's `poster.jpg` was picked by hand, so it seeds the taste profile as a liked example at full weight (1.0). Movies without a `poster.jpg` are ignored entirely |
 | AI pick flow | Deploy immediately (with backup), then review, re-rank, or override |
 | Database | Postgres, one fresh baseline schema, no data migrated |
 
@@ -24,7 +24,8 @@ rebuild has to attach before any of it runs.
 
 ```
 marquee/            the selection engine and the new skeleton, in the target layout
-                    (config/, fs/, integrations/, ml/, pipeline/, taste/, api/, cli, doctor);
+                    (config/, fs/, integrations/, ml/, pipeline/, library/, taste/, api/,
+                    cli, doctor, model_fetch);
                     docs/architecture.md describes each package
 tests/              mirrors marquee/: the original engine tests plus the engine tests
                     lifted from _salvage/tests/
@@ -99,8 +100,9 @@ that arrive with the database work; they import cleanly but cannot run until the
 | Deployment | `deploy/` | Shape is right (postgres, api, worker, web); scheduler folds into the worker |
 | CI extras | `ci/codeql.yml`, `ci/dependabot.yml` | The main workflow is re-homed in `.github/workflows/ci.yml`; these two wait for M8 |
 
-Partly lifted test files in `_salvage/tests/`: `test_pipeline.py` keeps 2 of its 78 tests
-(the system OCR status API route, and an assertion on the old `Settings.runs_work_path`);
+Partly lifted test files in `_salvage/tests/`: `test_pipeline.py` keeps 1 of its 78 tests
+(the system OCR status API route; a stale assertion on the old `Settings.runs_work_path` was
+deleted in M2);
 `test_text_profiles.py` keeps 8 of its 30 (six API tests that need the app, ORM, and
 database, and two that call the old job runner's `_ocr_gate_context`). The rest moved to
 `tests/pipeline/`. `test_archive_nan.py` and `test_artifact_codec.py` moved whole.
@@ -131,16 +133,29 @@ path mappings) are still in `Marquee.old/` for when the new config needs them.
 - Text profiles are stored in `data/text_profiles.json`, not the database.
 - The old `pipeline_config.py` read `MARQUEE_INTERNAL_RUNNER`, a leftover from the old runner.
   Removed in M0+M1: both settings classes read the same `.env`.
-- Comments reference old design-doc numbers and chunk IDs (`JMC6H`, `design 04 §9.2`) that
-  no longer point anywhere.
 
-## Suggested rebuild order
+## Rebuild order
 
-1. Skeleton: `pyproject.toml`, slim config, database base and a single baseline migration.
-   Close the two import seams and move the engine tests from `_salvage/tests/` into `tests/`.
-2. Library: models and Radarr/Sonarr sync.
-3. Jobs: the small queue, with classes for GPU, network, media-read, and media-write.
-4. Poster write path: deploy with backup, restore, heal.
-5. Runs, review API, feedback events, library taste seed, learning loop.
-6. Frontend: shell, library, review and rank, taste, a small activity view, trimmed settings.
-7. Media management on top of `MediaFile`, `core/filesystem.py`, and the media job classes.
+The first goal is a production-ready application for movies, on NVIDIA GPUs, deployed with
+Docker. The milestones, in order:
+
+1. **M0 and M1, machine and skeleton** (done): the project tooling, the engine moved into the
+   target layout with its import seams closed, its tests lifted, and `marquee doctor`.
+2. **M2, the engine runs for real** (done): `marquee models fetch`, `marquee taste seed` from
+   the library's posters, and `marquee run` for one movie, with no database.
+3. **M2b, container proof**: one image on an NVIDIA CUDA base that runs the doctor, fetches
+   the models, and completes a run inside a container with the GPU.
+4. **M3, database and movie library**: one baseline migration, library and artwork tables,
+   path translation, Radarr sync, and an API skeleton with key auth.
+5. **M4, jobs**: the small Postgres queue, with classes for GPU, network, media-read, and
+   media-write.
+6. **M5, the product loop**: runs as jobs, deploy with backup and restore, review and
+   re-rank, feedback events, exemplars, and the learning loop.
+7. **M6, frontend**: shell, library, review and rank, taste, a small activity view, trimmed
+   settings.
+8. **M8, packaging and production hardening**: the full Compose stack, a fresh-machine path
+   from the README, scheduled database backups, and `_salvage/` deleted.
+
+After that, in no fixed order: TV (series and season posters through Sonarr), other
+hardware, and media management on top of `MediaFile`, `fs/boundary.py`, and the media job
+classes.
