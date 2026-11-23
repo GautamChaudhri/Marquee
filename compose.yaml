@@ -1,4 +1,35 @@
 # Postgres for development. Credentials come from .env (see .env.example).
+#
+# The marquee and marquee-export services run the container image (see Dockerfile). They sit
+# behind the "app" profile, so `docker compose up -d` still starts only the database. Run them
+# one command at a time, for example:
+#
+#   docker compose --profile app run --rm marquee-export marquee models fetch
+#   docker compose --profile app run --rm marquee marquee doctor
+
+x-marquee: &marquee
+  profiles: ["app"]
+  # Settings come from .env, except those that differ inside a container. The container
+  # itself reads no .env file (MARQUEE_ENV_FILE is empty).
+  env_file: .env
+  environment:
+    MOVIE_ROOTS: /media/movies
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    DATA_DIR: /data
+    MARQUEE_ENV_FILE: ""
+  volumes:
+    - marquee-data:/data
+    # The movie library, read-only. Its path on the host comes from .env.
+    - ${MOVIE_LIBRARY_HOST_PATH:?set MOVIE_LIBRARY_HOST_PATH in .env}:/media/movies:ro
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
 services:
   db:
     image: postgres:19
@@ -18,5 +49,24 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  marquee:
+    <<: *marquee
+    image: marquee:runtime
+    build:
+      context: .
+      target: runtime
+      args: &marquee-build-args
+        MARQUEE_UID: "1000"
+        MARQUEE_GID: "1000"
+
+  marquee-export:
+    <<: *marquee
+    image: marquee:export
+    build:
+      context: .
+      target: export
+      args: *marquee-build-args
+
 volumes:
   db-data:
+  marquee-data:
