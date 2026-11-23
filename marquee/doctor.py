@@ -128,7 +128,7 @@ def check_core_models() -> CheckResult:
     return CheckResult("Core models", "PASS", "CLIP, aesthetic head, face detector present")
 
 
-def check_later_models() -> CheckResult:
+def check_style_models() -> CheckResult:
     present = {
         "DINOv2": Path(pipeline_settings.DINO_MODEL_PATH).is_file(),
         "YOLO person": Path(pipeline_settings.PERSON_MODEL_PATH).is_file(),
@@ -136,8 +136,61 @@ def check_later_models() -> CheckResult:
     }
     missing = [name for name, ok in present.items() if not ok]
     if missing:
-        return CheckResult("Later models", "WARN", f"missing: {', '.join(missing)} (arrives in M2)")
-    return CheckResult("Later models", "PASS", "DINOv2, YOLO person, zero-shot axes present")
+        return CheckResult(
+            "Style models",
+            "WARN",
+            f"missing: {', '.join(missing)}; build them with `marquee models fetch`",
+        )
+    return CheckResult("Style models", "PASS", "DINOv2, YOLO person, zero-shot axes present")
+
+
+def check_model_manifest() -> CheckResult:
+    from marquee.ml import model_manifest
+
+    path = settings.model_manifest_path
+    try:
+        manifest = model_manifest.load_manifest(path)
+    except model_manifest.ManifestError as exc:
+        return CheckResult("Model manifest", "FAIL", _error_text(exc))
+    if manifest is None:
+        return CheckResult(
+            "Model manifest", "WARN", f"no {path.name}; write it with `marquee models fetch`"
+        )
+    problems = model_manifest.verify(manifest, settings.DATA_DIR)
+    if problems:
+        listed = "; ".join(f"{problem.path}: {problem.reason}" for problem in problems)
+        return CheckResult("Model manifest", "FAIL", listed)
+    return CheckResult(
+        "Model manifest", "PASS", f"{len(manifest.entries)} entries match their checksums"
+    )
+
+
+def check_taste_profile() -> CheckResult:
+    from marquee.ml.taste_store import NumpyTasteStore
+
+    path = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    if not path.is_file():
+        return CheckResult(
+            "Taste profile", "WARN", f"no {path.name}; build it with `marquee taste seed`"
+        )
+    try:
+        store = NumpyTasteStore(path, expected_model_name=pipeline_settings.AI_MODEL)
+        exemplars = store.size
+        dino_model = store.dino_model_name if store.has_dino else None
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        return CheckResult("Taste profile", "FAIL", f"cannot load {path.name}: {_error_text(exc)}")
+    expected_dino = Path(pipeline_settings.DINO_MODEL_PATH).stem
+    if dino_model is not None and dino_model != expected_dino:
+        return CheckResult(
+            "Taste profile",
+            "FAIL",
+            f"DINOv2 embeddings were built with {dino_model}, not {expected_dino}; "
+            "rebuild with `marquee taste seed --reuse`",
+        )
+    dino = f"DINOv2 embeddings ({dino_model})" if dino_model else "no DINOv2 embeddings"
+    return CheckResult(
+        "Taste profile", "PASS", f"{exemplars} exemplars, {dino}; {pipeline_settings.AI_MODEL}"
+    )
 
 
 def check_onnx_runtime() -> CheckResult:
@@ -379,7 +432,9 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_settings,
     check_data_dir,
     check_core_models,
-    check_later_models,
+    check_style_models,
+    check_model_manifest,
+    check_taste_profile,
     check_onnx_runtime,
     check_gpu,
     check_ocr,
