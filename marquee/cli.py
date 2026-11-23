@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import logging
+import re
 import sys
+import time
 import warnings
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
 
 from marquee import __version__
 
 MODEL_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr")
+RANKED_SHOWN = 10
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -63,6 +72,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="rebuild the profile from the staged set without reading the library",
     )
+
+    run = commands.add_parser(
+        "run",
+        help="put one movie through the real pipeline",
+        description="Find the movie through its library folder (the IMDb id in the movie "
+        "file's name), rank its TMDB posters against the taste profile, and leave the "
+        "ranked posters and the run archive in a new folder under data/runs/.",
+    )
+    run.add_argument("title", help='the title as the library folder names it, e.g. "Die Hard"')
+    run.add_argument("--year", type=int, help="the year, when several movies share a title")
+    run.add_argument(
+        "--tmdb-id", type=int, help="use this TMDB id and the title as typed; skip the library"
+    )
+    run.add_argument("--json", action="store_true", help="print the summary as JSON")
     return parser
 
 
@@ -73,6 +96,160 @@ def _quiet_logging(level: str = "ERROR") -> None:
     setup_logging(level=level)
     logging.captureWarnings(True)
     warnings.simplefilter("ignore")
+
+
+def _fail(command: str, message: str) -> int:
+    print(f"marquee {command}: {message}", file=sys.stderr)
+    return 1
+
+
+@dataclass(frozen=True)
+class _MovieGateInputs:
+    """The attributes OcrGateContext.from_movie reads, taken from TMDB's movie details."""
+
+    director: str | None
+    production_companies_json: list[str]
+    tagline: str | None
+    text_profile_id: str | None = None
+
+
+def _run_folder_name(title: str, now: datetime) -> str:
+    from marquee.library.subjects import normalise_title
+
+    slug = re.sub(r"[^a-z0-9]+", "-", normalise_title(title)).strip("-") or "untitled"
+    return f"{now.strftime('%Y%m%dT%H%M%SZ')}-{slug[:60]}"
+
+
+def _run_summary(
+    subject: Any, output: Any, run_dir: Path, stages: list[Any], seconds: float
+) -> dict[str, Any]:
+    return {
+        "subject": {
+            "title": subject.title,
+            "tmdb_id": subject.tmdb_id,
+            "imdb_id": subject.imdb_id,
+            "folder": (
+                f"{subject.folder.quality}/{subject.folder.name}" if subject.folder else None
+            ),
+        },
+        "status": output.status,
+        "counts": output.counts,
+        "stages": [
+            {"stage": e.stage, "survivors": e.survivors, "seconds": e.elapsed_s} for e in stages
+        ],
+        "ranked_total": len(output.ranked),
+        "ranked": output.ranked[:RANKED_SHOWN],
+        "pick": output.recommendation,
+        "run_dir": str(run_dir),
+        "seconds": round(seconds, 1),
+    }
+
+
+def _print_run_summary(summary: dict[str, Any]) -> None:
+    counts = ", ".join(f"{name} {value}" for name, value in summary["counts"].items())
+    print(f"status    {summary['status']}")
+    print(f"counts    {counts}")
+    ranked = summary["ranked"]
+    if ranked:
+        print(f"ranked    top {len(ranked)} of {summary['ranked_total']}")
+        print("  rank  stack  score   file")
+        for row in ranked:
+            score = row["final_score"]
+            shown = f"{score:.4f}" if isinstance(score, int | float) else "-"
+            print(
+                f"  {row['rank']:>4}  {row['stack_label'] or '-':<5}  {shown:<6}  {row['orig_filename']}"
+            )
+    pick = summary["pick"]
+    if pick:
+        print(
+            f"pick      {pick['stack_label']} {pick['orig_filename']} (score {pick['final_score']:.4f})"
+        )
+    else:
+        print("pick      none (no candidate survived every gate)")
+    print(f"run       {summary['run_dir']}")
+    print(f"took      {summary['seconds']:.0f} s")
+
+
+async def _run_async(args: argparse.Namespace, token: str) -> int:
+    from marquee.config import settings
+    from marquee.integrations.tmdb.client import TMDBClient
+    from marquee.library.folders import scan_movie_roots
+    from marquee.library.subjects import resolve_subject
+    from marquee.pipeline.orchestrator import PosterSubjectInput
+    from marquee.pipeline.single_run import run_single_subject
+    from marquee.pipeline.text_profiles import OcrGateContext
+
+    started = time.perf_counter()
+    folders = [] if args.tmdb_id is not None else scan_movie_roots(settings.MOVIE_ROOTS)
+    async with TMDBClient(read_access_token=token) as tmdb:
+        subject = await resolve_subject(
+            args.title, client=tmdb, folders=folders, year=args.year, tmdb_id=args.tmdb_id
+        )
+        details = await tmdb.get_movie_details(subject.tmdb_id)
+    gate = OcrGateContext.from_movie(
+        _MovieGateInputs(
+            director=details.director,
+            production_companies_json=list(details.production_companies),
+            tagline=details.tagline,
+        )
+    )
+    run_dir = settings.runs_dir / _run_folder_name(subject.title, datetime.now(UTC))
+
+    if not args.json:
+        where = (
+            f", {subject.imdb_id}, {subject.folder.quality}/{subject.folder.name}"
+            if subject.folder
+            else ""
+        )
+        print(f"subject   {subject.title} (TMDB {subject.tmdb_id}{where})", flush=True)
+        print("stages", flush=True)
+    stages: list[Any] = []
+
+    def on_progress(event: Any) -> None:
+        if event.state != "end":
+            return
+        stages.append(event)
+        if not args.json:
+            survivors = "-" if event.survivors is None else event.survivors
+            print(
+                f"  {event.stage:<16} {survivors:>4} left  {event.elapsed_s or 0:7.2f} s",
+                flush=True,
+            )
+
+    output = await run_single_subject(
+        subject=PosterSubjectInput(title=subject.title, tmdb_id=subject.tmdb_id),
+        run_dir=run_dir,
+        ocr_gate=gate,
+        progress=on_progress,
+    )
+    summary = _run_summary(subject, output, run_dir, stages, time.perf_counter() - started)
+    if args.json:
+        print(json.dumps(summary, indent=2, default=str))
+    else:
+        _print_run_summary(summary)
+    return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    from marquee.config import pipeline_settings, settings
+    from marquee.integrations.tmdb.exceptions import TMDBError
+    from marquee.library.folders import LibraryRootError
+    from marquee.library.subjects import SubjectLookupError
+
+    # The console shows only the command's own lines and real errors; the run's full
+    # log still reaches pipeline.log, which hangs off the "marquee" logger.
+    _quiet_logging()
+    logging.getLogger("marquee").setLevel(logging.INFO)
+    token = settings.TMDB_READ_ACCESS_TOKEN
+    if token is None or not token.get_secret_value():
+        return _fail("run", "TMDB_READ_ACCESS_TOKEN is not set; add it to .env")
+    profile = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    if not profile.is_file():
+        return _fail("run", f"no taste profile at {profile}; run `marquee taste seed` first")
+    try:
+        return asyncio.run(_run_async(args, token.get_secret_value()))
+    except (SubjectLookupError, LibraryRootError, TMDBError) as exc:
+        return _fail("run", str(exc))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -99,6 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (seed.SeedError, LibraryRootError) as exc:
             print(f"marquee taste seed: {exc}", file=sys.stderr)
             return 1
+    if args.command == "run":
+        return _run(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 
