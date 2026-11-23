@@ -169,7 +169,7 @@ def test_missing_carried_models_are_reported_and_fail(paths: ModelPaths, calls: 
     assert _status(lines, "face") == "missing"
     face_line = next(line for line in lines if line.startswith("face"))
     assert "cannot be fetched yet" in face_line
-    assert "scrfd_500m_bnkps.onnx" in face_line
+    assert face_line.endswith(f"copy scrfd_500m_bnkps.onnx into {paths.face.parent}")
     assert calls == ["clip", "dino", "zeroshot", "yolo", "ocr"]
 
 

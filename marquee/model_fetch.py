@@ -588,7 +588,7 @@ def record_carried_item(item: str, paths: ModelPaths, previous: Manifest | None)
         wanted = paths.face.name
     present = [path for path in candidates if path.is_file()]
     if not present:
-        where = _rel(paths, candidates[0].parent)
+        where = candidates[0].parent
         return ItemResult(
             item,
             "missing",
