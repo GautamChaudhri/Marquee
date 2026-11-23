@@ -418,6 +418,9 @@ def _ocr_probe() -> dict[str, object]:
     import warnings
 
     warnings.simplefilter("ignore")
+    # A first load downloads the weights; keep each HTTP request out of the console.
+    for name in ("httpx", "httpcore", "huggingface_hub"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     # ocr_filter imports marquee.ml.hardware, which points PaddleX at the data directory.
     from marquee.pipeline import ocr_filter
 
@@ -527,10 +530,16 @@ def _reuse_or_describe(
     return model_manifest.describe(paths.data_dir, target, item=item, source=source)
 
 
+def _format_size(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / 1024 / 1024:.1f} MB"
+    return f"{size / 1024:.1f} KB"
+
+
 def _describe_present(entries: list[ManifestEntry]) -> str:
     size = sum(entry.size for entry in entries)
     names = ", ".join(entry.path for entry in entries)
-    return f"{names} ({size / 1024 / 1024:.1f} MB)"
+    return f"{names} ({_format_size(size)})"
 
 
 def fetch_built_item(
