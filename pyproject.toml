@@ -19,23 +19,35 @@ dependencies = [
     "numpy>=1.26,<3.0",
     "pillow>=12.2,<14.0",
     "imagehash>=4.3,<5.0",
-    # Headless: nothing opens a window, and it needs no system GL libraries.
-    "opencv-python-headless>=4.10,<5.0",
+    # The OpenCV build PaddleOCR's pipeline insists on (it checks for this exact
+    # distribution). It needs the system libGL.so.1 even though nothing opens a window.
+    "opencv-contrib-python==4.10.0.84",
     "httpx>=0.28,<1.0",
     "pydantic>=2.10,<3.0",
     "pydantic-settings>=2.6,<3.0",
     "psutil>=5.9,<8.0",
     "tqdm>=4.65,<5.0",
-    "paddleocr>=3.7,<3.8",
+    # The version the engine's OCR rules were tuned against; newer releases change
+    # the default recognition model.
+    "paddleocr==3.6.0",
     "psycopg[binary]>=3.2,<4.0",
     # marquee.fs.boundary builds streaming file responses with it.
     "fastapi>=0.115,<1.0",
 ]
 
 [project.optional-dependencies]
+# Pick exactly one: the GPU and CPU builds install the same modules and conflict.
 cpu = [
     "onnxruntime==1.26.0",
     "paddlepaddle==3.3.1",
+]
+nvidia = [
+    # ONNX Runtime built against CUDA 12.8 and cuDNN 9 (needed for Blackwell cards).
+    # CUDA and cuDNN come from the nvidia-*-cu12 wheels; PaddlePaddle pins their versions.
+    "onnxruntime-gpu[cuda,cudnn]==1.26.0",
+    # CUDA 12.9 build, served from PaddlePaddle's own index (see tool.uv.sources).
+    "paddlepaddle-gpu==3.3.1",
+    "nvidia-ml-py>=13.0,<14.0",
 ]
 
 [project.scripts]
@@ -53,10 +65,51 @@ dev = [
 ]
 
 [tool.uv]
-# PaddleOCR depends on the GUI build of OpenCV (opencv-contrib-python), which
-# installs the same cv2 module as opencv-python-headless and needs system GL
-# libraries. Drop it so exactly one OpenCV build is installed: the headless one.
-override-dependencies = ["opencv-contrib-python; sys_platform == 'never'"]
+conflicts = [[{ extra = "cpu" }, { extra = "nvidia" }]]
+# Marquee runs on Linux x86_64 (this machine, CI, and later the containers).
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-cu129" }
+
+[[tool.uv.index]]
+name = "paddle-cu129"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+explicit = true
+
+# PaddlePaddle's index serves wheels whose dependencies differ by platform, and uv reads
+# only one wheel's metadata. State the linux x86_64 wheel's requirements (copied from its
+# METADATA) so the CUDA wheels it pins are locked.
+[[tool.uv.dependency-metadata]]
+name = "paddlepaddle-gpu"
+version = "3.3.1"
+requires-dist = [
+    "httpx",
+    "numpy>=1.21",
+    "protobuf>=3.20.2",
+    "Pillow",
+    "opt_einsum==3.3.0",
+    "networkx",
+    "typing_extensions",
+    "safetensors>=0.6.0",
+    'setuptools; python_version >= "3.12"',
+    'nvidia-cuda-nvrtc-cu12==12.9.41; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cuda-runtime-cu12==12.9.37; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cuda-cupti-cu12==12.9.19; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cudnn-cu12==9.9.0.52; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cublas-cu12==12.9.0.13; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cufft-cu12==11.4.0.6; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-curand-cu12==10.3.10.19; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cusolver-cu12==11.7.4.40; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cusparse-cu12==12.5.9.5; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cusparselt-cu12==0.7.1; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-nccl-cu12==2.27.3; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-nvtx-cu12==12.9.19; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-nvjitlink-cu12==12.9.41; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cufile-cu12==1.14.0.30; platform_system == "Linux" and platform_machine == "x86_64"',
+    'cuda-python==12.9.4; platform_system == "Linux" and platform_machine == "x86_64"',
+    'nvidia-cuda-cccl-cu12==12.9.27; platform_system == "Linux" and platform_machine == "x86_64"',
+]
 
 [tool.hatch.version]
 path = "marquee/__init__.py"
