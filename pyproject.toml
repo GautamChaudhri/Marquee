@@ -64,6 +64,14 @@ dev = [
     "ruff==0.17.6",
     "import-linter>=2.17,<3.0",
 ]
+# Used only by `marquee models fetch` to export and build models; no runtime code imports
+# them. Install with `uv sync --extra nvidia --group export`. PyTorch is the CPU build, so
+# the only CUDA libraries in the environment stay the ones PaddlePaddle pins.
+export = [
+    "torch==2.15.0",
+    "transformers==5.24.0",
+    "onnx==1.23.2",
+]
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "nvidia" }]]
@@ -72,10 +80,16 @@ environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [tool.uv.sources]
 paddlepaddle-gpu = { index = "paddle-cu129" }
+torch = { index = "pytorch-cpu" }
 
 [[tool.uv.index]]
 name = "paddle-cu129"
 url = "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 # PaddlePaddle's index serves wheels whose dependencies differ by platform, and uv reads
