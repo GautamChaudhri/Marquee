@@ -107,6 +107,7 @@ def test_write_then_load_round_trips(data_dir: Path) -> None:
     assert [e.item for e in loaded.entries] == ["clip", "ocr"]
     assert loaded.for_item("ocr")[0].details == {"note": "n"}
     assert json.loads(path.read_text())["format"] == 1
+    assert path.stat().st_mode & 0o777 == 0o644
     # Atomic write: no temporary file is left behind.
     assert sorted(p.name for p in path.parent.iterdir() if p.is_file()) == [
         "clip.onnx",

@@ -184,6 +184,8 @@ def write_manifest(
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        # mkstemp creates the file private to this user; the manifest is not a secret.
+        os.chmod(tmp_name, 0o644)
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
