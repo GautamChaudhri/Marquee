@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from marquee.ml.colorfulness import hasler_susstrunk
-from marquee.pipeline.types import BoundingBox
+from marquee.ml.geometry import BoundingBox
 
 STANDARD_WIDTH = 500
 

@@ -6,8 +6,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-Point = tuple[float, float]
-BoundingBox = tuple[Point, Point, Point, Point]
+# Re-exported so existing `from marquee.pipeline.types import BoundingBox` imports keep working.
+from marquee.ml.geometry import BoundingBox as BoundingBox
+from marquee.ml.geometry import Point as Point
 
 
 @dataclass(frozen=True)

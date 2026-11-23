@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from marquee.pipeline.types import BoundingBox
+from marquee.ml.geometry import BoundingBox
 
 
 def hasler_susstrunk(image_rgb: np.ndarray) -> float:
