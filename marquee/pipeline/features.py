@@ -216,7 +216,7 @@ class FeatureExtractor:
             elif not getattr(self.taste_store, "has_dino", False):
                 logger.error(
                     "DINO | model present but taste profile has no DINOv2 "
-                    "embeddings — rebuild it: python -m marquee.ml.taste_trainer"
+                    "embeddings — rebuild it: python -m marquee.taste.trainer"
                 )
             elif self.taste_store.dino_model_name != self.dino_encoder.model_name:
                 logger.error(
@@ -273,7 +273,7 @@ class FeatureExtractor:
                 logger.warning(
                     "CALIBRATION | taste profile has no feature distributions — "
                     "taste_typicality disabled. Rebuild the profile: "
-                    "python -m marquee.ml.taste_trainer"
+                    "python -m marquee.taste.trainer"
                 )
             else:
                 self._calibration = calibration

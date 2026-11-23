@@ -75,7 +75,7 @@ def quantize_int8(model_path: Path, output_path: Path) -> None:
     print(
         "[NOTE] INT8 embeddings are a distinct space. Set "
         "AI_MODEL=clip-vit-b-32-int8 and rebuild the taste profile:\n"
-        "       python -m marquee.ml.taste_trainer"
+        "       python -m marquee.taste.trainer"
     )
 
 

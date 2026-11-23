@@ -524,7 +524,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     # Movies only, deliberately: the TV profile is built by scanning deployed
-    # artwork (marquee.core.tv_taste_scan) through the taste_rebuild job, so a
+    # artwork (the library scan listed in SALVAGE.md) through the taste_rebuild job, so a
     # flat-directory CLI build for TV would produce an unattributable profile.
     args.namespace = get_namespace("movies")
     if args.output is None:

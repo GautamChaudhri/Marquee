@@ -101,8 +101,8 @@ _REQUIRED_KEYS: dict[ArtifactKind, set[str]] = {
 }
 
 _REBUILD_HINTS: dict[ArtifactKind, str] = {
-    "taste_profile": "Rebuild it with `python -m marquee.ml.taste_trainer`.",
-    "taste_profile_tv": "Rebuild it with `python -m marquee.ml.taste_trainer`.",
+    "taste_profile": "Rebuild it with `python -m marquee.taste.trainer`.",
+    "taste_profile_tv": "Rebuild it with `python -m marquee.taste.trainer`.",
     "ranking_residual": "Retrain it with the canonical ranking_residual_train job.",
     "zeroshot_axes": "Rebuild it with `python -m marquee.ml.zeroshot`.",
     "taste_map": "Rebuild it by reloading the taste map endpoint or on the next app start.",

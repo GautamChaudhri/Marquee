@@ -2,7 +2,7 @@
 per-knob control hints (kind, range, options, step).
 
 All groups and knobs reference fields defined in ``PipelineSettings``
-(``marquee/core/pipeline_config.py``).  The settings page builds its UI
+(``marquee/config/pipeline.py``).  The settings page builds its UI
 from the groups/meta returned by ``GET /api/config/pipeline``.
 """
 

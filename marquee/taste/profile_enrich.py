@@ -7,7 +7,7 @@ without re-embedding. Resolution order per poster (``"Title (Year).jpg"``):
   2. the Marquee DB (``movies`` — synced from Radarr)
   3. TMDB ``/search/movie`` (one-time, only if a token is configured)
 
-Usage:  python -m marquee.ml.profile_enrich [--no-tmdb]
+Usage:  python -m marquee.taste.profile_enrich [--no-tmdb]
 """
 
 from __future__ import annotations
