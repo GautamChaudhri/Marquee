@@ -23,53 +23,60 @@ rebuild has to attach before any of it runs.
 ## Layout
 
 ```
-marquee/            the selection engine, in place at its old module paths
-tests/              the engine tests that need nothing outside marquee/
+marquee/            the selection engine and the new skeleton, in the target layout
+                    (config/, fs/, integrations/, ml/, pipeline/, taste/, api/, cli, doctor);
+                    docs/architecture.md describes each package
+tests/              mirrors marquee/: the original engine tests plus the engine tests
+                    lifted from _salvage/tests/
 frontend/           build config, design tokens, and API-independent UI primitives
+data/models/        model files (not committed; moved here from marquee/ml/models/)
 _salvage/           reference only: good logic that must be re-homed onto the new skeleton
   backend/          old module paths preserved (marquee/..., pyproject.toml)
   frontend/         old pages and API-bound components
-  tests/            tests for re-homed logic, plus the old conftest
-  deploy/ ci/ docs/ compose files, workflows, design docs, old README
+  tests/            tests for logic not yet re-homed, plus the old conftest
+  deploy/ ci/ docs/ compose files, the CodeQL and Dependabot configs, design docs, old README
 ```
 
-`_salvage/` is not part of the package. Exclude it from ruff and pytest, lift code out of it
-as each subsystem is rebuilt, and delete it when it is empty of anything useful.
+`_salvage/` is not part of the package. Ruff, pytest, and import-linter exclude it. Lift code
+out of it as each subsystem is rebuilt, and delete it when it is empty of anything useful.
 
 ## Kept as-is (`marquee/`, 52 files, about 14,600 lines)
+
+Paths below are where each module lives now. They were moved out of `marquee/core/` and `ml/`
+in the M0+M1 session without logic changes; `git log --follow` reaches their history.
 
 | Area | Modules | Why it stays |
 |---|---|---|
 | Gate-then-rank stages | `pipeline/runner.py`, `orchestrator.py`, `gate.py`, `scorer.py`, `features.py`, `types.py` | Clear stage order, cheapest signal first, every decision recorded per candidate |
 | Text gate | `pipeline/ocr_filter.py` (2,749 lines) | The most heavily tuned logic in the project. Large, but it works and is self-contained |
 | Design grouping | `pipeline/stacker.py`, `deduper.py`, `output.py` | Groups same-design variants instead of deleting them |
-| Taste matching | `ml/taste_store.py`, `calibration.py`, `normalize.py`, `namespaces.py` | Exemplar k-NN with negative exemplars and per-exemplar evidence weights |
-| Learning | `ml/residual.py`, `taste_trainer.py`, `profile_enrich.py`, `taste_map.py` | Pairwise residual already understands `rank` events with an order and a hate list |
+| Taste matching | `ml/taste_store.py`, `calibration.py`, `namespaces.py`, `pipeline/normalize.py` | Exemplar k-NN with negative exemplars and per-exemplar evidence weights |
+| Learning | `ml/residual.py`, `taste/trainer.py`, `taste/profile_enrich.py`, `taste/map.py` | Pairwise residual already understands `rank` events with an order and a hate list |
 | Inference wrappers | `ml/embedding.py`, `dino.py`, `aesthetic.py`, `face.py`, `person.py`, `zeroshot.py`, `visual_features.py`, `hardware.py` | ONNX sessions with provider selection per hardware tier |
-| Knobs | `core/pipeline_config.py`, `pipeline_config_meta.py` | One settings class for every threshold and weight, with a reproducibility snapshot |
-| Integrations | `core/arr_clients/`, `core/poster_sources/tmdb.py` | Thin, correct HTTP clients with error wrapping |
-| Filesystem | `core/filesystem.py` | Confined read/write roots with symlink rejection. The base for media manipulation later |
-| Small leaves | `core/cancellation.py`, `download_guard.py`, `text_profiles.py`, `system_metrics.py`, `rate_limit.py`, `integration_urls.py`, `logging.py` | No internal dependencies |
+| Knobs | `config/pipeline.py`, `config/pipeline_meta.py` | One settings class for every threshold and weight, with a reproducibility snapshot |
+| Integrations | `integrations/arr/`, `integrations/tmdb/` | Thin, correct HTTP clients with error wrapping |
+| Filesystem | `fs/boundary.py` | Confined read/write roots with symlink rejection. The base for media manipulation later |
+| Small leaves | `cancellation.py`, `fs/download_guard.py`, `pipeline/text_profiles.py`, `host_metrics.py`, `api/rate_limit.py`, `integrations/urls.py`, `logging.py` | No internal dependencies |
 
-Model files in `marquee/ml/models/` (338 MB, gitignored) came along: CLIP ViT-B/32, the
-aesthetic head, and the SCRFD face detector.
+Model files (338 MB, gitignored) came along and now live in `data/models/`: CLIP ViT-B/32, the
+aesthetic head (`.pth` plus its `.npz` sidecar), the SCRFD face detector, and
+`negative_prompts.npy`, which no kept code references.
 
 ### Import seams
 
-Four engine files import two modules that do not exist yet. These are the only dangling
-imports in `marquee/` and `tests/`.
+Closed. There are no dangling imports in `marquee/` or `tests/`.
 
-| File | Missing import | What it uses |
+| File | Was | Now |
 |---|---|---|
-| `pipeline/runner.py` | `marquee.core.runtime_settings` | `settings.runs_work_path`, `settings.DEBUG` |
-| `pipeline/runner.py` | `marquee.models` | `Movie`, as a carrier for `id`, `title`, `tmdb_id` |
-| `pipeline/orchestrator.py` | `marquee.core.runtime_settings` | `settings.TMDB_READ_ACCESS_TOKEN` |
-| `pipeline/orchestrator.py` | `marquee.models` | builds a transient `Movie` |
-| `ml/taste_map.py` | `marquee.core.runtime_settings` | `settings.db_url_resolved`, `settings.poster_cache_path` |
-| `ml/profile_enrich.py` | `marquee.core.runtime_settings` | `settings.db_url_resolved` |
+| `pipeline/runner.py` | `marquee.core.runtime_settings` (`runs_work_path`, `DEBUG`) | `marquee.config.settings` (`runs_dir`, `DEBUG`) |
+| `pipeline/runner.py` | `marquee.models.Movie` | `pipeline.types.SubjectRef` (`id`, `title`, `tmdb_id`) |
+| `pipeline/orchestrator.py` | `marquee.core.runtime_settings` (`TMDB_READ_ACCESS_TOKEN`) | `marquee.config.settings`, secret unwrapped at the call site |
+| `pipeline/orchestrator.py` | a transient `Movie` | a `SubjectRef` |
+| `taste/map.py` | `marquee.core.runtime_settings` (`db_url_resolved`, `poster_cache_path`) | `settings.database_url_sync`, `settings.poster_cache_dir` |
+| `taste/profile_enrich.py` | `marquee.core.runtime_settings` (`db_url_resolved`, TMDB token) | `settings.database_url_sync`, `settings.TMDB_READ_ACCESS_TOKEN` |
 
-Suggested fix: a slim `marquee/config.py`, and a small subject dataclass in
-`pipeline/types.py` so the engine stops depending on the ORM.
+`taste/map.py` and `taste/profile_enrich.py` still query library tables (`movies`, `series`)
+that arrive with the database work; they import cleanly but cannot run until then.
 
 ## Mostly good, re-home (`_salvage/`)
 
@@ -89,7 +96,14 @@ Suggested fix: a slim `marquee/config.py`, and a small subject dataclass in
 | Review UI | `frontend/src/lib/components/pipeline/RunResultsView.svelte` (1,929 lines), `PosterRankPanel`, `PosterStack`, `PosterCandidateTile` | The drag-to-rank and hate-pile panel is the core of the new product. Split the big view |
 | Library and taste pages | `frontend/src/routes/{films,television,taste}/` and their components | Trim; rebuild against the new API types |
 | Settings | `frontend/src/routes/settings/`, `components/settings/` | About 4,200 lines for eight tabs. Cut to connections, paths, naming, and a few knobs |
-| Deployment and CI | `deploy/`, `ci/` | Shape is right (postgres, api, worker, web); scheduler folds into the worker |
+| Deployment | `deploy/` | Shape is right (postgres, api, worker, web); scheduler folds into the worker |
+| CI extras | `ci/codeql.yml`, `ci/dependabot.yml` | The main workflow is re-homed in `.github/workflows/ci.yml`; these two wait for M8 |
+
+Partly lifted test files in `_salvage/tests/`: `test_pipeline.py` keeps 2 of its 78 tests
+(the system OCR status API route, and an assertion on the old `Settings.runs_work_path`);
+`test_text_profiles.py` keeps 8 of its 30 (six API tests that need the app, ORM, and
+database, and two that call the old job runner's `_ocr_gate_context`). The rest moved to
+`tests/pipeline/`. `test_archive_nan.py` and `test_artifact_codec.py` moved whole.
 
 ## Left behind
 
@@ -115,7 +129,8 @@ path mappings) are still in `Marquee.old/` for when the new config needs them.
 - Learning thresholds are high for a rank-and-learn loop: 50 liked titles before
   personalization, 25 titles and 200 pairs before the residual trains.
 - Text profiles are stored in `data/text_profiles.json`, not the database.
-- `pipeline_config.py` still reads `MARQUEE_INTERNAL_RUNNER`, a leftover from the old runner.
+- The old `pipeline_config.py` read `MARQUEE_INTERNAL_RUNNER`, a leftover from the old runner.
+  Removed in M0+M1: both settings classes read the same `.env`.
 - Comments reference old design-doc numbers and chunk IDs (`JMC6H`, `design 04 §9.2`) that
   no longer point anywhere.
 
