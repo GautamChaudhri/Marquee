@@ -207,18 +207,20 @@ def check_ocr() -> CheckResult:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            import paddle
-            import paddleocr
-
+            # ocr_filter imports marquee.ml.hardware, which points PaddleX at the data
+            # directory's model folder; that must happen before paddleocr is imported.
             from marquee.pipeline import ocr_filter
 
-            # Importing paddleocr sets up PaddleX's own logger, which narrates every
-            # model load; only its errors belong in the doctor's output.
-            logging.getLogger("paddlex").setLevel(logging.ERROR)
             cuda_ok, diagnostic = ocr_filter._paddle_cuda_probe(allow_import=True)
             device = ocr_filter._resolve_ocr_device(
                 paddle_cuda_available=cuda_ok, cuda_diagnostic=diagnostic
             )
+            import paddle
+            import paddleocr
+
+            # Importing paddleocr sets up PaddleX's own logger, which narrates every
+            # model load; only its errors belong in the doctor's output.
+            logging.getLogger("paddlex").setLevel(logging.ERROR)
             ocr_filter._load_ocr()
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         return CheckResult("OCR", "FAIL", f"PaddleOCR cannot load: {_error_text(exc)}")

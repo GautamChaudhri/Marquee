@@ -25,7 +25,7 @@ from pathlib import Path
 
 import onnxruntime as ort
 
-from marquee.config.pipeline import pipeline_settings
+from marquee.config import pipeline_settings, settings
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,9 @@ logger = logging.getLogger(__name__)
 # imported anywhere; this module is imported early (via embedding/hardware)
 # and re-imported in spawned OCR workers, so it lands ahead of every import.
 os.environ.setdefault("FLAGS_allocator_strategy", "auto_growth")
+# PaddleX reads its model cache folder once, when it is first imported. Point it at
+# the data directory so the OCR weights live with every other model.
+os.environ.setdefault("PADDLE_PDX_CACHE_HOME", str(settings.ocr_models_dir))
 
 # Friendly aliases accepted in EXECUTION_PROVIDER, beyond raw ORT names.
 _PROVIDER_ALIASES: dict[str, str] = {

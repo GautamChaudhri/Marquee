@@ -89,6 +89,11 @@ class Settings(BaseSettings):
         return self.models_dir / "manifest.json"
 
     @property
+    def ocr_models_dir(self) -> Path:
+        """PaddleX's cache folder; its ``official_models/`` holds the OCR weights."""
+        return self.models_dir / "paddlex"
+
+    @property
     def ml_dir(self) -> Path:
         return self.DATA_DIR / "ml"
 
