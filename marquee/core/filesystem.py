@@ -226,9 +226,7 @@ class FilesystemBoundary:
             raise
 
         strong_etag = (
-            f'"{etag}"'
-            if etag
-            else f'W/"{stat_result.st_size:x}-{int(stat_result.st_mtime):x}"'
+            f'"{etag}"' if etag else f'W/"{stat_result.st_size:x}-{int(stat_result.st_mtime):x}"'
         )
         headers: dict[str, str] = {
             "etag": strong_etag,

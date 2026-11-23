@@ -290,9 +290,7 @@ def resolve_map_identity(map_path: Path, *, namespace: TasteNamespace | None = N
     else:
         rows = _resolve_profile_movie_rows(pseudo_profile)
 
-    payload["movie_ids"] = np.asarray(
-        [int(row["movie_id"] or 0) for row in rows], dtype=np.int64
-    )
+    payload["movie_ids"] = np.asarray([int(row["movie_id"] or 0) for row in rows], dtype=np.int64)
     payload["movie_titles"] = unicode_array([str(row["movie_title"]) for row in rows])
     payload["years"] = np.asarray([int(row["year"] or 0) for row in rows], dtype=np.int64)
     payload["tmdb_ids"] = np.asarray([int(row["tmdb_id"] or 0) for row in rows], dtype=np.int64)
