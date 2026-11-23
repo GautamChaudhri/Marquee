@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.config.pipeline import pipeline_settings
 
 logger = logging.getLogger(__name__)
 

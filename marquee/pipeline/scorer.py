@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
+from marquee.config.pipeline import PipelineSettings, pipeline_settings
 from marquee.ml.residual import ResidualArtifact, baseline_signature, score_residual_candidate
 from marquee.pipeline.types import CandidateScore, FeatureVector
 

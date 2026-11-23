@@ -23,10 +23,10 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import numpy as np
 from PIL import Image
 
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.config.pipeline import pipeline_settings
 
 if TYPE_CHECKING:
-    from marquee.core.text_profiles import TextProfile
+    from marquee.pipeline.text_profiles import TextProfile
 from marquee.ml.hardware import effective_ocr_omp_threads, effective_ocr_workers
 from marquee.pipeline.types import BoundingBox, OCRCandidateResult, OCRTextBox
 
@@ -620,7 +620,7 @@ def ocr_device_plan() -> dict[str, Any]:
     function ``_load_ocr`` calls — so an operator-facing readout can never
     disagree with what the pool actually does.
     """
-    from marquee.core.system_metrics import gpu_inventory
+    from marquee.host_metrics import gpu_inventory
     from marquee.ml.hardware import detect_hardware
 
     requested = pipeline_settings.OCR_DEVICE

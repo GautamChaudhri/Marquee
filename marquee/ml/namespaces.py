@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.config.pipeline import pipeline_settings
 
 
 @dataclass(frozen=True)

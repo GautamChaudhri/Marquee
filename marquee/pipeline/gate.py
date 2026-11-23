@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
+from marquee.config.pipeline import PipelineSettings, pipeline_settings
 from marquee.pipeline.types import FeatureVector
 
 

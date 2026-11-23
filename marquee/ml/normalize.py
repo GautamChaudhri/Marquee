@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
+from marquee.config.pipeline import PipelineSettings, pipeline_settings
 from marquee.pipeline.types import FeatureVector
 
 # Fallback dino_knn range when the profile carries no self-knn statistics.

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from marquee.core.pipeline_config import PipelineSettings
+from marquee.config.pipeline import PipelineSettings
 from marquee.ml.residual import (
     ResidualArtifact,
     ResidualEvaluation,

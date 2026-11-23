@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.config.pipeline import pipeline_settings
 
 _HF_MODEL_ID = "openai/clip-vit-base-patch32"
 

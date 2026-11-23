@@ -42,8 +42,8 @@ import numpy as np
 from PIL import Image, ImageFile
 from tqdm import tqdm
 
-from marquee.core.cancellation import raise_if_cancelled
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.cancellation import raise_if_cancelled
+from marquee.config.pipeline import pipeline_settings
 from marquee.ml.aesthetic import AestheticPredictor
 from marquee.ml.artifact_codec import (
     save_npz_atomic,

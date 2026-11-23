@@ -25,8 +25,8 @@ from pathlib import Path
 
 import numpy as np
 
-from marquee.core.cancellation import raise_if_cancelled
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.cancellation import raise_if_cancelled
+from marquee.config.pipeline import pipeline_settings
 from marquee.core.runtime_settings import effective_settings as settings
 from marquee.ml.artifact_codec import (
     GENRES_JSON_KEY,

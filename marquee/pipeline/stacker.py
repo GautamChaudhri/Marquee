@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
+from marquee.config.pipeline import PipelineSettings, pipeline_settings
 from marquee.pipeline.types import CandidateScore
 
 logger = logging.getLogger(__name__)

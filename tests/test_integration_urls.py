@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from marquee.core.integration_urls import (
+from marquee.integrations.urls import (
     IntegrationURLValidationError,
     normalize_integration_url,
     same_integration_origin,

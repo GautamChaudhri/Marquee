@@ -24,9 +24,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
 from marquee.core.runtime_settings import effective_settings as settings
-from marquee.core.text_profiles import OcrGateContext
+from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.ocr_filter import OcrPool, OcrPoolTeardownError, PosterTextFilter
@@ -42,6 +41,7 @@ from marquee.pipeline.runner import (
     run_sync_stages,
 )
 from marquee.pipeline.scorer import ResidualRuntimeContext, select_scorer
+from marquee.pipeline.text_profiles import OcrGateContext
 from marquee.pipeline.types import CandidateScore
 
 logger = logging.getLogger(__name__)

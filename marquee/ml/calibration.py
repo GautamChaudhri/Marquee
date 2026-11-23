@@ -47,7 +47,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
+from marquee.config.pipeline import PipelineSettings, pipeline_settings
 
 logger = logging.getLogger(__name__)
 

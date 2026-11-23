@@ -40,12 +40,11 @@ from pathlib import Path
 import httpx
 import numpy as np
 
-from marquee.core.cancellation import JobCancelledError
-from marquee.core.download_guard import ensure_image_response
-from marquee.core.pipeline_config import pipeline_settings
-from marquee.core.poster_sources.tmdb import PosterCandidate, TMDBClient
+from marquee.cancellation import JobCancelledError
+from marquee.config.pipeline import pipeline_settings
 from marquee.core.runtime_settings import effective_settings as settings
-from marquee.core.text_profiles import OcrGateContext
+from marquee.fs.download_guard import ensure_image_response
+from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
 from marquee.models import Movie
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
 from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
@@ -59,6 +58,7 @@ from marquee.pipeline.scorer import (
     select_scorer,
 )
 from marquee.pipeline.stacker import assign_stacks
+from marquee.pipeline.text_profiles import OcrGateContext
 from marquee.pipeline.types import (
     BoundingBox,
     CandidateScore,

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from marquee.core.pipeline_config import PipelineSettings
+from marquee.config.pipeline import PipelineSettings
 from marquee.ml.artifact_codec import unicode_array
 from marquee.ml.calibration import TasteCalibration
 from marquee.ml.normalize import normalize_features, quality_artifact_raw

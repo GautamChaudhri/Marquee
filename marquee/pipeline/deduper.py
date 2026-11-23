@@ -43,7 +43,7 @@ from pathlib import Path
 import imagehash
 from PIL import Image, ImageFile
 
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.config.pipeline import pipeline_settings
 
 logger = logging.getLogger(__name__)
 

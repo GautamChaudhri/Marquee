@@ -10,8 +10,8 @@ from pathlib import Path
 
 import httpx
 
-from marquee.core.download_guard import ensure_image_response
-from marquee.core.poster_sources.tmdb import PosterCandidate
+from marquee.fs.download_guard import ensure_image_response
+from marquee.integrations.tmdb.client import PosterCandidate
 from marquee.pipeline.types import CandidateScore
 
 logger = logging.getLogger(__name__)

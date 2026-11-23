@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from marquee.core.filesystem import (
+from marquee.fs.boundary import (
     ConfinedKey,
     FilesystemBoundaryError,
     _etag_matches,
@@ -111,7 +111,7 @@ def test_atomic_replace_rejects_cross_device_without_copy_fallback(tmp_path: Pat
     destination = boundary.classify(destination_path, require_file=True, write=True)
 
     with (
-        patch("marquee.core.filesystem.os.replace", side_effect=OSError(errno.EXDEV, "cross")),
+        patch("marquee.fs.boundary.os.replace", side_effect=OSError(errno.EXDEV, "cross")),
         pytest.raises(FilesystemBoundaryError, match="cross-device"),
     ):
         boundary.atomic_replace(staged, destination)

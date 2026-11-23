@@ -28,8 +28,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from marquee.core.pipeline_config import PipelineSettings, pipeline_settings
-from marquee.core.poster_sources.tmdb import PosterCandidate
+from marquee.config.pipeline import PipelineSettings, pipeline_settings
+from marquee.integrations.tmdb.client import PosterCandidate
 from marquee.ml.aesthetic import AestheticPredictor
 from marquee.ml.colorfulness import title_colorfulness
 from marquee.ml.dino import DinoImageEncoder, dino_active, preprocess_dino

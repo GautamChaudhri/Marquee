@@ -26,7 +26,7 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 
-from marquee.core.pipeline_config import pipeline_settings
+from marquee.config.pipeline import pipeline_settings
 from marquee.ml.hardware import (
     create_onnx_session,
     detect_hardware,

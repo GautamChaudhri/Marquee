@@ -9,12 +9,12 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from marquee.core.download_guard import (
+from marquee.fs.download_guard import (
     MAX_POSTER_BYTES,
     DownloadRejectedError,
     ensure_image_response,
 )
-from marquee.core.poster_sources.tmdb import PosterCandidate
+from marquee.integrations.tmdb.client import PosterCandidate
 from marquee.pipeline.output import _download_original
 from marquee.pipeline.types import CandidateScore
 
