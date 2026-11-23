@@ -45,6 +45,15 @@ title. The cheapest signals run first:
 6. Detail features: faces, people, palette, composition, artifacts, title geometry. Final gate.
 7. Rank with a weighted scorer, plus a small learned correction once there is enough feedback.
 
+## Deployment
+
+Docker is the supported way to run Marquee: a Docker Compose stack on a Linux host with an
+NVIDIA GPU and the NVIDIA Container Toolkit. The container image already exists and the
+engine's commands run in it (see [docs/architecture.md](docs/architecture.md#container-image)).
+The full stack, with the API, the job worker, and the web interface, arrives with the rest of
+the rebuild, and its install steps with it. Until then, the setup below runs the engine
+directly on a Linux machine, which is also how Marquee is developed.
+
 ## Requirements
 
 - Linux x86_64.
@@ -139,7 +148,8 @@ data/           runtime state: models, caches, runs, backups (not committed)
 docs/           architecture and other documentation
 frontend/       the web interface (being rebuilt)
 _salvage/       code from the earlier codebase still waiting to be re-homed
-compose.yaml    PostgreSQL for development
+compose.yaml    PostgreSQL for development, and the application image's services
+Dockerfile      the container image (targets runtime and export)
 ```
 
 See [docs/architecture.md](docs/architecture.md) for what each package is for, the layering

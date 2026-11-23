@@ -76,7 +76,8 @@ repository root; `.env.example` lists every setting):
   switch. Model and artifact paths default to locations under the data directory.
 
 The environment variable `MARQUEE_ENV_FILE` selects a different dotenv file, or none when set
-to an empty string. The test suite uses it so that no test reads a real `.env`.
+to an empty string. The test suite uses it so that no test reads a real `.env`, and the
+container image uses it so that every setting comes from the environment.
 
 ## Commands
 
@@ -85,7 +86,7 @@ Everything an operator runs goes through the `marquee` command:
 | Command | Does |
 |---|---|
 | `marquee doctor` | Read-only checks of the machine, the models, the manifest, the taste profile, and every connection |
-| `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights), checks each build before putting it in place, and writes `data/models/manifest.json`. CLIP, DINOv2, and the zero-shot axes need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
+| `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights) and downloads the LAION aesthetic head and the SCRFD face detector, pinned by SHA-256. Checks each one before putting it in place, and writes `data/models/manifest.json`. CLIP, DINOv2, the zero-shot axes, and the aesthetic head's conversion need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
 | `marquee taste seed [--dry-run] [--rescan \| --reuse]` | Builds the first taste profile from the `poster.jpg` in each movie folder, staged as lossless 500 px wide copies. Refuses to scan again unless given `--rescan`; `--reuse` rebuilds from the staged copies |
 | `marquee run "<title>" [--year YYYY] [--tmdb-id N] [--json]` | Finds the movie through its library folder (the IMDb id in the movie file's name), runs it through the pipeline, and leaves the ranked posters and the run archive in a new run folder |
 
@@ -113,6 +114,42 @@ sets it to `data/models/paddlex` before anything imports PaddleOCR, unless it is
 
 Artifacts are tagged with the model that produced them: a taste profile, embedding cache entry,
 or residual built under one model name fails loudly when loaded under another.
+
+## Container image
+
+Marquee is deployed with Docker on a Linux host with an NVIDIA GPU. One `Dockerfile` at the
+repository root builds two targets:
+
+| Target | Holds | Used for |
+|---|---|---|
+| `runtime` | The package and its `nvidia` dependencies, installed from `uv.lock` into `/opt/venv`. No PyTorch | Everything that runs the product |
+| `export` | `runtime` plus the `export` dependency group and `uv` | `marquee models fetch` only |
+
+CUDA and cuDNN come from the Python wheels, as on a bare-metal install. The base image is a
+slim Python image, and the NVIDIA Container Toolkit on the host supplies only the driver. The
+image runs as a non-root user whose user and group ids are build arguments (`MARQUEE_UID` and
+`MARQUEE_GID`, default 1000). Dependencies are installed from the lockfile in their own layer,
+before any source, so a code change rebuilds only the layer that installs the package.
+
+**State lives on one volume.** The image holds code and dependencies, never a model. A volume
+mounted at `/data` is the data directory (`DATA_DIR=/data`): models, taste data, caches, and
+runs. It must be writable by the image's user; PaddleX also writes lock and temporary folders
+beside the OCR weights. `/data` in the image belongs to that user, so a new named volume does
+too.
+
+**Configuration comes from the environment.** The image sets `MARQUEE_ENV_FILE` to an empty
+string, so the application reads no dotenv file inside a container, and `marquee doctor` says
+the settings come from the environment. No `.env` file and no secret is ever copied into an
+image.
+
+In `compose.yaml`, the services `marquee` (target `runtime`) and `marquee-export` (target
+`export`) sit behind the `app` profile, so `docker compose up -d` still starts only the
+database. Both reserve the GPU, mount the volume `marquee-data` at `/data`, and mount the movie
+library read-only at `/media/movies` from the host path in `MOVIE_LIBRARY_HOST_PATH`. They take
+their settings from the host's `.env` through `env_file` and override the ones that differ
+inside a container: `MOVIE_ROOTS`, `POSTGRES_HOST`, `POSTGRES_PORT`, `DATA_DIR`, and
+`MARQUEE_ENV_FILE`. Each runs one command and exits; the API, worker, and web services that make
+up the full stack arrive later.
 
 ## Adding a module
 
