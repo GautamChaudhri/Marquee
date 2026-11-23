@@ -37,7 +37,6 @@ from marquee.ml.embedding import CLIPImageEncoder
 from marquee.ml.face import FaceDetector
 from marquee.ml.hardware import effective_clip_batch_size
 from marquee.ml.namespaces import TasteNamespace
-from marquee.ml.normalize import normalize_features, quality_artifact_raw
 from marquee.ml.person import PersonDetector
 from marquee.ml.preprocessing import preprocess_image
 from marquee.ml.taste_store import NumpyTasteStore, TasteStore
@@ -50,6 +49,7 @@ from marquee.ml.visual_features import (
     title_geometry,
 )
 from marquee.ml.zeroshot import ZeroShotAxes
+from marquee.pipeline.normalize import normalize_features, quality_artifact_raw
 from marquee.pipeline.types import FeatureVector, OCRCandidateResult
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,6 @@ from PIL import Image
 from marquee.config.pipeline import PipelineSettings
 from marquee.ml.artifact_codec import unicode_array
 from marquee.ml.calibration import TasteCalibration
-from marquee.ml.normalize import normalize_features, quality_artifact_raw
 from marquee.ml.residual import (
     ResidualArtifact,
     ResidualEvaluation,
@@ -26,6 +25,7 @@ from marquee.ml.visual_features import (
     standardize_width,
     title_geometry,
 )
+from marquee.pipeline.normalize import normalize_features, quality_artifact_raw
 from marquee.pipeline.scorer import (
     ResidualRuntimeContext,
     ResidualScorer,
