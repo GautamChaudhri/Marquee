@@ -26,7 +26,6 @@ from PIL import Image
 
 from marquee.config import settings
 from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
-from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
 from marquee.pipeline.ocr_filter import OcrPool, OcrPoolTeardownError, PosterTextFilter
 from marquee.pipeline.runner import (
@@ -42,7 +41,7 @@ from marquee.pipeline.runner import (
 )
 from marquee.pipeline.scorer import ResidualRuntimeContext, select_scorer
 from marquee.pipeline.text_profiles import OcrGateContext
-from marquee.pipeline.types import CandidateScore
+from marquee.pipeline.types import CandidateScore, SubjectRef
 
 logger = logging.getLogger(__name__)
 
@@ -192,9 +191,9 @@ class PosterPipelineOutput:
     message: str | None = None
 
 
-def _movie_of(subject: PosterSubjectInput) -> Movie:
-    """A transient (session-less) Movie the stage functions read identity from."""
-    return Movie(id=subject.movie_id, title=subject.title, tmdb_id=subject.tmdb_id)
+def _movie_of(subject: PosterSubjectInput) -> SubjectRef:
+    """The subject identity the stage functions read."""
+    return SubjectRef(id=subject.movie_id, title=subject.title, tmdb_id=subject.tmdb_id)
 
 
 def _fixture_fetch(

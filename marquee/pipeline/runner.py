@@ -45,7 +45,6 @@ from marquee.config import settings
 from marquee.config.pipeline import pipeline_settings
 from marquee.fs.download_guard import ensure_image_response
 from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
-from marquee.models import Movie
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
 from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
 from marquee.pipeline.gate import PosterGate
@@ -64,6 +63,7 @@ from marquee.pipeline.types import (
     CandidateScore,
     OCRCandidateResult,
     OCRTextBox,
+    SubjectRef,
 )
 
 logger = logging.getLogger(__name__)
@@ -427,7 +427,7 @@ def build_review_evidence(records: dict[str, CandidateScore]) -> list[dict[str, 
 
 def build_run_payload(
     *,
-    movie: Movie,
+    movie: SubjectRef,
     started_at: str,
     status: str,
     timings: dict[str, float],
@@ -590,7 +590,7 @@ class FetchOutcome:
 
 async def fetch_candidates(
     tmdb: TMDBClient,
-    movie: Movie,
+    movie: SubjectRef,
     *,
     media_type: str = "movie",
     season_number: int | None = None,
@@ -635,7 +635,7 @@ async def fetch_candidates(
 async def fetch_and_download(
     *,
     tmdb: TMDBClient,
-    movie: Movie,
+    movie: SubjectRef,
     originals_dir: Path,
     timings: dict[str, float],
     progress: ProgressCallback | None = None,

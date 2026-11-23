@@ -11,6 +11,18 @@ BoundingBox = tuple[Point, Point, Point, Point]
 
 
 @dataclass(frozen=True)
+class SubjectRef:
+    """Identity of the subject a run is for (a movie, series, or season).
+
+    The stages read only these fields, so the engine does not depend on the ORM model.
+    """
+
+    id: int | None
+    title: str
+    tmdb_id: int | None
+
+
+@dataclass(frozen=True)
 class OCRTextBox:
     text: str
     confidence: float
