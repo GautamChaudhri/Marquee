@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import warnings
 from collections.abc import Sequence
 
@@ -38,6 +39,30 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="ITEM",
         help=f"rebuild this item even if present (repeatable; one of {', '.join(MODEL_ITEMS)})",
     )
+
+    taste = commands.add_parser("taste", help="build the taste profile")
+    taste_commands = taste.add_subparsers(dest="taste_command", required=True, metavar="command")
+    seed = taste_commands.add_parser(
+        "seed",
+        help="build the first taste profile from the library's poster.jpg files",
+        description="Stage every movie folder's poster.jpg as a 500 px wide PNG exemplar at "
+        "weight 1.0 and build the taste profile from them. Folders without a poster.jpg "
+        "are ignored. Refuses to run again once a staged set exists unless told how.",
+    )
+    seed.add_argument(
+        "--dry-run", action="store_true", help="scan and print the report; write nothing"
+    )
+    again = seed.add_mutually_exclusive_group()
+    again.add_argument(
+        "--rescan",
+        action="store_true",
+        help="scan the library again and replace the staged set and the profile",
+    )
+    again.add_argument(
+        "--reuse",
+        action="store_true",
+        help="rebuild the profile from the staged set without reading the library",
+    )
     return parser
 
 
@@ -63,6 +88,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _quiet_logging()
         return model_fetch.fetch(force=args.force)
+    if args.command == "taste" and args.taste_command == "seed":
+        from marquee.library.folders import LibraryRootError
+        from marquee.taste import seed
+
+        _quiet_logging()
+        mode: seed.Mode = "rescan" if args.rescan else "reuse" if args.reuse else "first"
+        try:
+            return seed.run_seed(mode=mode, dry_run=args.dry_run)
+        except (seed.SeedError, LibraryRootError) as exc:
+            print(f"marquee taste seed: {exc}", file=sys.stderr)
+            return 1
     raise AssertionError(f"unhandled command {args.command!r}")
 
 
