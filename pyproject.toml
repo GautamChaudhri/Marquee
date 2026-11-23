@@ -164,7 +164,7 @@ include_external_packages = true
 name = "Layers only import downward"
 type = "layers"
 layers = [
-    "marquee.api : marquee.cli : marquee.doctor",
+    "marquee.api : marquee.cli : marquee.doctor : marquee.model_fetch",
     "marquee.taste",
     "marquee.library",
     "marquee.pipeline",
@@ -186,6 +186,7 @@ source_modules = [
     "marquee.api",
     "marquee.cli",
     "marquee.doctor",
+    "marquee.model_fetch",
     "marquee.taste",
     "marquee.library",
     "marquee.pipeline",

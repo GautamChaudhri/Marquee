@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import onnxruntime as ort
@@ -32,6 +33,9 @@ from marquee.ml.hardware import (
     detect_hardware,
     effective_clip_batch_size,
 )
+
+if TYPE_CHECKING:
+    import torch
 
 logger = logging.getLogger(__name__)
 
@@ -150,14 +154,16 @@ class DinoImageEncoder:
 # ---------------------------------------------------------------------------
 
 
-def export_dino_onnx(output: Path | None = None) -> Path:
+def export_dino_onnx(output: Path | None = None) -> torch.nn.Module:
+    """Export DINOv2-S/14 to ``output``; return the PyTorch module exported."""
     import torch
 
     output_path = Path(output or pipeline_settings.DINO_MODEL_PATH)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print("[INFO] Loading dinov2_vits14 via torch.hub (downloads ~88MB once) ...")
-    model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14")
+    logger.info("Loading dinov2_vits14 via torch.hub (downloads ~88MB once) ...")
+    # trust_repo answers torch.hub's interactive "trust this repository?" prompt.
+    model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14", trust_repo=True)
     model = model.cpu().eval()
 
     class _CLSWrapper(torch.nn.Module):
@@ -173,7 +179,7 @@ def export_dino_onnx(output: Path | None = None) -> Path:
 
     wrapper = _CLSWrapper(model).cpu().eval()
 
-    print(f"[INFO] Exporting DINOv2-S/14 to {output_path} ...")
+    logger.info("Exporting DINOv2-S/14 to %s ...", output_path)
     torch.onnx.export(
         wrapper,
         torch.zeros(1, 3, DINO_INPUT_SIZE, DINO_INPUT_SIZE, dtype=torch.float32),
@@ -185,7 +191,7 @@ def export_dino_onnx(output: Path | None = None) -> Path:
         do_constant_folding=True,
         dynamo=False,
     )
-    print(f"[INFO] Exported {output_path.stat().st_size / 1024 / 1024:.1f} MB")
+    logger.info("Exported %.1f MB", output_path.stat().st_size / 1024 / 1024)
 
     session = ort.InferenceSession(str(output_path), providers=["CPUExecutionProvider"])
     out = session.run(
@@ -194,8 +200,8 @@ def export_dino_onnx(output: Path | None = None) -> Path:
     )[0]
     if out.shape != (2, DINO_EMBED_DIM):
         raise RuntimeError(f"Unexpected DINOv2 output shape: {out.shape}")
-    print(f"[INFO] ONNX verification passed: (2, 3, 224, 224) -> {out.shape}")
-    return output_path
+    logger.info("ONNX verification passed: (2, 3, 224, 224) -> %s", out.shape)
+    return wrapper
 
 
 if __name__ == "__main__":

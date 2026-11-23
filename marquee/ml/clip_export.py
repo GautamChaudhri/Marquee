@@ -11,11 +11,18 @@ with that model before using it.
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from marquee.config.pipeline import pipeline_settings
+
+if TYPE_CHECKING:
+    import torch
+
+logger = logging.getLogger(__name__)
 
 _HF_MODEL_ID = "openai/clip-vit-base-patch32"
 
@@ -36,17 +43,18 @@ def _make_vision_wrapper() -> type:
     return CLIPVisionWrapper
 
 
-def export_vision_onnx(output_path: Path) -> None:
+def export_vision_onnx(output_path: Path) -> torch.nn.Module:
+    """Export CLIP's image tower to ``output_path``; return the PyTorch module exported."""
     import torch
     from transformers import CLIPModel
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[INFO] Loading {_HF_MODEL_ID} ...")
-    model = CLIPModel.from_pretrained(_HF_MODEL_ID).cpu().eval()
+    logger.info("Loading %s ...", _HF_MODEL_ID)
+    model = CLIPModel.from_pretrained(_HF_MODEL_ID, dtype=torch.float32).cpu().eval()
     wrapper_class = _make_vision_wrapper()
     wrapper = wrapper_class(model.vision_model, model.visual_projection).cpu().eval()
 
-    print(f"[INFO] Exporting CLIP B/32 to {output_path} ...")
+    logger.info("Exporting CLIP B/32 to %s ...", output_path)
     torch.onnx.export(
         wrapper,
         torch.zeros(1, 3, 224, 224, dtype=torch.float32),
@@ -58,7 +66,8 @@ def export_vision_onnx(output_path: Path) -> None:
         do_constant_folding=True,
         dynamo=False,
     )
-    print(f"[INFO] Exported {output_path.stat().st_size / 1024 / 1024:.1f} MB")
+    logger.info("Exported %.1f MB", output_path.stat().st_size / 1024 / 1024)
+    return wrapper
 
 
 def quantize_int8(model_path: Path, output_path: Path) -> None:

@@ -143,14 +143,16 @@ def build_axes(output: Path | None = None) -> Path:
     from transformers import CLIPModel, CLIPProcessor
 
     output_path = Path(output or pipeline_settings.ZEROSHOT_AXES_PATH)
-    print(f"[INFO] Loading {_HF_MODEL_ID} text tower ...")
-    model = CLIPModel.from_pretrained(_HF_MODEL_ID).eval()
+    logger.info("Loading %s text tower ...", _HF_MODEL_ID)
+    model = CLIPModel.from_pretrained(_HF_MODEL_ID, dtype=torch.float32).eval()
     processor = CLIPProcessor.from_pretrained(_HF_MODEL_ID)
 
     def embed_prompts(prompts: list[str]) -> np.ndarray:
         inputs = processor(text=prompts, return_tensors="pt", padding=True)
         with torch.no_grad():
-            features = model.get_text_features(**inputs)
+            # Transformers 5 returns an output object; the projected features are
+            # its pooler_output.
+            features = model.get_text_features(**inputs).pooler_output
         vectors = features.numpy().astype(np.float32)
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
         return vectors.mean(axis=0)  # ensemble mean
@@ -162,7 +164,7 @@ def build_axes(output: Path | None = None) -> Path:
         direction /= np.linalg.norm(direction)
         names.append(name)
         directions.append(direction)
-        print(f"[INFO] Built {name} from {len(positive)}+{len(negative)} prompts")
+        logger.info("Built %s from %d+%d prompts", name, len(positive), len(negative))
 
     save_npz_atomic(
         output_path,
@@ -172,7 +174,7 @@ def build_axes(output: Path | None = None) -> Path:
             "model_name": unicode_scalar("clip-vit-b-32"),
         },
     )
-    print(f"[INFO] Saved {len(names)} axes to {output_path}")
+    logger.info("Saved %d axes to %s", len(names), output_path)
     return output_path
 
 
