@@ -12,7 +12,7 @@ Two changes vs the original inline version:
   - The expensive ``FeatureExtractor`` is injected, not constructed per run —
     callers control its lifetime and can reuse loaded model sessions.
 
-Stage order (cheapest signal first — see design 04 §2):
+Stage order (cheapest signal first):
 
   FETCH (metadata gate pre-download) -> SHA-256 -> GATE:resolution (safety net)
         -> STYLE FEATURES (batched CLIP: knn_sim, aesthetic, metadata scalars)
@@ -442,7 +442,7 @@ def build_run_payload(
 ) -> dict[str, object]:
     """The full ``pipeline_run.json`` payload (also archived per run_id).
 
-    ``media_type``/``subject`` are additive TV fields (design 04 §9.2) — movie
+    ``media_type``/``subject`` are additive TV fields — movie
     callers keep the default, so the payload shape only gains the new
     ``media_type: "movie"`` key.
 
@@ -669,7 +669,7 @@ async def fetch_and_download(
 
     # ── Metadata gates (resolution floor + future metadata-only gates) ───
     # Run BEFORE any download so bandwidth/disk-rejected posters are never
-    # fetched from the CDN (design 18 §7).
+    # fetched from the CDN.
     gate = PosterGate()
     downloadable: list[PosterCandidate] = []
     metadata_gated = 0
@@ -876,7 +876,7 @@ def run_sync_stages(
     _stage_done("sha256", stage_started, timings, survivors=sha_result.final, progress=progress)
 
     # Gate 1: resolution floor — pure TMDB metadata, before any inference.
-    # As of design 18 §7, metadata gates run pre-download in fetch_and_download,
+    # Metadata gates run pre-download in fetch_and_download,
     # so this loop is a safety net — it should never fire under normal operation.
     stage_started = _stage_start("gate-resolution", total=sha_result.final, progress=progress)
     resolution_survivors: list[Path] = []

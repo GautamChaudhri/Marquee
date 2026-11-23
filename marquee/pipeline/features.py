@@ -204,7 +204,7 @@ class FeatureExtractor:
             return
         assert self.taste_store is not None
 
-        # ── DINOv2 (rec 4): hardware-tiered, model + profile must agree ──
+        # ── DINOv2: hardware-tiered, model + profile must agree ──────────
         self._dino_on = False
         if dino_active(log=True):
             if not self.dino_encoder.available:
@@ -240,7 +240,7 @@ class FeatureExtractor:
                     ),
                 )
 
-        # ── Quality pack + person detector (rec 5) ───────────────────────
+        # ── Quality pack + person detector ───────────────────────────────
         self._quality_on = self.config.EXTRA_QUALITY_ENABLED
         self._person_on = False
         if not self._quality_on:
@@ -258,12 +258,12 @@ class FeatureExtractor:
                     self.person_detector.model_path,
                 )
 
-        # ── Zero-shot axes (rec 1) ───────────────────────────────────────
+        # ── Zero-shot axes ───────────────────────────────────────────────
         if not self._zeroshot_loaded:
             self._zeroshot = ZeroShotAxes.load()  # logs its own status
             self._zeroshot_loaded = True
 
-        # ── Exemplar calibration (rec 2) ─────────────────────────────────
+        # ── Exemplar calibration ─────────────────────────────────────────
         self._calibration = None
         if not self.config.CALIBRATION_ENABLED:
             logger.info("CALIBRATION | disabled (CALIBRATION_ENABLED=false)")
@@ -538,7 +538,7 @@ class FeatureExtractor:
 
         features.dino_knn = dino_knn
 
-        # ── Exemplar-calibrated typicality (rec 2) ───────────────────────
+        # ── Exemplar-calibrated typicality ───────────────────────────────
         if self._calibration is not None:
             features.taste_typicality = self._aggregate_typicality(features)
 

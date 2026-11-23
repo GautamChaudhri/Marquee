@@ -1,4 +1,4 @@
-"""Named poster text profiles (design/plans/03 §Group B).
+"""Named poster text profiles.
 
 A text profile bundles the OCR text-gate knobs (mode, per-category allow
 toggles, residual tolerances, title requirement) under a stable id so the UI

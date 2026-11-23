@@ -1,4 +1,4 @@
-"""Compose the real poster-pipeline stages into one confined run (JMC6H H2).
+"""Compose the real poster-pipeline stages into one confined run.
 
 This is deliberately *not* a second pipeline. It wires together the established
 stage functions in :mod:`marquee.pipeline.runner` — fetch/download (or a confined

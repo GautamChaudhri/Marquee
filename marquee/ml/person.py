@@ -1,4 +1,4 @@
-"""YOLO person detection — composition features (rec 5).
+"""YOLO person detection — composition features.
 
 Counts people and measures how much of the poster they occupy, separating
 "one giant floating torso" from "small ensemble lineup" — a composition
@@ -7,8 +7,8 @@ silhouettes, and distant figures).
 
 Part of the EXTRA_QUALITY_ENABLED feature group. The model file is
 optional: if it is missing the features are skipped with a logged warning
-(this is an enhancement, not core infrastructure — per design 04 §13 only
-failures that break every candidate abort a run).
+(this is an enhancement, not core infrastructure — only failures that
+break every candidate abort a run).
 
 Export the ONNX model once (~5MB, needs the `ultralytics` package):
 

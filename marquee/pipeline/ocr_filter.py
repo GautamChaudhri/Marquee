@@ -1267,8 +1267,6 @@ def classify_text_box(
 
     Returns one of: ``title``, ``director``, ``rating``, ``studio``,
     ``tagline``, ``billing``, ``other``.
-
-    See design 18 §4 for the full classification spec.
     """
     text = _normalise(box.text)
     words = set(text.split())

@@ -109,7 +109,7 @@ def composition_features(image_bgr: np.ndarray) -> dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
-# Quality artifacts (rec 5) — monotonic badness signals, model-free
+# Quality artifacts — monotonic badness signals, model-free
 # ---------------------------------------------------------------------------
 
 

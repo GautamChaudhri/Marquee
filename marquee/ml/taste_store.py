@@ -14,7 +14,7 @@ The profile carries up to four kinds of taste signal:
     powering exemplar-calibrated normalization (see ``calibration.py``).
 
 Every embedding space is model-tagged; a mismatch between artifact and
-configured model fails loudly (design 04 §12).
+configured model fails loudly.
 """
 
 from __future__ import annotations

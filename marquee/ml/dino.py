@@ -2,8 +2,8 @@
 
 CLIP embeddings are dominated by semantic content; DINOv2's self-supervised
 features encode texture, medium, and rendering style (painterly vs
-airbrushed vs photo-composite) far better — exactly the axis the design doc
-(04 §9) names as the upgrade path for style discrimination. The pipeline
+airbrushed vs photo-composite) far better, which makes it the upgrade path
+for style discrimination. The pipeline
 uses it as a second k-NN against DINOv2 embeddings of the same taste
 exemplars (``dino_knn``), never as a CLIP replacement: the aesthetic head
 and zero-shot axes stay on CLIP.

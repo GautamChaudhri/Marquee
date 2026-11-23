@@ -88,7 +88,7 @@ class PipelineSettings(BaseSettings):
     EXTRA_QUALITY_ENABLED: bool = True
     PERSON_MODEL_PATH: Path = _MODELS_DIR / "yolo11n.onnx"
     PERSON_CONFIDENCE_THRESHOLD: float = 0.40
-    # Exemplar-calibrated normalization (rec 2): score each taste-band
+    # Exemplar-calibrated normalization: score each taste-band
     # feature by KDE typicality against the taste profile's per-feature
     # distributions instead of fixed higher-is-better ramps.
     CALIBRATION_ENABLED: bool = True
@@ -104,7 +104,7 @@ class PipelineSettings(BaseSettings):
     # Residual artifacts are supplied only through immutable publication staging.
     SCORER: str = "auto"
 
-    # ── Feedback loop (design 09) ─────────────────────────────────────
+    # ── Feedback loop ─────────────────────────────────────────────────
     FEEDBACK_GATE_ALERT_THRESHOLD: int = 5
     FEEDBACK_DEPLOY_DEFAULT: bool = True
     RESIDUAL_MIN_SUBJECTS: int = 25
@@ -331,7 +331,7 @@ class PipelineSettings(BaseSettings):
     OCR_TITLE_RECOVERY_ENABLED: bool = True
     OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD: float = 0.50
 
-    # ── Text-gate mode presets (design 18) ───────────────────────────
+    # ── Text-gate mode presets ───────────────────────────────────────
     # "title_only" = current strict behaviour (require title, reject residual).
     # "textless"   = accept only textless posters (reject title + residual).
     # "custom"     = per-category allow/deny toggles below.

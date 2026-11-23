@@ -10,7 +10,7 @@ is the exemplar distribution at this value, relative to its densest point.
 
 Why KDE and not a Gaussian band around the mean
 -----------------------------------------------
-The design's core thesis (04 §3, §6) is that taste is multimodal — a dark
+The core premise is that taste is multimodal — a dark
 horror cluster and a bright animation cluster coexist. A mean±σ band would
 put the scoring peak in the meaningless middle of those clusters, which is
 exactly the centroid-blur failure the k-NN scorer was built to avoid. A 1-D

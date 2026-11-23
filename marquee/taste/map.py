@@ -1,10 +1,10 @@
-"""3D/2D taste-map projection + clustering for the visualization (design 11).
+"""3D/2D taste-map projection + clustering for the visualization.
 
 Reduces the taste profile's CLIP embeddings to 3D (and 2D) for an interactive
 scatter, detects clusters, and projects live pipeline candidates into the same
 space by k-NN barycentric placement (the geometric picture of ``knn_sim``).
 
-Dependency posture (design 11 decision 2):
+Dependency posture:
   - UMAP (``umap-learn``) when installed — meaningful local+global structure.
   - PCA (hand-rolled numpy SVD) otherwise — zero dependency, deterministic.
   - HDBSCAN (``sklearn.cluster``) when installed — else no clustering.

@@ -52,7 +52,7 @@ KNOB_GROUPS: list[dict[str, Any]] = [
     },
     # The "text_gate" group was removed from the settings UI: text-gate
     # behaviour is managed through the Text Profiles system on the pipeline
-    # landing page (design/plans/03). The OCR_* knobs below stay in KNOB_META
+    # landing page. The OCR_* knobs below stay in KNOB_META
     # so the config API still serves and validates them.
     {
         "id": "style",

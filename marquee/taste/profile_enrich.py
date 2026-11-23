@@ -1,4 +1,4 @@
-"""Retrofit genres/years/tmdb_ids into an existing taste profile (design 11).
+"""Retrofit genres/years/tmdb_ids into an existing taste profile.
 
 Adds the ``genres``, ``years``, and ``tmdb_ids`` keys to the profile ``.npz``
 without re-embedding. Resolution order per poster (``"Title (Year).jpg"``):

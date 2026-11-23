@@ -52,7 +52,7 @@ def _features(**overrides) -> FeatureVector:
 
 
 # ---------------------------------------------------------------------------
-# Exemplar calibration (rec 2) — the KDE typicality core
+# Exemplar calibration — the KDE typicality core
 # ---------------------------------------------------------------------------
 
 
@@ -317,7 +317,7 @@ def test_select_scorer_auto_prefers_valid_residual(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# DINOv2 activation policy (rec 4)
+# DINOv2 activation policy
 # ---------------------------------------------------------------------------
 
 
