@@ -2,26 +2,26 @@
 
 Items, in the order they are built:
 
-========  ====================================================  ==============================
-item      built by                                              lands at
-========  ====================================================  ==============================
-clip      ``ml/clip_export.py::export_vision_onnx``             ``CLIP_MODEL_PATH``
-dino      ``ml/dino.py::export_dino_onnx``                      ``DINO_MODEL_PATH``
-zeroshot  ``ml/zeroshot.py::build_axes``                        ``ZEROSHOT_AXES_PATH``
-yolo      the Ultralytics exporter, in its own ``uv`` tool env  ``PERSON_MODEL_PATH``
-ocr       one load through ``pipeline/ocr_filter.py::_load_ocr``  ``<models>/paddlex/``
-========  ====================================================  ==============================
-
-The aesthetic head and the face detector cannot be fetched yet. When present they are
-recorded as carried over; when absent the command says so and exits 1.
+=========  ====================================================  ===========================
+item       built by                                              lands at
+=========  ====================================================  ===========================
+clip       ``ml/clip_export.py::export_vision_onnx``             ``CLIP_MODEL_PATH``
+dino       ``ml/dino.py::export_dino_onnx``                      ``DINO_MODEL_PATH``
+zeroshot   ``ml/zeroshot.py::build_axes``                        ``ZEROSHOT_AXES_PATH``
+yolo       the Ultralytics exporter, in its own ``uv`` tool env  ``PERSON_MODEL_PATH``
+ocr        one load through ``pipeline/ocr_filter.py::_load_ocr``  ``<models>/paddlex/``
+aesthetic  downloaded from LAION, converted to ``.npz``          ``AESTHETIC_MODEL_PATH``
+face       downloaded from InsightFace (``buffalo_sc`` pack)     ``FACE_MODEL_PATH``
+=========  ====================================================  ===========================
 
 What is present is left alone; what is missing (or named with ``--force``) is built. Every
 build writes to a temporary name in its destination folder and is renamed into place only
-after its check passes, so a failed export never leaves a file the engine would load. The
-manifest (``data/models/manifest.json``) is then written and verified.
+after its check passes, so a failed export never leaves a file the engine would load. A
+download's check is its SHA-256, pinned below. The manifest (``data/models/manifest.json``)
+is then written and verified.
 
-``clip``, ``dino``, and ``zeroshot`` need the export tools (the ``export`` dependency group).
-No runtime code path imports them.
+``clip``, ``dino``, ``zeroshot``, and ``aesthetic`` (its ``.pth`` to ``.npz`` conversion)
+need the export tools (the ``export`` dependency group). No runtime code path imports them.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
@@ -54,9 +55,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-BUILT_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr")
-CARRIED_ITEMS = ("aesthetic", "face")
-NEEDS_EXPORT_TOOLS = frozenset({"clip", "dino", "zeroshot"})
+BUILT_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr", "aesthetic", "face")
+NEEDS_EXPORT_TOOLS = frozenset({"clip", "dino", "zeroshot", "aesthetic"})
 EXPORT_TOOLS = ("torch", "transformers", "onnx")
 EXPORT_INSTALL_COMMAND = "uv sync --extra nvidia --group export"
 
@@ -74,12 +74,33 @@ YOLO_EXPORT_TIMEOUT_S = 1800
 YOLO_INPUT_SIZE = 640
 YOLO_OUTPUT_ROWS = 84
 
-CARRIED_SOURCE = (
-    "carried over from the previous installation; marquee models fetch cannot fetch it yet"
+# Downloads are pinned by SHA-256. The values are those of the files the engine was tuned
+# with, as recorded in the first manifest; each source was checked to serve those bytes.
+DOWNLOAD_TIMEOUT_S = 60.0
+MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+
+# LAION's linear aesthetic head for CLIP ViT-B/32, from the repository at a fixed commit.
+AESTHETIC_URL = (
+    "https://raw.githubusercontent.com/LAION-AI/aesthetic-predictor/"
+    "814214009feff106add4bb983807704ccdd5a0db/sa_0_4_vit_b_32_linear.pth"
 )
+AESTHETIC_SHA256 = "c7b14cead230694acc7b9447974d3cad78003c72da032e402a303b6c2429e85f"
+# np.savez stamps the time into the .npz, so the converted file is checked by its values:
+# the SHA-256 of the 512 weights and then the bias, as little-endian float32.
+AESTHETIC_VALUES_SHA256 = "dba6421aa35c4489c02b02d8d2a3ad9a495d50f85d35eef521fd551619bbb2ac"
+
+# InsightFace's SCRFD 500M detector with keypoints (scrfd_500m_bnkps.onnx). InsightFace
+# publishes it as det_500m.onnx inside the buffalo_sc model pack; the bytes are identical.
+FACE_ARCHIVE_URL = (
+    "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip"
+)
+FACE_ARCHIVE_SHA256 = "57d31b56b6ffa911c8a73cfc1707c73cab76efe7f13b675a05223bf42de47c72"
+FACE_ARCHIVE_MEMBER = "det_500m.onnx"
+FACE_SHA256 = "5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a"
+
 FOUND_SOURCE = "found in place; not built by marquee models fetch"
 
-Status = Literal["built", "present", "failed", "missing"]
+Status = Literal["built", "present", "failed"]
 
 
 class BuildError(Exception):
@@ -197,6 +218,45 @@ def staged(target: Path) -> Iterator[Path]:
         partial.unlink(missing_ok=True)
         raise
     os.replace(partial, target)
+
+
+def download(url: str, dest: Path) -> None:
+    """Stream ``url`` into ``dest``, refusing anything larger than ``MAX_DOWNLOAD_BYTES``.
+
+    Unit tests replace this function; they never touch the network.
+    """
+    import httpx
+
+    received = 0
+    with (
+        httpx.stream("GET", url, follow_redirects=True, timeout=DOWNLOAD_TIMEOUT_S) as response,
+        dest.open("wb") as out,
+    ):
+        response.raise_for_status()
+        for chunk in response.iter_bytes():
+            received += len(chunk)
+            if received > MAX_DOWNLOAD_BYTES:
+                raise BuildError(f"{url} is larger than {MAX_DOWNLOAD_BYTES} bytes")
+            out.write(chunk)
+
+
+def check_sha256(path: Path, expected: str, *, name: str) -> None:
+    actual = model_manifest.sha256_file(path)
+    if actual != expected:
+        raise BuildError(f"{name} has SHA-256 {actual}, expected {expected}")
+
+
+def aesthetic_values_sha256(npz_path: Path) -> str:
+    """SHA-256 of the head's 512 weights followed by its bias, as little-endian float32."""
+    import hashlib
+
+    with np.load(npz_path) as data:
+        weight = np.asarray(data["weight"])
+        bias = np.asarray(data["bias"])
+    if weight.shape != (512,) or bias.size != 1:
+        raise BuildError(f"aesthetic head has shapes {weight.shape} and {bias.shape}")
+    values = weight.astype("<f4").tobytes() + bias.astype("<f4").reshape(1).tobytes()
+    return hashlib.sha256(values).hexdigest()
 
 
 def _row_cosines(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -494,12 +554,77 @@ def build_ocr(paths: ModelPaths) -> Built:
     return Built(entries, f"loaded on {device}; {len(folders)} model folders: {', '.join(folders)}")
 
 
+def build_aesthetic(paths: ModelPaths) -> Built:
+    from marquee.ml import aesthetic
+
+    pth, npz = paths.aesthetic_files()
+    with staged(pth) as partial:
+        download(AESTHETIC_URL, partial)
+        check_sha256(partial, AESTHETIC_SHA256, name=pth.name)
+    with staged(npz) as partial:
+        aesthetic.convert_pth_to_npz(pth, partial)
+        values = aesthetic_values_sha256(partial)
+        if values != AESTHETIC_VALUES_SHA256:
+            raise BuildError(
+                f"{npz.name} values have SHA-256 {values}, expected {AESTHETIC_VALUES_SHA256}"
+            )
+    source = f"LAION-AI/aesthetic-predictor, {AESTHETIC_URL}"
+    entries = [
+        model_manifest.describe(
+            paths.data_dir,
+            pth,
+            item="aesthetic",
+            source=source,
+            details={"pinned sha256": AESTHETIC_SHA256},
+        ),
+        model_manifest.describe(
+            paths.data_dir,
+            npz,
+            item="aesthetic",
+            source=f"converted from {pth.name} (ml/aesthetic.py::convert_pth_to_npz)",
+            tools=_tool_versions("torch"),
+            details={"values sha256": AESTHETIC_VALUES_SHA256},
+        ),
+    ]
+    return Built(entries, ".pth matches its pinned SHA-256; .npz values match theirs")
+
+
+def build_face(paths: ModelPaths) -> Built:
+    paths.cache_dir.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix="face-fetch-", dir=paths.cache_dir))
+    try:
+        archive = scratch / Path(FACE_ARCHIVE_URL).name
+        download(FACE_ARCHIVE_URL, archive)
+        # Verified before it is opened, so nothing unchecked is ever unpacked.
+        check_sha256(archive, FACE_ARCHIVE_SHA256, name=archive.name)
+        with zipfile.ZipFile(archive) as pack, staged(paths.face) as partial:
+            with pack.open(FACE_ARCHIVE_MEMBER) as member, partial.open("wb") as out:
+                shutil.copyfileobj(member, out)
+            check_sha256(partial, FACE_SHA256, name=f"{archive.name}:{FACE_ARCHIVE_MEMBER}")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    entry = model_manifest.describe(
+        paths.data_dir,
+        paths.face,
+        item="face",
+        source=f"InsightFace SCRFD 500M with keypoints: {FACE_ARCHIVE_MEMBER} from "
+        f"{FACE_ARCHIVE_URL}",
+        details={
+            "pinned sha256": FACE_SHA256,
+            f"{Path(FACE_ARCHIVE_URL).name} sha256": FACE_ARCHIVE_SHA256,
+        },
+    )
+    return Built([entry], f"{FACE_ARCHIVE_MEMBER} matches its pinned SHA-256")
+
+
 BUILDERS: dict[str, Builder] = {
     "clip": build_clip,
     "dino": build_dino,
     "zeroshot": build_zeroshot,
     "yolo": build_yolo,
     "ocr": build_ocr,
+    "aesthetic": build_aesthetic,
+    "face": build_face,
 }
 
 
@@ -510,6 +635,8 @@ def _item_targets(item: str, paths: ModelPaths, previous: Manifest | None) -> li
     if item == "ocr":
         recorded = previous.for_item("ocr") if previous else []
         return [paths.data_dir / entry.path for entry in recorded]
+    if item == "aesthetic":
+        return list(paths.aesthetic_files())
     return [getattr(paths, item)]
 
 
@@ -579,31 +706,6 @@ def fetch_built_item(
     return ItemResult(item, "built", detail, built.entries, time.perf_counter() - started)
 
 
-def record_carried_item(item: str, paths: ModelPaths, previous: Manifest | None) -> ItemResult:
-    if item == "aesthetic":
-        candidates = list(paths.aesthetic_files())
-        wanted = f"{candidates[0].name} or {candidates[1].name}"
-    else:
-        candidates = [paths.face]
-        wanted = paths.face.name
-    present = [path for path in candidates if path.is_file()]
-    if not present:
-        where = candidates[0].parent
-        return ItemResult(
-            item,
-            "missing",
-            f"cannot be fetched yet; copy {wanted} into {where}",
-            previous.for_item(item) if previous else [],
-        )
-    try:
-        entries = [
-            _reuse_or_describe(paths, item, path, previous, CARRIED_SOURCE) for path in present
-        ]
-    except (BuildError, OSError, ValueError) as exc:
-        return ItemResult(item, "failed", str(exc), previous.for_item(item) if previous else [])
-    return ItemResult(item, "present", f"carried over: {_describe_present(entries)}", entries)
-
-
 def _format_result(result: ItemResult) -> str:
     took = f" in {result.seconds:.0f} s" if result.status == "built" else ""
     return f"{result.item:<9}  {result.status:<7}  {result.detail}{took}"
@@ -642,10 +744,6 @@ def fetch(
         )
         results.append(result)
         echo(_format_result(result))
-    for item in CARRIED_ITEMS:
-        result = record_carried_item(item, paths, previous)
-        results.append(result)
-        echo(_format_result(result))
 
     manifest = model_manifest.write_manifest(
         paths.manifest, [entry for result in results for entry in result.entries]
@@ -665,5 +763,5 @@ def fetch(
     if needed_tools:
         echo(f"The export tools are not installed. Install them with: {EXPORT_INSTALL_COMMAND}")
     echo(f"took {time.perf_counter() - started:.0f} s")
-    failed = any(result.status in ("failed", "missing") for result in results)
+    failed = any(result.status == "failed" for result in results)
     return 1 if failed or problems else 0

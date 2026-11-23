@@ -18,7 +18,7 @@ from typing import Any
 
 from marquee import __version__
 
-MODEL_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr")
+MODEL_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr", "aesthetic", "face")
 RANKED_SHOWN = 10
 
 
@@ -38,7 +38,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "fetch",
         help="build every missing model and write the checksum manifest",
         description="Build every model that is missing, leave alone what is present, and "
-        "write data/models/manifest.json. clip, dino, and zeroshot need the export tools.",
+        "write data/models/manifest.json. clip, dino, zeroshot, and aesthetic need the export "
+        "tools.",
     )
     fetch.add_argument(
         "--force",
