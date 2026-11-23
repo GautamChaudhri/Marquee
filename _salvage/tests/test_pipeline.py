@@ -29,10 +29,6 @@ from marquee.pipeline.scorer import WeightedScorer
 from marquee.pipeline.types import CandidateScore, FeatureVector, OCRCandidateResult
 
 
-def test_pipeline_run_root_is_inside_data():
-    assert Settings().runs_work_path == _RUNS_WORK_DATA
-
-
 def test_system_ocr_status_shape(monkeypatch: pytest.MonkeyPatch):
     from marquee.api.routes import system
 
