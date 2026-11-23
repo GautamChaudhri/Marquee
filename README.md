@@ -1,10 +1,12 @@
 # Marquee
 
-**AI poster selection for self-hosted Radarr and Sonarr libraries.**
+**AI poster selection for self-hosted Radarr movie libraries.**
 
 Marquee fetches every poster TMDB has for a title, removes the ones that can never be right,
 ranks the rest against a taste profile learned from posters you chose yourself, writes the
 winner into the media folder, and learns from how you re-rank or override its choice.
+
+Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 
 > **Status: mid-rebuild.** The selection engine runs from the command line: it builds its
 > models, seeds a taste profile from the posters already in your library, and ranks one
@@ -50,12 +52,12 @@ title. The cheapest signals run first:
 - Docker with Compose, for PostgreSQL.
 - The system OpenGL library (`libGL.so.1`: `mesa-libGL` on Fedora, `libgl1` on Debian and
   Ubuntu). PaddleOCR requires the full OpenCV build, which links against it.
-- Optional: an NVIDIA GPU. CUDA and cuDNN come from Python wheels; only the driver is needed.
+- An NVIDIA GPU. CUDA and cuDNN come from Python wheels; only the driver is needed.
 
 ## Setup
 
 ```bash
-# 1. Install the project environment. Pick exactly one extra: nvidia or cpu.
+# 1. Install the project environment. The cpu extra exists only for tests and CI.
 uv sync --extra nvidia
 
 # 2. Configure. Every setting is listed, with a comment, in .env.example.
@@ -84,11 +86,11 @@ uv run marquee run "Die Hard"
 
 `marquee models fetch` builds every model that is missing and leaves alone what is present:
 the CLIP image encoder, DINOv2, the zero-shot style axes, the YOLO person detector (exported
-in an isolated environment, so its dependencies never enter the project), and the OCR weights.
-Each build is checked before it is put in place, and `data/models/manifest.json` records
-every model's size, SHA-256, and origin. Two models cannot be fetched yet: copy the LAION
-aesthetic head (`sa_0_4_vit_b_32_linear.pth` or `.npz`) and the SCRFD face detector
-(`scrfd_500m_bnkps.onnx`) into `data/models/` yourself. `--force ITEM` rebuilds one item.
+in an isolated environment, so its dependencies never enter the project), the OCR weights,
+the LAION aesthetic head, and the SCRFD face detector. The last two are downloaded from
+their publishers and must match a pinned SHA-256. Each build is checked before it is put in
+place, and `data/models/manifest.json` records every model's size, SHA-256, and origin.
+`--force ITEM` rebuilds one item.
 
 `marquee taste seed` treats the `poster.jpg` in each movie folder as a poster you chose, at
 full weight. A movie without a `poster.jpg` is ignored. Each poster is staged as a lossless
