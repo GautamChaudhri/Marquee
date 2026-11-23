@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from marquee.core.runtime_settings import effective_settings as settings
+from marquee.config import settings
 from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
 from marquee.models import Movie
 from marquee.pipeline.features import FeatureExtractor
@@ -264,7 +264,8 @@ async def run_poster_pipeline(
         else None
     )
 
-    tmdb_token = settings.TMDB_READ_ACCESS_TOKEN
+    tmdb_secret = settings.TMDB_READ_ACCESS_TOKEN
+    tmdb_token = tmdb_secret.get_secret_value() if tmdb_secret is not None else None
     if source.mode != "fixture" and not tmdb_token:
         raise RuntimeError(
             "TMDB_READ_ACCESS_TOKEN is not configured; the poster pipeline cannot fetch candidates"

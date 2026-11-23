@@ -20,9 +20,8 @@ from pathlib import Path
 
 import numpy as np
 
+from marquee.config import settings
 from marquee.config.pipeline import pipeline_settings
-from marquee.core.runtime_settings import effective_app_settings
-from marquee.core.runtime_settings import effective_settings as settings
 from marquee.ml.artifact_codec import (
     decode_unicode_list,
     ensure_safe_artifact,
@@ -51,7 +50,7 @@ def _db_index() -> dict[str, tuple[list[str], int | None, int | None]]:
     import psycopg  # noqa: PLC0415
 
     index: dict[str, tuple[list[str], int | None, int | None]] = {}
-    db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
+    db_url = settings.database_url_sync
     try:
         with psycopg.connect(db_url) as conn, conn.cursor() as cursor:
             cursor.execute("SELECT title, year, genres, tmdb_id FROM movies")
@@ -71,7 +70,8 @@ def _db_index() -> dict[str, tuple[list[str], int | None, int | None]]:
 
 
 def _tmdb_lookup(title: str, year: int | None) -> tuple[list[str], int | None] | None:
-    token = effective_app_settings().TMDB_READ_ACCESS_TOKEN
+    token_secret = settings.TMDB_READ_ACCESS_TOKEN
+    token = token_secret.get_secret_value() if token_secret is not None else None
     if not token:
         return None
     import httpx  # noqa: PLC0415

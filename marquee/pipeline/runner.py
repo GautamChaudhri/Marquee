@@ -41,8 +41,8 @@ import httpx
 import numpy as np
 
 from marquee.cancellation import JobCancelledError
+from marquee.config import settings
 from marquee.config.pipeline import pipeline_settings
-from marquee.core.runtime_settings import effective_settings as settings
 from marquee.fs.download_guard import ensure_image_response
 from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
 from marquee.models import Movie
@@ -68,7 +68,7 @@ from marquee.pipeline.types import (
 
 logger = logging.getLogger(__name__)
 
-_RUNS_WORK_DATA = settings.runs_work_path
+_RUNS_WORK_DATA = settings.runs_dir
 _EXPERIMENTS_DATA = _RUNS_WORK_DATA
 _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(5)
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff"}

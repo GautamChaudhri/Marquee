@@ -26,8 +26,8 @@ from pathlib import Path
 import numpy as np
 
 from marquee.cancellation import raise_if_cancelled
+from marquee.config import settings
 from marquee.config.pipeline import pipeline_settings
-from marquee.core.runtime_settings import effective_settings as settings
 from marquee.ml.artifact_codec import (
     GENRES_JSON_KEY,
     decode_json_string_array,
@@ -56,8 +56,8 @@ _TV_SUFFIX = re.compile(r"-(?:show|season(\d+))$", re.IGNORECASE)
 def _map_path(ns: TasteNamespace | None = None) -> Path:
     ns = ns or get_namespace("movies")
     if ns.library == "movies":
-        return settings.poster_cache_path.parent / f"taste_map.{pipeline_settings.AI_MODEL}.npz"
-    return settings.poster_cache_path.parent / f"taste_map.tv.{pipeline_settings.AI_MODEL}.npz"
+        return settings.poster_cache_dir.parent / f"taste_map.{pipeline_settings.AI_MODEL}.npz"
+    return settings.poster_cache_dir.parent / f"taste_map.tv.{pipeline_settings.AI_MODEL}.npz"
 
 
 def _history_dir(ns: TasteNamespace | None = None) -> Path:
@@ -68,8 +68,8 @@ def _history_dir(ns: TasteNamespace | None = None) -> Path:
 def _thumbs_dir(ns: TasteNamespace | None = None) -> Path:
     ns = ns or get_namespace("movies")
     if ns.library == "movies":
-        return settings.poster_cache_path.parent / "taste_thumbs"
-    return settings.poster_cache_path.parent / "taste_thumbs_tv"
+        return settings.poster_cache_dir.parent / "taste_thumbs"
+    return settings.poster_cache_dir.parent / "taste_thumbs_tv"
 
 
 def _parse_name(name: str) -> tuple[str, int | None]:
@@ -140,7 +140,7 @@ def _resolve_profile_movie_rows(profile: dict) -> list[dict]:
             }
         )
 
-    db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
+    db_url = settings.database_url_sync
     by_id: dict[int, tuple[int, str, int | None, int | None]] = {}
     by_tmdb: dict[int, tuple[int, str, int | None, int | None]] = {}
     by_title: dict[str, list[tuple[int, str, int | None, int | None]]] = {}
@@ -224,7 +224,7 @@ def _resolve_profile_series_rows(profile: dict) -> list[dict]:
         for title, kind, season in identity
     ]
 
-    db_url = settings.db_url_resolved.replace("postgresql+asyncpg://", "postgresql://", 1)
+    db_url = settings.database_url_sync
     by_title: dict[str, tuple[int, str, int | None, int | None, list | None]] = {}
     seasons_by_series: dict[tuple[int, int], int] = {}
     try:
