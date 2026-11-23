@@ -85,15 +85,19 @@ _OPTIONAL_SETTINGS = (
 
 
 def check_settings() -> CheckResult:
-    if ENV_FILE is None or not ENV_FILE.is_file():
-        where = "no env file selected (MARQUEE_ENV_FILE is empty)" if ENV_FILE is None else ENV_FILE
-        return CheckResult("Settings", "FAIL", f".env missing: {where}")
+    # An empty MARQUEE_ENV_FILE deliberately selects no file, as in a container, where
+    # Compose passes every setting through the environment. A named file that is
+    # missing is a mistake.
+    if ENV_FILE is None:
+        source = "settings come from the environment (MARQUEE_ENV_FILE is empty)"
+    elif ENV_FILE.is_file():
+        source = ".env found"
+    else:
+        return CheckResult("Settings", "FAIL", f".env missing: {ENV_FILE}")
     unset = [name for name in _OPTIONAL_SETTINGS if not getattr(settings, name)]
     if unset:
-        return CheckResult("Settings", "WARN", f".env found; unset: {', '.join(unset)}")
-    return CheckResult(
-        "Settings", "PASS", f".env found; environment {settings.MARQUEE_ENVIRONMENT}"
-    )
+        return CheckResult("Settings", "WARN", f"{source}; unset: {', '.join(unset)}")
+    return CheckResult("Settings", "PASS", f"{source}; environment {settings.MARQUEE_ENVIRONMENT}")
 
 
 def check_data_dir() -> CheckResult:

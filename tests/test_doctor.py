@@ -56,6 +56,45 @@ def test_error_text_scrubs_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "***" in text
 
 
+def _configure_every_optional_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in doctor._OPTIONAL_SETTINGS:
+        monkeypatch.setattr(doctor.settings, name, "set")
+
+
+def test_settings_from_the_environment_alone_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "ENV_FILE", None)
+    _configure_every_optional_setting(monkeypatch)
+    result = doctor.check_settings()
+    assert result.status == "PASS"
+    assert "settings come from the environment" in result.detail
+
+
+def test_settings_from_the_environment_still_warn_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor, "ENV_FILE", None)
+    _configure_every_optional_setting(monkeypatch)
+    monkeypatch.setattr(doctor.settings, "RADARR_URL", None)
+    result = doctor.check_settings()
+    assert result.status == "WARN"
+    assert "settings come from the environment" in result.detail
+    assert "unset: RADARR_URL" in result.detail
+
+
+def test_settings_file_found_or_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _configure_every_optional_setting(monkeypatch)
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(doctor, "ENV_FILE", env_file)
+    missing = doctor.check_settings()
+    assert missing.status == "FAIL"
+    assert ".env missing" in missing.detail
+
+    env_file.write_text("", encoding="utf-8")
+    found = doctor.check_settings()
+    assert found.status == "PASS"
+    assert ".env found" in found.detail
+
+
 def test_unconfigured_services_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor.settings, "TMDB_READ_ACCESS_TOKEN", None)
     monkeypatch.setattr(doctor.settings, "RADARR_URL", None)
