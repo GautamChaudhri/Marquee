@@ -123,3 +123,21 @@ def test_run_with_an_absent_library(
 
     assert cli.main(["run", "Die Hard"]) == 1
     assert "does not exist (is the share mounted?)" in capsys.readouterr().err
+
+
+def test_ranked_rows_carry_the_full_stack_label() -> None:
+    payload = {
+        "diagnostic_ledger": {
+            "candidates": [
+                {"orig_filename": "a.jpg", "stack_rank": 1},
+                {"orig_filename": "b.jpg", "stack_rank": 2},
+                {"orig_filename": "rejected.jpg"},
+            ]
+        }
+    }
+    ranks = cli._stack_ranks(payload)
+
+    row = {"rank": 2, "orig_filename": "b.jpg", "final_score": 0.5, "stack_label": "A"}
+    assert ranks == {"a.jpg": 1, "b.jpg": 2}
+    assert cli._ranked_row(row, ranks) == {"rank": 2, "stack": "2A", "score": 0.5, "file": "b.jpg"}
+    assert cli._ranked_row(None, ranks) is None
