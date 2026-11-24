@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr
 
@@ -512,6 +514,66 @@ def test_rescan_is_refused_when_the_database_cannot_be_asked(
 
     assert cli.main(["taste", "seed", "--rescan"]) == 1
     assert "--rescan needs the database" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_the_seed_is_refused_in_every_form_once_exemplar_records_exist(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import psycopg
+
+    from marquee.taste import seed
+
+    ran: list[tuple[str, bool]] = []
+    monkeypatch.setattr(seed, "run_seed", lambda mode, dry_run: ran.append((mode, dry_run)) or 0)
+    assert cli.main(["taste", "seed", "--reuse"]) == 0
+    movie_id = _add_movie(1, "Heat", 1995)
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        conn.execute(
+            "insert into exemplars (movie_id, polarity, weight, source, state, sha256, "
+            "file_name, staged_name) values (%s, 'positive', 1.0, 'seed', 'active', %s, %s, "
+            "'Heat (1995).png')",
+            [movie_id, "a" * 64, f"{'a' * 64}.png"],
+        )
+    for argv in ([], ["--reuse"], ["--rescan"], ["--dry-run"]):
+        assert cli.main(["taste", "seed", *argv]) == 1
+        err = capsys.readouterr().err
+        assert "built from exemplar records now (1 of them)" in err, argv
+        assert "use `marquee taste rebuild` instead" in err
+    assert ran == [("reuse", False)]
+
+
+def test_the_seed_is_refused_when_the_database_cannot_be_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.taste import seed
+
+    monkeypatch.setattr(settings, "POSTGRES_HOST", "127.0.0.1")
+    monkeypatch.setattr(settings, "POSTGRES_PORT", 1)
+    monkeypatch.setattr(seed, "run_seed", lambda mode, dry_run: pytest.fail("must not run"))
+
+    assert cli.main(["taste", "seed", "--reuse"]) == 1
+    assert "the seed needs the database to confirm" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_import_seed_reports_its_problems_and_exits_1(
+    jobs_database: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from marquee.taste import seed
+
+    monkeypatch.setattr(
+        seed.SeedPaths,
+        "from_settings",
+        classmethod(lambda cls: cls(seed_dir=tmp_path / "seed", profile=tmp_path / "p.npz")),
+    )
+    assert cli.main(["taste", "import-seed"]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith("marquee taste import-seed: nothing imported; 1 problem(s):")
+    assert "movies.json cannot be read" in out
 
 
 # ── marquee runs, deploy, deployments, restore ────────────────────────────

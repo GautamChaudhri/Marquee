@@ -144,8 +144,23 @@ class Settings(BaseSettings):
         return self.DATA_DIR / "ml"
 
     @property
+    def exemplars_dir(self) -> Path:
+        """Each exemplar's kept image, named by its SHA-256: ``<sha256>.<ext>``."""
+        return self.ml_dir / "exemplars"
+
+    @property
+    def profiles_dir(self) -> Path:
+        """A copy of every taste profile built or registered, named by its SHA-256."""
+        return self.ml_dir / "profiles"
+
+    @property
     def cache_dir(self) -> Path:
         return self.DATA_DIR / "cache"
+
+    @property
+    def taste_build_dir(self) -> Path:
+        """Where a ``taste_rebuild`` job stages its exemplars and builds, one folder per job."""
+        return self.cache_dir / "taste-build"
 
     @property
     def embedding_cache_dir(self) -> Path:

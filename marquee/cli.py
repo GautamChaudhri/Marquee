@@ -50,14 +50,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"rebuild this item even if present (repeatable; one of {', '.join(MODEL_ITEMS)})",
     )
 
-    taste = commands.add_parser("taste", help="build the taste profile")
+    taste = commands.add_parser("taste", help="the taste profile and its exemplars")
     taste_commands = taste.add_subparsers(dest="taste_command", required=True, metavar="command")
     seed = taste_commands.add_parser(
         "seed",
         help="build the first taste profile from the library's poster.jpg files",
         description="Stage every movie folder's poster.jpg as a 500 px wide PNG exemplar at "
         "weight 1.0 and build the taste profile from them. Folders without a poster.jpg "
-        "are ignored. Refuses to run again once a staged set exists unless told how.",
+        "are ignored. Refuses to run again once a staged set exists unless told how, and in "
+        "every form once exemplar records exist (`marquee taste rebuild` builds from them).",
     )
     seed.add_argument(
         "--dry-run", action="store_true", help="scan and print the report; write nothing"
@@ -72,6 +73,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--reuse",
         action="store_true",
         help="rebuild the profile from the staged set without reading the library",
+    )
+    taste_commands.add_parser(
+        "import-seed",
+        help="make the staged seed the first exemplar records and register its profile",
+        description="Match each poster in data/ml/seed/movies.json to its movie by IMDb id, "
+        "keep its staged file as an active positive exemplar, and register the taste profile "
+        "file as it is. Writes nothing if anything does not match. Never builds a profile.",
     )
 
     run = commands.add_parser(
@@ -881,6 +889,87 @@ def _rescan_refusal() -> str | None:
     return None
 
 
+def _exemplar_refusal() -> str | None:
+    """Why ``taste seed`` must not run in any form, or ``None``.
+
+    Once exemplar records exist, the profile is built from them; a seed would overwrite it
+    with one built from the staged set alone, losing every exemplar feedback added. A
+    database whose schema predates exemplars has none. If the database cannot be asked,
+    that cannot be ruled out, and the seed is refused.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
+
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.db.models import Exemplar
+
+    async def count() -> int:
+        engine = create_engine()
+        try:
+            async with create_session_factory(engine)() as session:
+                return int(await session.scalar(select(func.count()).select_from(Exemplar)) or 0)
+        finally:
+            await engine.dispose()
+
+    try:
+        records = asyncio.run(count())
+    except ProgrammingError:
+        return None  # no exemplars table yet
+    except (SQLAlchemyError, OSError) as exc:
+        return (
+            "the seed needs the database to confirm no exemplar record exists yet; "
+            f"{_database_target()}: {_error_line(exc)}"
+        )
+    if records:
+        return (
+            f"the taste profile is built from exemplar records now ({records} of them), not "
+            "from the staged seed; use `marquee taste rebuild` instead"
+        )
+    return None
+
+
+async def _import_seed_async() -> int:
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.taste import seed
+
+    engine = create_engine()
+    try:
+        async with create_session_factory(engine)() as session:
+            report = await seed.import_seed(session)
+            if report.problems:
+                await session.rollback()
+            else:
+                await session.commit()
+    finally:
+        await engine.dispose()
+    if report.problems:
+        print(f"marquee taste import-seed: nothing imported; {len(report.problems)} problem(s):")
+        for problem in report.problems:
+            print(f"  {problem}")
+        return 1
+    profile = f"profile {report.profile_id} ({(report.profile_sha256 or '')[:12]})"
+    if report.already:
+        print(
+            f"already imported: {report.entries} seed exemplars and {profile} are registered; "
+            "nothing changed"
+        )
+        return 0
+    print(f"imported  {report.created} seed exemplars, active positives")
+    print(f"profile   {profile} registered as it is, active; source seed")
+    print(f"revision  {report.revision}")
+    return 0
+
+
+def _import_seed() -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    try:
+        return asyncio.run(_import_seed_async())
+    except SQLAlchemyError as exc:
+        return _fail("taste import-seed", f"{_database_target()}: {_error_line(exc)}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -903,11 +992,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if mode == "rescan" and (refusal := _rescan_refusal()) is not None:
             print(f"marquee taste seed: {refusal}", file=sys.stderr)
             return 1
+        if (refusal := _exemplar_refusal()) is not None:
+            print(f"marquee taste seed: {refusal}", file=sys.stderr)
+            return 1
         try:
             return seed.run_seed(mode=mode, dry_run=args.dry_run)
         except (seed.SeedError, LibraryRootError) as exc:
             print(f"marquee taste seed: {exc}", file=sys.stderr)
             return 1
+    if args.command == "taste" and args.taste_command == "import-seed":
+        return _import_seed()
     if args.command == "run":
         return _run(args)
     if args.command == "db":

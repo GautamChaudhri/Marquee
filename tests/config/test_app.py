@@ -49,6 +49,9 @@ def test_runtime_paths_derive_from_data_dir(tmp_path: Path) -> None:
     assert settings.runs_dir == tmp_path / "runs"
     assert settings.backups_dir == tmp_path / "backups"
     assert settings.text_profiles_path == tmp_path / "text_profiles.json"
+    assert settings.exemplars_dir == tmp_path / "ml" / "exemplars"
+    assert settings.profiles_dir == tmp_path / "ml" / "profiles"
+    assert settings.taste_build_dir == tmp_path / "cache" / "taste-build"
 
 
 def test_database_urls_quote_credentials() -> None:

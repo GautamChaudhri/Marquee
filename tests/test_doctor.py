@@ -207,6 +207,7 @@ def test_taste_profile_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     from marquee.config import pipeline_settings
 
     _point_models_at(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_registered_profile", lambda: None)  # nothing registered
     profile = Path(pipeline_settings.TASTE_PROFILE_PATH)
 
     absent = doctor.check_taste_profile()
@@ -229,6 +230,46 @@ def test_taste_profile_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     other_clip = doctor.check_taste_profile()
     assert other_clip.status == "FAIL"
     assert "model mismatch" in other_clip.detail
+
+
+@pytest.mark.db
+def test_taste_profile_is_checked_against_its_registered_build(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, database_url: str
+) -> None:
+    import hashlib
+
+    import psycopg
+
+    from marquee.config import pipeline_settings
+
+    _point_models_at(monkeypatch, tmp_path)
+    _point_settings_at(monkeypatch, database_url)
+    profile = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    _profile(profile, dino="dinov2-vits14")
+    sha = hashlib.sha256(profile.read_bytes()).hexdigest()
+    assert doctor.check_taste_profile().status == "PASS"  # nothing registered yet
+
+    with psycopg.connect(doctor.settings.database_url_sync, autocommit=True) as conn:
+        conn.execute(
+            "insert into taste_profiles (sha256, revision, source, positives, negatives, "
+            "positive_movie_ids, file_name, is_active) values (%s, %s, 'seed', 3, 0, '[]', %s, "
+            "true)",
+            [sha, "b" * 64, f"{sha}.npz"],
+        )
+        registered = doctor.check_taste_profile()
+        assert registered.status == "PASS"
+        assert registered.detail.endswith("; registered build 1")
+
+        _profile(profile)  # another file in its place
+        other = doctor.check_taste_profile()
+        assert other.status == "WARN"
+        assert f"is not the registered build (profile 1, {sha[:12]})" in other.detail
+
+        conn.execute("update taste_profiles set is_active = false")
+        none_active = doctor.check_taste_profile()
+        assert (
+            none_active.status == "WARN" and "no registered build is active" in none_active.detail
+        )
 
 
 def test_settings_warn_when_the_api_key_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -206,9 +206,55 @@ def check_taste_profile() -> CheckResult:
             "rebuild with `marquee taste seed --reuse`",
         )
     dino = f"DINOv2 embeddings ({dino_model})" if dino_model else "no DINOv2 embeddings"
-    return CheckResult(
-        "Taste profile", "PASS", f"{exemplars} exemplars, {dino}; {pipeline_settings.AI_MODEL}"
-    )
+    summary = f"{exemplars} exemplars, {dino}; {pipeline_settings.AI_MODEL}"
+    registered = _registered_profile()
+    if registered is None:  # nothing registered yet, or no database to ask
+        return CheckResult("Taste profile", "PASS", summary)
+    try:
+        from marquee.taste.rebuild import file_sha256
+
+        sha = file_sha256(path)
+    except OSError as exc:
+        return CheckResult("Taste profile", "FAIL", f"cannot read {path.name}: {_error_text(exc)}")
+    active_id, active_sha = registered
+    if active_sha is None:
+        return CheckResult(
+            "Taste profile",
+            "WARN",
+            f"{summary}; no registered build is active (`marquee taste rebuild`)",
+        )
+    if sha != active_sha:
+        return CheckResult(
+            "Taste profile",
+            "WARN",
+            f"{path.name} is not the registered build (profile {active_id}, "
+            f"{active_sha[:12]}); it is {sha[:12]}. `marquee taste rebuild` publishes it again",
+        )
+    return CheckResult("Taste profile", "PASS", f"{summary}; registered build {active_id}")
+
+
+def _registered_profile() -> tuple[int | None, str | None] | None:
+    """The active registered profile's id and hash, ``(None, None)`` when profiles are
+    registered but none is active, and ``None`` when none is registered or the database
+    cannot say."""
+    try:
+        import psycopg
+
+        with psycopg.connect(
+            settings.database_url_sync, connect_timeout=int(NETWORK_TIMEOUT_S)
+        ) as conn:
+            (present,) = conn.execute("select to_regclass('taste_profiles')").fetchone()
+            if not present:
+                return None
+            (rows,) = conn.execute("select count(*) from taste_profiles").fetchone()
+            if not rows:
+                return None
+            active = conn.execute(
+                "select id, sha256 from taste_profiles where is_active"
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - doctor reports, never raises; the Database line says why
+        return None
+    return (int(active[0]), str(active[1])) if active else (None, None)
 
 
 def check_onnx_runtime() -> CheckResult:

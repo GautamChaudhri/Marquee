@@ -16,6 +16,7 @@ why the command refuses to scan again unless told to.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -31,8 +32,18 @@ from typing import Literal
 
 import cv2
 import numpy as np
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import pipeline_settings, settings
+from marquee.db.models import Exemplar as ExemplarRow
+from marquee.db.models import Movie, TasteProfile
+from marquee.db.models.taste import (
+    POLARITY_POSITIVE,
+    PROFILE_SOURCE_SEED,
+    SOURCE_SEED,
+    STATE_ACTIVE,
+)
 from marquee.library.folders import MovieFolder, scan_movie_roots
 from marquee.ml.visual_features import STANDARD_WIDTH, standardize_width
 
@@ -411,3 +422,165 @@ def run_seed(
     )
     echo(f"took          {time.perf_counter() - started:.0f} s")
     return 0
+
+
+# ── The seed as records (from M5b on) ──────────────────────────────────────
+
+
+@dataclass
+class ImportReport:
+    """What ``marquee taste import-seed`` found and did."""
+
+    entries: int = 0
+    problems: list[str] = field(default_factory=list)
+    created: int = 0
+    already: bool = False
+    profile_sha256: str | None = None
+    profile_id: int | None = None
+    revision: str | None = None
+
+
+def _staged_hashes(paths: SeedPaths, names: list[str]) -> dict[str, str | None]:
+    out: dict[str, str | None] = {}
+    for name in names:
+        path = paths.staged_dir / name
+        out[name] = _sha256(path) if path.is_file() and not path.is_symlink() else None
+    return out
+
+
+async def import_seed(session: AsyncSession, *, paths: SeedPaths | None = None) -> ImportReport:
+    """Make the staged seed the first exemplar records, and register the profile built from it.
+
+    Each entry of ``movies.json`` is matched to a movie by its IMDb id; its staged file is
+    kept in the exemplar store and becomes an active positive (source ``seed``, the record's
+    weight, the name it was staged under). The profile file is then registered as it is. It
+    never builds a profile and never writes ``TASTE_PROFILE_PATH``.
+
+    If anything does not match, it writes nothing and lists what is wrong in the report.
+    A second import changes nothing and says so. The caller commits.
+    """
+    from marquee.taste import exemplars, rebuild
+
+    paths = paths or SeedPaths.from_settings()
+    report = ImportReport()
+    try:
+        record = json.loads(await asyncio.to_thread(paths.record.read_text, encoding="utf-8"))
+        entries = list(record["exemplars"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        report.problems.append(f"{paths.record} cannot be read: {exc}")
+        return report
+    report.entries = len(entries)
+
+    existing = list(await session.scalars(select(ExemplarRow).order_by(ExemplarRow.id)))
+    registered = await session.scalar(
+        select(TasteProfile).where(TasteProfile.source == PROFILE_SOURCE_SEED)
+    )
+    seeded = [row for row in existing if row.source == SOURCE_SEED]
+    if existing or registered is not None:
+        if registered is not None and len(seeded) == len(entries):
+            report.already = True
+            report.created = 0
+            report.profile_sha256 = registered.sha256
+            report.profile_id = registered.id
+            report.revision = registered.revision
+        else:
+            report.problems.append(
+                f"exemplar records already exist ({len(existing)}, {len(seeded)} from the seed) "
+                "but do not match the seed record; nothing was imported"
+            )
+        return report
+
+    names = [str(entry.get("staged_name")) for entry in entries]
+    imdb_ids = [entry.get("imdb_id") for entry in entries]
+    rows = await session.execute(
+        select(Movie.id, Movie.imdb_id).where(Movie.imdb_id.in_([i for i in imdb_ids if i]))
+    )
+    by_imdb: dict[str, list[int]] = {}
+    for movie_id, imdb_id in rows:
+        by_imdb.setdefault(imdb_id, []).append(movie_id)
+    movie_of: dict[str, int] = {}
+    for name, imdb_id in zip(names, imdb_ids, strict=True):
+        found = by_imdb.get(imdb_id or "", [])
+        if not found:
+            report.problems.append(f"{name}: no movie has IMDb id {imdb_id}")
+        elif len(found) > 1:
+            report.problems.append(f"{name}: {len(found)} movies have IMDb id {imdb_id}")
+        else:
+            movie_of[name] = found[0]
+    seen: dict[int, str] = {}
+    for name, movie_id in movie_of.items():
+        if movie_id in seen:
+            report.problems.append(f"{name} and {seen[movie_id]} are both movie {movie_id}")
+        seen[movie_id] = name
+    if len(set(names)) != len(names):
+        report.problems.append("movies.json names one staged file twice")
+    for entry in entries:
+        weight = entry.get("weight")
+        if isinstance(weight, bool) or not isinstance(weight, int | float) or not 0 < weight <= 1:
+            report.problems.append(
+                f"{entry.get('staged_name')}: weight {weight!r} is not in (0, 1]"
+            )
+
+    try:
+        facts = await asyncio.to_thread(rebuild.read_profile, paths.profile)
+    except (rebuild.ProfileError, FileNotFoundError) as exc:
+        report.problems.append(f"the profile cannot be read: {exc}")
+        return report
+    if facts.positives != len(entries):
+        report.problems.append(
+            f"the profile holds {facts.positives} exemplars and movies.json lists {len(entries)}"
+        )
+    if facts.negatives:
+        report.problems.append(f"the profile holds {facts.negatives} negatives; a seed has none")
+    if sorted(facts.poster_names) != sorted(names):
+        report.problems.append("the profile's exemplars are not the files movies.json lists")
+    hashes = await asyncio.to_thread(_staged_hashes, paths, names)
+    in_profile = dict(zip(facts.poster_names, facts.poster_sha256s, strict=False))
+    for name, digest in hashes.items():
+        if digest is None:
+            report.problems.append(f"{name}: the staged file is missing")
+        elif in_profile.get(name) not in (None, digest):
+            report.problems.append(
+                f"{name}: the staged file is not the one the profile was built from"
+            )
+    if report.problems:
+        return report
+
+    now = datetime.now(UTC)
+    created: list[ExemplarRow] = []
+    for entry, name in zip(entries, names, strict=True):
+        digest = hashes[name]
+        assert digest is not None
+        kept = await asyncio.to_thread(exemplars.keep_file, paths.staged_dir / name, digest)
+        created.append(
+            ExemplarRow(
+                movie_id=movie_of[name],
+                polarity=POLARITY_POSITIVE,
+                weight=float(entry["weight"]),
+                source=SOURCE_SEED,
+                state=STATE_ACTIVE,
+                sha256=digest,
+                file_name=kept,
+                staged_name=name,
+                created_at=now,
+            )
+        )
+    file_name = await asyncio.to_thread(rebuild.keep_copy, paths.profile, facts.sha256)
+    session.add_all(created)
+    await session.flush()
+    revision = exemplars.revision_of(created)
+    profile = await rebuild.register(
+        session,
+        sha256=facts.sha256,
+        revision=revision,
+        source=PROFILE_SOURCE_SEED,
+        positives=facts.positives,
+        negatives=facts.negatives,
+        movie_ids=list(movie_of.values()),
+        file_name=file_name,
+    )
+    report.created = len(created)
+    report.profile_sha256 = facts.sha256
+    report.profile_id = profile.id
+    report.revision = revision
+    return report

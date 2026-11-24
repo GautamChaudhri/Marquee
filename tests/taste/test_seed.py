@@ -260,6 +260,165 @@ def test_cli_reports_a_refusal_in_one_line(
         raise SeedError("a staged set already exists")
 
     monkeypatch.setattr(seed, "run_seed", refuse)
+    monkeypatch.setattr(cli, "_exemplar_refusal", lambda: None)  # no exemplar records
 
     assert cli.main(["taste", "seed"]) == 1
     assert capsys.readouterr().err.strip() == "marquee taste seed: a staged set already exists"
+
+
+# ── marquee taste import-seed ──────────────────────────────────────────────
+
+STAGED = {"Alien (1979).png": "tt0078748", "Heat (1995).png": "tt0113277"}
+
+
+def _staged_seed(paths: SeedPaths, *, names: dict[str, str] = STAGED) -> dict[str, str]:
+    """A staged set, its record, and the profile built from it; returns name -> hash."""
+    import hashlib
+
+    paths.staged_dir.mkdir(parents=True)
+    hashes = {}
+    for n, name in enumerate(sorted(names)):
+        assert cv2.imwrite(str(paths.staged_dir / name), _image(500, 750, n))
+        hashes[name] = hashlib.sha256((paths.staged_dir / name).read_bytes()).hexdigest()
+    record = {
+        "exemplars": [
+            {"staged_name": name, "imdb_id": imdb, "weight": 1.0} for name, imdb in names.items()
+        ]
+    }
+    paths.record.write_text(json.dumps(record))
+    np.savez(
+        paths.profile,
+        embeddings=np.ones((len(names), 512), dtype=np.float32),
+        poster_names=unicode_array(sorted(names)),
+        poster_sha256s=unicode_array([hashes[name] for name in sorted(names)]),
+    )
+    return hashes
+
+
+async def _movies(session, *imdb_ids: str) -> dict[str, int]:
+    from datetime import UTC, datetime
+
+    from marquee.db.models import Movie
+
+    ids = {}
+    for n, imdb in enumerate(imdb_ids, start=1):
+        movie = Movie(
+            radarr_id=n,
+            title=f"Movie {n}",
+            sort_title=f"movie {n}",
+            radarr_path=f"/radarr/Movie {n}",
+            imdb_id=imdb,
+            has_file=True,
+            last_seen_at=datetime.now(UTC),
+        )
+        session.add(movie)
+        await session.flush()
+        ids[imdb] = movie.id
+    return ids
+
+
+@pytest.fixture
+def data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from marquee.config import settings
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+    return tmp_path / "data"
+
+
+@pytest.mark.db
+async def test_import_seed_records_every_staged_poster_and_registers_the_profile(
+    db_session, paths: SeedPaths, data_dir: Path
+) -> None:
+    import hashlib
+
+    from sqlalchemy import select
+
+    from marquee.db.models import Exemplar, TasteProfile
+    from marquee.taste import exemplars
+    from marquee.taste.seed import import_seed
+
+    hashes = _staged_seed(paths)
+    ids = await _movies(db_session, *STAGED.values())
+    profile_bytes = paths.profile.read_bytes()
+
+    report = await import_seed(db_session, paths=paths)
+    await db_session.commit()
+
+    assert report.problems == [] and report.created == 2 and not report.already
+    rows = list(await db_session.scalars(select(Exemplar).order_by(Exemplar.staged_name)))
+    assert [(r.movie_id, r.staged_name, r.sha256, r.weight) for r in rows] == [
+        (ids["tt0078748"], "Alien (1979).png", hashes["Alien (1979).png"], 1.0),
+        (ids["tt0113277"], "Heat (1995).png", hashes["Heat (1995).png"], 1.0),
+    ]
+    assert {(r.polarity, r.source, r.state, r.event_id, r.source_file) for r in rows} == {
+        ("positive", "seed", "active", None, None)
+    }
+    for row in rows:
+        assert (
+            exemplars.read_kept(row.file_name, row.sha256)
+            == (paths.staged_dir / row.staged_name).read_bytes()
+        )
+    (profile,) = (await db_session.scalars(select(TasteProfile))).all()
+    sha = hashlib.sha256(profile_bytes).hexdigest()
+    assert (profile.sha256, profile.source, profile.positives, profile.negatives) == (
+        sha,
+        "seed",
+        2,
+        0,
+    )
+    assert profile.is_active and profile.positive_movie_ids == sorted(ids.values())
+    assert profile.revision == exemplars.revision_of(rows) == report.revision
+    assert (data_dir / "ml" / "profiles" / f"{sha}.npz").read_bytes() == profile_bytes
+    assert paths.profile.read_bytes() == profile_bytes  # never touched
+
+    again = await import_seed(db_session, paths=paths)
+    assert again.already and again.created == 0 and again.problems == []
+    assert again.profile_id == profile.id
+    assert len((await db_session.scalars(select(Exemplar))).all()) == 2
+
+
+@pytest.mark.db
+async def test_import_seed_writes_nothing_when_anything_does_not_match(
+    db_session, paths: SeedPaths, data_dir: Path
+) -> None:
+    from sqlalchemy import func, select
+
+    from marquee.db.models import Exemplar, TasteProfile
+    from marquee.taste.seed import import_seed
+
+    _staged_seed(paths)
+    await _movies(db_session, "tt0078748")  # Heat is missing
+    np.savez(  # and the profile holds one exemplar more than the record lists
+        paths.profile,
+        embeddings=np.ones((3, 512), dtype=np.float32),
+        poster_names=unicode_array(["Alien (1979).png", "Heat (1995).png", "Other.png"]),
+    )
+
+    report = await import_seed(db_session, paths=paths)
+
+    assert report.created == 0
+    assert report.problems == [
+        "Heat (1995).png: no movie has IMDb id tt0113277",
+        "the profile holds 3 exemplars and movies.json lists 2",
+        "the profile's exemplars are not the files movies.json lists",
+    ]
+    assert await db_session.scalar(select(func.count()).select_from(Exemplar)) == 0
+    assert await db_session.scalar(select(func.count()).select_from(TasteProfile)) == 0
+    assert not (data_dir / "ml" / "exemplars").exists()
+
+
+@pytest.mark.db
+async def test_import_seed_notices_a_staged_file_that_changed(
+    db_session, paths: SeedPaths, data_dir: Path
+) -> None:
+    from marquee.taste.seed import import_seed
+
+    _staged_seed(paths)
+    await _movies(db_session, *STAGED.values())
+    assert cv2.imwrite(str(paths.staged_dir / "Heat (1995).png"), _image(500, 750, 9))
+
+    report = await import_seed(db_session, paths=paths)
+
+    assert report.problems == [
+        "Heat (1995).png: the staged file is not the one the profile was built from"
+    ]
