@@ -6,7 +6,7 @@ import type { RequestHandler } from './$types';
 
 const PREFIX = '/api/';
 
-const handler: RequestHandler = async ({ request, url, fetch }) => {
+const handler: RequestHandler = async ({ request, url }) => {
 	const key = apiKey();
 	if (!key) {
 		return Response.json({ detail: 'The web server has no API key configured.' }, { status: 503 });
@@ -18,7 +18,9 @@ const handler: RequestHandler = async ({ request, url, fetch }) => {
 	if (!target.pathname.startsWith(PREFIX) || target.origin !== new URL(base).origin) {
 		return Response.json({ detail: 'Not found' }, { status: 404 });
 	}
-	return forward(request, path, url.search, { apiUrl: base, apiKey: key, fetch });
+	// The plain fetch, not SvelteKit's: SvelteKit's adds the browser's cookies to a request
+	// for the same host name, whatever the port, and the backend must never see them.
+	return forward(request, path, url.search, { apiUrl: base, apiKey: key, fetch: globalThis.fetch });
 };
 
 export const GET = handler;
