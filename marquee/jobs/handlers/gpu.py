@@ -1,13 +1,17 @@
 """What the GPU child runs for the gpu job kinds. Only the child imports this module.
 
 Each function takes the payload, the cancel event, and a progress function, and returns a
-JSON-able result. None of them uses the database.
+JSON-able result. None of them uses the database: what a function needs from it arrives in
+the payload, and what it learns goes back in the result.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from marquee.jobs.gpu_child import run_async
@@ -110,6 +114,112 @@ def engine_probe(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> 
         "stages": stages,
         "ranked": len(output.ranked),
         "pick": ranked_row(output.recommendation, stack_ranks(output.payload)),
+        "seconds": round(time.perf_counter() - started, 2),
+        "pid": os.getpid(),
+    }
+
+
+@dataclass(frozen=True)
+class _MovieGateInputs:
+    """The attributes ``OcrGateContext.from_movie`` reads, by the names it reads them.
+
+    The engine reads ``production_companies_json``; the movies table calls the column
+    ``production_companies``.
+    """
+
+    director: str | None
+    production_companies_json: list[str]
+    tagline: str | None
+    text_profile_id: str | None = None
+
+
+def _run_folder(payload: dict[str, Any]) -> str:
+    name = payload.get("run_folder")
+    if not isinstance(name, str) or not name or name in {".", ".."} or "/" in name:
+        raise PermanentJobError("the payload needs the run folder's name")
+    return name
+
+
+def _required_int(payload: dict[str, Any], name: str) -> int:
+    value = _optional_int(payload, name)
+    if value is None:
+        raise PermanentJobError(f"the payload needs {name}")
+    return value
+
+
+def _file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
+def poster_run(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> dict[str, Any]:
+    """Run one movie through the real pipeline in the run folder the worker named.
+
+    The payload carries everything the engine needs (the folder's name, the movie's id,
+    title, and TMDB id, and the three text-gate fields from the movies table). The result
+    is small; the archive the pipeline writes into the folder is the full record.
+    """
+    from marquee.config import pipeline_settings, settings
+    from marquee.integrations.tmdb.exceptions import TMDBError
+    from marquee.pipeline.orchestrator import PosterSubjectInput
+    from marquee.pipeline.single_run import run_single_subject
+    from marquee.pipeline.text_profiles import OcrGateContext
+
+    folder = _run_folder(payload)
+    movie_id = _required_int(payload, "movie_id")
+    tmdb_id = _required_int(payload, "tmdb_id")
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise PermanentJobError("the payload needs a title")
+    token = settings.TMDB_READ_ACCESS_TOKEN
+    if token is None or not token.get_secret_value():
+        raise PermanentJobError("TMDB_READ_ACCESS_TOKEN is not set")
+    profile = Path(pipeline_settings.TASTE_PROFILE_PATH)
+    if not profile.is_file():
+        raise PermanentJobError("there is no taste profile; run `marquee taste seed` first")
+    profile_sha256 = _file_sha256(profile)
+    gate = OcrGateContext.from_movie(
+        _MovieGateInputs(
+            director=payload.get("director"),
+            production_companies_json=list(payload.get("production_companies") or []),
+            tagline=payload.get("tagline"),
+        )
+    )
+    stages: list[dict[str, Any]] = []
+
+    def on_event(event: Any) -> None:
+        if event.state == "end":
+            stages.append(
+                {"stage": event.stage, "survivors": event.survivors, "seconds": event.elapsed_s}
+            )
+        progress(event.done, event.total, f"{event.stage} {event.state}")
+
+    started = time.perf_counter()
+    try:
+        output = run_async(
+            run_single_subject(
+                subject=PosterSubjectInput(title=title, tmdb_id=tmdb_id, movie_id=movie_id),
+                run_dir=settings.runs_dir / folder,
+                ocr_gate=gate,
+                progress=on_event,
+                should_cancel=cancel.is_set,
+            )
+        )
+    except TMDBError as exc:
+        raise RuntimeError(f"TMDB: {exc}") from exc
+    pick = output.recommendation
+    return {
+        "status": output.status,
+        "counts": output.counts,
+        "stages": stages,
+        "scorer": output.payload.get("scorer"),
+        "engine_run_id": output.run_id,
+        "ai_model": pipeline_settings.AI_MODEL,
+        "profile_sha256": profile_sha256,
+        "pick_file": str(pick["orig_filename"]) if pick else None,
         "seconds": round(time.perf_counter() - started, 2),
         "pid": os.getpid(),
     }

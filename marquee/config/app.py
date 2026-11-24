@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     # The worker stops the GPU child process after this long without a GPU job, which frees
     # the GPU memory its models hold.
     GPU_IDLE_SECONDS: int = Field(default=300, ge=0)
+    # When true, a library sync that succeeds queues a run of every movie never run before.
+    RUN_NEW_MOVIES: bool = False
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

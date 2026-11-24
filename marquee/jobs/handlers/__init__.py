@@ -1,12 +1,13 @@
 """Thin adapters from a job to the domain code that does its work, and the list of kinds.
 
-A gpu kind names its function by import path, so the worker never imports it: only the
-GPU child does.
+A gpu kind either names its function by import path, so the worker never imports it (only
+the GPU child does), or has a handler that calls the child through ``ctx.gpu``.
 """
 
 from __future__ import annotations
 
 from marquee.jobs.handlers.library_sync import library_sync
+from marquee.jobs.handlers.poster_run import POSTER_RUN
 from marquee.jobs.registry import JobKind
 
 KINDS: tuple[JobKind, ...] = (
@@ -30,4 +31,5 @@ KINDS: tuple[JobKind, ...] = (
         gpu_function="marquee.jobs.handlers.gpu:engine_probe",
         timeout_s=10 * 60,
     ),
+    POSTER_RUN,
 )
