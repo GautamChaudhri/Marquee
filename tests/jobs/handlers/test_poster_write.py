@@ -427,6 +427,91 @@ async def test_a_retry_after_a_sync_takes_the_previous_poster_from_the_intent(
     assert not deploy.intent_path(restore_job).exists()
 
 
+def _poster_is_a_symlink(folder: Path) -> None:
+    (folder.parent / "elsewhere.jpg").write_bytes(OWNERS)
+    (folder / "poster.jpg").symlink_to(folder.parent / "elsewhere.jpg")
+
+
+def _poster_is_a_folder(folder: Path) -> None:
+    (folder / "poster.jpg").mkdir()
+
+
+def _folder_is_missing(folder: Path) -> None:
+    folder.rmdir()
+
+
+def _folder_is_a_symlink(folder: Path) -> None:
+    real = folder.parent.parent / "real-heat"
+    real.mkdir()
+    folder.rmdir()
+    folder.symlink_to(real)
+
+
+@pytest.mark.parametrize(
+    ("break_it", "message"),
+    [
+        (_poster_is_a_symlink, "symbolic link"),
+        (_poster_is_a_folder, "not a regular file"),
+        (_folder_is_missing, "missing or not a plain folder"),
+        (_folder_is_a_symlink, "missing or not a plain folder"),
+    ],
+)
+async def test_a_refusal_no_retry_can_fix_fails_at_once(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    break_it: Any,
+    message: str,
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=False)
+    deployed = await _deploy(sessions, ids, "other")
+    (library / "poster.jpg").unlink()
+    break_it(library)
+
+    with pytest.raises(PermanentJobError, match=message):
+        await _deploy(sessions, ids, "pick")
+    with pytest.raises(PermanentJobError, match=message):
+        await _restore(sessions, ids, deployed["deployment_id"])
+
+
+async def test_a_path_outside_the_roots_fails_at_once(
+    library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=False)
+    async with sessions() as session:
+        await session.execute(Movie.__table__.update().values(radarr_path="/elsewhere/Heat (1995)"))
+        await session.commit()
+    with pytest.raises(PermanentJobError, match="no movie root covers"):
+        await _deploy(sessions, ids)
+
+
+async def test_a_read_back_mismatch_and_an_io_error_still_retry(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=True)
+    real_write = deploy.write_file
+
+    def wrong_bytes(target: deploy.Target, data: bytes, mode: int) -> None:
+        real_write(target, OTHER if data == PICK else data, mode)
+
+    monkeypatch.setattr(deploy, "write_file", wrong_bytes)
+    with pytest.raises(deploy.VerificationError) as mismatch:
+        await _deploy(sessions, ids)
+    assert not isinstance(mismatch.value, PermanentJobError)
+    assert (library / "poster.jpg").read_bytes() == OWNERS
+
+    def disk_error(target: deploy.Target, data: bytes, mode: int) -> None:
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(deploy, "write_file", disk_error)
+    with pytest.raises(OSError, match="Input/output error"):
+        await _deploy(sessions, ids)
+    assert (library / "poster.jpg").read_bytes() == OWNERS
+
+
 async def test_payloads_and_refusals(
     library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
 ) -> None:

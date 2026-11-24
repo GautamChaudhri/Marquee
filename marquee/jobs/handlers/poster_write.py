@@ -143,11 +143,13 @@ async def poster_deploy(ctx: JobContext) -> dict[str, Any]:
                 return {"skipped": True, "note": "DEPLOY_POLICY is off now", "movie_id": movie.id}
             guard = missing_guard if settings.DEPLOY_POLICY == "missing" else None
         base = {"movie_id": movie.id, "run_id": run.id, "candidate_id": candidate.id}
-        done = await deploy.already_deployed(sessions, movie, candidate.id)
-        if done is not None:
-            result = deploy.recorded(done, "already_deployed", "the poster was already deployed")
-            return {**base, "skipped": False, **result.to_dict()}
         try:
+            done = await deploy.already_deployed(sessions, movie, candidate.id)
+            if done is not None:
+                result = deploy.recorded(
+                    done, "already_deployed", "the poster was already deployed"
+                )
+                return {**base, "skipped": False, **result.to_dict()}
             data = await _original(ctx.job_id, candidate.source_file)
             result = await deploy.write_poster(
                 sessions,
@@ -164,7 +166,8 @@ async def poster_deploy(ctx: JobContext) -> dict[str, Any]:
                 ),
                 guard=guard,
             )
-        except (deploy.NotAJpegError, PathMappingError) as exc:
+        except (deploy.NotAJpegError, deploy.RefusedTargetError, PathMappingError) as exc:
+            # No retry can change these; a read-back mismatch or an I/O error still retries.
             raise PermanentJobError(str(exc)) from exc
         with contextlib.suppress(OSError):
             _staged_path(ctx.job_id).unlink(missing_ok=True)
@@ -213,7 +216,7 @@ async def poster_restore(ctx: JobContext) -> dict[str, Any]:
             ),
         )
         return {**base, **result.to_dict()}
-    except PathMappingError as exc:
+    except (deploy.RefusedTargetError, PathMappingError) as exc:
         raise PermanentJobError(str(exc)) from exc
     finally:
         await engine.dispose()

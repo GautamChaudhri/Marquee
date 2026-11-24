@@ -90,6 +90,11 @@ class VerificationError(DeployError):
     """The written file did not hold the bytes written; the previous poster was put back."""
 
 
+class RefusedTargetError(DeployError):
+    """The folder or its ``poster.jpg`` is not something Marquee writes to (missing, a
+    symbolic link, not a regular file, outside the roots); retrying will not change that."""
+
+
 # ── The new bytes of a deploy ─────────────────────────────────────────────
 
 
@@ -197,12 +202,12 @@ def locate(radarr_path: str, title: str) -> Target:
     """Step 1: the movie's folder, which must exist, and its confined ``poster.jpg``."""
     folder = PathMapper.from_settings().to_local(radarr_path)
     if folder.is_symlink() or not folder.is_dir():
-        raise DeployError(
+        raise RefusedTargetError(
             f"the folder of {title} is missing or not a plain folder; Marquee never creates one"
         )
     poster_path = folder / POSTER_NAME
     if poster_path.is_symlink():
-        raise DeployError(f"{POSTER_NAME} of {title} is a symbolic link; it is left alone")
+        raise RefusedTargetError(f"{POSTER_NAME} of {title} is a symbolic link; it is left alone")
     boundary = boundary_for_roots(
         {f"movies{i}": Path(root) for i, root in enumerate(settings.MOVIE_ROOTS)},
         access="read_write",
@@ -216,7 +221,7 @@ def locate(radarr_path: str, title: str) -> Target:
             poster_path=poster_path,
         )
     except FilesystemBoundaryError as exc:
-        raise DeployError(
+        raise RefusedTargetError(
             f"the folder of {title} is not safely inside a movie root: {exc}"
         ) from exc
 
@@ -228,7 +233,7 @@ def read_current(target: Target) -> OnDisk | None:
     except FileNotFoundError:
         return None
     if not stat.S_ISREG(st.st_mode):
-        raise DeployError(f"{POSTER_NAME} is not a regular file; it is left alone")
+        raise RefusedTargetError(f"{POSTER_NAME} is not a regular file; it is left alone")
     fd = target.boundary.open_read(target.poster)
     with os.fdopen(fd, "rb") as handle:
         data = handle.read()
