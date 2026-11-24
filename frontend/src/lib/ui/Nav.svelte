@@ -5,6 +5,8 @@
 		icon: string;
 		/** Whether the item is the current page's section. */
 		active: boolean;
+		/** A number to show beside the label, such as how many reviews wait; none when null. */
+		count?: number | null;
 	}
 </script>
 
@@ -19,9 +21,16 @@
 	<ul>
 		{#each items as item (item.href)}
 			<li>
-				<a href={item.href} class:on={item.active} aria-current={item.active ? 'page' : undefined}>
+				<a
+					href={item.href}
+					class:on={item.active}
+					aria-current={item.active ? 'page' : undefined}
+					title={item.label}
+				>
 					<Icon name={item.icon} size={17} />
-					<span>{item.label}</span>
+					<span class="label">{item.label}</span>
+					{#if item.count}<span class="count" aria-label="{item.count} waiting">{item.count}</span
+						>{/if}
 				</a>
 			</li>
 		{/each}
@@ -66,6 +75,18 @@
 		color: var(--text);
 		background: var(--gold-soft);
 	}
+	.count {
+		margin-left: auto;
+		min-width: 20px;
+		padding: 0 6px;
+		border-radius: var(--radius-pill);
+		background: var(--gold);
+		color: var(--on-gold);
+		font-size: 11px;
+		font-weight: 700;
+		text-align: center;
+		font-variant-numeric: tabular-nums;
+	}
 	@media (max-width: 720px) {
 		nav {
 			flex-direction: row;
@@ -75,9 +96,25 @@
 		}
 		ul {
 			flex-direction: row;
+			gap: 2px;
 		}
 		ul a {
-			padding: 6px 10px;
+			padding: 6px 8px;
+			gap: 4px;
+		}
+		/* Icons only on a narrow screen; the label stays for screen readers. */
+		.label {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			overflow: hidden;
+			clip-path: inset(50%);
+			white-space: nowrap;
+		}
+		.count {
+			min-width: 16px;
+			padding: 0 4px;
+			font-size: 10px;
 		}
 	}
 </style>

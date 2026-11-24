@@ -241,6 +241,10 @@
 					run.finished_at
 				)}
 				· {runSummary(run)} · {blindLabel(run.blind)} · {run.reviewed ? 'Reviewed' : 'Not reviewed'}
+				{#if run.state === 'completed'}
+					<a class="review" href="/review/{run.id}" data-testid="review-this-run">Review this run</a
+					>
+				{/if}
 			</p>
 			{#if run.candidates.some((c) => c.rank !== null)}
 				<CandidateGrid candidates={run.candidates} />
@@ -392,6 +396,11 @@
 		margin: 0 0 12px;
 		font-size: 12.5px;
 		color: var(--muted);
+	}
+	.review {
+		margin-left: 8px;
+		color: var(--gold-copy);
+		font-weight: 550;
 	}
 	@media (max-width: 720px) {
 		.head {

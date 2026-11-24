@@ -48,7 +48,8 @@
 		"vitest": "4.1.12"
 	},
 	"dependencies": {
-		"openapi-fetch": "0.17.0"
+		"openapi-fetch": "0.17.0",
+		"svelte-dnd-action": "0.9.80"
 	},
 	"overrides": {
 		"cookie": "0.7.2"

@@ -2,7 +2,9 @@
 	import '../app.css';
 	import '$lib/ui/controls.css';
 	import { page } from '$app/state';
+	import { onMount } from 'svelte';
 	import WorkerBadge from '$lib/features/jobs/WorkerBadge.svelte';
+	import { pendingReviews, refreshPendingReviews } from '$lib/stores/review';
 	import Nav from '$lib/ui/Nav.svelte';
 	import Toasts from '$lib/ui/Toasts.svelte';
 	import TopBar from '$lib/ui/TopBar.svelte';
@@ -13,7 +15,11 @@
 	const TITLES: Record<string, string> = {
 		'/': 'Library',
 		'/movies/[id]': 'Movie',
-		'/activity': 'Activity'
+		'/review': 'Review',
+		'/review/[runId]': 'Review',
+		'/taste': 'Taste',
+		'/activity': 'Activity',
+		'/system': 'System'
 	};
 
 	const bare = $derived(page.route.id === '/signin' || page.route.id === null);
@@ -25,8 +31,20 @@
 			icon: 'film',
 			active: route === '/' || route.startsWith('/movies')
 		},
+		{
+			href: '/review',
+			label: 'Review',
+			icon: 'eye',
+			active: route.startsWith('/review'),
+			count: $pendingReviews || null
+		},
 		{ href: '/activity', label: 'Activity', icon: 'activity', active: route === '/activity' }
 	]);
+
+	// The Review entry's number: read when the shell loads, and after each answer.
+	onMount(() => {
+		if (!bare) void refreshPendingReviews();
+	});
 </script>
 
 {#if bare}
