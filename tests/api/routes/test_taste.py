@@ -12,7 +12,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.db.models import Movie, PosterRun, RunCandidate
+from marquee.db.models import Artwork, Movie, PosterRun, RunCandidate
 
 NOW = datetime(2026, 11, 24, tzinfo=UTC)
 
@@ -251,3 +251,96 @@ async def test_taste_status_and_rebuild(
     assert first.status_code == 202 and again.status_code == 200
     assert first.json()["kind"] == "taste_rebuild" and again.json()["id"] == first.json()["id"]
     assert first.json()["payload"]["force"] is True
+
+
+async def test_an_exemplar_says_whose_it_is_and_what_ended_it(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
+) -> None:
+    ids = await _run(db_session, data_dir, title="Alpha")
+    first = await client.post(
+        f"/api/runs/{ids['run']}/feedback",
+        headers=headers,
+        json={
+            "action": "override",
+            "candidate_id": ids["r2"],
+            "deploy": False,
+            "idempotency_key": "a",
+        },
+    )
+    second = await client.post(
+        f"/api/runs/{ids['run']}/feedback",
+        headers=headers,
+        json={
+            "action": "override",
+            "candidate_id": ids["r3"],
+            "deploy": False,
+            "idempotency_key": "b",
+        },
+    )
+    first_event, second_event = first.json()["event"]["id"], second.json()["event"]["id"]
+    ended = second.json()["exemplars"]["ended"]
+    assert [(e["source_file"], e["ended_by_event_id"]) for e in ended] == [("r2.jpg", second_event)]
+    created = second.json()["exemplars"]["created"][0]
+    assert (created["title"], created["year"], created["ended_by_event_id"]) == (
+        "Alpha",
+        2001,
+        None,
+    )
+
+    items = (await client.get("/api/taste/exemplars", headers=headers)).json()["items"]
+    by_file = {item["source_file"]: item for item in items}
+    assert by_file["r2.jpg"]["state"] == "superseded"
+    assert by_file["r2.jpg"]["ended_by_event_id"] == second_event
+    assert by_file["r2.jpg"]["event_id"] == first_event
+    assert by_file["r3.jpg"]["ended_by_event_id"] is None
+    for item in items:
+        assert (item["title"], item["year"]) == ("Alpha", 2001)
+        assert datetime.fromisoformat(item["updated_at"])
+    # Ended by the second event, in a later transaction than the one that made it.
+    assert datetime.fromisoformat(by_file["r2.jpg"]["updated_at"]) > datetime.fromisoformat(
+        by_file["r2.jpg"]["created_at"]
+    )
+
+
+async def test_the_review_queue_carries_its_pictures(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
+) -> None:
+    with_poster = await _run(db_session, data_dir, title="Alpha", n=1)
+    without = await _run(db_session, data_dir, title="Beta", n=2)
+    sha = "a" * 64
+    db_session.add(
+        Artwork(
+            movie_id=with_poster["movie"],
+            artwork_kind="poster",
+            file_name="poster.jpg",
+            sha256=sha,
+            size_bytes=1234,
+            file_modified_at=NOW,
+            origin="library",
+            first_seen_at=NOW,
+            last_seen_at=NOW,
+        )
+    )
+    # Beta's pick was never downloaded: it has no picture to show.
+    pick = await db_session.get(RunCandidate, without["r1"])
+    assert pick is not None
+    pick.sha256 = None
+    await db_session.commit()
+
+    items = (await client.get("/api/review", headers=headers)).json()["items"]
+    by_title = {item["title"]: item for item in items}
+    assert by_title["Alpha"]["poster"] == {
+        "file_name": "poster.jpg",
+        "sha256": sha,
+        "size_bytes": 1234,
+        "origin": "library",
+        "url": f"/api/movies/{with_poster['movie']}/poster",
+        "version": sha[:12],
+    }
+    assert by_title["Alpha"]["pick_image_url"] == (
+        f"/api/runs/{with_poster['run']}/candidates/{with_poster['r1']}/image"
+    )
+    assert by_title["Beta"]["poster"] is None
+    assert by_title["Beta"]["pick_image_url"] is None
+    picture = await client.get(by_title["Alpha"]["pick_image_url"], headers=headers)
+    assert picture.status_code == 200 and picture.content == b"Alpha 1"

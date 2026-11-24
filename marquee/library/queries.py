@@ -6,6 +6,7 @@ movies with a file unless asked to include the ones Radarr still wants.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
@@ -120,3 +121,27 @@ async def get_movie(session: AsyncSession, movie_id: int) -> MovieWithPoster | N
         )
     ).first()
     return MovieWithPoster(row[0], row[1], row[2]) if row else None
+
+
+async def posters_of(session: AsyncSession, movie_ids: Collection[int]) -> dict[int, Artwork]:
+    """Each movie's poster row, by movie id, in one query; movies with none are left out."""
+    if not movie_ids:
+        return {}
+    rows = await session.scalars(
+        select(Artwork).where(
+            Artwork.movie_id.in_(set(movie_ids)), Artwork.artwork_kind == ARTWORK_POSTER
+        )
+    )
+    return {row.movie_id: row for row in rows}
+
+
+async def movie_names(
+    session: AsyncSession, movie_ids: Collection[int]
+) -> dict[int, tuple[str, int | None]]:
+    """Each movie's title and year, by movie id, in one query."""
+    if not movie_ids:
+        return {}
+    rows = await session.execute(
+        select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(set(movie_ids)))
+    )
+    return {row.id: (row.title, row.year) for row in rows}

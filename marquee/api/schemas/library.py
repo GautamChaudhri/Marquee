@@ -7,6 +7,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from marquee.db.models import Artwork
 from marquee.library.queries import MovieWithPoster
 
 
@@ -22,6 +23,20 @@ class Poster(BaseModel):
         "for a JPEG thumbnail, and v=<version> to let the answer be cached for a year"
     )
     version: str = Field(description="The first 12 hex of sha256: the value for v=")
+
+    @classmethod
+    def of(cls, movie_id: int, artwork: Artwork | None) -> Poster | None:
+        """A movie's poster row as an answer, or ``None`` when it has none."""
+        if artwork is None:
+            return None
+        return cls(
+            file_name=artwork.file_name,
+            sha256=artwork.sha256,
+            size_bytes=artwork.size_bytes,
+            origin=artwork.origin,  # type: ignore[arg-type]
+            url=f"/api/movies/{movie_id}/poster",
+            version=artwork.sha256[:12],
+        )
 
 
 class MovieItem(BaseModel):
@@ -48,18 +63,7 @@ class MovieItem(BaseModel):
     @classmethod
     def build(cls, row: MovieWithPoster) -> MovieItem:
         movie, artwork = row.movie, row.poster
-        poster = (
-            Poster(
-                file_name=artwork.file_name,
-                sha256=artwork.sha256,
-                size_bytes=artwork.size_bytes,
-                origin=artwork.origin,  # type: ignore[arg-type]
-                url=f"/api/movies/{movie.id}/poster",
-                version=artwork.sha256[:12],
-            )
-            if artwork is not None
-            else None
-        )
+        poster = Poster.of(movie.id, artwork)
         return cls(
             id=movie.id,
             radarr_id=movie.radarr_id,

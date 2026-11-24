@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from marquee.api.schemas.library import Poster
 from marquee.db.models import Exemplar, PreferenceEvent
 from marquee.db.models.taste import MAX_EXPOSED, MAX_IDEMPOTENCY_KEY
 
@@ -110,6 +112,8 @@ class ExemplarItem(BaseModel):
 
     id: int
     movie_id: int
+    title: str = Field(description="The movie's title")
+    year: int | None = Field(description="The movie's year")
     polarity: Polarity
     weight: float
     source: Literal["seed", "feedback"]
@@ -120,13 +124,26 @@ class ExemplarItem(BaseModel):
     source_file: str | None = Field(description="TMDB's file name; null for a seed exemplar")
     replaced_exemplar_id: int | None
     created_at: datetime
+    updated_at: datetime
     ended_at: datetime | None
+    ended_by_event_id: int | None = Field(
+        description="The act of feedback that ended it; null while it is active, and for one "
+        "ended before that was recorded"
+    )
     image_url: str
 
     @classmethod
-    def build(cls, row: Exemplar) -> Self:
-        values = {name: getattr(row, name) for name in cls.model_fields if name != "image_url"}
-        return cls(**values, image_url=f"/api/taste/exemplars/{row.id}/image")
+    def build(cls, row: Exemplar, names: Mapping[int, tuple[str, int | None]]) -> Self:
+        """``names``: each movie's title and year by id (``library.queries.movie_names``)."""
+        title, year = names[row.movie_id]
+        values = {
+            name: getattr(row, name)
+            for name in cls.model_fields
+            if name not in ("image_url", "title", "year")
+        }
+        return cls(
+            **values, title=title, year=year, image_url=f"/api/taste/exemplars/{row.id}/image"
+        )
 
 
 class ExemplarList(BaseModel):
@@ -167,6 +184,10 @@ class PendingItem(BaseModel):
     finished_at: datetime | None
     policy_deployed: bool = Field(description="The deploy policy deployed this run's pick")
     blind: bool | None
+    poster: Poster | None = Field(description="The movie's poster now, as a movie item has it")
+    pick_image_url: str | None = Field(
+        description="The run's pick, its 500 px file (null when it was never downloaded)"
+    )
 
 
 class PendingList(BaseModel):

@@ -2631,6 +2631,23 @@
             "type": "integer",
             "title": "Movie Id"
           },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "The movie's title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year",
+            "description": "The movie's year"
+          },
           "polarity": {
             "type": "string",
             "enum": [
@@ -2715,6 +2732,11 @@
             "format": "date-time",
             "title": "Created At"
           },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
           "ended_at": {
             "anyOf": [
               {
@@ -2727,6 +2749,18 @@
             ],
             "title": "Ended At"
           },
+          "ended_by_event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended By Event Id",
+            "description": "The act of feedback that ended it; null while it is active, and for one ended before that was recorded"
+          },
           "image_url": {
             "type": "string",
             "title": "Image Url"
@@ -2736,6 +2770,8 @@
         "required": [
           "id",
           "movie_id",
+          "title",
+          "year",
           "polarity",
           "weight",
           "source",
@@ -2746,7 +2782,9 @@
           "source_file",
           "replaced_exemplar_id",
           "created_at",
+          "updated_at",
           "ended_at",
+          "ended_by_event_id",
           "image_url"
         ],
         "title": "ExemplarItem"
@@ -3639,6 +3677,29 @@
               }
             ],
             "title": "Blind"
+          },
+          "poster": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Poster"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The movie's poster now, as a movie item has it"
+          },
+          "pick_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Image Url",
+            "description": "The run's pick, its 500 px file (null when it was never downloaded)"
           }
         },
         "type": "object",
@@ -3650,7 +3711,9 @@
           "ranked",
           "finished_at",
           "policy_deployed",
-          "blind"
+          "blind",
+          "poster",
+          "pick_image_url"
         ],
         "title": "PendingItem"
       },

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import asdict
 from typing import Annotated, BinaryIO
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response, status
@@ -14,6 +13,7 @@ from sqlalchemy import func, select
 from marquee.api.files import file_response
 from marquee.api.routes.jobs import job_item
 from marquee.api.schemas.jobs import JobItem
+from marquee.api.schemas.library import Poster
 from marquee.api.schemas.taste import (
     EventItem,
     EventList,
@@ -38,6 +38,7 @@ from marquee.db.models import Exemplar
 from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
 from marquee.jobs import review
 from marquee.jobs.handlers.taste_rebuild import enqueue_rebuild
+from marquee.library.queries import movie_names
 from marquee.taste import agreement, exemplars, feedback
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,19 @@ _FEEDBACK_RESPONSES = {
 }
 
 
-def _changes(changes: exemplars.Changes) -> ExemplarChanges:
+async def _changes(session: Session, changes: exemplars.Changes) -> ExemplarChanges:
+    every = [*changes.created, *changes.ended, *changes.reactivated]
+    if every:
+        # Their updated_at was set by the database on commit: read the rows again, in one query.
+        await session.scalars(
+            select(Exemplar)
+            .where(Exemplar.id.in_([row.id for row in every]))
+            .execution_options(populate_existing=True)
+        )
+    names = await movie_names(session, {row.movie_id for row in every})
+
     def items(rows: list[Exemplar]) -> list[ExemplarItem]:
-        return [ExemplarItem.build(row) for row in sorted(rows, key=lambda r: r.id)]
+        return [ExemplarItem.build(row, names) for row in sorted(rows, key=lambda r: r.id)]
 
     return ExemplarChanges(
         created=items(changes.created),
@@ -67,7 +78,7 @@ async def _result(session: Session, result: review.ReviewResult) -> FeedbackResu
     event = result.outcome.event
     return FeedbackResult(
         event=EventItem.build(event, revoked.get(event.id)),
-        exemplars=_changes(result.outcome.changes),
+        exemplars=await _changes(session, result.outcome.changes),
         jobs=FeedbackJobs(
             deploy=result.deploy_job.id if result.deploy_job is not None else None,
             rebuild=result.rebuild_job.id if result.rebuild_job is not None else None,
@@ -88,7 +99,27 @@ def _http(exc: feedback.FeedbackError) -> HTTPException:
 async def review_list(session: Session) -> PendingList:
     """Movies whose latest completed run has no feedback that stands; policy deploys first."""
     rows = await agreement.pending_reviews(session)
-    return PendingList(items=[PendingItem(**asdict(row)) for row in rows])
+    return PendingList(
+        items=[
+            PendingItem(
+                movie_id=row.movie_id,
+                title=row.title,
+                year=row.year,
+                run_id=row.run_id,
+                ranked=row.ranked,
+                finished_at=row.finished_at,
+                policy_deployed=row.policy_deployed,
+                blind=row.blind,
+                poster=Poster.of(row.movie_id, row.poster),
+                pick_image_url=(
+                    f"/api/runs/{row.run_id}/candidates/{row.pick_id}/image"
+                    if row.pick_id is not None
+                    else None
+                ),
+            )
+            for row in rows
+        ]
+    )
 
 
 @router.post(
@@ -194,18 +225,21 @@ async def list_exemplars(
     if polarity is not None:
         conditions.append(Exemplar.polarity == polarity)
     total = await session.scalar(select(func.count()).select_from(Exemplar).where(*conditions))
-    rows = await session.scalars(
-        select(Exemplar)
-        .where(*conditions)
-        .order_by(Exemplar.id.desc())
-        .limit(page_size)
-        .offset((page - 1) * page_size)
+    rows = list(
+        await session.scalars(
+            select(Exemplar)
+            .where(*conditions)
+            .order_by(Exemplar.id.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
     )
+    names = await movie_names(session, {row.movie_id for row in rows})
     return ExemplarList(
         total=total or 0,
         page=page,
         page_size=page_size,
-        items=[ExemplarItem.build(row) for row in rows],
+        items=[ExemplarItem.build(row, names) for row in rows],
     )
 
 

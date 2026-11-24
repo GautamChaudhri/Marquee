@@ -19,10 +19,20 @@ from sqlalchemy import and_, exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import pipeline_settings
-from marquee.db.models import Deployment, Exemplar, Movie, PosterRun, PreferenceEvent, TasteProfile
+from marquee.db.models import (
+    Artwork,
+    Deployment,
+    Exemplar,
+    Movie,
+    PosterRun,
+    PreferenceEvent,
+    RunCandidate,
+    TasteProfile,
+)
 from marquee.db.models.deployment import INITIATED_BY_POLICY
 from marquee.db.models.run import RUN_COMPLETED
 from marquee.db.models.taste import ACTION_REJECT, ACTION_REVOKE
+from marquee.library.queries import posters_of
 from marquee.taste import exemplars, feedback, rebuild
 
 MIN_FOR_PERCENT = 10
@@ -145,6 +155,10 @@ class Pending:
     finished_at: datetime | None
     policy_deployed: bool
     blind: bool | None
+    poster: Artwork | None = None
+    """The movie's poster row now, if it has one."""
+    pick_id: int | None = None
+    """The run's pick, when its file was downloaded (so its image can be shown)."""
 
 
 async def pending_reviews(session: AsyncSession, *, limit: int | None = None) -> list[Pending]:
@@ -183,6 +197,17 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
     if limit is not None:
         statement = statement.limit(limit)
     rows = (await session.execute(statement)).all()
+    posters = await posters_of(session, [movie.id for movie, _, _ in rows])
+    picks: dict[int, int] = {}
+    if rows:
+        found = await session.execute(
+            select(RunCandidate.run_id, RunCandidate.id).where(
+                RunCandidate.run_id.in_([run.id for _, run, _ in rows]),
+                RunCandidate.is_pick.is_(True),
+                RunCandidate.sha256.is_not(None),
+            )
+        )
+        picks = {row.run_id: row.id for row in found}
     out = []
     for movie, run, deployed in rows:
         out.append(
@@ -195,6 +220,8 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
                 finished_at=run.finished_at,
                 policy_deployed=bool(deployed),
                 blind=await feedback.blind_for(session, run),
+                poster=posters.get(movie.id),
+                pick_id=picks.get(run.id),
             )
         )
     return out
