@@ -12,8 +12,6 @@ import pytest
 
 from marquee.jobs.handlers import gpu
 from marquee.jobs.registry import PermanentJobError
-from marquee.library import title_run
-from marquee.library.subjects import ResolvedSubject, SubjectLookupError
 from marquee.pipeline.runner import ProgressEvent
 
 
@@ -36,50 +34,6 @@ class _Output:
             "diagnostic_ledger": {"candidates": [{"orig_filename": "a.jpg", "stack_rank": 1}]}
         }
     )
-
-
-async def _fake_run_title(title: str, **kwargs: Any) -> title_run.TitleRun:
-    kwargs["progress"](ProgressEvent(stage="ocr", state="start", total=3))
-    kwargs["progress"](ProgressEvent(stage="ocr", state="end", survivors=2, elapsed_s=1.5))
-    assert kwargs["should_cancel"]() is False
-    return title_run.TitleRun(
-        subject=ResolvedSubject(title="Die Hard", tmdb_id=562, imdb_id="tt0095016"),
-        output=_Output(),  # type: ignore[arg-type]
-        run_dir=Path("/runs/20261124T000000Z-die-hard"),
-    )
-
-
-def test_engine_probe_reports_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(title_run, "run_title", _fake_run_title)
-    progress: list[tuple] = []
-
-    result = gpu.engine_probe(
-        {"title": "Die Hard"}, threading.Event(), lambda *values: progress.append(values)
-    )
-
-    assert result["run_folder"] == "20261124T000000Z-die-hard"
-    assert result["subject"] == {"title": "Die Hard", "tmdb_id": 562, "imdb_id": "tt0095016"}
-    assert result["counts"] == {"posters_found": 3, "ranked": 2}
-    assert result["stages"] == [{"stage": "ocr", "survivors": 2, "seconds": 1.5}]
-    assert result["ranked"] == 2
-    assert result["pick"] == {"rank": 1, "stack": "1A", "score": 0.9, "file": "a.jpg"}
-    assert progress == [(None, 3, "ocr start"), (None, None, "ocr end")]
-
-
-@pytest.mark.parametrize("payload", [{}, {"title": " "}, {"title": "X", "year": "1988"}])
-def test_engine_probe_refuses_a_bad_payload(payload: dict) -> None:
-    with pytest.raises(PermanentJobError):
-        gpu.engine_probe(payload, threading.Event(), lambda *_: None)
-
-
-def test_a_title_that_leads_nowhere_is_permanent(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def no_such_title(title: str, **kwargs: Any) -> None:
-        raise SubjectLookupError("no movie folder titled 'Die Hrd'")
-
-    monkeypatch.setattr(title_run, "run_title", no_such_title)
-
-    with pytest.raises(PermanentJobError, match="no movie folder"):
-        gpu.engine_probe({"title": "Die Hrd"}, threading.Event(), lambda *_: None)
 
 
 class _FakeSession:

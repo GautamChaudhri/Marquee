@@ -25,11 +25,5 @@ KINDS: tuple[JobKind, ...] = (
         gpu_function="marquee.jobs.handlers.gpu:gpu_selftest",
         timeout_s=5 * 60,
     ),
-    JobKind(
-        "engine_probe",
-        "gpu",
-        gpu_function="marquee.jobs.handlers.gpu:engine_probe",
-        timeout_s=10 * 60,
-    ),
     POSTER_RUN,
 )

@@ -67,58 +67,6 @@ def _optional_int(payload: dict[str, Any], name: str) -> int | None:
     return value
 
 
-def engine_probe(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> dict[str, Any]:
-    """Run one title through the real pipeline, as ``marquee run`` does. A diagnostic.
-
-    It writes a run folder under ``data/runs/`` and nothing in the database.
-    """
-    from marquee.integrations.tmdb.exceptions import TMDBError
-    from marquee.library.folders import LibraryRootError
-    from marquee.library.subjects import SubjectLookupError
-    from marquee.library.title_run import TitleRunError, ranked_row, run_title, stack_ranks
-
-    title = payload.get("title")
-    if not isinstance(title, str) or not title.strip():
-        raise PermanentJobError("the payload needs a title")
-    year, tmdb_id = _optional_int(payload, "year"), _optional_int(payload, "tmdb_id")
-    stages: list[dict[str, Any]] = []
-
-    def on_event(event: Any) -> None:
-        if event.state == "end":
-            stages.append(
-                {"stage": event.stage, "survivors": event.survivors, "seconds": event.elapsed_s}
-            )
-        progress(event.done, event.total, f"{event.stage} {event.state}")
-
-    started = time.perf_counter()
-    try:
-        run = run_async(
-            run_title(
-                title, year=year, tmdb_id=tmdb_id, progress=on_event, should_cancel=cancel.is_set
-            )
-        )
-    except (TitleRunError, SubjectLookupError, LibraryRootError) as exc:
-        raise PermanentJobError(str(exc)) from exc
-    except TMDBError as exc:
-        raise RuntimeError(f"TMDB: {exc}") from exc
-    output = run.output
-    return {
-        "run_folder": run.run_dir.name,
-        "subject": {
-            "title": run.subject.title,
-            "tmdb_id": run.subject.tmdb_id,
-            "imdb_id": run.subject.imdb_id,
-        },
-        "status": output.status,
-        "counts": output.counts,
-        "stages": stages,
-        "ranked": len(output.ranked),
-        "pick": ranked_row(output.recommendation, stack_ranks(output.payload)),
-        "seconds": round(time.perf_counter() - started, 2),
-        "pid": os.getpid(),
-    }
-
-
 @dataclass(frozen=True)
 class _MovieGateInputs:
     """The attributes ``OcrGateContext.from_movie`` reads, by the names it reads them.

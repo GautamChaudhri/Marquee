@@ -7,16 +7,13 @@ import asyncio
 import json
 import logging
 import sys
-import time
 import warnings
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 from marquee import __version__
 
 MODEL_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr", "aesthetic", "face")
-RANKED_SHOWN = 10
 JOBS_SHOWN = 50
 # The states in marquee.db.models.job, repeated so building the parser imports no database code.
 JOB_STATES = ("queued", "running", "succeeded", "failed", "cancelled")
@@ -76,15 +73,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser(
         "run",
-        help="put one movie through the real pipeline",
-        description="Find the movie through its library folder (the IMDb id in the movie "
-        "file's name), rank its TMDB posters against the taste profile, and leave the "
-        "ranked posters and the run archive in a new folder under data/runs/.",
+        help="put one movie through the real pipeline, as a job",
+        description="Find the movie in the database by its title (case ignored), queue a "
+        "poster_run job for it, and follow it to the end: the worker ranks the movie's TMDB "
+        "posters against the taste profile and records the run, its candidates, and the "
+        "pick. Needs a running worker unless --no-wait is given. Writes nothing to the "
+        "media library unless DEPLOY_POLICY says so.",
     )
-    run.add_argument("title", help='the title as the library folder names it, e.g. "Die Hard"')
+    run.add_argument("title", help='the title as Radarr lists it, e.g. "Die Hard"')
     run.add_argument("--year", type=int, help="the year, when several movies share a title")
+    run.add_argument("--movie-id", type=int, help="the movie's id, when several share a title")
     run.add_argument(
-        "--tmdb-id", type=int, help="use this TMDB id and the title as typed; skip the library"
+        "--no-wait", action="store_true", help="queue the job and exit; do not follow it"
     )
     run.add_argument("--json", action="store_true", help="print the summary as JSON")
 
@@ -134,9 +134,10 @@ def _build_parser() -> argparse.ArgumentParser:
     jobs_enqueue = jobs_commands.add_parser(
         "enqueue",
         help="queue a job of a registered kind",
-        description="Queue a job: library_sync, gpu_selftest, or engine_probe (whose payload "
-        'needs a title, e.g. {"title": "Die Hard"}). A kind that allows one active job '
-        "returns the one already queued or running.",
+        description="Queue a job of a registered kind: library_sync, gpu_selftest, or "
+        'poster_run (whose payload needs a movie id, e.g. {"movie_id": 12}). A kind that '
+        "allows one active job (per movie, for runs) returns the one already queued or "
+        "running.",
     )
     jobs_enqueue.add_argument("kind")
     jobs_enqueue.add_argument("--payload", default="{}", help="a JSON object (default {})")
@@ -441,37 +442,19 @@ def _db(args: argparse.Namespace) -> int:
     raise AssertionError(f"unhandled db command {args.db_command!r}")
 
 
-def _run_summary(
-    subject: Any, output: Any, run_dir: Path, stages: list[Any], seconds: float
-) -> dict[str, Any]:
-    from marquee.library.title_run import ranked_row, stack_ranks
-
-    ranks = stack_ranks(output.payload)
-    return {
-        "subject": {
-            "title": subject.title,
-            "tmdb_id": subject.tmdb_id,
-            "imdb_id": subject.imdb_id,
-            "folder": (
-                f"{subject.folder.quality}/{subject.folder.name}" if subject.folder else None
-            ),
-        },
-        "status": output.status,
-        "counts": output.counts,
-        "stages": [
-            {"stage": e.stage, "survivors": e.survivors, "seconds": e.elapsed_s} for e in stages
-        ],
-        "ranked_total": len(output.ranked),
-        "ranked": [ranked_row(row, ranks) for row in output.ranked[:RANKED_SHOWN]],
-        "pick": ranked_row(output.recommendation, ranks),
-        "run_dir": str(run_dir),
-        "seconds": round(seconds, 1),
-    }
+FOLLOW_POLL_S = 0.5
 
 
 def _score(row: dict[str, Any]) -> str:
     score = row["score"]
     return f"{score:.4f}" if isinstance(score, int | float) else "-     "
+
+
+def _print_stages(stages: list[dict[str, Any]]) -> None:
+    print("stages")
+    for stage in stages:
+        survivors = "-" if stage.get("survivors") is None else stage["survivors"]
+        print(f"  {stage['stage']:<16} {survivors:>4} left  {stage.get('seconds') or 0:7.2f} s")
 
 
 def _print_run_summary(summary: dict[str, Any]) -> None:
@@ -486,74 +469,131 @@ def _print_run_summary(summary: dict[str, Any]) -> None:
             print(f"  {row['rank']:>4}  {row['stack'] or '-':<5}  {_score(row)}  {row['file']}")
     pick = summary["pick"]
     if pick:
-        print(f"pick      {pick['stack']} {pick['file']} (score {_score(pick)})")
+        print(
+            f"pick      {pick['stack']} {pick['file']} (score {_score(pick)}; "
+            f"candidate {pick['candidate_id']})"
+        )
     else:
         print("pick      none (no candidate survived every gate)")
-    print(f"run       {summary['run_dir']}")
+    print(f"run       {summary['run_id']}, in {summary['run_dir']}")
     print(f"took      {summary['seconds']:.0f} s")
 
 
-async def _run_async(args: argparse.Namespace) -> int:
-    from marquee.library.subjects import ResolvedSubject
-    from marquee.library.title_run import run_title
+def _movie_line(movie: Any) -> str:
+    year = f" ({movie.year})" if movie.year else ""
+    return f"{movie.title}{year}, movie {movie.id}, TMDB {movie.tmdb_id}"
 
-    started = time.perf_counter()
 
-    def on_resolved(subject: ResolvedSubject) -> None:
-        if args.json:
-            return
-        where = (
-            f", {subject.imdb_id}, {subject.folder.quality}/{subject.folder.name}"
-            if subject.folder
-            else ""
+class _CommandError(Exception):
+    """The command cannot go on; the message is printed as it is."""
+
+
+async def _find_movie(session: Any, args: argparse.Namespace) -> Any:
+    from marquee.artwork import runs
+
+    matches = await runs.find_movies_by_title(session, args.title, year=args.year)
+    if args.movie_id is not None:
+        matches = [movie for movie in matches if movie.id == args.movie_id]
+    if not matches:
+        wanted = f"{args.title!r}" + (f" ({args.year})" if args.year else "")
+        if args.movie_id is not None:
+            wanted += f" with id {args.movie_id}"
+        raise _CommandError(
+            f"no movie titled {wanted} in the database; the title is matched exactly, case "
+            "ignored (run `marquee sync` if the movie is new)"
         )
-        print(f"subject   {subject.title} (TMDB {subject.tmdb_id}{where})", flush=True)
-        print("stages", flush=True)
+    if len(matches) > 1:
+        listed = "; ".join(_movie_line(movie) for movie in matches)
+        raise _CommandError(
+            f"{len(matches)} movies are titled {args.title!r}: {listed}. Give --year or --movie-id"
+        )
+    return matches[0]
 
-    stages: list[Any] = []
 
-    def on_progress(event: Any) -> None:
-        if event.state != "end":
-            return
-        stages.append(event)
+async def _follow(sessions: Any, job_id: int, *, quiet: bool) -> Any:
+    """Wait for a job to finish, saying when it starts; returns the finished job."""
+    from marquee.jobs import queries
+
+    said_running = False
+    while True:
+        async with sessions() as session:
+            job = await queries.get_job(session, job_id)
+        assert job is not None
+        if job.state == "running" and not said_running and not quiet:
+            print(f"running   attempt {job.attempt} of {job.max_attempts}", flush=True)
+            said_running = True
+        if job.state in ("succeeded", "failed", "cancelled"):
+            return job
+        await asyncio.sleep(FOLLOW_POLL_S)
+
+
+async def _run_async(args: argparse.Namespace) -> int:
+    from marquee.artwork import runs
+    from marquee.config import settings
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.jobs import queries
+    from marquee.jobs.handlers.poster_run import enqueue_run
+
+    engine = create_engine()
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions() as session:
+            movie = await _find_movie(session, args)
+            reason = runs.ineligible_reason(movie)
+            if reason is not None:
+                raise _CommandError(reason)
+            worker = await queries.worker_status(session)
+            if not worker.running and not args.no_wait:
+                raise _CommandError(
+                    "no worker is running, so nothing was queued; start one with "
+                    "`marquee worker`, or give --no-wait to queue the run anyway"
+                )
+            job, created = await enqueue_run(session, movie.id)
+        said = "queued" if created else f"already {job.state}; following it"
         if not args.json:
-            survivors = "-" if event.survivors is None else event.survivors
-            print(
-                f"  {event.stage:<16} {survivors:>4} left  {event.elapsed_s or 0:7.2f} s",
-                flush=True,
-            )
-
-    run = await run_title(
-        args.title,
-        year=args.year,
-        tmdb_id=args.tmdb_id,
-        progress=on_progress,
-        on_resolved=on_resolved,
-    )
-    summary = _run_summary(
-        run.subject, run.output, run.run_dir, stages, time.perf_counter() - started
-    )
+            print(f"movie     {_movie_line(movie)}", flush=True)
+            print(f"job       {job.id} poster_run {said}", flush=True)
+        if args.no_wait:
+            if args.json:
+                print(json.dumps({"job_id": job.id, "created": created, "movie_id": movie.id}))
+            return 0
+        job = await _follow(sessions, job.id, quiet=args.json)
+    finally:
+        await engine.dispose()
+    if job.state != "succeeded":
+        raise _CommandError(f"job {job.id} {job.state}: {job.error or 'no error recorded'}")
+    summary = {
+        **job.result,
+        "job_id": job.id,
+        "movie": {
+            "id": movie.id,
+            "title": movie.title,
+            "year": movie.year,
+            "tmdb_id": movie.tmdb_id,
+            "imdb_id": movie.imdb_id,
+        },
+        "run_dir": str(settings.runs_dir / job.result["run_folder"]),
+    }
     if args.json:
-        print(json.dumps(summary, indent=2, default=str))
+        print(json.dumps(summary, indent=2))
     else:
+        _print_stages(summary["stages"])
         _print_run_summary(summary)
     return 0
 
 
 def _run(args: argparse.Namespace) -> int:
-    from marquee.integrations.tmdb.exceptions import TMDBError
-    from marquee.library.folders import LibraryRootError
-    from marquee.library.subjects import SubjectLookupError
-    from marquee.library.title_run import TitleRunError
+    from sqlalchemy.exc import SQLAlchemyError
 
-    # The console shows only the command's own lines and real errors; the run's full
-    # log still reaches pipeline.log, which hangs off the "marquee" logger.
     _quiet_logging()
-    logging.getLogger("marquee").setLevel(logging.INFO)
     try:
         return asyncio.run(_run_async(args))
-    except (TitleRunError, SubjectLookupError, LibraryRootError, TMDBError) as exc:
+    except _CommandError as exc:
         return _fail("run", str(exc))
+    except SQLAlchemyError as exc:
+        return _fail("run", f"{_database_target()}: {_error_line(exc)}")
+    except KeyboardInterrupt:
+        return _fail("run", "stopped following; the job goes on (`marquee jobs show <id>`)")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

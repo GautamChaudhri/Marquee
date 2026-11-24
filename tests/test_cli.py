@@ -1,119 +1,39 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import SecretStr
 
 from marquee import cli
-from marquee.config import pipeline_settings, settings
+from marquee.config import settings
 
 
 def test_run_arguments() -> None:
     args = cli._build_parser().parse_args(["run", "Die Hard", "--year", "1988", "--json"])
 
-    assert (args.command, args.title, args.year, args.tmdb_id, args.json) == (
+    assert (args.command, args.title, args.year, args.movie_id, args.no_wait, args.json) == (
         "run",
         "Die Hard",
         1988,
         None,
+        False,
         True,
     )
 
 
-def test_run_with_a_tmdb_id() -> None:
-    args = cli._build_parser().parse_args(["run", "Die Hard", "--tmdb-id", "562"])
+def test_run_with_a_movie_id_and_no_wait() -> None:
+    args = cli._build_parser().parse_args(["run", "Die Hard", "--movie-id", "12", "--no-wait"])
 
-    assert args.tmdb_id == 562
+    assert (args.movie_id, args.no_wait) == (12, True)
 
 
-@pytest.mark.parametrize("argv", [["run"], ["run", "Die Hard", "--year", "eighty-eight"]])
+@pytest.mark.parametrize(
+    "argv",
+    [["run"], ["run", "Die Hard", "--year", "eighty-eight"], ["run", "X", "--tmdb-id", "562"]],
+)
 def test_run_rejects_bad_arguments(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         cli._build_parser().parse_args(argv)
     assert exc.value.code == 2
-
-
-@pytest.fixture
-def ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """A configured token and a taste profile file, so the run reaches the lookup."""
-    profile = tmp_path / "taste_profile.npz"
-    profile.write_bytes(b"profile")
-    monkeypatch.setattr(settings, "TMDB_READ_ACCESS_TOKEN", SecretStr("test-token"))
-    monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", profile)
-    return profile
-
-
-def test_run_without_a_tmdb_token(
-    monkeypatch: pytest.MonkeyPatch, ready: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(settings, "TMDB_READ_ACCESS_TOKEN", None)
-
-    assert cli.main(["run", "Die Hard"]) == 1
-    assert capsys.readouterr().err.strip() == (
-        "marquee run: TMDB_READ_ACCESS_TOKEN is not set; add it to .env"
-    )
-
-
-def test_run_without_a_taste_profile(
-    monkeypatch: pytest.MonkeyPatch,
-    ready: Path,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", tmp_path / "absent.npz")
-
-    assert cli.main(["run", "Die Hard"]) == 1
-    err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 1
-    assert "no taste profile" in err[0]
-    assert "marquee taste seed" in err[0]
-
-
-class _NoNetworkTMDB:
-    """Stands in for TMDBClient; a lookup that never reaches TMDB must not call it."""
-
-    def __init__(self, read_access_token: str) -> None:
-        self.token = read_access_token
-
-    async def __aenter__(self) -> _NoNetworkTMDB:
-        return self
-
-    async def __aexit__(self, *_exc: object) -> None:
-        return None
-
-    async def find_by_external_id(self, external_id: str, source: str) -> dict:
-        raise AssertionError("no TMDB call expected")
-
-
-def test_run_with_an_unknown_title(
-    monkeypatch: pytest.MonkeyPatch,
-    ready: Path,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    root = tmp_path / "Movies"
-    (root / "1080p" / "Die Hard (1988)").mkdir(parents=True)
-    monkeypatch.setattr(settings, "MOVIE_ROOTS", [root])
-    monkeypatch.setattr("marquee.integrations.tmdb.client.TMDBClient", _NoNetworkTMDB)
-
-    assert cli.main(["run", "Die Hrd"]) == 1
-    err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 1
-    assert err[0].startswith("marquee run: no movie folder titled 'Die Hrd'")
-    assert "Die Hard (1988)" in err[0]
-
-
-def test_run_with_an_absent_library(
-    monkeypatch: pytest.MonkeyPatch,
-    ready: Path,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(settings, "MOVIE_ROOTS", [tmp_path / "not-mounted"])
-
-    assert cli.main(["run", "Die Hard"]) == 1
-    assert "does not exist (is the share mounted?)" in capsys.readouterr().err
 
 
 # ── marquee db ────────────────────────────────────────────────────────────
@@ -260,9 +180,9 @@ def test_worker_and_jobs_arguments() -> None:
         "library_sync",
         True,
     )
-    queued = parse(["jobs", "enqueue", "engine_probe", "--payload", '{"title": "Die Hard"}'])
+    queued = parse(["jobs", "enqueue", "gpu_selftest", "--payload", '{"title": "Die Hard"}'])
     assert (queued.kind, queued.payload, queued.priority) == (
-        "engine_probe",
+        "gpu_selftest",
         '{"title": "Die Hard"}',
         0,
     )
@@ -309,8 +229,10 @@ def jobs_database(monkeypatch: pytest.MonkeyPatch, database_url: str) -> object:
     monkeypatch.setattr(settings, "POSTGRES_PORT", parsed.port)
     monkeypatch.setattr(settings, "POSTGRES_DB", parsed.database)
     yield
+    from marquee.db.base import Base
+
     with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
-        conn.execute("TRUNCATE jobs, job_events, job_schedules RESTART IDENTITY CASCADE")
+        conn.execute(f"TRUNCATE {', '.join(Base.metadata.tables)} RESTART IDENTITY CASCADE")
 
 
 @pytest.mark.db
@@ -329,19 +251,19 @@ def test_jobs_commands_end_to_end(
     assert run("jobs", "enqueue", "library_sync")[1] == (
         "job 1 library_sync already queued; not queued again\n"
     )
-    code, out, _ = run("jobs", "enqueue", "engine_probe", "--payload", '{"title": "Die Hard"}')
-    assert code == 0 and out.endswith(" engine_probe queued\n")
+    code, out, _ = run("jobs", "enqueue", "gpu_selftest", "--payload", '{"title": "Die Hard"}')
+    assert code == 0 and out.endswith(" gpu_selftest queued\n")
     probe = out.split()[1]
 
     code, out, _ = run("jobs", "list")
     assert code == 0
-    assert out.splitlines()[1].split()[:4] == [probe, "engine_probe", "queued", "0/1"]
+    assert out.splitlines()[1].split()[:4] == [probe, "gpu_selftest", "queued", "0/1"]
     assert out.splitlines()[-1] == "2 of 2 job(s)"
-    listed = json.loads(run("jobs", "list", "--kind", "engine_probe", "--json")[1])
+    listed = json.loads(run("jobs", "list", "--kind", "gpu_selftest", "--json")[1])
     assert [(job["id"], job["payload"]) for job in listed] == [(int(probe), {"title": "Die Hard"})]
 
-    assert run("jobs", "cancel", probe)[1] == f"job {probe} engine_probe cancelled\n"
-    assert run("jobs", "retry", probe)[1] == f"job {probe} engine_probe queued again\n"
+    assert run("jobs", "cancel", probe)[1] == f"job {probe} gpu_selftest cancelled\n"
+    assert run("jobs", "retry", probe)[1] == f"job {probe} gpu_selftest queued again\n"
 
     code, out, _ = run("jobs", "show", probe)
     assert code == 0
@@ -356,3 +278,192 @@ def test_jobs_commands_end_to_end(
     code, _, err = run("jobs", "retry", "1")
     assert code == 1
     assert "job 1 is queued; only a failed or cancelled job can be retried" in err
+
+
+# ── marquee run ───────────────────────────────────────────────────────────
+
+
+def _add_movie(radarr_id: int, title: str, year: int, **values: object) -> int:
+    import psycopg
+
+    columns = {
+        "radarr_id": radarr_id,
+        "title": title,
+        "sort_title": title.lower(),
+        "year": year,
+        "radarr_path": f"/radarr/{title} ({year})",
+        "has_file": True,
+        "tmdb_id": 500 + radarr_id,
+        **values,
+    }
+    names = ", ".join(columns)
+    marks = ", ".join(["%s"] * len(columns))
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        row = conn.execute(
+            f"insert into movies ({names}, tmdb_enriched_at, last_seen_at) "
+            f"values ({marks}, now(), now()) returning id",
+            list(columns.values()),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _jobs() -> list[tuple]:
+    import psycopg
+
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        return conn.execute("select id, kind, payload from jobs order by id").fetchall()
+
+
+def _worker_running(monkeypatch: pytest.MonkeyPatch, running: bool) -> None:
+    from marquee.jobs import queries
+
+    async def status(session: object) -> object:
+        return queries.WorkerStatus(running=running, since=None, queued=0, running_jobs=0, failed=0)
+
+    monkeypatch.setattr(queries, "worker_status", status)
+
+
+@pytest.mark.db
+def test_run_needs_one_movie(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _worker_running(monkeypatch, True)
+    first = _add_movie(1, "Dune", 1984)
+    second = _add_movie(2, "Dune", 2021)
+
+    assert cli.main(["run", "Dun"]) == 1
+    assert "no movie titled 'Dun' in the database" in capsys.readouterr().err
+    assert cli.main(["run", "dune"]) == 1
+    err = capsys.readouterr().err
+    assert "2 movies are titled 'dune'" in err
+    assert f"Dune (1984), movie {first}" in err and f"Dune (2021), movie {second}" in err
+    assert "Give --year or --movie-id" in err
+    assert cli.main(["run", "Dune", "--year", "1999"]) == 1
+    assert "no movie titled 'Dune' (1999)" in capsys.readouterr().err
+    assert _jobs() == []
+
+    assert cli.main(["run", "Dune", "--movie-id", str(second), "--no-wait"]) == 0
+    assert f"movie {second}" in capsys.readouterr().out
+    assert [(kind, payload) for _, kind, payload in _jobs()] == [
+        ("poster_run", {"movie_id": second})
+    ]
+
+
+@pytest.mark.db
+def test_run_refuses_without_a_worker_unless_told_not_to_wait(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _worker_running(monkeypatch, False)
+    movie_id = _add_movie(1, "Heat", 1995)
+
+    assert cli.main(["run", "Heat"]) == 1
+    assert "no worker is running, so nothing was queued" in capsys.readouterr().err
+    assert _jobs() == []
+
+    assert cli.main(["run", "Heat", "--no-wait", "--json"]) == 0
+    import json
+
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["movie_id"] == movie_id and printed["created"] is True
+    assert cli.main(["run", "Heat", "--no-wait"]) == 0
+    assert "already queued; following it" in capsys.readouterr().out
+    assert len(_jobs()) == 1
+
+
+@pytest.mark.db
+def test_run_refuses_a_movie_it_cannot_run(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _worker_running(monkeypatch, True)
+    _add_movie(1, "Ash", 2025, has_file=False)
+
+    assert cli.main(["run", "Ash"]) == 1
+    assert "has no file" in capsys.readouterr().err
+    assert _jobs() == []
+
+
+@pytest.mark.db
+def test_run_follows_the_job_and_prints_the_summary(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+    import threading
+    import time
+
+    import psycopg
+
+    _worker_running(monkeypatch, True)
+    movie_id = _add_movie(1, "Heat", 1995)
+    monkeypatch.setattr(cli, "FOLLOW_POLL_S", 0.05)
+    result = {
+        "run_id": 3,
+        "movie_id": movie_id,
+        "title": "Heat",
+        "run_folder": "00000003-heat",
+        "status": "completed",
+        "counts": {"posters_found": 2, "ranked": 1},
+        "stages": [{"stage": "fetch", "survivors": 2, "seconds": 0.5}],
+        "ranked_total": 1,
+        "ranked": [{"rank": 1, "stack": "1A", "score": 0.9, "file": "a.jpg"}],
+        "pick": {"candidate_id": 8, "rank": 1, "stack": "1A", "score": 0.9, "file": "a.jpg"},
+        "seconds": 20.0,
+    }
+
+    def pretend_worker() -> None:
+        deadline = time.monotonic() + 10
+        with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+            while time.monotonic() < deadline:
+                done = conn.execute(
+                    "update jobs set state = 'succeeded', attempt = 1, result = %s "
+                    "where kind = 'poster_run' returning id",
+                    [json.dumps(result)],
+                ).fetchone()
+                if done:
+                    return
+                time.sleep(0.05)
+
+    thread = threading.Thread(target=pretend_worker)
+    thread.start()
+    try:
+        assert cli.main(["run", "heat"]) == 0
+    finally:
+        thread.join()
+    out = capsys.readouterr().out
+    assert f"movie     Heat (1995), movie {movie_id}, TMDB 501" in out
+    assert "  fetch               2 left     0.50 s" in out
+    assert "pick      1A a.jpg (score 0.9000; candidate 8)" in out
+    assert f"run       3, in {settings.runs_dir / '00000003-heat'}" in out
+
+
+@pytest.mark.db
+def test_run_reports_a_failed_job(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import threading
+    import time
+
+    import psycopg
+
+    _worker_running(monkeypatch, True)
+    _add_movie(1, "Heat", 1995)
+    monkeypatch.setattr(cli, "FOLLOW_POLL_S", 0.05)
+
+    def pretend_worker() -> None:
+        deadline = time.monotonic() + 10
+        with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+            while time.monotonic() < deadline:
+                if conn.execute(
+                    "update jobs set state = 'failed', error = 'TMDB: 503' "
+                    "where kind = 'poster_run' returning id"
+                ).fetchone():
+                    return
+                time.sleep(0.05)
+
+    thread = threading.Thread(target=pretend_worker)
+    thread.start()
+    try:
+        assert cli.main(["run", "Heat"]) == 1
+    finally:
+        thread.join()
+    assert "failed: TMDB: 503" in capsys.readouterr().err
