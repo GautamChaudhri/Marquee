@@ -32,8 +32,9 @@ marquee/
                    by the seed), the Radarr sync (sync.py), and the read queries over the
                    library (queries.py)
   artwork/         what Marquee chooses and writes: the run record (runs.py), poster backups
-                   (backup.py), and the one path that writes poster.jpg into a movie folder,
-                   for a deploy and for a restore (deploy.py)
+                   (backup.py), the one path that writes poster.jpg into a movie folder,
+                   for a deploy and for a restore (deploy.py), and the small copies of
+                   library posters the web app shows (thumbnails.py)
   taste/           building and enriching the taste profile (trainer, map, profile enrichment),
                    the first profile seeded from the library's posters and its import as
                    records (seed.py), exemplar records and their kept images (exemplars.py),
@@ -45,7 +46,8 @@ marquee/
                    the rebuild it calls for, in one commit), and handlers/, adapters from a job
                    to the domain code that does the work (the sync, the run, deploy and
                    restore, the taste rebuild)
-  api/             the HTTP API: the app factory and server (app.py), API-key auth (auth.py),
+  api/             the HTTP API: the app factory, the server, and the OpenAPI document the
+                   web app's types come from (app.py), API-key auth (auth.py),
                    routes/ (health, library, jobs, runs, deployments, taste), schemas/ (response
                    models), file responses (files.py), and a rate limiter
 ```
@@ -125,6 +127,7 @@ Everything an operator runs goes through the `marquee` command:
 | `marquee db revision -m "<text>"` | For developers: writes a new migration from the difference between the models and a database at the newest revision |
 | `marquee sync [--dry-run] [--json]` | Checks that Radarr's root folders map to folders here, copies Radarr's movie list into the database, records each folder's poster, and fetches TMDB details once per movie; exits 1 when a movie failed or the path check failed |
 | `marquee api [--host] [--port]` | Serves the HTTP API under uvicorn, on `API_HOST` and `API_PORT` by default |
+| `marquee api-schema [--check] [--output PATH]` | Writes the API's OpenAPI document to `frontend/openapi.json`, which the web app's types are generated from; it needs no database and does not depend on `MARQUEE_ENVIRONMENT`. `--check` writes nothing and exits 1 when the file is missing or stale; the backend CI job runs it |
 | `marquee worker [--drain]` | Runs the job queue until SIGTERM or Ctrl-C, which stop it gracefully. Only one runs at a time; a second exits with "a worker is already running". `--drain` exits once nothing is runnable and queues no scheduled work |
 | `marquee jobs list [--state] [--kind] [--json]` | The newest 50 jobs |
 | `marquee jobs show <id>` | One job and its events |
@@ -144,7 +147,8 @@ without its source tree. There is no `alembic.ini`: `marquee/db/migrate.py` buil
 Alembic configuration in code and hands the environment script an open connection, so no
 database URL passes through Alembic's configuration. There is one baseline migration
 (`0001`); every later schema change is a new numbered migration (`0002` adds the job tables,
-`0003` the run and deployment tables, `0004` the taste tables), and a merged migration is
+`0003` the run and deployment tables, `0004` the taste tables, `0005` the event that ended
+an exemplar and `updated_at` on exemplars and taste profiles), and a merged migration is
 never edited.
 
 The library schema is movies only (the job tables are described under [Jobs](#jobs)):
@@ -157,7 +161,7 @@ The library schema is movies only (the job tables are described under [Jobs](#jo
 | `run_candidates` | One row per candidate a run considered (unique per run and TMDB file name): the SHA-256 of the 500 px file it downloaded (null when it never downloaded it), the stage it reached, its gate decision and rejection reason, its rank, final score, and design stack, and whether it is the pick (a partial unique index allows one per run). Feature values stay in the archive. Rows go with their run |
 | `deployments` | Append-only (`created_at`, no `updated_at`): every write to a movie folder, a `deploy` or a `restore`, who asked (`owner` or `policy`), the run, candidate, and TMDB file it came from, the job (unique: a job writes at most one row), the file's name, the new file's SHA-256 and size (null when the write removed the poster), the previous poster's SHA-256 and origin (null when there was none), its backup's name relative to the backups directory, and for a restore the row it undoes |
 | `preference_events` | Append-only (`created_at` only; no code updates or deletes a row): one act of feedback (`approval`, `override`, `rank`, `reject`, `revoke`) on a movie's run (set null if the run is deleted). It keeps its own copy of what was shown, because candidate rows go with their run: `exposed`, one object per shown candidate (TMDB's file name as `candidate_id`, its SHA-256, `baseline_rank`, `baseline_score`, `stack`, and `normalized_features` from the archive), at most 100; `context` (`order`, `hated`, `selected_candidate`, as file names); the chosen and the picked file, the chosen file's hash, the run's profile hash and scorer, and `blind` (null: unknown). A `revoke` names the event it revokes (unique). `idempotency_key` is unique, 1 to 160 characters |
-| `exemplars` | A poster the taste profile is built from: the movie, `positive` or `negative`, a weight in (0, 1], the source (`seed`, or `feedback` with its event and TMDB file), the state (`active`, `superseded`, `revoked`, and when it ended), the kept image's SHA-256 and name in `data/ml/exemplars/`, the name the trainer sees (`staged_name`, positives only), and the exemplar it replaced. Partial unique indexes allow one active positive per movie and one active row per movie, polarity, and image |
+| `exemplars` | A poster the taste profile is built from: the movie, `positive` or `negative`, a weight in (0, 1], the source (`seed`, or `feedback` with its event and TMDB file), the state (`active`, `superseded`, `revoked`, when it ended, and the act of feedback that ended it, `ended_by_event_id`: null while active, and for rows ended before `0005`), the kept image's SHA-256 and name in `data/ml/exemplars/`, the name the trainer sees (`staged_name`, positives only), and the exemplar it replaced. Partial unique indexes allow one active positive per movie and one active row per movie, polarity, and image |
 | `taste_profiles` | Every profile built or registered: its SHA-256 (unique), the exemplar revision it was built from, `seed` or `rebuild`, its positive and negative counts, the movie ids of its positives (sorted; what makes a run blind), its copy's name in `data/ml/profiles/`, the job that built it, and whether it is the active one (a partial unique index allows one) |
 
 **The database never stores a local path.** The host and the container see the library at
@@ -259,8 +263,8 @@ kind's timeout.
 | `library_sync` | network | 3 | 15 min | One Radarr sync (`library.sync.sync_from_settings`). Another sync holding its lock is a success marked skipped; folders that do not map are a permanent error. One active job at a time (dedupe key) |
 | `gpu_selftest` | gpu | 1 | 5 min | In the GPU child, loads CLIP as the doctor does (once per child) and embeds one batch; reports the provider, the time, and whether the session was already loaded |
 | `poster_run` | gpu | 2 | 10 min | One movie (`{"movie_id": N}`) through the pipeline, with its run record (see [Runs](#runs)). One active run per movie (`poster_run:<movie id>`) |
-| `poster_deploy` | media_write | 3 | 5 min | Writes a candidate's original into the movie folder (`{"candidate_id", "initiated_by", "movie_id"}`); see [Writing a poster](#writing-a-poster). One active write per movie (`poster_write:<movie id>`) |
-| `poster_restore` | media_write | 3 | 5 min | Puts back what was in the folder before a deployment, any deployment of the movie (`{"deployment_id", "movie_id"}`); the same key as `poster_deploy` |
+| `poster_deploy` | media_write | 3 | 5 min | Writes a candidate's original into the movie folder (`{"candidate_id", "initiated_by", "movie_id"}`, and `event_id` when feedback asked for it); see [Writing a poster](#writing-a-poster). No dedupe key: the newest write request for a movie wins |
+| `poster_restore` | media_write | 3 | 5 min | Puts back what was in the folder before a deployment, any deployment of the movie (`{"deployment_id", "movie_id"}`); the newest write request wins here too |
 | `taste_rebuild` | gpu | 2 | 15 min | Builds the taste profile from the active exemplars and publishes it (`{"revision", "force"}`); see [Review and learning](#review-and-learning). One active rebuild per exemplar revision (`taste_rebuild:{revision}`) |
 
 A dedupe key may name payload fields in braces (`poster_run:{movie_id}`), so a kind can allow
@@ -404,6 +408,17 @@ the row and the newest deployment already describe the new bytes, nothing is add
 result says the poster was already deployed; a deploy of the candidate already deployed does
 not even fetch it again.
 
+**The newest write request for a movie wins** (`jobs/handlers/poster_write.py`). A deploy or
+a restore is always queued, except a request identical to the movie's newest write job (same
+kind and payload) while that job is still queued, which is returned instead; requests for one
+movie are queued one at a time under a transaction-level advisory lock. A deploy that feedback
+asks for carries its event's id, so each act of feedback names its own deploy. When a write
+job starts, first attempt or retry, and a newer write job of the same movie is queued,
+running, or succeeded, the older one succeeds with `skipped: superseded by job N` and writes
+nothing, unless it already wrote its row (it is done) or kept an intent (it may have renamed
+its file into place, so it records that write first and the newer job writes over it). Two
+write jobs still never run at once: the class allows one.
+
 **Restore** works on any deployment of a movie, not only the newest: restoring deployment N
 backs up what is in the folder now, whatever it is, and puts back what was there before N
 (from its backup, with its origin), or removes the poster when there was none, and records a
@@ -444,11 +459,18 @@ does not hold exactly the listed files. From then on, the profile is built from 
 | `override` | the candidate named | weight 1.0, replaces the active positive | none | that candidate |
 | `rank` | first of the order | weight 1.0, replaces the active positive | each hated candidate ranked `FEEDBACK_HARD_NEGATIVE_RANK_MAX` (10) or better | first of the order |
 | `reject` | none | none | the same, from every shown candidate when none is named | nothing |
-| `revoke` | (undoes one earlier event) | its exemplars are revoked; the one its active positive replaced comes back if it is still only superseded | | nothing |
+| `revoke` | (undoes one earlier event) | its exemplars are revoked, then what revoked events ended comes back, as far as the rules allow (below) | | nothing |
 
 An override that names the pick is recorded as an approval. A hated candidate whose bytes are
 the movie's active positive ends that positive. A movie has at most one active positive (a new
-one supersedes it) and 8 active negatives (a ninth ends the oldest). Each new exemplar keeps a
+one supersedes it) and 8 active negatives (a ninth ends the oldest, never one the same event
+made). When one event hates more hard negatives than that, the best-ranked 8 become negatives
+and the rest make nothing. Every exemplar that feedback ends records the event that ended it.
+A revoke revokes the exemplars its event made; then a superseded exemplar of the movie whose
+ending event is revoked is eligible again: the newest eligible positive becomes active if the
+movie has none, and eligible negatives become active, newest first, up to 8. The revoke event
+keeps the ids it brought back in its `context` (`reactivated`), so a replayed revoke answers
+the same. Each new exemplar keeps a
 copy of the candidate's 500 px file from the run folder, checked against its recorded hash. A
 positive's `staged_name` is `<title> (<year>)<suffix>` from the movies table, with `/` replaced:
 the trainer reads the title for OCR from it. An exemplar is active as soon as its event is
@@ -502,9 +524,9 @@ of it. `marquee api` serves it under uvicorn.
 |---|---|---|
 | `GET /health/live` | no | the process is up |
 | `GET /health/ready` | no | the database answers and its schema is the newest migration; 503 otherwise |
-| `GET /api/movies` | yes | one page of movies with a file (`include_unavailable` adds the ones Radarr wants), with `q` (case-insensitive title search), `has_poster`, `sort` (`title`, `year`, `added`), `page`, and `page_size` (1 to 200) |
+| `GET /api/movies` | yes | one page of movies with a file (`include_unavailable` adds the ones Radarr wants), with `q` (case-insensitive title search), `has_poster`, `origin` (`library` or `marquee`: whose poster it is), `has_run` (any run record), `sort` (`title`, `year`, `added`), `page`, and `page_size` (1 to 200). A movie's `poster` carries `version`, the first 12 hex of its hash |
 | `GET /api/movies/{id}` | yes | one movie; 404 when absent or retired |
-| `GET /api/movies/{id}/poster` | yes | the poster file, with its SHA-256 as the ETag; 404 when there is no poster row or the file is gone or changed |
+| `GET /api/movies/{id}/poster` | yes | the poster file, with its SHA-256 as the ETag; 404 when there is no poster row or the file is gone or changed. With `width` (160, 320, or 640; 422 otherwise) a JPEG thumbnail, never enlarged, ETag `"<sha256>-<width>"`, made once from the library file (whose bytes must hash to the row's) and kept in `data/cache/thumbs/`; 409 when the poster does not decode. With `v` equal to the poster's current `version`, the answer is `private, max-age=31536000, immutable`; otherwise `private, no-cache` |
 | `GET /api/jobs` | yes | one page of jobs, newest first, with `state`, `kind`, and `parent_id` filters and paging as for movies |
 | `GET /api/jobs/events` | yes | events of every job after the event id `after`, oldest first (`limit` 1 to 500), and the cursor for the next poll |
 | `GET /api/jobs/{id}` | yes | one job; 404 when absent |
@@ -518,9 +540,9 @@ of it. `marquee api` serves it under uvicorn.
 | `GET /api/runs` | yes | one page of runs, newest first, with `movie_id` and `state` filters |
 | `GET /api/runs/{id}` | yes | one run and its candidates, ranked ones first, whether it was blind, and whether it is reviewed |
 | `GET /api/runs/{id}/candidates/{candidate_id}/image` | yes | the 500 px file the run downloaded, confined to the runs directory and checked against its recorded hash (the ETag) |
-| `POST /api/runs/{id}/deploy` | yes | `{"candidate_id": N}` optional (the pick by default): queues the owner's deploy, 202; 200 with the movie's write already queued or running; 409 when the candidate cannot be deployed |
+| `POST /api/runs/{id}/deploy` | yes | `{"candidate_id": N}` optional (the pick by default): queues the owner's deploy, 202; 200 with the job when the same request is the movie's newest write and still queued; 409 when the candidate cannot be deployed |
 | `GET /api/deployments` | yes | one page of deployments, newest first, with a `movie_id` filter |
-| `POST /api/deployments/{id}/restore` | yes | queues a restore of any deployment, 202; 200 with the movie's write already queued or running |
+| `POST /api/deployments/{id}/restore` | yes | queues a restore of any deployment, 202; 200 with the job when the same request is the movie's newest write and still queued |
 | `GET /api/review` | yes | movies whose latest completed run has no feedback that stands, policy deploys first |
 | `POST /api/runs/{id}/feedback` | yes | `{"action", "candidate_id", "order", "hated", "shown", "deploy" (default true), "idempotency_key" (required)}`: 201 with the event, the exemplar changes, and the job ids; 200 with the same body when the key was used before; 404 for an unknown run or candidate; 409 with the reason when refused; 422 for a malformed body |
 | `GET /api/runs/{id}/feedback` | yes | the run's events and the revokes of them |
@@ -541,6 +563,75 @@ or a query string; uvicorn's own access log is off. Queries live in
 `marquee/library/queries.py` and `marquee/jobs/queries.py`, not in the routes. No route
 queues a job of an arbitrary kind.
 
+## The web app
+
+`frontend/` is a SvelteKit 2 app (Svelte 5 runes, TypeScript strict) built with
+`adapter-node`. It talks to nothing but the HTTP API, and the browser never holds the API key.
+
+**How the browser reaches the API.** The browser calls this site's own `/api/*`. The route
+`src/routes/api/[...path]/+server.ts` forwards each request to `MARQUEE_API_URL` with
+`X-Api-Key: MARQUEE_API_KEY` attached (`src/lib/server/proxy.ts`): it drops hop-by-hop headers,
+the browser's cookies, and any credential the browser sent; refuses a body over 1 MB (413); gives
+up after 20 s (504) and says so when the API is down (502); and streams the answer back with its
+status, `ETag`, and `Cache-Control`, so a 304 stays a 304. It uses the plain `fetch`, not
+SvelteKit's, which would add the browser's cookies to a request for the same host name. Both
+settings are read at runtime through `$env/dynamic/private` (`src/lib/server/env.ts`), so the
+built app holds no key, and nothing with the key reaches page data, a `PUBLIC_` variable, or
+a client bundle.
+
+**Sign-in.** The owner signs in with the API key at `/signin` (a form action). The server
+compares it with its own in constant time (both sides hashed first) and sets the cookie
+`marquee_session`: an expiry time and an HMAC-SHA256 of it, keyed by an HMAC of a fixed label
+under the API key (`src/lib/server/session.ts`); `HttpOnly`, `SameSite=Strict`, `Path=/`,
+`Secure` when the request came over HTTPS, 30 days. There is no session store: changing the
+API key signs everyone out. Five failed attempts within a minute from one address answer 429
+until the minute passes (in memory). `POST /signout` deletes the cookie. With no key configured
+the sign-in page says so and nothing else is served.
+
+**Every request** passes `src/hooks.server.ts` first. A request that changes something
+(anything but GET, HEAD, OPTIONS) is refused with 403 unless the browser's `Origin` (or, with
+none, `Sec-Fetch-Site: same-origin`) says it came from this site. Only the sign-in page is
+open: any other page without a valid session goes to `/signin?next=...`, and `/api/*` answers
+401. Static assets are served before the hooks run. Responses carry `X-Content-Type-Options:
+nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: same-origin`. The built server needs
+`ORIGIN` set to the address the browser uses (or a proxy's `PROTOCOL_HEADER` and `HOST_HEADER`),
+or it takes the request for HTTPS and the same-origin check refuses every form.
+
+**API types are generated, never written by hand.** `marquee api-schema` writes the API's
+OpenAPI document to `frontend/openapi.json`, committed and checked in CI. `npm run api:types`
+generates `src/lib/api/generated/schema.d.ts` (gitignored) from it with `openapi-typescript`,
+on `prepare`, before `check`, and before `build`. `src/lib/api/client.ts` is `openapi-fetch`
+over those types; `call()` folds every answer into one result shape, `errors.ts` is the one
+place a backend `detail` or a status becomes a sentence, and one middleware sends a 401 back to
+sign-in. `src/lib/api/types.ts` only names schemas.
+
+**Layout of `src/lib/`:** `api/` (the client), `server/` (server-only: settings, session,
+rate limit, origin check, proxy), `ui/` (design-system primitives: buttons, notices, the top
+bar, navigation, toasts, the confirm dialog), `features/<area>/` (what knows about the library,
+runs, or jobs), and `stores/` (theme, toasts). Colours, radii, and fonts come from the tokens in
+`src/app.css`.
+
+**The pages** render in the browser (`ssr = false`); the server still checks the session before
+it sends one.
+
+| Page | Shows | Can do |
+|---|---|---|
+| `/` Library | the grid of movies with a file, width-320 thumbnails with their `version`, title and year, a mark for no poster and for Marquee's poster; search, filters (poster, whose, runs), and sort, kept in the address; more load as the owner scrolls | Sync now (`POST /api/sync`), then follows the job |
+| `/movies/[id]` | the poster at width 640, the facts, the latest run (when, blind, reviewed, the ranked candidates with rank, score, stack, and the pick, read-only), and the poster history, newest first | Run (`POST /api/movies/{id}/run`, then follows the job and shows the new run); put back what was there before a deployment, behind a confirmation |
+| `/activity` | the worker's state; jobs newest first with kind, state, progress, and times, filtered by state and kind and paged; a job's events and error | Cancel and Retry where the API allows |
+
+There is no deploy, pick, approve, reject, or revoke button: choosing a poster is feedback, and
+belongs to the review page. Activity polls `GET /api/jobs/events` every 2 s and reads again the
+jobs it mentions, and reads the whole list again every 15 s whatever the feed says, because the
+feed can skip an event; on opening it pages through the feed once to find where it ends.
+
+**Tests.** Unit tests (Vitest) cover the server code and the logic in `src/lib/`. End-to-end
+tests (Playwright, Chromium) run the built app against a small fake API in `frontend/e2e/`
+that refuses any request without the test key; they cover sign-in, the session and its
+cookie, the same-origin check, the proxy, both Library pages, and Activity, at 390 and
+1440 px. CI's `frontend` job runs `npm ci`, the types, `check`, `lint`, the unit tests, the
+build, and the end-to-end tests.
+
 ## Runtime data
 
 Everything the application writes lives under one directory, `DATA_DIR` (default `data/` in
@@ -555,7 +646,8 @@ data/
               the record of what was seeded (movies.json), exemplars/: each exemplar's kept
               image (<sha256>.<ext>), and profiles/: a copy of each profile built or
               registered (<sha256>.npz; the five newest, the seed's, and the active one)
-  cache/      embeddings (keyed by model and file hash), poster downloads, thumbnails,
+  cache/      embeddings (keyed by model and file hash), poster downloads, thumbs/ (the web
+              app's poster thumbnails, <poster sha256>-<width>.jpg),
               deploys/ (originals a deploy fetched and the write's intent, <job id>.json, until
               it records its write), taste-build/<job id>/ (a rebuild's staged exemplars and
               its build, removed once published), and in a

@@ -15,8 +15,9 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > be undone byte for byte. You can review each run (approve the pick, choose another, re-rank
 > with a hate pile, reject them all, or take any of that back), and the taste profile is
 > rebuilt from your feedback. Nothing is written to your library unless you ask for it or turn
-> on `DEPLOY_POLICY`. The web interface, and the learned correction to the score, are being
-> rebuilt on top of it.
+> on `DEPLOY_POLICY`. A web interface shows the library, each movie's latest run and poster
+> history, and the job queue; the review page and the learned correction to the score are
+> being rebuilt on top of it.
 
 ## Why
 
@@ -113,6 +114,8 @@ uv run marquee review approve <run id>
 
 # 11. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
 uv run marquee api
+
+# 12. Serve the web interface (see "The web interface" below), and sign in with API_KEY.
 ```
 
 `marquee models fetch` builds every model that is missing and leaves alone what is present:
@@ -248,6 +251,26 @@ prints the same report as JSON. It never writes to a media folder and never prin
 Use `uv sync --extra nvidia` (or `--extra cpu`) whenever you sync: a plain `uv sync` removes
 the extra's packages.
 
+## The web interface
+
+The web interface is a SvelteKit app in `frontend/` (Node 26, through
+[fnm](https://github.com/Schniz/fnm) and `frontend/.node-version`). The browser signs in with
+the API key and never holds it: the web server keeps the key and forwards `/api/*` to the API
+itself.
+
+```bash
+cd frontend
+npm ci                      # also generates the API types from frontend/openapi.json
+cp .env.example .env        # then set MARQUEE_API_URL and MARQUEE_API_KEY (the API's API_KEY)
+npm run dev                 # http://localhost:3166, localhost only
+```
+
+To serve the built app instead, `npm run build`, then
+`HOST=127.0.0.1 ORIGIN=http://127.0.0.1:3000 node --env-file=.env build` (port 3000 by
+default; without `HOST` it listens on every address; `ORIGIN` is the address the browser
+uses, which the server needs for its same-origin check when no proxy sets it). The `.env`
+file is gitignored; `frontend/.env.example` names both settings with placeholders.
+
 ## Development
 
 ```bash
@@ -256,6 +279,22 @@ uv run ruff format --check .
 uv run lint-imports                 # layering contracts
 uv run pytest                       # everything
 uv run pytest -m "not gpu and not models"   # what CI runs
+uv run marquee api-schema --check   # frontend/openapi.json matches the API
+```
+
+After changing an API route or response, run `uv run marquee api-schema` and commit
+`frontend/openapi.json`: the web interface's types are generated from it. The frontend's
+checks, as CI runs them:
+
+```bash
+cd frontend
+npm ci
+npm run check               # types (generates them first)
+npm run lint                # prettier and eslint
+npm run test:unit           # vitest
+npm run build
+npx playwright install chromium     # once; on Linux it may need system libraries
+npm run test:e2e            # the built app against a fake API in frontend/e2e
 ```
 
 Tests that need model files are marked `models`, tests that need a GPU `gpu`, and tests that
@@ -273,7 +312,7 @@ marquee/        the application package (see docs/architecture.md)
 tests/          mirrors marquee/ one-to-one
 data/           runtime state: models, caches, runs, backups (not committed)
 docs/           architecture and other documentation
-frontend/       the web interface (being rebuilt)
+frontend/       the web interface (SvelteKit)
 _salvage/       code from the earlier codebase still waiting to be re-homed
 compose.yaml    PostgreSQL for development, and the application image's services
 Dockerfile      the container image (targets runtime and export)

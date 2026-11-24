@@ -207,8 +207,9 @@ Docker. The milestones, in order:
    policy that is off unless turned on. **M5b** (done): review and re-rank, feedback events,
    exemplars as records, the profile rebuilt by a job, and agreement. **M5c** (after M6): a
    blind evaluation and the residual.
-7. **M6, frontend**: shell, library, review and rank, taste, a small activity view, trimmed
-   settings.
+7. **M6, frontend**, in two sessions. **M6a** (done): sign-in with the API key, a
+   same-origin proxy that keeps the key on the server, generated API types, the shell, the
+   Library pages, and Activity. **M6b**: review and rank, taste, a small system page.
 8. **M8, packaging and production hardening**: the full Compose stack, a fresh-machine path
    from the README, scheduled database backups, and `_salvage/` deleted.
 
