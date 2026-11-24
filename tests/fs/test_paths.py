@@ -29,10 +29,8 @@ def _from_settings(**values: object) -> PathMapper:
 
 
 def test_translates_a_radarr_path() -> None:
-    mapper = _mapper(("/plunder/movies", "/Volumes/PLUNDER/Media/Movies"))
-    assert mapper.to_local("/plunder/movies/Dune (2021)") == Path(
-        "/Volumes/PLUNDER/Media/Movies/Dune (2021)"
-    )
+    mapper = _mapper(("/data/movies", "/srv/media/movies"))
+    assert mapper.to_local("/data/movies/Dune (2021)") == Path("/srv/media/movies/Dune (2021)")
 
 
 def test_settings_pair_radarr_roots_with_movie_roots_by_position() -> None:
@@ -47,8 +45,8 @@ def test_settings_pair_radarr_roots_with_movie_roots_by_position() -> None:
 
 
 def test_without_radarr_roots_each_movie_root_maps_to_itself() -> None:
-    mapper = _from_settings(MOVIE_ROOTS="/plunder/movies")
-    assert mapper.to_local("/plunder/movies/Dune (2021)") == Path("/plunder/movies/Dune (2021)")
+    mapper = _from_settings(MOVIE_ROOTS="/data/movies")
+    assert mapper.to_local("/data/movies/Dune (2021)") == Path("/data/movies/Dune (2021)")
 
 
 def test_the_container_side_follows_movie_roots() -> None:
@@ -61,25 +59,25 @@ def test_the_container_side_follows_movie_roots() -> None:
 
 
 def test_a_path_no_root_covers_is_refused() -> None:
-    mapper = _mapper(("/plunder/movies", "/Volumes/PLUNDER/Media/Movies"))
+    mapper = _mapper(("/data/movies", "/srv/media/movies"))
     with pytest.raises(UnmappedPathError, match="no movie root covers"):
         mapper.to_local("/some/other/path/Dune")
     assert not mapper.covers("/some/other/path/Dune")
 
 
 def test_translation_requires_a_complete_prefix_component() -> None:
-    mapper = _mapper(("/plunder/movies", "/movies"))
+    mapper = _mapper(("/data/movies", "/movies"))
     with pytest.raises(UnmappedPathError):
-        mapper.to_local("/plunder/movies-private/secret")
+        mapper.to_local("/data/movies-private/secret")
     with pytest.raises(UnmappedPathError):
         _mapper(("/movies", "/media/movies")).to_local("/movies2/Dune")
 
 
 def test_translation_handles_trailing_slashes_and_the_root_itself() -> None:
-    mapper = _mapper(("/plunder/movies/", "/movies/"))
-    assert mapper.to_local("/plunder/movies/Dune") == Path("/movies/Dune")
-    assert mapper.to_local("/plunder/movies/") == Path("/movies")
-    assert mapper.to_local("/plunder//movies/./Dune/") == Path("/movies/Dune")
+    mapper = _mapper(("/data/movies/", "/movies/"))
+    assert mapper.to_local("/data/movies/Dune") == Path("/movies/Dune")
+    assert mapper.to_local("/data/movies/") == Path("/movies")
+    assert mapper.to_local("/data//movies/./Dune/") == Path("/movies/Dune")
 
 
 def test_a_filesystem_root_prefix_on_the_radarr_side_works() -> None:
