@@ -11,6 +11,7 @@ query string. Uvicorn's own access log, which prints the query string, is off.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -81,6 +82,13 @@ def create_app(*, database_url: str | None = None) -> FastAPI:
     api.include_router(taste.router)
     app.include_router(api)
     return app
+
+
+def openapi_document() -> str:
+    """The API's OpenAPI document as JSON text, as ``marquee api-schema`` writes it for the
+    web app's generated types. It needs no database and no key, and it is the same whatever
+    ``MARQUEE_ENVIRONMENT`` says (that only decides whether the API serves it)."""
+    return json.dumps(create_app().openapi(), indent=2, ensure_ascii=False) + "\n"
 
 
 def serve(host: str, port: int) -> None:

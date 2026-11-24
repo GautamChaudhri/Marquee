@@ -168,6 +168,50 @@ def test_api_warns_when_no_key_is_configured(
     assert "API_KEY is not set" in capsys.readouterr().err
 
 
+# ── marquee api-schema ────────────────────────────────────────────────────
+
+
+def test_api_schema_writes_the_document_and_checks_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.api.app import openapi_document
+
+    target = tmp_path / "openapi.json"
+    assert cli.main(["api-schema", "--check", "--output", str(target)]) == 1
+    assert "is not current" in capsys.readouterr().err
+    assert not target.exists()
+
+    assert cli.main(["api-schema", "--output", str(target)]) == 0
+    assert target.read_text(encoding="utf-8") == openapi_document()
+    assert cli.main(["api-schema", "--check", "--output", str(target)]) == 0
+    assert "is current" in capsys.readouterr().out
+
+    target.write_text(openapi_document().replace("Marquee", "Other"), encoding="utf-8")
+    assert cli.main(["api-schema", "--check", "--output", str(target)]) == 1
+    assert cli.main(["api-schema", "--output", str(tmp_path / "no" / "such.json")]) == 1
+
+
+def test_the_committed_api_schema_is_current() -> None:
+    """The web app's types come from frontend/openapi.json: it must be what the API says."""
+    from marquee.api.app import openapi_document
+
+    committed = Path(__file__).resolve().parents[1] / "frontend" / "openapi.json"
+    assert committed.read_text(encoding="utf-8") == openapi_document(), (
+        "frontend/openapi.json is out of date: run `uv run marquee api-schema`"
+    )
+
+
+def test_the_api_schema_does_not_depend_on_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from marquee.api.app import openapi_document
+
+    monkeypatch.setattr(settings, "MARQUEE_ENVIRONMENT", "development")
+    development = openapi_document()
+    monkeypatch.setattr(settings, "MARQUEE_ENVIRONMENT", "production")
+    assert openapi_document() == development
+
+
 # ── marquee worker and marquee jobs ───────────────────────────────────────
 
 

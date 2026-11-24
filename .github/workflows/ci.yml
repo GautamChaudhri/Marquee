@@ -72,6 +72,10 @@ jobs:
       - name: Layering contracts
         run: uv run --no-sync lint-imports
 
+      - name: API schema is current
+        # The web app's types are generated from frontend/openapi.json.
+        run: uv run --no-sync marquee api-schema --check
+
       - name: Tests
         # No GPU and no model files on the runner; the database tests use the service above.
         run: uv run --no-sync pytest -rsxX -m "not gpu and not models"

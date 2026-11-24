@@ -1,0 +1,4463 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Marquee",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health/live": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Live",
+        "description": "The process is up.",
+        "operationId": "live_health_live_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Live"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Ready",
+        "description": "The database answers and its schema is the newest migration.",
+        "operationId": "ready_health_ready_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "List Movies",
+        "description": "Movies Radarr lists. Only movies with a file unless ``include_unavailable``.",
+        "operationId": "list_movies_api_movies_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Case-insensitive title search",
+              "title": "Q"
+            },
+            "description": "Case-insensitive title search"
+          },
+          {
+            "name": "has_poster",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only movies with (true) or without (false) a poster",
+              "title": "Has Poster"
+            },
+            "description": "Only movies with (true) or without (false) a poster"
+          },
+          {
+            "name": "origin",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "library",
+                    "marquee"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only movies whose poster is the owner's (library) or Marquee's",
+              "title": "Origin"
+            },
+            "description": "Only movies whose poster is the owner's (library) or Marquee's"
+          },
+          {
+            "name": "has_run",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only movies with (true) or without (false) a run",
+              "title": "Has Run"
+            },
+            "description": "Only movies with (true) or without (false) a run"
+          },
+          {
+            "name": "include_unavailable",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Also list movies Radarr wants but has no file for",
+              "default": false,
+              "title": "Include Unavailable"
+            },
+            "description": "Also list movies Radarr wants but has no file for"
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "title",
+                "year",
+                "added"
+              ],
+              "type": "string",
+              "description": "title (A to Z by sort title), year or added (newest first)",
+              "default": "title",
+              "title": "Sort"
+            },
+            "description": "title (A to Z by sort title), year or added (newest first)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovieList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies/{movie_id}": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Get Movie",
+        "operationId": "get_movie_api_movies__movie_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MovieItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such movie, or Radarr no longer lists it"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/movies/{movie_id}/poster": {
+      "get": {
+        "tags": [
+          "library"
+        ],
+        "summary": "Get Poster",
+        "description": "The movie's poster as the last sync recorded it, or a JPEG thumbnail of it.",
+        "operationId": "get_poster_api_movies__movie_id__poster_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          },
+          {
+            "name": "width",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ThumbnailWidth"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A thumbnail this wide (never enlarged); the file itself without",
+              "title": "Width"
+            },
+            "description": "A thumbnail this wide (never enlarged); the file itself without"
+          },
+          {
+            "name": "v",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first 12 hex of the poster's sha256: while it is current, the answer may be cached for a year",
+              "title": "V"
+            },
+            "description": "The first 12 hex of the poster's sha256: while it is current, the answer may be cached for a year"
+          },
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The poster file, or a thumbnail",
+            "content": {
+              "image/jpeg": {}
+            }
+          },
+          "304": {
+            "description": "Unchanged since the ETag the client holds"
+          },
+          "404": {
+            "description": "No such movie, no poster, or the file is gone or changed"
+          },
+          "409": {
+            "description": "A thumbnail was asked for and the poster does not decode"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "List Jobs",
+        "description": "Jobs, newest first.",
+        "operationId": "list_jobs_api_jobs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "name": "parent_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the jobs of this batch",
+              "title": "Parent Id"
+            },
+            "description": "Only the jobs of this batch"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/events": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Job Event Feed",
+        "description": "Events of every job after a cursor, oldest first: a feed a page can poll.",
+        "operationId": "job_event_feed_api_jobs_events_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The last event id already seen",
+              "default": 0,
+              "title": "After"
+            },
+            "description": "The last event id already seen"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobEventFeed"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_jobs__job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/events": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Job Events",
+        "description": "One job's events, oldest first.",
+        "operationId": "get_job_events_api_jobs__job_id__events_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobEventList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/cancel": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Cancel Job",
+        "description": "Cancel a queued job now, or ask a running one to stop; a batch takes its children.",
+        "operationId": "cancel_job_api_jobs__job_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job"
+          },
+          "409": {
+            "description": "The job's state does not allow it"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/jobs/{job_id}/retry": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Retry Job",
+        "description": "Queue a failed or cancelled job again, as new; its events keep its history.",
+        "operationId": "retry_job_api_jobs__job_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job"
+          },
+          "409": {
+            "description": "The job's state does not allow it"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sync": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Queue Sync",
+        "description": "Queue a library sync (202), or return the one already queued or running (200).",
+        "operationId": "queue_sync_api_sync_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A sync was already queued or running; that job"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/worker": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Get Worker",
+        "description": "Whether a worker is running, and how many jobs are queued, running, and failed.",
+        "operationId": "get_worker_api_worker_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkerInfo"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/movies/{movie_id}/run": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Queue Run",
+        "description": "Queue a run of one movie (202), or return its run already queued or running (200).",
+        "operationId": "queue_run_api_movies__movie_id__run_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Movie Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A job of this kind was already queued or running; that job"
+          },
+          "404": {
+            "description": "No such movie"
+          },
+          "409": {
+            "description": "The movie cannot be run (no file, no TMDB details, retired)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/batch": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Queue Batch",
+        "description": "Queue a batch of runs, for a scope or for a list of movies.",
+        "operationId": "queue_batch_api_runs_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchQueued"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A movie in movie_ids is unknown or cannot be run"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "List Runs",
+        "description": "Runs, newest first.",
+        "operationId": "list_runs_api_runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Movie Id"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "running",
+                    "completed",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Run",
+        "description": "One run and its candidates: ranked ones by rank, then the rest.",
+        "operationId": "get_run_api_runs__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such run"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/candidates/{candidate_id}/image": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Candidate Image",
+        "description": "The 500 px image a run downloaded for one candidate.",
+        "operationId": "get_candidate_image_api_runs__run_id__candidates__candidate_id__image_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The 500 px file the run downloaded",
+            "content": {
+              "image/jpeg": {}
+            }
+          },
+          "304": {
+            "description": "Unchanged since the ETag the client holds"
+          },
+          "404": {
+            "description": "No such run or candidate, never downloaded, or the file is gone"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/runs/{run_id}/deploy": {
+      "post": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Queue Deploy",
+        "description": "Queue the owner's deploy of a candidate of this run: the pick unless one is named.",
+        "operationId": "queue_deploy_api_runs__run_id__deploy_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/DeployRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The same request is the movie's newest write and still queued"
+          },
+          "404": {
+            "description": "No such run, or the candidate is not one of its candidates"
+          },
+          "409": {
+            "description": "The candidate cannot be deployed (run not completed, never downloaded, no pick)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/deployments": {
+      "get": {
+        "tags": [
+          "deployments"
+        ],
+        "summary": "List Deployments",
+        "description": "Every write Marquee made to a movie folder, newest first.",
+        "operationId": "list_deployments_api_deployments_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Movie Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/deployments/{deployment_id}/restore": {
+      "post": {
+        "tags": [
+          "deployments"
+        ],
+        "summary": "Queue Restore",
+        "description": "Queue a restore that puts back what was in the folder before this deployment (any\ndeployment of a movie, not only the newest).",
+        "operationId": "queue_restore_api_deployments__deployment_id__restore_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "deployment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Deployment Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The same request is the movie's newest write and still queued"
+          },
+          "404": {
+            "description": "No such deployment"
+          },
+          "409": {
+            "description": "The deployment cannot be restored"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review List",
+        "description": "Movies whose latest completed run has no feedback that stands; policy deploys first.",
+        "operationId": "review_list_api_review_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingList"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/runs/{run_id}/feedback": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Post Feedback",
+        "description": "Record one act of feedback on a run: the event, its exemplar changes, and the jobs.",
+        "operationId": "post_feedback_api_runs__run_id__feedback_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FeedbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResult"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The key was used before: the same event, and nothing changed"
+          },
+          "404": {
+            "description": "No such run, candidate, or event"
+          },
+          "409": {
+            "description": "Refused, with the reason (not the latest run, no file, ...)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Feedback",
+        "description": "A run's events, and the revokes of them, oldest first.",
+        "operationId": "get_feedback_api_runs__run_id__feedback_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such run"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/feedback/{event_id}/revoke": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Revoke Feedback",
+        "description": "Revoke one event: its exemplars are revoked, the one its positive replaced comes\nback, and a rebuild is queued. The library is left alone.",
+        "operationId": "revoke_feedback_api_feedback__event_id__revoke_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RevokeRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResult"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "The key was used before: the same event, and nothing changed"
+          },
+          "404": {
+            "description": "No such run, candidate, or event"
+          },
+          "409": {
+            "description": "Refused, with the reason (not the latest run, no file, ...)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Taste Status",
+        "description": "Exemplars, the active profile, whether a rebuild is due, agreement, and what the\nresidual would get from the events (it is not trained).",
+        "operationId": "taste_status_api_taste_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TasteStatus"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/taste/rebuild": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Queue Rebuild",
+        "description": "Queue a rebuild of the taste profile from the active exemplars.",
+        "operationId": "queue_rebuild_api_taste_rebuild_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RebuildRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobItem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "A rebuild of this revision was already queued; that job"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
+    },
+    "/api/taste/exemplars": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "List Exemplars",
+        "description": "Exemplars, newest first.",
+        "operationId": "list_exemplars_api_taste_exemplars_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Movie Id"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "active",
+                    "superseded",
+                    "revoked"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "polarity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "positive",
+                    "negative"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Polarity"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExemplarList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/exemplars/{exemplar_id}/image": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Exemplar Image",
+        "description": "An exemplar's kept image, with its hash as the ETag.",
+        "operationId": "get_exemplar_image_api_taste_exemplars__exemplar_id__image_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "exemplar_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Exemplar Id"
+            }
+          },
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The kept image",
+            "content": {
+              "image/jpeg": {},
+              "image/png": {}
+            }
+          },
+          "304": {
+            "description": "Unchanged since the ETag the client holds"
+          },
+          "404": {
+            "description": "No such exemplar, or its image is gone or changed"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AgreementItem": {
+        "properties": {
+          "blind": {
+            "$ref": "#/components/schemas/TallyItem",
+            "description": "The first unrevoked review of each blind run"
+          },
+          "by_profile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TallyItem"
+            },
+            "type": "object",
+            "title": "By Profile"
+          },
+          "by_month": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TallyItem"
+            },
+            "type": "object",
+            "title": "By Month"
+          },
+          "not_blind": {
+            "$ref": "#/components/schemas/TallyItem",
+            "description": "Counted apart, never in the agreement"
+          },
+          "unknown": {
+            "$ref": "#/components/schemas/TallyItem",
+            "description": "Runs whose profile is not registered"
+          }
+        },
+        "type": "object",
+        "required": [
+          "blind",
+          "by_profile",
+          "by_month",
+          "not_blind",
+          "unknown"
+        ],
+        "title": "AgreementItem"
+      },
+      "BatchQueued": {
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/JobItem",
+            "description": "The batch's parent job"
+          },
+          "movies": {
+            "type": "integer",
+            "title": "Movies",
+            "description": "Movies the request covered"
+          },
+          "queued": {
+            "type": "integer",
+            "title": "Queued",
+            "description": "Runs queued; a movie with a run already active is left out"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch",
+          "movies",
+          "queued"
+        ],
+        "title": "BatchQueued"
+      },
+      "BatchRequest": {
+        "properties": {
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "never-run",
+                  "no-poster",
+                  "all"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope",
+            "description": "never-run: eligible movies with no run; no-poster: with no poster; all: every eligible movie"
+          },
+          "movie_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array",
+                "maxItems": 1000,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Movie Ids"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "With scope: at most this many"
+          }
+        },
+        "type": "object",
+        "title": "BatchRequest"
+      },
+      "CandidateItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "source_file": {
+            "type": "string",
+            "title": "Source File",
+            "description": "TMDB's file name"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256",
+            "description": "Of the 500 px file; null if never downloaded"
+          },
+          "stage_reached": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Reached"
+          },
+          "gate_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Decision"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank"
+          },
+          "final_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Score"
+          },
+          "stack": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stack",
+            "description": "Design stack and variant, e.g. 1A"
+          },
+          "is_pick": {
+            "type": "boolean",
+            "title": "Is Pick",
+            "description": "The run's recommendation: rank 1"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url",
+            "description": "The 500 px file, with the API key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "source_file",
+          "sha256",
+          "stage_reached",
+          "gate_decision",
+          "rejection_reason",
+          "rank",
+          "final_score",
+          "stack",
+          "is_pick",
+          "image_url"
+        ],
+        "title": "CandidateItem"
+      },
+      "DeployRequest": {
+        "properties": {
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id",
+            "description": "Default: the run's pick"
+          }
+        },
+        "type": "object",
+        "title": "DeployRequest"
+      },
+      "DeploymentItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "deploy",
+              "restore"
+            ],
+            "title": "Action"
+          },
+          "initiated_by": {
+            "type": "string",
+            "enum": [
+              "policy",
+              "owner"
+            ],
+            "title": "Initiated By"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id"
+          },
+          "source_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source File"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "file_name": {
+            "type": "string",
+            "title": "File Name"
+          },
+          "new_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Sha256",
+            "description": "Null when the write removed the poster"
+          },
+          "new_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Size Bytes"
+          },
+          "previous_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Sha256",
+            "description": "Null when there was no poster"
+          },
+          "previous_origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "library",
+                  "marquee"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Origin"
+          },
+          "backup_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backup File",
+            "description": "Relative to the backups directory"
+          },
+          "restores_deployment_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restores Deployment Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "movie_id",
+          "action",
+          "initiated_by",
+          "run_id",
+          "candidate_id",
+          "source_file",
+          "job_id",
+          "file_name",
+          "new_sha256",
+          "new_size_bytes",
+          "previous_sha256",
+          "previous_origin",
+          "backup_file",
+          "restores_deployment_id",
+          "created_at"
+        ],
+        "title": "DeploymentItem"
+      },
+      "DeploymentList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "DeploymentList"
+      },
+      "EventItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "override",
+              "rank",
+              "reject",
+              "revoke"
+            ],
+            "title": "Action"
+          },
+          "chosen_source_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chosen Source File",
+            "description": "TMDB's file name of the one chosen"
+          },
+          "chosen_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chosen Sha256"
+          },
+          "pick_source_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Source File",
+            "description": "The run's pick, when the event was made"
+          },
+          "profile_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Sha256"
+          },
+          "scorer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorer Name"
+          },
+          "blind": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blind",
+            "description": "The run's profile had no positive exemplar of the movie; null: unknown"
+          },
+          "exposed": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Exposed",
+            "description": "Every candidate shown, as it was"
+          },
+          "context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Context",
+            "description": "order, hated, selected_candidate"
+          },
+          "revokes_event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revokes Event Id"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By",
+            "description": "The revoke that undid this one"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "movie_id",
+          "run_id",
+          "action",
+          "chosen_source_file",
+          "chosen_sha256",
+          "pick_source_file",
+          "profile_sha256",
+          "scorer_name",
+          "blind",
+          "exposed",
+          "context",
+          "revokes_event_id",
+          "created_at"
+        ],
+        "title": "EventItem"
+      },
+      "EventList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EventItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "EventList"
+      },
+      "ExemplarChanges": {
+        "properties": {
+          "created": {
+            "items": {
+              "$ref": "#/components/schemas/ExemplarItem"
+            },
+            "type": "array",
+            "title": "Created"
+          },
+          "ended": {
+            "items": {
+              "$ref": "#/components/schemas/ExemplarItem"
+            },
+            "type": "array",
+            "title": "Ended"
+          },
+          "reactivated": {
+            "items": {
+              "$ref": "#/components/schemas/ExemplarItem"
+            },
+            "type": "array",
+            "title": "Reactivated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "ended",
+          "reactivated"
+        ],
+        "title": "ExemplarChanges"
+      },
+      "ExemplarItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "polarity": {
+            "type": "string",
+            "enum": [
+              "positive",
+              "negative"
+            ],
+            "title": "Polarity"
+          },
+          "weight": {
+            "type": "number",
+            "title": "Weight"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "seed",
+              "feedback"
+            ],
+            "title": "Source"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "superseded",
+              "revoked"
+            ],
+            "title": "State"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "staged_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staged Name",
+            "description": "The name the trainer sees; positives only"
+          },
+          "source_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source File",
+            "description": "TMDB's file name; null for a seed exemplar"
+          },
+          "replaced_exemplar_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaced Exemplar Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "image_url": {
+            "type": "string",
+            "title": "Image Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "movie_id",
+          "polarity",
+          "weight",
+          "source",
+          "event_id",
+          "state",
+          "sha256",
+          "staged_name",
+          "source_file",
+          "replaced_exemplar_id",
+          "created_at",
+          "ended_at",
+          "image_url"
+        ],
+        "title": "ExemplarItem"
+      },
+      "ExemplarList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ExemplarItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "ExemplarList"
+      },
+      "FeedbackJobs": {
+        "properties": {
+          "deploy": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deploy",
+            "description": "The poster_deploy job, if one was queued"
+          },
+          "rebuild": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rebuild",
+            "description": "The taste_rebuild job, if one was queued"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deploy",
+          "rebuild"
+        ],
+        "title": "FeedbackJobs"
+      },
+      "FeedbackRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "override",
+              "rank",
+              "reject"
+            ],
+            "title": "Action"
+          },
+          "candidate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Id",
+            "description": "override: the one chosen"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order",
+            "description": "rank: best first"
+          },
+          "hated": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hated",
+            "description": "rank or reject: the hate pile (reject: every shown one by default)"
+          },
+          "shown": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shown",
+            "description": "What the owner was shown, in that order; default every ranked candidate"
+          },
+          "deploy": {
+            "type": "boolean",
+            "title": "Deploy",
+            "description": "Deploy the chosen poster (approval, override, rank)",
+            "default": true
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "description": "Sent again with the same request, it returns the same event (200)"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action",
+          "idempotency_key"
+        ],
+        "title": "FeedbackRequest",
+        "description": "One act of feedback on a run. Candidates are named by their ids in the run."
+      },
+      "FeedbackResult": {
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/EventItem"
+          },
+          "exemplars": {
+            "$ref": "#/components/schemas/ExemplarChanges"
+          },
+          "jobs": {
+            "$ref": "#/components/schemas/FeedbackJobs"
+          },
+          "deploy_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deploy Note",
+            "description": "Why no deploy was queued, when it was refused"
+          }
+        },
+        "type": "object",
+        "required": [
+          "event",
+          "exemplars",
+          "jobs",
+          "deploy_note"
+        ],
+        "title": "FeedbackResult"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "JobEventFeed": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobEventItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_after": {
+            "type": "integer",
+            "title": "Next After",
+            "description": "Pass as `after` to get the events that follow"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_after"
+        ],
+        "title": "JobEventFeed"
+      },
+      "JobEventItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "Also the feed's cursor"
+          },
+          "job_id": {
+            "type": "integer",
+            "title": "Job Id"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "started",
+              "progress",
+              "retry_scheduled",
+              "succeeded",
+              "failed",
+              "cancel_requested",
+              "cancelled",
+              "requeued",
+              "retried"
+            ],
+            "title": "Type"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "at",
+          "type",
+          "message",
+          "data"
+        ],
+        "title": "JobEventItem"
+      },
+      "JobEventList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobEventItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "JobEventList"
+      },
+      "JobItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "job_class": {
+            "type": "string",
+            "enum": [
+              "gpu",
+              "network",
+              "media_read",
+              "media_write",
+              "batch"
+            ],
+            "title": "Job Class"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
+          "result": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error",
+            "description": "One line, with every secret blanked out"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "title": "Attempt",
+            "description": "How many times the job has started"
+          },
+          "max_attempts": {
+            "type": "integer",
+            "title": "Max Attempts"
+          },
+          "run_after": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Run After",
+            "description": "A queued job does not start before this"
+          },
+          "dedupe_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dedupe Key"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "The batch this job belongs to"
+          },
+          "cancel_requested": {
+            "type": "boolean",
+            "title": "Cancel Requested"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "job_class",
+          "state",
+          "priority",
+          "payload",
+          "result",
+          "error",
+          "progress",
+          "attempt",
+          "max_attempts",
+          "run_after",
+          "dedupe_key",
+          "parent_id",
+          "cancel_requested",
+          "created_at",
+          "updated_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "JobItem"
+      },
+      "JobList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/JobItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "JobList"
+      },
+      "JobProgress": {
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current",
+          "total",
+          "message"
+        ],
+        "title": "JobProgress"
+      },
+      "Live": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status",
+            "default": "ok"
+          }
+        },
+        "type": "object",
+        "title": "Live"
+      },
+      "MovieItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "radarr_id": {
+            "type": "integer",
+            "title": "Radarr Id"
+          },
+          "tmdb_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tmdb Id"
+          },
+          "imdb_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imdb Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "sort_title": {
+            "type": "string",
+            "title": "Sort Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "genres": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Genres"
+          },
+          "has_file": {
+            "type": "boolean",
+            "title": "Has File",
+            "description": "Radarr has the movie's file; false for wanted movies"
+          },
+          "file_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size Bytes"
+          },
+          "added_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Added At",
+            "description": "When Radarr added the movie"
+          },
+          "director": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Director"
+          },
+          "production_companies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Production Companies"
+          },
+          "tagline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tagline"
+          },
+          "poster": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Poster"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "poster_origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "library",
+                  "marquee"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Poster Origin",
+            "description": "Who put the poster there; null when there is none"
+          },
+          "latest_run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Run Id",
+            "description": "The movie's newest run, if it has one"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "radarr_id",
+          "tmdb_id",
+          "imdb_id",
+          "title",
+          "sort_title",
+          "year",
+          "genres",
+          "has_file",
+          "file_size_bytes",
+          "added_at",
+          "director",
+          "production_companies",
+          "tagline",
+          "poster",
+          "poster_origin",
+          "latest_run_id"
+        ],
+        "title": "MovieItem"
+      },
+      "MovieList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MovieItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "MovieList"
+      },
+      "PendingItem": {
+        "properties": {
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "run_id": {
+            "type": "integer",
+            "title": "Run Id"
+          },
+          "ranked": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ranked"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "policy_deployed": {
+            "type": "boolean",
+            "title": "Policy Deployed",
+            "description": "The deploy policy deployed this run's pick"
+          },
+          "blind": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blind"
+          }
+        },
+        "type": "object",
+        "required": [
+          "movie_id",
+          "title",
+          "year",
+          "run_id",
+          "ranked",
+          "finished_at",
+          "policy_deployed",
+          "blind"
+        ],
+        "title": "PendingItem"
+      },
+      "PendingList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PendingItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "PendingList"
+      },
+      "Poster": {
+        "properties": {
+          "file_name": {
+            "type": "string",
+            "title": "File Name",
+            "description": "The file's name inside the movie folder"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "title": "Size Bytes"
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "library",
+              "marquee"
+            ],
+            "title": "Origin",
+            "description": "library: found in the folder (the owner's); marquee: written by a deploy"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "Where to fetch the image, with the API key. Add width=160, 320, or 640 for a JPEG thumbnail, and v=<version> to let the answer be cached for a year"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version",
+            "description": "The first 12 hex of sha256: the value for v="
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_name",
+          "sha256",
+          "size_bytes",
+          "origin",
+          "url",
+          "version"
+        ],
+        "title": "Poster"
+      },
+      "ProfileItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "seed",
+              "rebuild"
+            ],
+            "title": "Source"
+          },
+          "revision": {
+            "type": "string",
+            "title": "Revision"
+          },
+          "positives": {
+            "type": "integer",
+            "title": "Positives"
+          },
+          "negatives": {
+            "type": "integer",
+            "title": "Negatives"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "sha256",
+          "source",
+          "revision",
+          "positives",
+          "negatives",
+          "created_at"
+        ],
+        "title": "ProfileItem"
+      },
+      "Ready": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "not ready"
+            ],
+            "title": "Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "Ready"
+      },
+      "RebuildRequest": {
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "title": "Force",
+            "description": "Build even when the profile is up to date",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RebuildRequest"
+      },
+      "ResidualItem": {
+        "properties": {
+          "subjects": {
+            "type": "integer",
+            "title": "Subjects"
+          },
+          "pairs": {
+            "type": "integer",
+            "title": "Pairs"
+          },
+          "min_subjects": {
+            "type": "integer",
+            "title": "Min Subjects"
+          },
+          "min_pairs": {
+            "type": "integer",
+            "title": "Min Pairs"
+          },
+          "trained": {
+            "type": "boolean",
+            "title": "Trained"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subjects",
+          "pairs",
+          "min_subjects",
+          "min_pairs",
+          "trained"
+        ],
+        "title": "ResidualItem"
+      },
+      "RevokeRequest": {
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key",
+            "description": "Default revoke:<event id>, so asking twice returns the same revoke"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RevokeRequest"
+      },
+      "RunDetail": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "run_folder": {
+            "type": "string",
+            "title": "Run Folder",
+            "description": "The run folder's name inside the runs directory"
+          },
+          "engine_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Run Id"
+          },
+          "engine_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Status",
+            "description": "completed, or flagged_manual when no candidate survived every gate"
+          },
+          "scorer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorer Name"
+          },
+          "ai_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Model"
+          },
+          "profile_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Sha256",
+            "description": "The taste profile's hash when it started"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "stages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stages"
+          },
+          "candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Count"
+          },
+          "ranked_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ranked Count"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "blind": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blind",
+            "description": "The run's profile had no positive exemplar of the movie; null: unknown"
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed",
+            "description": "The run has feedback that is not revoked"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/CandidateItem"
+            },
+            "type": "array",
+            "title": "Candidates"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "movie_id",
+          "job_id",
+          "state",
+          "run_folder",
+          "engine_run_id",
+          "engine_status",
+          "scorer_name",
+          "ai_model",
+          "profile_sha256",
+          "counts",
+          "stages",
+          "candidate_count",
+          "ranked_count",
+          "error",
+          "started_at",
+          "finished_at",
+          "blind",
+          "reviewed",
+          "candidates"
+        ],
+        "title": "RunDetail"
+      },
+      "RunItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "run_folder": {
+            "type": "string",
+            "title": "Run Folder",
+            "description": "The run folder's name inside the runs directory"
+          },
+          "engine_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Run Id"
+          },
+          "engine_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Status",
+            "description": "completed, or flagged_manual when no candidate survived every gate"
+          },
+          "scorer_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorer Name"
+          },
+          "ai_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Model"
+          },
+          "profile_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Sha256",
+            "description": "The taste profile's hash when it started"
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counts"
+          },
+          "stages": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stages"
+          },
+          "candidate_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Count"
+          },
+          "ranked_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ranked Count"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "movie_id",
+          "job_id",
+          "state",
+          "run_folder",
+          "engine_run_id",
+          "engine_status",
+          "scorer_name",
+          "ai_model",
+          "profile_sha256",
+          "counts",
+          "stages",
+          "candidate_count",
+          "ranked_count",
+          "error",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "RunItem"
+      },
+      "RunList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RunItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "RunList"
+      },
+      "TallyItem": {
+        "properties": {
+          "reviewed": {
+            "type": "integer",
+            "title": "Reviewed"
+          },
+          "agreed": {
+            "type": "integer",
+            "title": "Agreed"
+          },
+          "top3": {
+            "type": "integer",
+            "title": "Top3"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent",
+            "description": "Only from 10 reviews"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reviewed",
+          "agreed",
+          "top3",
+          "percent"
+        ],
+        "title": "TallyItem"
+      },
+      "TasteStatus": {
+        "properties": {
+          "exemplars": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Exemplars",
+            "description": "state -> polarity -> count"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "type": "string",
+            "title": "Revision",
+            "description": "The active exemplars' revision"
+          },
+          "rebuild_due": {
+            "type": "boolean",
+            "title": "Rebuild Due"
+          },
+          "agreement": {
+            "$ref": "#/components/schemas/AgreementItem"
+          },
+          "residual": {
+            "$ref": "#/components/schemas/ResidualItem"
+          },
+          "pending_reviews": {
+            "type": "integer",
+            "title": "Pending Reviews"
+          }
+        },
+        "type": "object",
+        "required": [
+          "exemplars",
+          "profile",
+          "revision",
+          "rebuild_due",
+          "agreement",
+          "residual",
+          "pending_reviews"
+        ],
+        "title": "TasteStatus"
+      },
+      "ThumbnailWidth": {
+        "type": "integer",
+        "enum": [
+          160,
+          320,
+          640
+        ],
+        "title": "ThumbnailWidth",
+        "description": "The widths a thumbnail is made at (:data:`marquee.artwork.thumbnails.WIDTHS`)."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WorkerInfo": {
+        "properties": {
+          "running": {
+            "type": "boolean",
+            "title": "Running",
+            "description": "Whether a worker holds the single-worker lock"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since",
+            "description": "When the running worker connected"
+          },
+          "queued": {
+            "type": "integer",
+            "title": "Queued"
+          },
+          "running_jobs": {
+            "type": "integer",
+            "title": "Running Jobs"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "running",
+          "since",
+          "queued",
+          "running_jobs",
+          "failed"
+        ],
+        "title": "WorkerInfo"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "description": "Authorization: Bearer <API_KEY>",
+        "scheme": "bearer"
+      },
+      "APIKeyHeader": {
+        "type": "apiKey",
+        "description": "The API key",
+        "in": "header",
+        "name": "X-Api-Key"
+      }
+    }
+  }
+}

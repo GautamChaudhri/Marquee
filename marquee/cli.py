@@ -9,6 +9,7 @@ import logging
 import sys
 import warnings
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from marquee import __version__
@@ -233,6 +234,23 @@ def _build_parser() -> argparse.ArgumentParser:
     api.add_argument("--host", help="address to listen on (default: API_HOST)")
     api.add_argument("--port", type=int, help="port to listen on (default: API_PORT)")
 
+    api_schema = commands.add_parser(
+        "api-schema",
+        help="write the API's OpenAPI document for the web app",
+        description="Write the HTTP API's OpenAPI document to frontend/openapi.json, which the "
+        "web app's TypeScript types are generated from. With --check, write nothing and exit 1 "
+        "when the file is missing or differs from what the API would write now.",
+    )
+    api_schema.add_argument(
+        "--output",
+        type=Path,
+        default=Path("frontend") / "openapi.json",
+        help="where to write it (default: frontend/openapi.json)",
+    )
+    api_schema.add_argument(
+        "--check", action="store_true", help="exit 1 when the file is not current"
+    )
+
     worker = commands.add_parser(
         "worker",
         help="run the job queue",
@@ -407,6 +425,27 @@ def _api(args: argparse.Namespace) -> int:
             "marquee api: API_KEY is not set; every /api request will answer 503", file=sys.stderr
         )
     serve(args.host or settings.API_HOST, args.port or settings.API_PORT)
+    return 0
+
+
+def _api_schema(args: argparse.Namespace) -> int:
+    from marquee.api.app import openapi_document
+
+    document = openapi_document()
+    path: Path = args.output
+    if args.check:
+        try:
+            current = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            current = None
+        if current != document:
+            return _fail("api-schema", f"{path} is not current; run `marquee api-schema`")
+        print(f"{path} is current")
+        return 0
+    if not path.parent.is_dir():
+        return _fail("api-schema", f"{path.parent} is not a folder")
+    path.write_text(document, encoding="utf-8")
+    print(f"wrote {path} ({len(document.encode())} bytes)")
     return 0
 
 
@@ -1416,6 +1455,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _sync(args)
     if args.command == "api":
         return _api(args)
+    if args.command == "api-schema":
+        return _api_schema(args)
     if args.command == "worker":
         return _worker(args)
     if args.command == "jobs":
