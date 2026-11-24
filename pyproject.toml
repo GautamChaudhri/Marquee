@@ -32,7 +32,7 @@ dependencies = [
     # the default recognition model.
     "paddleocr==3.6.0",
     "psycopg[binary]>=3.2,<4.0",
-    # marquee.fs.boundary builds streaming file responses with it.
+    # The HTTP API (marquee.api, the only package allowed to import it).
     "fastapi>=0.115,<1.0",
 ]
 
@@ -201,4 +201,27 @@ forbidden_modules = ["dotenv", "pydantic_settings"]
 # Reaching settings through marquee.config is the point; only direct imports are banned.
 # Reads of os.environ cannot be expressed as an import contract; they are kept in
 # marquee.config by review (other modules only set variables PaddlePaddle reads).
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "Only marquee.api imports a web framework"
+type = "forbidden"
+source_modules = [
+    "marquee.cli",
+    "marquee.doctor",
+    "marquee.model_fetch",
+    "marquee.taste",
+    "marquee.library",
+    "marquee.pipeline",
+    "marquee.ml",
+    "marquee.fs",
+    "marquee.integrations",
+    "marquee.config",
+    "marquee.logging",
+    "marquee.cancellation",
+    "marquee.host_metrics",
+]
+forbidden_modules = ["fastapi", "starlette"]
+# The CLI starts the API, so it reaches FastAPI through marquee.api; only direct imports
+# are banned.
 allow_indirect_imports = true
