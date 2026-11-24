@@ -38,6 +38,7 @@
 			active: route.startsWith('/review'),
 			count: $pendingReviews || null
 		},
+		{ href: '/taste', label: 'Taste', icon: 'taste', active: route === '/taste' },
 		{ href: '/activity', label: 'Activity', icon: 'activity', active: route === '/activity' }
 	]);
 
