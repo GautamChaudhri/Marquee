@@ -9,11 +9,11 @@ same dotenv file. Every runtime path is derived here from ``DATA_DIR``.
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from typing import Annotated, Any
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Any, Self
 from urllib.parse import quote
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -51,10 +51,19 @@ class Settings(BaseSettings):
 
     # Comma-separated in the environment.
     MOVIE_ROOTS: Annotated[list[Path], NoDecode] = Field(default_factory=list)
+    # The folders in MOVIE_ROOTS as Radarr sees them, in the same order, comma-separated.
+    # Unset means Radarr sees the library at the same paths Marquee does. Only
+    # marquee.fs.paths uses it, to turn a path from Radarr into a local one.
+    RADARR_MOVIE_ROOTS: Annotated[list[PurePosixPath], NoDecode] = Field(default_factory=list)
 
     TMDB_READ_ACCESS_TOKEN: SecretStr | None = None
     RADARR_URL: str | None = None
     RADARR_API_KEY: SecretStr | None = None
+
+    # Every /api request must present this key. Unset, the API answers 503.
+    API_KEY: SecretStr | None = None
+    API_HOST: str = "127.0.0.1"
+    API_PORT: int = 8000
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
@@ -69,6 +78,31 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [Path(part.strip()) for part in value.split(",") if part.strip()]
         return value
+
+    @field_validator("RADARR_MOVIE_ROOTS", mode="before")
+    @classmethod
+    def _split_radarr_roots(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return [PurePosixPath(part.strip()) for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("RADARR_MOVIE_ROOTS", mode="after")
+    @classmethod
+    def _radarr_roots_are_absolute(cls, value: list[PurePosixPath]) -> list[PurePosixPath]:
+        for root in value:
+            if not root.is_absolute() or "\0" in str(root):
+                raise ValueError(f"RADARR_MOVIE_ROOTS entry {str(root)!r} is not an absolute path")
+        return value
+
+    @model_validator(mode="after")
+    def _radarr_roots_pair_with_movie_roots(self) -> Self:
+        if self.RADARR_MOVIE_ROOTS and len(self.RADARR_MOVIE_ROOTS) != len(self.MOVIE_ROOTS):
+            raise ValueError(
+                f"RADARR_MOVIE_ROOTS has {len(self.RADARR_MOVIE_ROOTS)} entries and MOVIE_ROOTS "
+                f"has {len(self.MOVIE_ROOTS)}; they pair by position, so set one Radarr folder "
+                "for each movie root, in the same order, or leave RADARR_MOVIE_ROOTS unset"
+            )
+        return self
 
     @field_validator("DATA_DIR", mode="after")
     @classmethod
@@ -129,8 +163,8 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """Async SQLAlchemy URL (asyncpg driver)."""
-        return f"postgresql+asyncpg://{self._database_netloc()}/{quote(self.POSTGRES_DB, safe='')}"
+        """SQLAlchemy URL on psycopg 3: async with create_async_engine, sync for Alembic."""
+        return f"postgresql+psycopg://{self._database_netloc()}/{quote(self.POSTGRES_DB, safe='')}"
 
     @property
     def database_url_sync(self) -> str:

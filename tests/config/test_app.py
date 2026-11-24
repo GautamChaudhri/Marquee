@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
+from pydantic import ValidationError
 
 from marquee.config import app
 from marquee.config.app import REPO_ROOT, Settings
@@ -59,16 +60,23 @@ def test_database_urls_quote_credentials() -> None:
         POSTGRES_DB="marquee",
     )
     assert settings.database_url == (
-        "postgresql+asyncpg://mar%20quee:p%40ss%3Aword%2F1@db.example:6543/marquee"
+        "postgresql+psycopg://mar%20quee:p%40ss%3Aword%2F1@db.example:6543/marquee"
     )
     assert settings.database_url_sync.startswith("postgresql://mar%20quee:p%40ss%3Aword%2F1@")
 
 
 def test_secrets_never_appear_in_repr() -> None:
-    settings = _settings(TMDB_READ_ACCESS_TOKEN="tmdb-secret", RADARR_API_KEY="radarr-secret")
+    settings = _settings(
+        TMDB_READ_ACCESS_TOKEN="tmdb-secret",
+        RADARR_API_KEY="radarr-secret",
+        API_KEY="api-secret",
+        POSTGRES_PASSWORD="db-secret",
+    )
     text = repr(settings) + str(settings)
     assert "tmdb-secret" not in text
     assert "radarr-secret" not in text
+    assert "api-secret" not in text
+    assert "db-secret" not in text
     assert settings.TMDB_READ_ACCESS_TOKEN.get_secret_value() == "tmdb-secret"
 
 
@@ -84,3 +92,45 @@ def test_env_file_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert app._resolve_env_file() == tmp_path / "other.env"
     monkeypatch.setenv("MARQUEE_ENV_FILE", "")
     assert app._resolve_env_file() is None
+
+
+def test_radarr_movie_roots_split_on_commas_and_pair_by_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOVIE_ROOTS", "/media/movies, /media/more")
+    monkeypatch.setenv("RADARR_MOVIE_ROOTS", "/data/movies , /data/more")
+    settings = Settings(_env_file=None)
+    assert [
+        PurePosixPath("/data/movies"),
+        PurePosixPath("/data/more"),
+    ] == settings.RADARR_MOVIE_ROOTS
+
+
+def test_radarr_movie_roots_default_to_unset() -> None:
+    assert _settings(MOVIE_ROOTS="/media/movies").RADARR_MOVIE_ROOTS == []
+
+
+def test_radarr_movie_roots_must_match_movie_roots_in_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MOVIE_ROOTS", "/media/movies")
+    monkeypatch.setenv("RADARR_MOVIE_ROOTS", "/data/movies,/data/more")
+    with pytest.raises(ValidationError) as caught:
+        Settings(_env_file=None)
+    message = str(caught.value)
+    assert "RADARR_MOVIE_ROOTS" in message
+    assert "MOVIE_ROOTS has 1" in message
+
+
+def test_radarr_movie_roots_must_be_absolute(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MOVIE_ROOTS", "/media/movies")
+    monkeypatch.setenv("RADARR_MOVIE_ROOTS", "movies")
+    with pytest.raises(ValidationError, match="not an absolute path"):
+        Settings(_env_file=None)
+
+
+def test_api_settings_defaults() -> None:
+    settings = _settings()
+    assert settings.API_KEY is None
+    assert settings.API_HOST == "127.0.0.1"
+    assert settings.API_PORT == 8000
