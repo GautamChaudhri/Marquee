@@ -6,6 +6,11 @@ and never touches the database), checks the result, and publishes it
 (:mod:`marquee.taste.rebuild`). Every step is safe to repeat: a profile an earlier attempt
 built and kept is published without building again, and ``TASTE_PROFILE_PATH`` always holds a
 complete profile, the old one or the new one.
+
+A rebuild that published a profile then trains the residual for it
+(:func:`marquee.taste.residuals.train`): the engine binds an artifact to one profile, so
+without a training straight after, runs would fall back to the weighted scorer. A training
+that fails or raises never fails the rebuild; the job's result says what it did.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from marquee.db.models import Job
 from marquee.db.models.taste import PROFILE_SOURCE_REBUILD
 from marquee.jobs import queue
 from marquee.jobs.registry import JobContext, JobKind, PermanentJobError
-from marquee.taste import exemplars, rebuild
+from marquee.taste import exemplars, rebuild, residuals
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +108,17 @@ async def _publish(
     }
 
 
+async def _train(sessions: async_sessionmaker[AsyncSession], job_id: int) -> dict[str, Any]:
+    """Train the residual for the profile just published. Never raises: what happened goes
+    into the rebuild's result."""
+    try:
+        async with sessions() as session:
+            return (await residuals.train(session, job_id=job_id)).to_dict()
+    except Exception as exc:  # a boundary: the rebuild already published its profile
+        logger.exception("TASTE | job %d: the residual training after the rebuild failed", job_id)
+        return {"outcome": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+
+
 async def taste_rebuild(ctx: JobContext) -> dict[str, Any]:
     revision, force = _payload(ctx.payload)
     started = time.perf_counter()
@@ -174,12 +190,14 @@ async def taste_rebuild(ctx: JobContext) -> dict[str, Any]:
             await asyncio.to_thread(rebuild.mark_built, build_dir, plan.revision, facts.sha256)
             sha256 = facts.sha256
         published = await _publish(sessions, plan, sha256, ctx.job_id, build_dir)
+        trained = await _train(sessions, ctx.job_id)
         return {
             **base,
             "skipped": None,
             "built": built,
             **published,
             "movies": len(plan.movie_ids),
+            "residual": trained,
             "seconds": round(time.perf_counter() - started, 1),
         }
     finally:

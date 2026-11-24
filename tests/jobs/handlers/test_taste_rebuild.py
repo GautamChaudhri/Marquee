@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from marquee.config import pipeline_settings, settings
 from marquee.db import engine as db_engine_module
 from marquee.db.engine import create_session_factory
-from marquee.db.models import Exemplar, Job, Movie, TasteProfile
+from marquee.db.models import Exemplar, Job, Movie, ResidualTraining, TasteProfile
 from marquee.jobs.handlers import taste_rebuild as handler
 from marquee.jobs.registry import JobContext, PermanentJobError
 from marquee.ml.artifact_codec import unicode_array
@@ -212,6 +212,13 @@ async def test_a_rebuild_stages_builds_and_publishes(
     assert (settings.profiles_dir / f"{sha}.npz").is_file()
     assert not (settings.taste_build_dir / str(job_id)).exists()
     assert not list(_scratch.parent.glob(".*.part"))
+    # It trained the residual for the new profile (with no feedback, too little evidence).
+    assert result["residual"]["outcome"] == "no_change"
+    assert result["residual"]["reason"] == "insufficient_evidence"
+    assert result["residual"]["profile_id"] == active.id
+    async with sessions() as session:
+        training = await session.scalar(select(ResidualTraining))
+    assert training is not None and training.job_id == job_id
 
     again = await handler.taste_rebuild(
         _context(await _job(sessions), {"revision": ids["revision"], "force": False}, None)
@@ -355,3 +362,41 @@ async def test_old_profile_copies_are_pruned(
     assert len(result["pruned"]) == 2  # the two oldest rebuilds
     assert f"{seed.sha256}.npz" in kept and f"{result['sha256']}.npz" in kept
     assert len(kept) == 6  # the seed and the five newest
+
+
+async def test_a_training_that_fails_never_fails_the_rebuild(
+    sessions: async_sessionmaker[AsyncSession], _scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from marquee.taste import residuals
+
+    ids = await _records(sessions)
+    await _seed_profile(sessions, _scratch)
+
+    async def broken(session: AsyncSession, *, job_id: int | None = None) -> Any:
+        raise RuntimeError("the database went away")
+
+    monkeypatch.setattr(residuals, "train", broken)
+    result = await handler.taste_rebuild(
+        _context(
+            await _job(sessions), {"revision": ids["revision"], "force": False}, _fake_child([])
+        )
+    )
+    assert result["skipped"] is None and result["built"] is True
+    assert result["residual"]["outcome"] == "failed"
+    assert "the database went away" in result["residual"]["error"]
+    async with sessions() as session:
+        active = await rebuild.active_profile(session)
+    assert active is not None and active.id == result["profile_id"]
+
+
+async def test_a_skipped_rebuild_trains_nothing(
+    sessions: async_sessionmaker[AsyncSession], _scratch: Path
+) -> None:
+    ids = await _records(sessions)
+    result = await handler.taste_rebuild(
+        _context(await _job(sessions), {"revision": "f" * 64, "force": False}, None)
+    )
+    assert result["skipped"] == "superseded" and "residual" not in result
+    async with sessions() as session:
+        assert await session.scalar(select(ResidualTraining)) is None
+    assert ids

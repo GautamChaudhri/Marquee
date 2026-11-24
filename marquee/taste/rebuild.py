@@ -23,11 +23,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.db.models import TasteProfile
+from marquee.db.models import ResidualTraining, TasteProfile
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,9 @@ async def register(
 ) -> TasteProfile:
     """Make this profile the active one, in the caller's transaction.
 
-    A profile already registered under this hash is made active again rather than added.
+    A profile already registered under this hash is made active again rather than added. An
+    active residual artifact trained for another profile becomes inactive in the same
+    transaction: the engine binds an artifact to the profile it was trained for.
     """
     await session.execute(
         update(TasteProfile)
@@ -201,6 +203,12 @@ async def register(
         session.add(row)
     else:
         row.is_active = True
+    await session.flush()
+    await session.execute(
+        update(ResidualTraining)
+        .where(ResidualTraining.is_active, ResidualTraining.profile_id.is_distinct_from(row.id))
+        .values(is_active=False, deactivated_at=func.now())
+    )
     await session.flush()
     return row
 
