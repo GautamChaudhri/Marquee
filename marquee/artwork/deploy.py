@@ -11,15 +11,18 @@ Every write follows the same steps (house rules, "Writing media files"):
 3. If the target already holds exactly the new bytes, nothing is written.
 4. Whatever is in the way is backed up (:mod:`marquee.artwork.backup`) and the backup
    verified.
-5. The new bytes go to a temporary file in the same folder, flushed and synced, then renamed
-   over the target; a failure removes the temporary file.
+5. What the write is about to do (the new hash and the previous poster's hash, origin, and
+   backup) is kept beside the staged original (:func:`write_intent`). Then the new bytes go
+   to a temporary file in the same folder, flushed and synced, and are renamed over the
+   target; a failure removes the temporary file.
 6. The target is read back and its hash compared; if it differs the backup is put back and
    the write fails loudly.
 7. One transaction updates the ``artwork`` row and inserts the ``deployments`` row.
 
 Every step is safe to repeat. A job that already wrote its ``deployments`` row is done; a
 file already in place (an earlier attempt renamed it and died before step 7) is recorded
-without writing again.
+without writing again, with the previous poster its intent names: a sync may have rewritten
+the ``artwork`` row in between.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import os
 import stat
@@ -258,6 +262,66 @@ def remove_file(target: Target) -> None:
     target.boundary.fsync_parent(target.poster)
 
 
+# ── What a write is about to do ───────────────────────────────────────────
+
+INTENT_FORMAT = 1
+
+
+@dataclass(frozen=True)
+class Intent:
+    """What a job's write is about to do, kept until the write is recorded.
+
+    A later attempt of the same job that finds the new bytes already in place takes the
+    previous poster from here, not from the ``artwork`` row, which a sync may have rewritten
+    between the rename and the record.
+    """
+
+    job_id: int
+    movie_id: int
+    new_sha256: str | None
+    previous_sha256: str | None
+    previous_origin: str | None
+    backup_file: str | None
+
+
+def intent_path(job_id: int) -> Path:
+    return settings.deploy_staging_dir / f"{job_id}.json"
+
+
+def write_intent(intent: Intent) -> None:
+    """Keep ``intent`` under a temporary name, synced, then renamed into place. Blocking."""
+    folder = settings.deploy_staging_dir
+    folder.mkdir(parents=True, exist_ok=True)
+    temporary = folder / f".{intent.job_id}.json.part"
+    data = json.dumps({"format": INTENT_FORMAT, **asdict(intent)}, sort_keys=True).encode()
+    with temporary.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, intent_path(intent.job_id))
+
+
+def read_intent(job_id: int) -> Intent | None:
+    """The intent a job kept, or ``None`` when there is none or it cannot be read. Blocking."""
+    try:
+        value = json.loads(intent_path(job_id).read_text(encoding="utf-8"))
+        if value.pop("format") != INTENT_FORMAT:
+            raise ValueError("unknown format")
+        intent = Intent(**value)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        logger.warning("DEPLOY | the intent of job %d cannot be read: %s", job_id, exc)
+        return None
+    return intent if intent.job_id == job_id else None
+
+
+def remove_intent(job_id: int | None) -> None:
+    if job_id is not None:
+        with contextlib.suppress(OSError):
+            intent_path(job_id).unlink(missing_ok=True)
+
+
 # ── The write ─────────────────────────────────────────────────────────────
 
 
@@ -365,6 +429,7 @@ async def write_poster(
     async with sessions() as session:
         own, row, newest = await _rows(session, movie.id, write.job_id)
     if own is not None:
+        await asyncio.to_thread(remove_intent, write.job_id)
         return recorded(own, "already_recorded", "this job already made its write")
     target = await asyncio.to_thread(locate, movie.radarr_path, movie.title)
     current = await asyncio.to_thread(read_current, target)
@@ -385,8 +450,26 @@ async def write_poster(
             and newest.action == write.action
             and newest.restores_deployment_id == write.restores_deployment_id
         ):
+            await asyncio.to_thread(remove_intent, write.job_id)
             return recorded(newest, "already_deployed", "the poster was already deployed")
-        if row is not None and row.sha256 != new_sha:
+        intent = (
+            await asyncio.to_thread(read_intent, write.job_id) if write.job_id is not None else None
+        )
+        if intent is not None and (intent.movie_id, intent.new_sha256) == (movie.id, new_sha):
+            # An earlier attempt of this job renamed the new bytes into place and stopped
+            # before recording it. Its intent names the poster it replaced; the row may not
+            # (a sync in between records what it found: the new bytes).
+            previous_sha, previous_origin = intent.previous_sha256, intent.previous_origin
+            backup_file = intent.backup_file
+            if previous_sha is not None and not await asyncio.to_thread(
+                backup.exists, movie.id, previous_sha
+            ):
+                raise DeployError(
+                    f"{POSTER_NAME} already holds the new bytes but the backup of the poster "
+                    "it replaced is missing; nothing recorded"
+                )
+            note = "the file was already in place; an earlier attempt of this job wrote it"
+        elif row is not None and row.sha256 != new_sha:
             previous_sha, previous_origin = row.sha256, row.origin
             backup_file = backup.backup_key(movie.id, row.sha256)
             if not await asyncio.to_thread(backup.exists, movie.id, row.sha256):
@@ -419,7 +502,19 @@ async def write_poster(
             known = row is not None and row.sha256 == current.sha256
             previous_origin = row.origin if known and row is not None else ORIGIN_LIBRARY
         mode = current.mode if current is not None else NEW_FILE_MODE
-        if write.new is not None:  # step 5
+        if write.job_id is not None:  # step 5
+            await asyncio.to_thread(
+                write_intent,
+                Intent(
+                    job_id=write.job_id,
+                    movie_id=movie.id,
+                    new_sha256=new_sha,
+                    previous_sha256=previous_sha,
+                    previous_origin=previous_origin,
+                    backup_file=backup_file,
+                ),
+            )
+        if write.new is not None:
             await asyncio.to_thread(write_file, target, write.new, mode)
         else:
             await asyncio.to_thread(remove_file, target)
@@ -439,6 +534,7 @@ async def write_poster(
         deployment = await _record(
             session, write, target, new_sha, new_origin, previous_sha, previous_origin, backup_file
         )
+    await asyncio.to_thread(remove_intent, write.job_id)
     logger.info(
         "DEPLOY | movie %d: %s %s (%s); deployment %d",
         movie.id,

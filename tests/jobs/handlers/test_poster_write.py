@@ -338,6 +338,95 @@ async def test_restoring_a_deploy_into_an_empty_folder_leaves_no_poster(
     assert await _row(sessions) is None
 
 
+async def _sync_posters(sessions: async_sessionmaker[AsyncSession]) -> None:
+    """The poster part of a library sync, exactly as `marquee sync` runs it."""
+    from marquee.fs.boundary import boundary_for_roots
+    from marquee.fs.paths import PathMapper
+    from marquee.library import sync
+    from marquee.library.folders import scan_movie_roots
+
+    roots = list(settings.MOVIE_ROOTS)
+    async with sessions() as session:
+        listed = {movie.id: movie for movie in await session.scalars(select(Movie))}
+        await sync._sync_posters(
+            session,
+            listed,
+            scan_movie_roots(roots),
+            PathMapper.from_settings(),
+            boundary_for_roots({f"movies{i}": r for i, r in enumerate(roots)}, access="read"),
+            datetime.now(UTC),
+            sync.SyncReport(dry_run=False),
+            None,
+        )
+        await session.commit()
+
+
+async def test_a_retry_after_a_sync_takes_the_previous_poster_from_the_intent(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attempt one stops after the rename, a sync runs, attempt two records the owner's
+    poster as the previous one, with origin library and its backup. Restores likewise."""
+    ids = await _setup(sessions, library, owners_poster=True)
+    real_record = deploy._record
+
+    async def died_after_the_rename(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the worker died after the rename")
+
+    monkeypatch.setattr(deploy, "_record", died_after_the_rename)
+    job_id = await _job(sessions, "poster_deploy")
+    payload = {"candidate_id": ids["pick"], "initiated_by": "owner", "movie_id": ids["movie"]}
+    with pytest.raises(RuntimeError):
+        await handler.poster_deploy(_ctx(job_id, payload))
+    assert (library / "poster.jpg").read_bytes() == PICK
+    assert deploy.read_intent(job_id) == deploy.Intent(
+        job_id=job_id,
+        movie_id=ids["movie"],
+        new_sha256=backup.sha256_of(PICK),
+        previous_sha256=backup.sha256_of(OWNERS),
+        previous_origin="library",
+        backup_file=backup.backup_key(ids["movie"], backup.sha256_of(OWNERS)),
+    )
+
+    await _sync_posters(sessions)  # it records what it finds: the new bytes, as the library's
+    row = await _row(sessions)
+    assert row is not None and (row.sha256, row.origin) == (backup.sha256_of(PICK), "library")
+
+    monkeypatch.setattr(deploy, "_record", real_record)
+    result = await handler.poster_deploy(_ctx(job_id, payload))
+
+    assert result["outcome"] == "already_in_place"
+    async with sessions() as session:
+        deployed = await session.get(Deployment, result["deployment_id"])
+    assert deployed is not None
+    assert deployed.previous_sha256 == backup.sha256_of(OWNERS)
+    assert deployed.previous_origin == "library"
+    assert deployed.backup_file == backup.backup_key(ids["movie"], backup.sha256_of(OWNERS))
+    assert backup.verify(deployed.backup_file, backup.sha256_of(OWNERS)) == OWNERS
+    assert (await _row(sessions)).origin == "marquee"  # type: ignore[union-attr]
+    assert not deploy.intent_path(job_id).exists()
+
+    # A restore keeps its intent too: stopped after the rename, a sync, then the retry.
+    monkeypatch.setattr(deploy, "_record", died_after_the_rename)
+    restore_job = await _job(sessions, "poster_restore")
+    restore = {"deployment_id": deployed.id, "movie_id": ids["movie"]}
+    with pytest.raises(RuntimeError):
+        await handler.poster_restore(_ctx(restore_job, restore))
+    await _sync_posters(sessions)  # the owner's bytes over Marquee's: "replaced by hand"
+    monkeypatch.setattr(deploy, "_record", real_record)
+    restored = await handler.poster_restore(_ctx(restore_job, restore))
+
+    assert (library / "poster.jpg").read_bytes() == OWNERS
+    assert (restored["previous_sha256"], restored["previous_origin"]) == (
+        backup.sha256_of(PICK),
+        "marquee",
+    )
+    assert (await _row(sessions)).origin == "library"  # type: ignore[union-attr]
+    assert not deploy.intent_path(restore_job).exists()
+
+
 async def test_payloads_and_refusals(
     library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
 ) -> None:
