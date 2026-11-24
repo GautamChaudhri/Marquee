@@ -14,6 +14,12 @@ test('Activity shows the worker and the jobs, newest first, and filters them', a
 	await expect(rows).toHaveCount(3);
 	await expect(rows.first()).toContainText('Run');
 	await expect(rows.first()).toContainText('queued');
+	// A job about a movie names it, linked to the movie's page; a sync names none.
+	await expect(rows.first().getByRole('link', { name: 'Arrival (2016)' })).toHaveAttribute(
+		'href',
+		'/movies/3'
+	);
+	await expect(rows.nth(1).getByRole('link', { name: /\(\d{4}\)/ })).toHaveCount(0);
 
 	await page.getByLabel('State').selectOption('failed');
 	await expect(rows).toHaveCount(1);
@@ -38,15 +44,23 @@ test('Activity updates by itself as a job moves on', async ({ page }) => {
 test('a job’s detail shows its events; Cancel and Retry work where allowed', async ({ page }) => {
 	await page.goto('/activity');
 	const rows = page.getByTestId('job-row');
-	await rows.filter({ hasText: 'queued' }).getByRole('link').click();
+	await rows
+		.filter({ hasText: 'queued' })
+		.getByRole('link', { name: /^#\d+$/ })
+		.click();
 	const detail = page.getByTestId('job-detail');
 	await expect(detail.getByTestId('job-events')).toContainText('queued');
+	await expect(detail.getByTestId('job-movie')).toHaveText('Arrival (2016)');
+	await expect(detail.getByTestId('job-movie')).toHaveAttribute('href', '/movies/3');
 	await detail.getByRole('button', { name: 'Cancel' }).click();
 	await expect(detail).toContainText('cancelled');
 	await expect(detail.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
 
 	await page.getByRole('button', { name: 'Close the job' }).click();
-	await rows.filter({ hasText: 'failed' }).getByRole('link').click();
+	await rows
+		.filter({ hasText: 'failed' })
+		.getByRole('link', { name: /^#\d+$/ })
+		.click();
 	await expect(detail).toContainText('Radarr answered 503');
 	await detail.getByRole('button', { name: 'Retry' }).click();
 	await expect(detail.getByTestId('job-events')).toContainText('retried');

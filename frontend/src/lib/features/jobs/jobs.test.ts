@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { canCancel, canRetry, describeJob, detailHeadline, isFinal, kindLabel } from './jobs';
+import {
+	canCancel,
+	canRetry,
+	describeJob,
+	detailHeadline,
+	isFinal,
+	kindLabel,
+	subjectLabel
+} from './jobs';
 
 const base = { progress: null, error: null, result: null, cancel_requested: false };
 
@@ -53,5 +61,12 @@ describe('jobs', () => {
 		expect(kindLabel('library_sync')).toBe('Library sync');
 		expect(kindLabel('poster_restore')).toBe('Restore');
 		expect(kindLabel('something_new')).toBe('something new');
+	});
+
+	it('names the movie a job is about', () => {
+		expect(subjectLabel({ movie_id: 1, title: 'Heat', year: 1995 })).toBe('Heat (1995)');
+		expect(subjectLabel({ movie_id: 2, title: 'Untitled', year: null })).toBe('Untitled');
+		expect(subjectLabel(null)).toBeNull();
+		expect(subjectLabel(undefined)).toBeNull();
 	});
 });

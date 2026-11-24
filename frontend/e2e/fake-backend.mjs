@@ -248,9 +248,16 @@ setInterval(() => {
 	}
 }, 700);
 
-// The `auto` flag is the fake's own; the API has no such field.
+// The `auto` flag is the fake's own; the API has no such field. `subject` is the movie the
+// payload names, as the API gives it.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-const publicJob = ({ auto, ...job }) => job;
+const publicJob = ({ auto, ...job }) => {
+	const movie = state.movies.find((m) => m.id === job.payload?.movie_id);
+	return {
+		...job,
+		subject: movie ? { movie_id: movie.id, title: movie.title, year: movie.year } : null
+	};
+};
 
 function send(res, status, body, headers = {}) {
 	if (Buffer.isBuffer(body)) {

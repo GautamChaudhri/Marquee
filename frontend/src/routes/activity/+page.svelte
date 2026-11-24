@@ -15,7 +15,7 @@
 		type ActivityQuery
 	} from '$lib/features/jobs/feed';
 	import JobDetail from '$lib/features/jobs/JobDetail.svelte';
-	import { KIND_NAMES, describeJob, kindLabel } from '$lib/features/jobs/jobs';
+	import { KIND_NAMES, describeJob, kindLabel, subjectLabel } from '$lib/features/jobs/jobs';
 	import StateBadge from '$lib/features/jobs/StateBadge.svelte';
 	import { formatWhen } from '$lib/format';
 	import { poll } from '$lib/poll';
@@ -279,6 +279,7 @@
 					<tr>
 						<th>Job</th>
 						<th>Kind</th>
+						<th>Movie</th>
 						<th>State</th>
 						<th>Progress</th>
 						<th>Queued</th>
@@ -290,6 +291,13 @@
 						<tr class:selected={query.job === job.id} data-testid="job-row">
 							<td><a href="?{paramsFromActivity({ ...query, job: job.id })}">#{job.id}</a></td>
 							<td>{kindLabel(job.kind)}</td>
+							<td class="movie">
+								{#if job.subject}
+									<a href="/movies/{job.subject.movie_id}">{subjectLabel(job.subject)}</a>
+								{:else}
+									<span class="none">—</span>
+								{/if}
+							</td>
 							<td><StateBadge state={job.state} /></td>
 							<td class="progress">{describeJob(job)}</td>
 							<td class="when">{formatWhen(job.created_at)}</td>
@@ -426,6 +434,12 @@
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
+	.movie a {
+		font-variant-numeric: normal;
+	}
+	.none {
+		color: var(--muted);
+	}
 	.when {
 		white-space: nowrap;
 		color: var(--muted);
@@ -467,12 +481,21 @@
 			padding: 0;
 			border: 0;
 		}
+		.movie {
+			grid-column: 1 / -1;
+			order: 1;
+		}
+		.movie:has(.none) {
+			display: none;
+		}
 		.progress {
 			grid-column: 1 / -1;
+			order: 2;
 		}
 		.when {
 			grid-column: span 3;
 			font-size: 12px;
+			order: 3;
 		}
 		.when:last-child {
 			display: none;

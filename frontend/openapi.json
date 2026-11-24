@@ -3206,6 +3206,17 @@
               }
             ],
             "title": "Finished At"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobSubject"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The movie the payload names (a run, deploy, or restore)"
           }
         },
         "type": "object",
@@ -3306,6 +3317,37 @@
           "message"
         ],
         "title": "JobProgress"
+      },
+      "JobSubject": {
+        "properties": {
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          }
+        },
+        "type": "object",
+        "required": [
+          "movie_id",
+          "title",
+          "year"
+        ],
+        "title": "JobSubject",
+        "description": "The movie a job is about."
       },
       "Live": {
         "properties": {

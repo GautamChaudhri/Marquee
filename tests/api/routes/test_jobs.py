@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import psycopg
 import pytest
 from httpx import AsyncClient
@@ -9,6 +11,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from marquee.db.engine import create_session_factory
+from marquee.db.models import Movie
 from marquee.jobs import batch, queue
 from marquee.jobs.registry import JobContext, JobKind
 from marquee.jobs.store import WORKER_LOCK_KEY
@@ -215,3 +218,36 @@ async def test_the_worker_route_reads_the_lock(
         await holder.execute("SELECT pg_advisory_lock(%s)", [WORKER_LOCK_KEY])
         busy = (await client.get("/api/worker", headers=headers)).json()
     assert busy["running"] is True and busy["since"] is not None
+
+
+@pytest.mark.db
+async def test_a_job_names_the_movie_it_is_about(
+    client: AsyncClient, headers: dict[str, str], db_engine: AsyncEngine
+) -> None:
+    async with create_session_factory(db_engine)() as session:
+        heat = Movie(
+            radarr_id=7,
+            title="Heat",
+            sort_title="heat",
+            year=1995,
+            radarr_path="/radarr/Heat (1995)",
+            has_file=True,
+            last_seen_at=datetime(2026, 11, 24, tzinfo=UTC),
+        )
+        session.add(heat)
+        await session.commit()
+        movie_id = heat.id
+    about = await _enqueue(db_engine, movie_id=movie_id)
+    other = await _enqueue(db_engine, OTHER)
+
+    body = (await client.get("/api/jobs", headers=headers)).json()
+    subjects = {job["id"]: job["subject"] for job in body["items"]}
+    assert subjects == {
+        about: {"movie_id": movie_id, "title": "Heat", "year": 1995},
+        other: None,
+    }
+    one = (await client.get(f"/api/jobs/{about}", headers=headers)).json()
+    assert one["subject"] == {"movie_id": movie_id, "title": "Heat", "year": 1995}
+    cancelled = (await client.post(f"/api/jobs/{about}/cancel", headers=headers)).json()
+    assert cancelled["subject"]["title"] == "Heat"
+    assert (await client.get(f"/api/jobs/{other}", headers=headers)).json()["subject"] is None

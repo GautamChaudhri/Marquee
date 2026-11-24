@@ -16,6 +16,16 @@ class JobProgress(BaseModel):
     message: str | None
 
 
+class JobSubject(BaseModel):
+    """The movie a job is about."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    movie_id: int
+    title: str
+    year: int | None
+
+
 class JobItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -38,6 +48,9 @@ class JobItem(BaseModel):
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    subject: JobSubject | None = Field(
+        default=None, description="The movie the payload names (a run, deploy, or restore)"
+    )
 
 
 class JobList(BaseModel):

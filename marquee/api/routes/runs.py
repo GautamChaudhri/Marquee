@@ -14,6 +14,7 @@ from fastapi.responses import Response as FileResponse
 from sqlalchemy import select
 
 from marquee.api.files import file_response
+from marquee.api.routes.jobs import job_item
 from marquee.api.schemas.jobs import JobItem
 from marquee.api.schemas.runs import (
     BatchQueued,
@@ -71,7 +72,7 @@ async def queue_run(session: Session, movie_id: int, response: Response) -> JobI
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
     job, created = await enqueue_run(session, movie_id)
     _accepted(response, created)
-    return JobItem.model_validate(job)
+    return await job_item(session, job)
 
 
 @router.post(
@@ -83,7 +84,9 @@ async def queue_batch(session: Session, request: BatchRequest) -> BatchQueued:
     """Queue a batch of runs, for a scope or for a list of movies."""
     if request.scope is not None:
         parent, children, found = await enqueue_scope(session, request.scope, limit=request.limit)
-        return BatchQueued(batch=JobItem.model_validate(parent), movies=found, queued=len(children))
+        return BatchQueued(
+            batch=await job_item(session, parent), movies=found, queued=len(children)
+        )
     wanted = list(dict.fromkeys(request.movie_ids or []))
     eligible = set(
         await session.scalars(select(Movie.id).where(Movie.id.in_(wanted), runs.eligible()))
@@ -96,7 +99,7 @@ async def queue_batch(session: Session, request: BatchRequest) -> BatchQueued:
         )
     parent, children = await enqueue_runs(session, wanted, payload={"movies": len(wanted)})
     return BatchQueued(
-        batch=JobItem.model_validate(parent), movies=len(wanted), queued=len(children)
+        batch=await job_item(session, parent), movies=len(wanted), queued=len(children)
     )
 
 
@@ -227,4 +230,4 @@ async def queue_deploy(
     except WriteRefusedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     _accepted(response, created)
-    return JobItem.model_validate(job)
+    return await job_item(session, job)

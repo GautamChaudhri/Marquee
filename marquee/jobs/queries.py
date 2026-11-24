@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.db.models import Job, JobEvent
+from marquee.db.models import Job, JobEvent, Movie
 from marquee.jobs.registry import BATCH
 from marquee.jobs.store import WORKER_LOCK_KEY
 
@@ -64,6 +65,41 @@ async def list_jobs(
         .offset((page - 1) * page_size)
     )
     return JobPage(total=total or 0, items=list(rows))
+
+
+@dataclass(frozen=True)
+class JobSubject:
+    """The movie a job is about."""
+
+    movie_id: int
+    title: str
+    year: int | None
+
+
+def payload_movie_id(payload: dict[str, Any] | None) -> int | None:
+    """The movie a job's payload names (runs, deploys, restores), or ``None``."""
+    value = (payload or {}).get("movie_id")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+async def subjects(session: AsyncSession, jobs: Sequence[Job]) -> dict[int, JobSubject]:
+    """The movie each job is about, by job id, in one query for all of them. A job whose
+    payload names no movie, or a movie that no longer exists, is left out."""
+    wanted = {movie_id for job in jobs if (movie_id := payload_movie_id(job.payload))}
+    if not wanted:
+        return {}
+    rows = await session.execute(
+        select(Movie.id, Movie.title, Movie.year).where(Movie.id.in_(wanted))
+    )
+    movies = {row.id: JobSubject(row.id, row.title, row.year) for row in rows}
+    found: dict[int, JobSubject] = {}
+    for job in jobs:
+        movie_id = payload_movie_id(job.payload)
+        if movie_id is not None and movie_id in movies:
+            found[job.id] = movies[movie_id]
+    return found
 
 
 async def get_job(session: AsyncSession, job_id: int) -> Job | None:

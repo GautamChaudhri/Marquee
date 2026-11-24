@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
+from marquee.api.routes.jobs import job_item
 from marquee.api.schemas.jobs import JobItem
 from marquee.api.schemas.runs import DeploymentItem, DeploymentList
 from marquee.api.sessions import Session
@@ -56,4 +57,4 @@ async def queue_restore(session: Session, deployment_id: int, response: Response
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not created:
         response.status_code = status.HTTP_200_OK
-    return JobItem.model_validate(job)
+    return await job_item(session, job)

@@ -3,7 +3,7 @@
 	import { formatDuration, formatWhen } from '$lib/format';
 	import Button from '$lib/ui/Button.svelte';
 	import Notice from '$lib/ui/Notice.svelte';
-	import { canCancel, canRetry, detailHeadline, kindLabel } from './jobs';
+	import { canCancel, canRetry, detailHeadline, kindLabel, subjectLabel } from './jobs';
 	import StateBadge from './StateBadge.svelte';
 
 	/** One job: its state, error, and events, with Cancel and Retry where the API allows. */
@@ -35,6 +35,12 @@
 	<p class="line">{detailHeadline(job)}</p>
 	{#if job.error}<p class="error" role="alert">{job.error}</p>{/if}
 	<dl>
+		{#if job.subject}<dt>Movie</dt>
+			<dd>
+				<a href="/movies/{job.subject.movie_id}" data-testid="job-movie"
+					>{subjectLabel(job.subject)}</a
+				>
+			</dd>{/if}
 		<dt>Queued</dt>
 		<dd>{formatWhen(job.created_at)}</dd>
 		<dt>Started</dt>

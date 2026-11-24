@@ -36,6 +36,12 @@ export function kindLabel(kind: string): string {
 	return KIND_LABELS[kind] ?? kind.replaceAll('_', ' ');
 }
 
+/** The movie a job is about, as "Title (Year)", or null when it names none. */
+export function subjectLabel(subject: Job['subject']): string | null {
+	if (!subject) return null;
+	return subject.year ? `${subject.title} (${subject.year})` : subject.title;
+}
+
 /** One line for a job's state: its progress while it runs, its error when it failed, and
  *  what it skipped when it stepped aside. */
 export function describeJob(

@@ -12,6 +12,7 @@ from fastapi.responses import Response as FileResponse
 from sqlalchemy import func, select
 
 from marquee.api.files import file_response
+from marquee.api.routes.jobs import job_item
 from marquee.api.schemas.jobs import JobItem
 from marquee.api.schemas.taste import (
     EventItem,
@@ -172,7 +173,7 @@ async def queue_rebuild(
     )
     if not created:
         response.status_code = status.HTTP_200_OK
-    return JobItem.model_validate(job)
+    return await job_item(session, job)
 
 
 @router.get("/taste/exemplars")
