@@ -31,9 +31,14 @@ dependencies = [
     # The version the engine's OCR rules were tuned against; newer releases change
     # the default recognition model.
     "paddleocr==3.6.0",
+    # The one database driver: SQLAlchemy's async engine and Alembic both use psycopg 3.
     "psycopg[binary]>=3.2,<4.0",
-    # The HTTP API (marquee.api, the only package allowed to import it).
+    # The asyncio extra brings greenlet, which SQLAlchemy 2.1 no longer installs by default.
+    "sqlalchemy[asyncio]>=2.1,<2.2",
+    "alembic>=1.20,<2.0",
+    # The HTTP API (marquee.api, the only package allowed to import it), served by uvicorn.
     "fastapi>=0.115,<1.0",
+    "uvicorn>=0.54,<1.0",
 ]
 
 [project.optional-dependencies]
