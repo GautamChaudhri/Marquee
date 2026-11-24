@@ -74,6 +74,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="rebuild the profile from the staged set without reading the library",
     )
+    taste_rebuild = taste_commands.add_parser(
+        "rebuild",
+        help="rebuild the taste profile from the exemplar records, as a job",
+        description="Queue a taste_rebuild of the active exemplars and follow it. It builds a "
+        "new profile from their kept images and puts it in place with one rename. Without "
+        "--force it does nothing when the active profile was built from the same exemplars.",
+    )
+    taste_rebuild.add_argument(
+        "--force", action="store_true", help="build even when the profile is up to date"
+    )
+    taste_rebuild.add_argument(
+        "--no-wait", action="store_true", help="queue it even with no worker running, and return"
+    )
     taste_commands.add_parser(
         "import-seed",
         help="make the staged seed the first exemplar records and register its profile",
@@ -970,6 +983,68 @@ def _import_seed() -> int:
         return _fail("taste import-seed", f"{_database_target()}: {_error_line(exc)}")
 
 
+def _print_rebuild(job: Any) -> None:
+    result = job.result or {}
+    if result.get("skipped"):
+        print(f"skipped   {result['skipped']} (revision {result['revision'][:12]})")
+        if result.get("profile_id"):
+            print(f"profile   {result['profile_id']} ({result['sha256'][:12]}) stays active")
+        return
+    how = "built" if result.get("built") else "published from an earlier attempt's build"
+    print(
+        f"profile   {result['profile_id']} ({result['sha256'][:12]}) {how}, active; "
+        f"{result['positives']} positives, {result['negatives']} negatives, "
+        f"{result['movies']} movies"
+    )
+    print(f"revision  {result['revision']}")
+    if result.get("previous_profile_id"):
+        print(f"replaces  profile {result['previous_profile_id']}")
+    print(f"took      {result['seconds']:.0f} s")
+
+
+async def _taste_rebuild_async(args: argparse.Namespace) -> int:
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.jobs import queries
+    from marquee.jobs.handlers.taste_rebuild import enqueue_rebuild
+
+    engine = create_engine()
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions() as session:
+            worker = await queries.worker_status(session)
+            if not worker.running and not args.no_wait:
+                raise _CommandError(
+                    "no worker is running, so nothing was queued; start one with "
+                    "`marquee worker`, or give --no-wait to queue the rebuild anyway"
+                )
+            job, created = await enqueue_rebuild(session, force=args.force)
+        said = "queued" if created else f"already {job.state}; following it"
+        print(f"job       {job.id} taste_rebuild {said}", flush=True)
+        if args.no_wait:
+            return 0
+        job = await _follow(sessions, job.id, quiet=False)
+    finally:
+        await engine.dispose()
+    if job.state != "succeeded":
+        raise _CommandError(f"job {job.id} {job.state}: {job.error or 'no error recorded'}")
+    _print_rebuild(job)
+    return 0
+
+
+def _taste_rebuild(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    try:
+        return asyncio.run(_taste_rebuild_async(args))
+    except _CommandError as exc:
+        return _fail("taste rebuild", str(exc))
+    except SQLAlchemyError as exc:
+        return _fail("taste rebuild", f"{_database_target()}: {_error_line(exc)}")
+    except KeyboardInterrupt:
+        return _fail("taste rebuild", "stopped following; the job goes on")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -1002,6 +1077,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
     if args.command == "taste" and args.taste_command == "import-seed":
         return _import_seed()
+    if args.command == "taste" and args.taste_command == "rebuild":
+        return _taste_rebuild(args)
     if args.command == "run":
         return _run(args)
     if args.command == "db":

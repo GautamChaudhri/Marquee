@@ -171,3 +171,46 @@ def poster_run(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> di
         "seconds": round(time.perf_counter() - started, 2),
         "pid": os.getpid(),
     }
+
+
+def taste_rebuild(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> dict[str, Any]:
+    """Build a taste profile from the exemplars the worker staged, with the trainer as it is.
+
+    The payload names the build folder (inside the taste build directory) and the two weight
+    maps; the trainer reads ``positive/`` and ``negative/`` there and writes ``profile.npz``
+    beside them. The worker checks and publishes the result.
+    """
+    from marquee.config import settings
+    from marquee.taste.rebuild import BUILT, NEGATIVE, POSITIVE
+    from marquee.taste.trainer import rebuild_profile
+
+    name = payload.get("build")
+    if not isinstance(name, str) or not name or name in {".", ".."} or "/" in name:
+        raise PermanentJobError("the payload needs the build folder's name")
+    positive_weights = payload.get("positive_weights")
+    negative_weights = payload.get("negative_weights")
+    if not isinstance(positive_weights, dict) or not isinstance(negative_weights, dict):
+        raise PermanentJobError("the payload needs both weight maps")
+    build = settings.taste_build_dir / name
+    negatives = build / NEGATIVE
+    has_negatives = negatives.is_dir() and any(negatives.iterdir())
+
+    def on_progress(update: dict[str, Any]) -> None:
+        message = update.get("message") or update.get("stage")
+        progress(update.get("processed"), update.get("total"), message)
+
+    started = time.perf_counter()
+    output = rebuild_profile(
+        training_dir=build / POSITIVE,
+        negative_dir=negatives if has_negatives else None,
+        output=build / BUILT,
+        progress_callback=on_progress,
+        cancel_event=cancel,
+        positive_weights=positive_weights,
+        negative_weights=negative_weights,
+    )
+    return {
+        "sha256": _file_sha256(Path(output)),
+        "seconds": round(time.perf_counter() - started, 2),
+        "pid": os.getpid(),
+    }

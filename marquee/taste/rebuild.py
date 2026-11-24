@@ -203,3 +203,183 @@ async def register(
         row.is_active = True
     await session.flush()
     return row
+
+
+# ── A rebuild ─────────────────────────────────────────────────────────────
+
+POSITIVE = "positive"
+NEGATIVE = "negative"
+BUILT = "profile.npz"
+MARKER = "built.json"
+
+
+class RebuildRefusedError(ProfileError):
+    """The active exemplars cannot make a profile; no retry changes that."""
+
+
+@dataclass(frozen=True)
+class Staged:
+    """One exemplar as the trainer sees it: its name in the build folder and its weight."""
+
+    name: str
+    file_name: str
+    sha256: str
+    weight: float
+    movie_id: int
+
+
+@dataclass(frozen=True)
+class BuildPlan:
+    revision: str
+    positives: list[Staged]
+    negatives: list[Staged]
+
+    @property
+    def movie_ids(self) -> list[int]:
+        return sorted({row.movie_id for row in self.positives})
+
+    def weights(self) -> tuple[dict[str, float], dict[str, float]]:
+        return (
+            {row.name: row.weight for row in self.positives},
+            {row.name: row.weight for row in self.negatives},
+        )
+
+
+async def plan_build(session: AsyncSession) -> BuildPlan:
+    """What a profile built now is built from: the active exemplars.
+
+    Positives are staged under their ``staged_name`` (the trainer reads titles from it, and
+    orders the profile by it); negatives under their kept name, once per image. Refused when
+    two active positives share a staged name, or when there are fewer positives than
+    ``TASTE_SEEDING_MIN_POSTERS``.
+    """
+    from marquee.config import pipeline_settings
+    from marquee.db.models import Movie
+    from marquee.db.models.taste import POLARITY_POSITIVE
+    from marquee.taste import exemplars
+
+    rows = await exemplars.active(session)
+    positives: dict[str, Staged] = {}
+    negatives: dict[str, Staged] = {}
+    for row in rows:
+        if row.polarity == POLARITY_POSITIVE:
+            assert row.staged_name is not None
+            if (other := positives.get(row.staged_name)) is not None:
+                titles = dict(
+                    (
+                        await session.execute(
+                            select(Movie.id, Movie.title).where(
+                                Movie.id.in_([other.movie_id, row.movie_id])
+                            )
+                        )
+                    ).all()
+                )
+                raise RebuildRefusedError(
+                    f"two active positives are staged as {row.staged_name!r}: "
+                    f"{titles.get(other.movie_id)} (movie {other.movie_id}) and "
+                    f"{titles.get(row.movie_id)} (movie {row.movie_id})"
+                )
+            positives[row.staged_name] = Staged(
+                row.staged_name, row.file_name, row.sha256, row.weight, row.movie_id
+            )
+        elif row.file_name not in negatives:
+            negatives[row.file_name] = Staged(
+                row.file_name, row.file_name, row.sha256, row.weight, row.movie_id
+            )
+    minimum = pipeline_settings.TASTE_SEEDING_MIN_POSTERS
+    if len(positives) < minimum:
+        raise RebuildRefusedError(
+            f"only {len(positives)} active positive exemplars; a profile needs at least "
+            f"{minimum} (TASTE_SEEDING_MIN_POSTERS), so the current one stays"
+        )
+    return BuildPlan(
+        revision=exemplars.revision_of(rows),
+        positives=sorted(positives.values(), key=lambda s: s.name),
+        negatives=sorted(negatives.values(), key=lambda s: s.name),
+    )
+
+
+def stage(plan: BuildPlan, build_dir: Path) -> None:
+    """Copy every exemplar's kept image into ``positive/`` and ``negative/``. Blocking.
+
+    Each copy is checked against its hash first. Anything an earlier attempt left is
+    removed. ``rebuild_profile`` reads a ``movie/`` sub-folder specially, so the trainer is
+    given ``positive/`` itself, which has no sub-folders.
+    """
+    import shutil
+
+    from marquee.taste import exemplars
+
+    if build_dir.is_symlink():
+        raise ProfileError(f"the build folder {build_dir.name} is a symbolic link")
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    for folder, rows in ((POSITIVE, plan.positives), (NEGATIVE, plan.negatives)):
+        target = build_dir / folder
+        target.mkdir(parents=True)
+        for row in rows:
+            (target / row.name).write_bytes(exemplars.read_kept(row.file_name, row.sha256))
+
+
+def verify_built(path: Path, plan: BuildPlan) -> ProfileFacts:
+    """The built file must load and hold exactly what was staged. Blocking."""
+    facts = read_profile(path)
+    if (facts.positives, facts.negatives) != (len(plan.positives), len(plan.negatives)):
+        raise ProfileError(
+            f"the built profile holds {facts.positives} positives and {facts.negatives} "
+            f"negatives; {len(plan.positives)} and {len(plan.negatives)} were staged"
+        )
+    if sorted(facts.poster_names) != [row.name for row in plan.positives]:
+        raise ProfileError("the built profile's exemplars are not the ones staged")
+    return facts
+
+
+def mark_built(build_dir: Path, revision: str, sha256: str) -> None:
+    """Say that this build folder's profile is built and kept, so a later attempt of the job
+    publishes it without building again. Blocking."""
+    import json
+
+    temporary = build_dir / f".{MARKER}.part"
+    temporary.write_text(json.dumps({"revision": revision, "sha256": sha256}))
+    os.replace(temporary, build_dir / MARKER)
+
+
+def read_marker(build_dir: Path) -> tuple[str, str] | None:
+    """``(revision, sha256)`` of a profile an earlier attempt built and kept, if any."""
+    import json
+
+    try:
+        value = json.loads((build_dir / MARKER).read_text(encoding="utf-8"))
+        revision, sha = str(value["revision"]), str(value["sha256"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return revision, sha
+
+
+async def kept_names(session: AsyncSession) -> set[str]:
+    """The profile copies to keep: the newest :data:`KEEP_NEWEST`, the seed's, and the
+    active one."""
+    from marquee.db.models.taste import PROFILE_SOURCE_SEED
+
+    newest = await session.scalars(
+        select(TasteProfile.file_name).order_by(TasteProfile.id.desc()).limit(KEEP_NEWEST)
+    )
+    special = await session.scalars(
+        select(TasteProfile.file_name).where(
+            TasteProfile.is_active | (TasteProfile.source == PROFILE_SOURCE_SEED)
+        )
+    )
+    return set(newest) | set(special)
+
+
+def prune(keep: set[str]) -> list[str]:
+    """Delete the kept profile copies not in ``keep``; returns their names. Blocking."""
+    removed = []
+    folder = settings.profiles_dir
+    if not folder.is_dir():
+        return removed
+    for path in sorted(folder.iterdir()):
+        if _PROFILE_NAME.fullmatch(path.name) and path.name not in keep and path.is_file():
+            path.unlink()
+            removed.append(path.name)
+    return removed

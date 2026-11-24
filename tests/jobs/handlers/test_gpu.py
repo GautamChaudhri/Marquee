@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -164,3 +165,54 @@ def test_poster_run_needs_a_taste_profile(
     )
     with pytest.raises(PermanentJobError, match="taste seed"):
         gpu.poster_run(_run_payload(), threading.Event(), lambda *_: None)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"positive_weights": {}, "negative_weights": {}},
+        {"build": "../x", "positive_weights": {}, "negative_weights": {}},
+        {"build": "7", "positive_weights": {}},
+        {"build": "7", "positive_weights": [], "negative_weights": {}},
+    ],
+)
+def test_taste_rebuild_refuses_a_bad_payload(payload: dict) -> None:
+    with pytest.raises(PermanentJobError):
+        gpu.taste_rebuild(payload, threading.Event(), lambda *_: None)
+
+
+def test_taste_rebuild_hands_the_trainer_the_staged_folders(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from marquee.config import settings
+    from marquee.taste import trainer
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+    build = tmp_path / "cache" / "taste-build" / "7"
+    (build / "positive").mkdir(parents=True)
+    (build / "negative").mkdir()
+    calls: list[dict[str, Any]] = []
+
+    def fake_rebuild_profile(**kwargs: Any) -> Path:
+        calls.append(kwargs)
+        kwargs["progress_callback"]({"stage": "clip", "processed": 1, "total": 2})
+        kwargs["output"].write_bytes(b"profile")
+        return kwargs["output"]
+
+    monkeypatch.setattr(trainer, "rebuild_profile", fake_rebuild_profile)
+    progress: list[tuple] = []
+    cancel = threading.Event()
+    result = gpu.taste_rebuild(
+        {"build": "7", "positive_weights": {"A (2001).png": 0.75}, "negative_weights": {}},
+        cancel,
+        lambda *args: progress.append(args),
+    )
+
+    (call,) = calls
+    assert call["training_dir"] == build / "positive"
+    assert call["negative_dir"] is None  # an empty negative folder is no negatives
+    assert call["output"] == build / "profile.npz"
+    assert call["cancel_event"] is cancel
+    assert call["positive_weights"] == {"A (2001).png": 0.75}
+    assert progress == [(1, 2, "clip")]
+    assert result["sha256"] == hashlib.sha256(b"profile").hexdigest()

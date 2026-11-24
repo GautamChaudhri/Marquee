@@ -243,18 +243,38 @@ POSTER_RESTORE = JobKind(
 # ── Queueing ──────────────────────────────────────────────────────────────
 
 
-async def enqueue_deploy(
-    session: AsyncSession, candidate_id: int, *, initiated_by: str = INITIATED_BY_OWNER
+async def add_deploy(
+    session: AsyncSession,
+    candidate_id: int,
+    *,
+    initiated_by: str = INITIATED_BY_OWNER,
+    event_id: int | None = None,
 ) -> tuple[Job, bool]:
-    """Queue a deploy of a candidate; returns the job and whether it is new.
+    """Queue a deploy of a candidate in the caller's transaction (not committed); returns the
+    job and whether it is new. ``event_id`` names the feedback that asked for it.
 
     When a write of the same movie is already queued or running, that job is returned.
     """
     candidate, _, movie = await _candidate(session, candidate_id)
     if initiated_by == INITIATED_BY_POLICY and not candidate.is_pick:
         raise WriteRefusedError("the policy deploys only a run's pick")
-    payload = {"candidate_id": candidate.id, "initiated_by": initiated_by, "movie_id": movie.id}
-    return await queue.enqueue(session, POSTER_DEPLOY, payload)
+    payload: dict[str, Any] = {
+        "candidate_id": candidate.id,
+        "initiated_by": initiated_by,
+        "movie_id": movie.id,
+    }
+    if event_id is not None:
+        payload["event_id"] = event_id
+    return await queue.add_job(session, POSTER_DEPLOY, payload)
+
+
+async def enqueue_deploy(
+    session: AsyncSession, candidate_id: int, *, initiated_by: str = INITIATED_BY_OWNER
+) -> tuple[Job, bool]:
+    """Queue a deploy of a candidate, and commit; returns the job and whether it is new."""
+    job, created = await add_deploy(session, candidate_id, initiated_by=initiated_by)
+    await session.commit()
+    return job, created
 
 
 async def enqueue_restore(session: AsyncSession, deployment_id: int) -> tuple[Job, bool]:

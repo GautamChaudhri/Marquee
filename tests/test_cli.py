@@ -576,6 +576,28 @@ def test_import_seed_reports_its_problems_and_exits_1(
     assert "movies.json cannot be read" in out
 
 
+@pytest.mark.db
+def test_taste_rebuild_queues_the_current_revision(
+    jobs_database: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import psycopg
+
+    from marquee.taste.exemplars import revision_of
+
+    assert cli.main(["taste", "rebuild"]) == 1
+    assert "no worker is running, so nothing was queued" in capsys.readouterr().err
+    assert cli.main(["taste", "rebuild", "--force", "--no-wait"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("job       ") and out.endswith(" taste_rebuild queued\n")
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        kind, payload, key = conn.execute("select kind, payload, dedupe_key from jobs").fetchone()
+    assert kind == "taste_rebuild"
+    assert payload == {"revision": revision_of([]), "force": True}
+    assert key == f"taste_rebuild:{revision_of([])}"
+    assert cli.main(["taste", "rebuild", "--no-wait"]) == 0
+    assert "already queued; following it" in capsys.readouterr().out
+
+
 # ── marquee runs, deploy, deployments, restore ────────────────────────────
 
 
