@@ -25,8 +25,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.db.models import Job
 from marquee.db.models.job import ACTIVE_STATES
-from marquee.jobs.registry import JobKind
+from marquee.jobs import batch
+from marquee.jobs.registry import BATCH, JobKind
 from marquee.jobs.store import (
+    FRESH,
     JobNotFoundError,
     JobStateError,
     add_event,
@@ -37,7 +39,6 @@ from marquee.jobs.store import (
 BACKOFF_BASE_S = 30
 BACKOFF_CAP_S = 600
 ORPHANED = "the worker stopped while the job was running"
-_FRESH = {"populate_existing": True, "synchronize_session": False}
 
 
 def backoff_seconds(attempt: int) -> int:
@@ -62,7 +63,9 @@ async def _missing_or_state(session: AsyncSession, job_id: int, wanted: str) -> 
 
 
 async def _finished(session: AsyncSession, job: Job) -> None:
-    """Hook for what follows a job reaching a final state."""
+    """A job reached a final state: its batch may be done too (same transaction)."""
+    if job.parent_id is not None:
+        await batch.finish_parent_if_done(session, job.parent_id)
 
 
 async def enqueue(
@@ -100,7 +103,7 @@ async def enqueue(
         )
     # The active job a conflict found may finish before it is read; then insert again.
     for _ in range(3):
-        job = await session.scalar(statement.returning(Job), execution_options=_FRESH)
+        job = await session.scalar(statement.returning(Job), execution_options=FRESH)
         if job is not None:
             await add_event(session, job.id, "queued", data={"priority": priority})
             await notify(session, f"new {job.id}")
@@ -108,7 +111,7 @@ async def enqueue(
             return job, True
         existing = await session.scalar(
             select(Job).where(Job.dedupe_key == key, Job.state.in_(ACTIVE_STATES)),
-            execution_options=_FRESH,
+            execution_options=FRESH,
         )
         if existing is not None:
             await session.commit()
@@ -143,7 +146,7 @@ async def claim(session: AsyncSession, classes: Collection[str]) -> Job | None:
             progress=null(),
         )
         .returning(Job),
-        execution_options=_FRESH,
+        execution_options=FRESH,
     )
     if job is None:
         await session.commit()
@@ -160,7 +163,7 @@ async def succeed(session: AsyncSession, job_id: int, result: Any) -> bool:
         .where(Job.id == job_id, Job.state == "running")
         .values(state="succeeded", result=result, error=null(), finished_at=func.now())
         .returning(Job),
-        execution_options=_FRESH,
+        execution_options=FRESH,
     )
     if job is None:
         await session.commit()
@@ -190,7 +193,7 @@ async def fail(
             error=error,
         )
         .returning(Job),
-        execution_options=_FRESH,
+        execution_options=FRESH,
     )
     if job is None:
         await session.commit()
@@ -212,7 +215,7 @@ async def mark_cancelled(session: AsyncSession, job_id: int, message: str) -> bo
         .where(Job.id == job_id, Job.state == "running")
         .values(state="cancelled", finished_at=func.now())
         .returning(Job),
-        execution_options=_FRESH,
+        execution_options=FRESH,
     )
     if job is None:
         await session.commit()
@@ -226,14 +229,19 @@ async def mark_cancelled(session: AsyncSession, job_id: int, message: str) -> bo
 async def request_cancel(session: AsyncSession, job_id: int) -> Job:
     """Cancel a queued job now, or ask a running one to stop.
 
+    For a batch, its queued children are cancelled and its running ones asked to stop.
     Asking again changes nothing. Raises :class:`JobStateError` for a finished job.
     """
+    job = await batch.cancel_batch(session, job_id)
+    if job is not None:
+        await session.commit()
+        return job
     job = await session.scalar(
         update(Job)
         .where(Job.id == job_id, Job.state == "queued")
         .values(state="cancelled", cancel_requested=True, finished_at=func.now())
         .returning(Job),
-        execution_options=_FRESH,
+        execution_options=FRESH,
     )
     if job is not None:
         await add_event(session, job_id, "cancelled", "cancelled before it started")
@@ -242,10 +250,11 @@ async def request_cancel(session: AsyncSession, job_id: int) -> Job:
         return job
     job = await session.scalar(
         update(Job)
-        .where(Job.id == job_id, Job.state == "running", Job.cancel_requested.is_(False))
+        .where(Job.id == job_id, Job.state == "running", Job.job_class != BATCH)
+        .where(Job.cancel_requested.is_(False))
         .values(cancel_requested=True)
         .returning(Job),
-        execution_options=_FRESH,
+        execution_options=FRESH,
     )
     if job is not None:
         await add_event(session, job_id, "cancel_requested")
@@ -253,7 +262,7 @@ async def request_cancel(session: AsyncSession, job_id: int) -> Job:
         await session.commit()
         return job
     job = await session.scalar(
-        select(Job).where(Job.id == job_id, Job.state == "running"), execution_options=_FRESH
+        select(Job).where(Job.id == job_id, Job.state == "running"), execution_options=FRESH
     )
     if job is not None:
         await session.commit()
@@ -269,7 +278,7 @@ async def retry(session: AsyncSession, job_id: int) -> Job:
             .where(
                 Job.id == job_id,
                 Job.state.in_(("failed", "cancelled")),
-                Job.job_class != "batch",
+                Job.job_class != BATCH,
             )
             .values(
                 state="queued",
@@ -283,7 +292,7 @@ async def retry(session: AsyncSession, job_id: int) -> Job:
                 finished_at=null(),
             )
             .returning(Job),
-            execution_options=_FRESH,
+            execution_options=FRESH,
         )
     except IntegrityError:
         await session.rollback()
@@ -334,7 +343,7 @@ async def recover_orphans(session: AsyncSession) -> list[Job]:
     jobs = (
         await session.scalars(
             update(Job)
-            .where(Job.state == "running", Job.job_class != "batch")
+            .where(Job.state == "running", Job.job_class != BATCH)
             .values(
                 state=case(
                     (Job.cancel_requested, "cancelled"), (exhausted, "failed"), else_="queued"
@@ -344,7 +353,7 @@ async def recover_orphans(session: AsyncSession) -> list[Job]:
                 error=case((and_(~Job.cancel_requested, exhausted), ORPHANED), else_=Job.error),
             )
             .returning(Job),
-            execution_options=_FRESH,
+            execution_options=FRESH,
         )
     ).all()
     for job in jobs:
@@ -375,7 +384,7 @@ async def requeue(session: AsyncSession, job_ids: Sequence[int]) -> list[Job]:
                 finished_at=case((Job.cancel_requested, func.now()), else_=null()),
             )
             .returning(Job),
-            execution_options=_FRESH,
+            execution_options=FRESH,
         )
     ).all()
     for job in jobs:

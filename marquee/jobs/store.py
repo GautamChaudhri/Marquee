@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.db.models import JobEvent
 
 CHANNEL = "marquee_jobs"
+FRESH = {"populate_existing": True, "synchronize_session": False}
+"""Execution options for statements returning jobs: refresh any copy the session holds."""
 
 
 class JobNotFoundError(LookupError):
