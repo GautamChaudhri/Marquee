@@ -734,7 +734,7 @@ def _run(args: argparse.Namespace) -> int:
 def _queued_line(job: Any, created: bool) -> str:
     if created:
         return f"job {job.id} {job.kind} queued"
-    return f"job {job.id} {job.kind} already {job.state} for this movie; not queued again"
+    return f"job {job.id} {job.kind} already {job.state}; not queued again"
 
 
 def _print_runs(page: Any) -> None:

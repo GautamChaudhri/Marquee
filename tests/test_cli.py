@@ -779,7 +779,7 @@ def test_run_and_deployment_commands(
     code, out, _ = run("deploy", str(run_id))
     assert code == 0 and out.endswith(" poster_deploy queued\n")
     code, out, _ = run("deploy", str(run_id))
-    assert code == 0 and "already queued for this movie; not queued again" in out
+    assert code == 0 and "poster_deploy already queued; not queued again" in out
     assert "is not one of run" in run("deploy", str(run_id), "--candidate", "999")[2]
 
     assert run("deployments", "list")[1].splitlines()[-1] == "0 of 0 deployment(s)"

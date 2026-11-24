@@ -248,11 +248,14 @@ async def test_deploy_queues_the_owners_write(
         "initiated_by": "owner",
         "movie_id": ids["movie"],
     }
-    # One write per movie: asking again returns the queued one.
+    # The same request again, while it is the movie's newest write and queued: that job.
+    again = await client.post(f"/api/runs/{ids['run']}/deploy", headers=headers)
+    assert again.status_code == 200 and again.json()["id"] == pick.json()["id"]
+    # Another candidate is a new request: queued, and it wins over the first.
     other = await client.post(
         f"/api/runs/{ids['run']}/deploy", headers=headers, json={"candidate_id": ids["other"]}
     )
-    assert other.status_code == 200 and other.json()["id"] == pick.json()["id"]
+    assert other.status_code == 202 and other.json()["id"] > pick.json()["id"]
 
     # Let the queued deploy finish, so the next request is checked rather than deduplicated.
     await db_session.execute(
@@ -315,10 +318,12 @@ async def test_deployments_list_and_restore(
     assert old.status_code == 202
     assert old.json()["kind"] == "poster_restore"
     assert old.json()["payload"] == {"deployment_id": first.id, "movie_id": ids["movie"]}
-    # One write per movie at a time: the newest answers with the restore already queued.
+    # The same restore again is that job; a restore of another deployment is queued too.
+    same = await client.post(f"/api/deployments/{first.id}/restore", headers=headers)
+    assert same.status_code == 200 and same.json()["id"] == old.json()["id"]
     newest = await client.post(f"/api/deployments/{second.id}/restore", headers=headers)
-    assert newest.status_code == 200
-    assert newest.json()["id"] == old.json()["id"]
+    assert newest.status_code == 202
+    assert newest.json()["id"] > old.json()["id"]
     assert (await client.post("/api/deployments/999/restore", headers=headers)).status_code == 404
 
 

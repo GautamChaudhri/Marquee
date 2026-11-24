@@ -546,15 +546,108 @@ async def test_queueing_writes(
             "initiated_by": "owner",
             "movie_id": ids["movie"],
         }
-        assert job.dedupe_key == f"poster_write:{ids['movie']}"
-        same, created_again = await handler.enqueue_deploy(session, ids["pick"])
-        assert not created_again and same.id == job.id  # one write per movie at a time
+        assert job.dedupe_key is None
         with pytest.raises(handler.WriteRefusedError, match="never downloaded"):
             await handler.enqueue_deploy(session, ids["never"])
         with pytest.raises(handler.WriteRefusedError, match="no candidate"):
             await handler.enqueue_deploy(session, 999)
         with pytest.raises(handler.WriteRefusedError, match="only the policy|policy deploys only"):
             await handler.enqueue_deploy(session, ids["other"], initiated_by="policy")
+
+
+async def test_an_identical_write_request_is_not_queued_twice(
+    library: Path, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=True)
+    async with sessions() as session:
+        first, created = await handler.enqueue_deploy(session, ids["other"])
+        same, created_again = await handler.enqueue_deploy(session, ids["other"])
+        assert created and not created_again and same.id == first.id
+        # Another request for the movie is always queued: the newest one wins.
+        newer, newer_created = await handler.enqueue_deploy(session, ids["pick"])
+        assert newer_created and newer.id > first.id
+        # The first request again is newer than both, so it is queued again too.
+        again, again_created = await handler.enqueue_deploy(session, ids["other"])
+        assert again_created and again.id > newer.id
+        repeated, repeated_created = await handler.enqueue_deploy(session, ids["other"])
+        assert not repeated_created and repeated.id == again.id
+
+
+async def _queued_write(
+    sessions: async_sessionmaker[AsyncSession], ids: dict[str, int], which: str
+) -> Job:
+    async with sessions() as session:
+        job, created = await handler.enqueue_deploy(session, ids[which])
+    assert created
+    return job
+
+
+async def _run_write(job: Job) -> dict[str, Any]:
+    run = handler.poster_deploy if job.kind == "poster_deploy" else handler.poster_restore
+    return await run(_ctx(job.id, dict(job.payload)))
+
+
+async def _set_state(sessions: async_sessionmaker[AsyncSession], job_id: int, state: str) -> None:
+    async with sessions() as session:
+        await session.execute(Job.__table__.update().where(Job.id == job_id).values(state=state))
+        await session.commit()
+
+
+async def test_an_older_write_retried_after_a_newer_one_succeeded_writes_nothing(
+    library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=True)
+    older = await _queued_write(sessions, ids, "other")
+    newer = await _queued_write(sessions, ids, "pick")
+    assert (await _run_write(newer))["outcome"] == "written"
+    await _set_state(sessions, newer.id, "succeeded")
+
+    result = await _run_write(older)  # its retry, after the newer one succeeded
+
+    assert result["skipped"] == f"superseded by job {newer.id}"
+    assert result["superseded_by"] == newer.id
+    assert (library / "poster.jpg").read_bytes() == PICK
+    assert fetched == ["pick.jpg"]
+    assert await _deployment_count(sessions) == 1
+
+
+async def test_a_newer_write_that_was_cancelled_does_not_supersede(
+    library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=True)
+    older = await _queued_write(sessions, ids, "other")
+    newer = await _queued_write(sessions, ids, "pick")
+    await _set_state(sessions, newer.id, "cancelled")
+
+    assert (await _run_write(older))["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == OTHER
+
+
+async def test_a_write_that_stopped_after_its_rename_is_recorded_before_it_steps_aside(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An attempt that renamed its file into place must record it, even when a newer write
+    is waiting: otherwise the folder would hold a poster no row describes."""
+    ids = await _setup(sessions, library, owners_poster=True)
+    older = await _queued_write(sessions, ids, "other")
+    real_record = deploy._record
+
+    async def died_after_the_rename(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the worker died after the rename")
+
+    monkeypatch.setattr(deploy, "_record", died_after_the_rename)
+    with pytest.raises(RuntimeError):
+        await _run_write(older)
+    monkeypatch.setattr(deploy, "_record", real_record)
+    newer = await _queued_write(sessions, ids, "pick")
+
+    assert (await _run_write(older))["outcome"] == "already_in_place"
+    assert (await _run_write(newer))["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == PICK
+    assert await _deployment_count(sessions) == 2
 
 
 @pytest.mark.parametrize(

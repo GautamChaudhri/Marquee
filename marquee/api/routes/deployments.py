@@ -40,7 +40,7 @@ async def list_deployments(
     "/{deployment_id}/restore",
     status_code=status.HTTP_202_ACCEPTED,
     responses={
-        200: {"description": "A write of this movie was already queued or running; that job"},
+        200: {"description": "The same request is the movie's newest write and still queued"},
         404: {"description": "No such deployment"},
         409: {"description": "The deployment cannot be restored"},
     },

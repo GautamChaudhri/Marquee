@@ -1,9 +1,16 @@
 """The ``poster_deploy`` and ``poster_restore`` jobs: writes to a movie folder.
 
-Both are class ``media_write`` (one at a time) and share one dedupe key per movie, so a
-movie never has two writes queued or running. Both go through
-:func:`marquee.artwork.deploy.write_poster`. Payloads carry the movie's id for that key;
-the handlers check it against the database.
+Both are class ``media_write``, so two writes never run at once. Both go through
+:func:`marquee.artwork.deploy.write_poster`. Payloads carry the movie's id; the handlers
+check it against the database.
+
+**The newest write request for a movie wins.** A deploy or a restore is always queued,
+except a request identical to the movie's newest write job while that job is still queued,
+which is returned instead (:func:`add_write`). When a write job starts, first attempt or
+retry, and a newer write job of the same movie is queued, running, or succeeded, the older
+one succeeds as ``skipped: superseded by job N`` and writes nothing. A job that already
+renamed its file into place (it kept an intent) records that write first, so the folder
+never holds a poster no row describes; the newer job then writes over it.
 """
 
 from __future__ import annotations
@@ -14,8 +21,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import ColumnElement, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from marquee.artwork import backup, deploy
 from marquee.config import settings
@@ -36,8 +43,13 @@ from marquee.db.models.run import RUN_COMPLETED
 from marquee.fs.paths import PathMappingError
 from marquee.jobs import queue
 from marquee.jobs.registry import JobContext, JobKind, PermanentJobError
+from marquee.jobs.store import FRESH
 
-WRITE_KEY = "poster_write:{movie_id}"
+WRITE_KINDS = ("poster_deploy", "poster_restore")
+SUPERSEDING_STATES = ("queued", "running", "succeeded")
+WRITE_LOCK_CLASS = int.from_bytes(b"mqwr", "big")
+"""With the movie's id, the transaction lock that queues one write request of a movie at a
+time (the two-key advisory lock space, apart from the worker's and the sync's keys)."""
 
 
 class WriteRefusedError(ValueError):
@@ -109,6 +121,14 @@ def _staged(job_id: int) -> bytes | None:
     return data
 
 
+async def _own_write(sessions: async_sessionmaker[AsyncSession], job_id: int) -> Deployment | None:
+    """The deployments row this job already wrote, if an earlier attempt got that far."""
+    async with sessions() as session:
+        own = await session.scalar(select(Deployment).where(Deployment.job_id == job_id))
+        await session.commit()
+    return own
+
+
 async def _original(job_id: int, source_file: str) -> bytes:
     """The bytes this job deploys: fetched once, then the same bytes on every attempt."""
     data = await asyncio.to_thread(_staged, job_id)
@@ -116,6 +136,49 @@ async def _original(job_id: int, source_file: str) -> bytes:
         data = await deploy.fetch_original(source_file)
         await asyncio.to_thread(_keep_staged, job_id, data)
     return data
+
+
+# ── The newest request wins ───────────────────────────────────────────────
+
+
+def _of_movie(movie_id: int) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
+    """The conditions that pick the write jobs of one movie."""
+    return Job.kind.in_(WRITE_KINDS), Job.payload["movie_id"].as_integer() == movie_id
+
+
+async def newer_write(session: AsyncSession, job_id: int, movie_id: int) -> int | None:
+    """The newest write job of the movie queued after this one that is queued, running, or
+    succeeded: the one that wins over this job. ``None`` when there is none."""
+    return await session.scalar(
+        select(Job.id)
+        .where(*_of_movie(movie_id), Job.id > job_id, Job.state.in_(SUPERSEDING_STATES))
+        .order_by(Job.id.desc())
+        .limit(1)
+    )
+
+
+async def _superseded(
+    sessions: async_sessionmaker[AsyncSession], job_id: int, movie_id: int
+) -> dict[str, Any] | None:
+    """The result of a write job that steps aside for a newer one, or ``None`` to go ahead.
+
+    A job that kept an intent may already have renamed its file into place; it goes ahead
+    and records that write rather than leave the folder holding a poster no row describes.
+    """
+    if await asyncio.to_thread(deploy.intent_path(job_id).exists):
+        return None
+    async with sessions() as session:
+        newer = await newer_write(session, job_id, movie_id)
+        await session.commit()
+    if newer is None:
+        return None
+    with contextlib.suppress(OSError):
+        _staged_path(job_id).unlink(missing_ok=True)
+    return {
+        "movie_id": movie_id,
+        "skipped": f"superseded by job {newer}",
+        "superseded_by": newer,
+    }
 
 
 async def poster_deploy(ctx: JobContext) -> dict[str, Any]:
@@ -135,6 +198,10 @@ async def poster_deploy(ctx: JobContext) -> dict[str, Any]:
             await session.commit()
         if movie.id != movie_id:
             raise PermanentJobError(f"candidate {candidate_id} is not movie {movie_id}'s")
+        if await _own_write(sessions, ctx.job_id) is None and (
+            skipped := await _superseded(sessions, ctx.job_id, movie.id)
+        ):
+            return skipped
         guard = None
         if initiated_by == INITIATED_BY_POLICY:
             if not candidate.is_pick:
@@ -196,6 +263,8 @@ async def poster_restore(ctx: JobContext) -> dict[str, Any]:
         if own is not None:
             result = deploy.recorded(own, "already_recorded", "this job already made its write")
             return {**base, **result.to_dict()}
+        if skipped := await _superseded(sessions, ctx.job_id, movie.id):
+            return {**skipped, "restores_deployment_id": deployment_id}
         data: bytes | None = None
         if undone.previous_sha256 is not None:
             if undone.backup_file is None:
@@ -228,7 +297,6 @@ POSTER_DEPLOY = JobKind(
     handler=poster_deploy,
     max_attempts=3,
     timeout_s=5 * 60,
-    dedupe_key=WRITE_KEY,
 )
 POSTER_RESTORE = JobKind(
     "poster_restore",
@@ -236,11 +304,36 @@ POSTER_RESTORE = JobKind(
     handler=poster_restore,
     max_attempts=3,
     timeout_s=5 * 60,
-    dedupe_key=WRITE_KEY,
 )
 
 
 # ── Queueing ──────────────────────────────────────────────────────────────
+
+
+async def add_write(
+    session: AsyncSession, kind: JobKind, payload: dict[str, Any]
+) -> tuple[Job, bool]:
+    """Queue a write of ``payload["movie_id"]`` in the caller's transaction; returns the job
+    and whether it is new.
+
+    The request is always queued, unless the movie's newest write job is this same request
+    (kind and payload) and still queued: that job is returned. Requests for one movie are
+    queued one at a time under a transaction lock, so "newest" is well defined.
+    """
+    movie_id = payload["movie_id"]
+    await session.execute(select(func.pg_advisory_xact_lock(WRITE_LOCK_CLASS, movie_id)))
+    newest = await session.scalar(
+        select(Job).where(*_of_movie(movie_id)).order_by(Job.id.desc()).limit(1),
+        execution_options=FRESH,
+    )
+    if (
+        newest is not None
+        and newest.state == "queued"
+        and newest.kind == kind.name
+        and newest.payload == payload
+    ):
+        return newest, False
+    return await queue.add_job(session, kind, payload)
 
 
 async def add_deploy(
@@ -251,9 +344,8 @@ async def add_deploy(
     event_id: int | None = None,
 ) -> tuple[Job, bool]:
     """Queue a deploy of a candidate in the caller's transaction (not committed); returns the
-    job and whether it is new. ``event_id`` names the feedback that asked for it.
-
-    When a write of the same movie is already queued or running, that job is returned.
+    job and whether it is new. ``event_id`` names the feedback that asked for it, so each
+    act of feedback has a deploy of its own (see :func:`add_write`).
     """
     candidate, _, movie = await _candidate(session, candidate_id)
     if initiated_by == INITIATED_BY_POLICY and not candidate.is_pick:
@@ -265,7 +357,7 @@ async def add_deploy(
     }
     if event_id is not None:
         payload["event_id"] = event_id
-    return await queue.add_job(session, POSTER_DEPLOY, payload)
+    return await add_write(session, POSTER_DEPLOY, payload)
 
 
 async def enqueue_deploy(
@@ -278,16 +370,18 @@ async def enqueue_deploy(
 
 
 async def enqueue_restore(session: AsyncSession, deployment_id: int) -> tuple[Job, bool]:
-    """Queue a restore of any deployment of a movie: it puts back what was in the folder
-    before that deployment."""
+    """Queue a restore of any deployment of a movie, and commit: it puts back what was in
+    the folder before that deployment."""
     undone = await session.get(Deployment, deployment_id)
     if undone is None:
         raise WriteRefusedError(f"no deployment {deployment_id}")
     movie = await session.get(Movie, undone.movie_id)
     assert movie is not None
-    return await queue.enqueue(
+    job, created = await add_write(
         session, POSTER_RESTORE, {"deployment_id": deployment_id, "movie_id": movie.id}
     )
+    await session.commit()
+    return job, created
 
 
 async def queue_policy_deploy(

@@ -2,19 +2,36 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import io
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
+from PIL import Image
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from marquee.artwork import deploy
 from marquee.config import settings
+from marquee.db import engine as db_engine_module
 from marquee.db.engine import create_session_factory
-from marquee.db.models import Exemplar, Job, Movie, PosterRun, PreferenceEvent, RunCandidate
+from marquee.db.models import (
+    Deployment,
+    Exemplar,
+    Job,
+    Movie,
+    PosterRun,
+    PreferenceEvent,
+    RunCandidate,
+)
 from marquee.jobs import review
+from marquee.jobs.handlers import poster_write
+from marquee.jobs.registry import JobContext, JobKind
+from marquee.jobs.worker import Worker
 from marquee.taste import exemplars, feedback
 
 pytestmark = pytest.mark.db
@@ -194,3 +211,104 @@ async def test_a_revoke_queues_a_rebuild(sessions: async_sessionmaker[AsyncSessi
         again = await review.revoke(session, event_id=picked.outcome.event.id)
     assert not again.created and again.rebuild_job is not None
     assert again.rebuild_job.id == undone.rebuild_job.id
+
+
+# ── Two picks in quick succession ─────────────────────────────────────────
+
+
+def _jpeg(colour: tuple[int, int, int]) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (500, 750), colour).save(out, format="JPEG")
+    return out.getvalue()
+
+
+ORIGINALS = {
+    "r1.jpg": _jpeg((200, 0, 0)),
+    "r2.jpg": _jpeg((0, 200, 0)),
+    "r3.jpg": _jpeg((0, 0, 200)),
+}
+
+
+@pytest.fixture
+def movie_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_url: str) -> Path:
+    """The movie's folder in tmp_path, the write handlers on the test database, and TMDB
+    faked: each candidate's original is a distinct JPEG."""
+    root = tmp_path / "movies"
+    folder = root / "Dunkirk (2017)"
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(settings, "MOVIE_ROOTS", [root])
+    monkeypatch.setattr(settings, "RADARR_MOVIE_ROOTS", [PurePosixPath("/radarr")])
+    real = db_engine_module.create_engine
+    monkeypatch.setattr(poster_write, "create_engine", lambda url=None: real(database_url))
+
+    async def fake_fetch(source_file: str, client: object = None) -> bytes:
+        return ORIGINALS[source_file]
+
+    monkeypatch.setattr(deploy, "fetch_original", fake_fetch)
+    return folder
+
+
+async def _no_rebuild(ctx: JobContext) -> dict[str, Any]:
+    return {"skipped": "not in this test"}
+
+
+async def _drain_writes(database_url: str) -> None:
+    """A worker that runs what is queued and exits; rebuilds are stubbed out."""
+    kinds = (
+        poster_write.POSTER_DEPLOY,
+        poster_write.POSTER_RESTORE,
+        JobKind("taste_rebuild", "gpu", handler=_no_rebuild),
+    )
+    worker = Worker(
+        registry={kind.name: kind for kind in kinds},
+        database_url=database_url,
+        schedules=(),
+        drain=True,
+        poll_s=0.2,
+        stop_grace_s=2.0,
+        gpu_idle_s=60.0,
+    )
+    await asyncio.wait_for(worker.run(), 30)
+
+
+async def test_two_picks_while_nothing_runs_deploy_the_second(
+    sessions: async_sessionmaker[AsyncSession], movie_folder: Path, database_url: str
+) -> None:
+    ids = await _run(sessions)
+    async with sessions() as session:
+        first = await review.submit(
+            session,
+            run_id=ids["run"],
+            action="override",
+            candidate_id=ids["r2"],
+            idempotency_key="a",
+        )
+    async with sessions() as session:
+        second = await review.submit(
+            session,
+            run_id=ids["run"],
+            action="override",
+            candidate_id=ids["r3"],
+            idempotency_key="b",
+        )
+    assert first.deploy_job is not None and second.deploy_job is not None
+    # Each event names its own deploy, never an older one.
+    assert second.deploy_job.id > first.deploy_job.id
+    assert second.deploy_job.payload["event_id"] == second.outcome.event.id
+    assert second.deploy_job.payload["candidate_id"] == ids["r3"]
+
+    await _drain_writes(database_url)
+
+    assert (movie_folder / "poster.jpg").read_bytes() == ORIGINALS["r3.jpg"]
+    async with sessions() as session:
+        older = await session.get(Job, first.deploy_job.id)
+        newer = await session.get(Job, second.deploy_job.id)
+        written = list(await session.scalars(select(Deployment)))
+    assert older is not None and newer is not None
+    assert (older.state, newer.state) == ("succeeded", "succeeded")
+    assert older.result["skipped"] == f"superseded by job {newer.id}"
+    assert newer.result["outcome"] == "written"
+    assert [row.candidate_id for row in written] == [ids["r3"]]
+    async with sessions() as session:
+        positive = await exemplars.active_positive(session, ids["movie"])
+    assert positive is not None and positive.source_file == "r3.jpg"

@@ -197,7 +197,7 @@ async def get_candidate_image(
     "/runs/{run_id}/deploy",
     status_code=status.HTTP_202_ACCEPTED,
     responses={
-        200: {"description": "A write of this movie was already queued or running; that job"},
+        200: {"description": "The same request is the movie's newest write and still queued"},
         404: {"description": "No such run, or the candidate is not one of its candidates"},
         409: {
             "description": "The candidate cannot be deployed (run not completed, never "
