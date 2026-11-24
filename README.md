@@ -190,8 +190,27 @@ the exemplars change, a `taste_rebuild` job builds a new taste profile from them
 and swaps it in with one rename; `marquee taste rebuild [--force]` asks for one by hand.
 `marquee taste status` shows the exemplars, the active profile, whether a rebuild is due, and
 the agreement: how often you kept the AI's pick, counted only on runs made while the movie
-had no exemplar of its own (a percentage appears from ten reviews). It also says how much
-evidence the learned score correction would have; that correction is not trained yet.
+had no exemplar of its own (a percentage appears from ten reviews), and the residual's state.
+
+**The residual** is the second way Marquee learns: a small, bounded correction to the score,
+learned from your answers (never from the posters you picked by hand, which stay a clean
+measurement). Every rebuild trains it for the new profile, and it turns on by itself only when
+it agrees with your order better than the plain score on movies it did not train on (at least
+25 movies and 200 pairs of answers, and 2 points better). Until then every training is
+recorded and says what is still missing. `marquee taste residual status` says whether runs use
+it and why; `marquee taste residual train` trains it now. To switch it off, set
+`SCORER=weighted`: runs then always rank with the plain score.
+
+**A blind evaluation** measures how good the picks are. `marquee taste evaluate` runs every
+movie whose poster you chose again, each without its own poster in the taste profile, and
+looks for your poster among the candidates: was it the pick, how far down did it land (by
+design, as the review page shows them), did a gate remove it and why, or is it not among
+TMDB's posters at all. The posters you picked by hand are the headline; ones you chose in a
+review are counted apart. It changes no poster, no answer, and no profile, takes about 20 s a
+movie on the GPU, and keeps only each movie's newest evaluation run. `marquee taste
+evaluation [ID] [--results]` prints the summary, and one line per movie. Those runs never
+appear in the review list and nothing is deployed from them. `EVAL_MATCH_MIN_COSINE` (0.95)
+is how alike a candidate must be to your poster to count as it when no TMDB file name says so.
 
 Two settings decide what happens without you asking. `DEPLOY_POLICY` (default `off`) makes a
 finished run deploy its pick by itself: `missing` only where the folder has no poster or the
@@ -236,7 +255,8 @@ movie, and its poster; runs (`POST /api/movies/{id}/run`, `POST /api/runs/batch`
 (`POST /api/runs/{id}/deploy`), the deployments and restoring one
 (`POST /api/deployments/{id}/restore`); review (`/api/review`, `POST` and `GET`
 `/api/runs/{id}/feedback`, `/api/feedback`, `POST /api/feedback/{id}/revoke`) and taste
-(`/api/taste`, `POST /api/taste/rebuild`, `/api/taste/exemplars` and each one's image); a
+(`/api/taste`, `POST /api/taste/rebuild`, `/api/taste/exemplars` and each one's image,
+`POST /api/taste/evaluations`, the evaluations, one, and its results); a
 summary of the installation (`/api/system`); the jobs
 (`/api/jobs`, one job, its events, and a
 feed of every job's events after a cursor), cancel and retry, `POST /api/sync` to queue a
@@ -277,8 +297,9 @@ file is gitignored; `frontend/.env.example` names both settings with placeholder
 
 The pages: **Library** (the grid, and each movie's poster, latest run, and poster history,
 where any write can be put back), **Review** (the runs waiting for your answer; the number
-waiting is in the navigation), **Taste** (the profile, the agreement, recent feedback, and the
-exemplars), **Activity** (the job queue), and **System** (what the installation is and how it
+waiting is in the navigation), **Taste** (the profile, the agreement, the residual, the blind
+evaluation with a button that runs one and a page of every poster's result, recent feedback,
+and the exemplars), **Activity** (the job queue), and **System** (what the installation is and how it
 is set, read-only). On a run's review page each card is one design, its variants folded
 under it; keep the pick, use another design, put them in your order with a hate pile (with
 the buttons on each card, or by dragging), or refuse them all. "Write the chosen poster to
