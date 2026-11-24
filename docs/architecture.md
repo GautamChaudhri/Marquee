@@ -16,8 +16,9 @@ marquee/
   logging.py       text and JSON log formatting
   config/          the two settings classes; the only code that reads the environment
   db/              the SQLAlchemy async engine, the declarative Base, the ORM models (movies,
-                   artwork, jobs, poster_runs, run_candidates, deployments), the Alembic
-                   migrations, and migrate.py, which applies them
+                   artwork, jobs, poster_runs, run_candidates, deployments,
+                   preference_events, exemplars, taste_profiles), the Alembic migrations, and
+                   migrate.py, which applies them
   fs/              filesystem safety: confined roots, symlink rejection, download validation,
                    and paths.py, the only place a path from Radarr becomes a local path
   integrations/    thin HTTP clients: arr/ (Radarr, Sonarr), tmdb/, URL validation
@@ -33,14 +34,19 @@ marquee/
   artwork/         what Marquee chooses and writes: the run record (runs.py), poster backups
                    (backup.py), and the one path that writes poster.jpg into a movie folder,
                    for a deploy and for a restore (deploy.py)
-  taste/           building and enriching the taste profile (trainer, map, profile enrichment)
-                   and the first profile seeded from the library's posters (seed.py)
+  taste/           building and enriching the taste profile (trainer, map, profile enrichment),
+                   the first profile seeded from the library's posters and its import as
+                   records (seed.py), exemplar records and their kept images (exemplars.py),
+                   feedback (feedback.py), the profile registry and how a rebuild is published
+                   (rebuild.py), and agreement and the review list (agreement.py)
   jobs/            the job queue on PostgreSQL: kinds and class limits (registry.py), every
                    state change (queue.py), batches, schedules, the read queries, the worker,
-                   the GPU child process (gpu_child.py), and handlers/, adapters from a job to
-                   the domain code that does the work (the sync, the run, deploy and restore)
+                   the GPU child process (gpu_child.py), review.py (feedback with the deploy and
+                   the rebuild it calls for, in one commit), and handlers/, adapters from a job
+                   to the domain code that does the work (the sync, the run, deploy and
+                   restore, the taste rebuild)
   api/             the HTTP API: the app factory and server (app.py), API-key auth (auth.py),
-                   routes/ (health, library, jobs, runs, deployments), schemas/ (response
+                   routes/ (health, library, jobs, runs, deployments, taste), schemas/ (response
                    models), file responses (files.py), and a rate limiter
 ```
 
@@ -80,7 +86,7 @@ repository root; `.env.example` lists every setting):
 - `Settings` (`marquee/config/app.py`): environment name, debug and log level, the data
   directory, PostgreSQL connection parts, the movie roots and how Radarr sees them
   (`RADARR_MOVIE_ROOTS`), integration credentials, the API's key, host, and port, and the
-  worker's two knobs (`SYNC_INTERVAL_MINUTES`, `GPU_IDLE_SECONDS`). Secrets
+  worker's knobs (`SYNC_INTERVAL_MINUTES`, `GPU_IDLE_SECONDS`, `GPU_CHILD_MAX_RSS_MB`). Secrets
   are pydantic `SecretStr` values and never print; `secret_values()` lists them so error text
   can be scrubbed. It derives every runtime path and both database URLs: `database_url`
   (`postgresql+psycopg://`, used by SQLAlchemy's async engine and by Alembic) and
@@ -99,15 +105,21 @@ Everything an operator runs goes through the `marquee` command:
 
 | Command | Does |
 |---|---|
-| `marquee doctor` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile, and every connection |
+| `marquee doctor` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile (and, once one is registered, whether the file is that build), and every connection |
 | `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights) and downloads the LAION aesthetic head and the SCRFD face detector, pinned by SHA-256. Checks each one before putting it in place, and writes `data/models/manifest.json`. CLIP, DINOv2, the zero-shot axes, and the aesthetic head's conversion need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
-| `marquee taste seed [--dry-run] [--rescan \| --reuse]` | Builds the first taste profile from the `poster.jpg` in each movie folder, staged as lossless 500 px wide copies. Refuses to scan again unless given `--rescan`; `--reuse` rebuilds from the staged copies. `--rescan` is refused once Marquee has written a poster |
+| `marquee taste seed [--dry-run] [--rescan \| --reuse]` | Builds the first taste profile from the `poster.jpg` in each movie folder, staged as lossless 500 px wide copies. Refuses to scan again unless given `--rescan`; `--reuse` rebuilds from the staged copies. `--rescan` is refused once Marquee has written a poster, and every form is refused once exemplar records exist |
+| `marquee taste import-seed` | Makes each staged seed poster an exemplar record (matched to its movie by IMDb id) and registers the profile file as it is; writes nothing and exits 1 if anything does not match; a second run changes nothing |
+| `marquee taste rebuild [--force] [--no-wait]` | Queues a `taste_rebuild` of the active exemplars and follows it |
+| `marquee taste status [--json]` | Exemplars by state and polarity, the active profile and whether a rebuild is due, agreement, and the residual's evidence against its thresholds |
+| `marquee review list [--json]` / `marquee review show <run> [--json]` | Runs waiting for a review; one run with its ranked candidates' ids, whether it was blind, and its events |
+| `marquee review approve <run>` / `pick <run> --candidate N` / `rank <run> --order IDS [--hate IDS]` / `reject <run> [--hate IDS]` | One act of feedback (see [Review and learning](#review-and-learning)); approve, pick, and rank also deploy unless given `--no-deploy`. Follows the jobs it queued when a worker runs |
+| `marquee review revoke <event>` | Takes one act of feedback back |
 | `marquee run "<title>" [--year Y] [--movie-id N] [--no-wait] [--json]` | Finds the movie in the database (exact title, case ignored), queues a `poster_run`, and follows it, printing the stages and the summary; with no worker running it queues nothing unless `--no-wait` |
 | `marquee runs list [--movie-id N] [--state S] [--json]` / `marquee runs show <id> [--json]` | The newest 50 runs; one run and its candidates |
 | `marquee runs batch --scope never-run\|no-poster\|all [--limit N]` | Queues a batch of runs, one line per job |
 | `marquee deploy <run id> [--candidate N]` | Queues the owner's deploy of the run's pick, or of another candidate |
-| `marquee deployments list [--movie-id N] [--json]` | The newest 50 deployments |
-| `marquee restore <deployment id>` | Queues a restore of a movie's newest deployment |
+| `marquee deployments list [--movie-id N] [--json]` | The newest 50 deployments, with what a restore of each would put back |
+| `marquee restore <deployment id>` | Queues a restore of any deployment of a movie: it puts back what was in the folder before it |
 | `marquee db upgrade` | Applies every migration the database lacks |
 | `marquee db status` | Shows the database's revision and the newest one; exits 1 when they differ |
 | `marquee db revision -m "<text>"` | For developers: writes a new migration from the difference between the models and a database at the newest revision |
@@ -132,7 +144,8 @@ without its source tree. There is no `alembic.ini`: `marquee/db/migrate.py` buil
 Alembic configuration in code and hands the environment script an open connection, so no
 database URL passes through Alembic's configuration. There is one baseline migration
 (`0001`); every later schema change is a new numbered migration (`0002` adds the job tables,
-`0003` the run and deployment tables), and a merged migration is never edited.
+`0003` the run and deployment tables, `0004` the taste tables), and a merged migration is
+never edited.
 
 The library schema is movies only (the job tables are described under [Jobs](#jobs)):
 
@@ -143,6 +156,9 @@ The library schema is movies only (the job tables are described under [Jobs](#jo
 | `poster_runs` | One row per pipeline run of one movie: the movie (no cascade: movies are retired, never deleted), the job that ran it (unique, so a job has one run; set null if the job is deleted), the state (`running`, `completed`, `failed`, `cancelled`), the run folder's name inside the runs directory (never a path), the engine's run id and status, the scorer, the model, the taste profile's SHA-256 when it started, the counts and stage timings (JSONB), how many candidates and how many ranked, a one-line error, and when it started and finished |
 | `run_candidates` | One row per candidate a run considered (unique per run and TMDB file name): the SHA-256 of the 500 px file it downloaded (null when it never downloaded it), the stage it reached, its gate decision and rejection reason, its rank, final score, and design stack, and whether it is the pick (a partial unique index allows one per run). Feature values stay in the archive. Rows go with their run |
 | `deployments` | Append-only (`created_at`, no `updated_at`): every write to a movie folder, a `deploy` or a `restore`, who asked (`owner` or `policy`), the run, candidate, and TMDB file it came from, the job (unique: a job writes at most one row), the file's name, the new file's SHA-256 and size (null when the write removed the poster), the previous poster's SHA-256 and origin (null when there was none), its backup's name relative to the backups directory, and for a restore the row it undoes |
+| `preference_events` | Append-only (`created_at` only; no code updates or deletes a row): one act of feedback (`approval`, `override`, `rank`, `reject`, `revoke`) on a movie's run (set null if the run is deleted). It keeps its own copy of what was shown, because candidate rows go with their run: `exposed`, one object per shown candidate (TMDB's file name as `candidate_id`, its SHA-256, `baseline_rank`, `baseline_score`, `stack`, and `normalized_features` from the archive), at most 100; `context` (`order`, `hated`, `selected_candidate`, as file names); the chosen and the picked file, the chosen file's hash, the run's profile hash and scorer, and `blind` (null: unknown). A `revoke` names the event it revokes (unique). `idempotency_key` is unique, 1 to 160 characters |
+| `exemplars` | A poster the taste profile is built from: the movie, `positive` or `negative`, a weight in (0, 1], the source (`seed`, or `feedback` with its event and TMDB file), the state (`active`, `superseded`, `revoked`, and when it ended), the kept image's SHA-256 and name in `data/ml/exemplars/`, the name the trainer sees (`staged_name`, positives only), and the exemplar it replaced. Partial unique indexes allow one active positive per movie and one active row per movie, polarity, and image |
+| `taste_profiles` | Every profile built or registered: its SHA-256 (unique), the exemplar revision it was built from, `seed` or `rebuild`, its positive and negative counts, the movie ids of its positives (sorted; what makes a run blind), its copy's name in `data/ml/profiles/`, the job that built it, and whether it is the active one (a partial unique index allows one) |
 
 **The database never stores a local path.** The host and the container see the library at
 different paths and share one database, so a movie row holds its folder as Radarr reports
@@ -244,7 +260,8 @@ kind's timeout.
 | `gpu_selftest` | gpu | 1 | 5 min | In the GPU child, loads CLIP as the doctor does (once per child) and embeds one batch; reports the provider, the time, and whether the session was already loaded |
 | `poster_run` | gpu | 2 | 10 min | One movie (`{"movie_id": N}`) through the pipeline, with its run record (see [Runs](#runs)). One active run per movie (`poster_run:<movie id>`) |
 | `poster_deploy` | media_write | 3 | 5 min | Writes a candidate's original into the movie folder (`{"candidate_id", "initiated_by", "movie_id"}`); see [Writing a poster](#writing-a-poster). One active write per movie (`poster_write:<movie id>`) |
-| `poster_restore` | media_write | 3 | 5 min | Undoes a movie's newest deployment (`{"deployment_id", "movie_id"}`); the same key as `poster_deploy` |
+| `poster_restore` | media_write | 3 | 5 min | Puts back what was in the folder before a deployment, any deployment of the movie (`{"deployment_id", "movie_id"}`); the same key as `poster_deploy` |
+| `taste_rebuild` | gpu | 2 | 15 min | Builds the taste profile from the active exemplars and publishes it (`{"revision", "force"}`); see [Review and learning](#review-and-learning). One active rebuild per exemplar revision (`taste_rebuild:{revision}`) |
 
 A dedupe key may name payload fields in braces (`poster_run:{movie_id}`), so a kind can allow
 one active job per movie. A batch's children keep their kind's key: a child whose key an active
@@ -262,7 +279,12 @@ kill, `kill -9`), the job fails with "the GPU process died" and the exit code or
 worker kills what is left of the group, and the next GPU job starts a new child. If the
 worker dies, the child sees its parent change within a second and kills its whole group.
 After `GPU_IDLE_SECONDS` (default 300) without a job the worker stops the child, which frees
-the GPU memory it holds.
+the GPU memory it holds. The child's resident memory also grows with every run (about
+150 MiB, without levelling off), so when a GPU job ends and the child holds more than
+`GPU_CHILD_MAX_RSS_MB` (default 4096; 0 turns it off; read from `VmRSS` in
+`/proc/<pid>/status`), the worker stops it the same way and logs the size; the next GPU job
+starts a new one. The check runs while the finished job still holds the gpu class's slot, so
+it never happens during a job.
 
 A gpu kind either names a function the child runs (`gpu_function`, as `gpu_selftest` does), or
 has a handler that runs in the worker and calls the child for the part that needs the GPU:
@@ -321,7 +343,10 @@ and keeps the database work around the GPU child's:
 
 A cancel that was asked for marks the run cancelled and removes its folder; a stopping worker
 puts the job back instead, and its next attempt starts the run over. A failure marks it failed
-with the one-line error and keeps the folder for its log.
+with the one-line error and keeps the folder for its log. A completed run is never run again:
+when an attempt starts and the job's run already completed (the worker died between completing
+it and finishing the job), the handler returns the recorded result and changes nothing, since
+feedback and deployments point at its candidates.
 
 **The pick is the engine's recommendation:** the highest-scoring candidate, rank 1. Stacks are
 how designs are shown, not what is deployed. A run of a movie whose own poster seeded the taste
@@ -356,9 +381,11 @@ for a deploy and for a restore, in this order:
    `data/backups/posters/<movie id>/<sha256>.jpg`, written under a temporary name, synced,
    renamed, and read back. A backup already there with the right hash is kept; one with the
    wrong hash is an error.
-5. The new bytes go to a temporary file in the same folder, flushed and synced, then renamed
-   over the target (the replaced file's mode is kept; a new one gets 0644). A failure removes
-   the temporary file.
+5. What the write is about to do is kept beside the staged original,
+   `data/cache/deploys/<job id>.json` (written under a temporary name and renamed): the movie,
+   the new hash, and the previous poster's hash, origin, and backup. Then the new bytes go to a
+   temporary file in the same folder, flushed and synced, and are renamed over the target (the
+   replaced file's mode is kept; a new one gets 0644). A failure removes the temporary file.
 6. The target is read back and its hash compared; if it differs, the previous poster is put
    back and the write fails loudly.
 7. One transaction, under the sync's advisory lock so a sync in progress cannot overwrite the
@@ -367,15 +394,21 @@ for a deploy and for a restore, in this order:
 
 Every step is safe to repeat. A job that already wrote its `deployments` row is done. When
 step 3 finds the new bytes in place because an earlier attempt renamed them and died, the
-previous poster is the one the `artwork` row still describes, and its backup must exist. When
+previous poster is the one that attempt's intent names, not the `artwork` row, which a sync may
+have rewritten in between (it records what it finds: the new bytes, as the library's); its
+backup must exist. The intent is removed once the write is recorded. A refusal no retry can
+change (a `poster.jpg` that is a symbolic link or not a regular file, a movie folder that is
+missing or a link, a path outside the roots) fails the job on its first attempt; a read-back
+mismatch or an I/O error retries. When
 the row and the newest deployment already describe the new bytes, nothing is added and the
 result says the poster was already deployed; a deploy of the candidate already deployed does
 not even fetch it again.
 
-**Restore** undoes a movie's newest deployment, and only that one: it backs up what is in the
-folder now, whatever it is, and puts back what the row says was there (from its backup, with
-its origin), or removes the poster when there was none. A restore is itself a deployment, so it
-can be undone in turn.
+**Restore** works on any deployment of a movie, not only the newest: restoring deployment N
+backs up what is in the folder now, whatever it is, and puts back what was there before N
+(from its backup, with its origin), or removes the poster when there was none, and records a
+`restore` row naming N. Restoring the same deployment twice in a row writes nothing the
+second time. A restore is itself a deployment, so it can be undone in turn.
 
 **Deploy policy.** Nothing deploys by itself unless `DEPLOY_POLICY` says so. When a run
 completes with a pick: `off` (the default) queues nothing; `missing` queues a deploy only when
@@ -389,6 +422,76 @@ accepts any downloaded candidate of a completed run.
 deleted the way a library row is; when its bytes changed, the owner replaced it by hand, so it
 becomes origin `library` with the new hash and the sync's report counts it. A sync never
 touches `deployments`. `marquee taste seed --rescan` is refused once any deployment exists.
+
+## Review and learning
+
+The loop: a run picks (rank 1), the pick may be deployed, the owner reviews the run, and the
+review changes the exemplars, which a rebuild turns into the next taste profile.
+
+**Exemplars are records.** `marquee taste import-seed` makes each poster the seed staged
+(`data/ml/seed/movies.json`, matched to its movie by IMDb id) an active positive with source
+`seed`, keeping a copy of the staged PNG in `data/ml/exemplars/<sha256>.png`, and registers the
+profile file built from them as it is (a `taste_profiles` row, source `seed`, active, with a
+copy in `data/ml/profiles/`). It writes nothing when an entry matches no movie or the profile
+does not hold exactly the listed files. From then on, the profile is built from the records.
+
+**Feedback** goes to a movie's latest completed run only, and each act is one
+`preference_events` row (`marquee/taste/feedback.py`):
+
+| Action | Chosen | Positive exemplar | Negative exemplars | Deploys (unless told not to) |
+|---|---|---|---|---|
+| `approval` | the run's pick | weight 0.75, only when the movie has no active positive | none | the pick |
+| `override` | the candidate named | weight 1.0, replaces the active positive | none | that candidate |
+| `rank` | first of the order | weight 1.0, replaces the active positive | each hated candidate ranked `FEEDBACK_HARD_NEGATIVE_RANK_MAX` (10) or better | first of the order |
+| `reject` | none | none | the same, from every shown candidate when none is named | nothing |
+| `revoke` | (undoes one earlier event) | its exemplars are revoked; the one its active positive replaced comes back if it is still only superseded | | nothing |
+
+An override that names the pick is recorded as an approval. A hated candidate whose bytes are
+the movie's active positive ends that positive. A movie has at most one active positive (a new
+one supersedes it) and 8 active negatives (a ninth ends the oldest). Each new exemplar keeps a
+copy of the candidate's 500 px file from the run folder, checked against its recorded hash. A
+positive's `staged_name` is `<title> (<year>)<suffix>` from the movies table, with `/` replaced:
+the trainer reads the title for OCR from it. An exemplar is active as soon as its event is
+recorded, whatever happens to the deploy. A key already used returns the event it made and
+changes nothing. A revoke leaves the library alone; restoring a deployment is how a poster is
+put back. `marquee/jobs/review.py` records the feedback, queues the owner's deploy and, when
+the exemplars' revision changed, a `taste_rebuild`, and commits once.
+
+**The revision** is a SHA-256 over the active exemplars (polarity, image hash, weight to six
+places, staged name), sorted: two sets that would build the same profile share it.
+
+**A rebuild** (`taste_rebuild`, `marquee/jobs/handlers/taste_rebuild.py`) succeeds as skipped
+when its revision is no longer the current one, or when the active profile already has it and
+`force` is false. Otherwise it stages the active exemplars' kept images (each checked by its
+hash) into `data/cache/taste-build/<job id>/positive/<staged_name>` and
+`negative/<sha256>.<ext>`, and the GPU child runs `taste/trainer.py::rebuild_profile` on them
+as it is, with both weight maps. It refuses for good below `TASTE_SEEDING_MIN_POSTERS` active
+positives, or when two active positives share a staged name. The new file must load and hold
+exactly what was staged. Publishing: a copy in `data/ml/profiles/<sha256>.npz`, a marker in the
+build folder, then a copy beside `TASTE_PROFILE_PATH`, synced and renamed over it, then one
+transaction that makes the new `taste_profiles` row the active one. The file goes first: a
+crash before the row leaves a complete profile in place that the doctor reports as not the
+registered build, and the job's next attempt publishes the kept build without building again.
+`TASTE_PROFILE_PATH` always holds a complete profile, the old one or the new one. The build
+folder is then removed, and only the five newest profile copies, the seed's, and the active
+one are kept. A run queued before a rebuild uses the profile that was in place when it
+started; `poster_runs.profile_sha256` says which.
+
+**Blind.** A run is blind when its movie had no positive exemplar in the profile it used (the
+`taste_profiles` row with the run's `profile_sha256`), and "unknown" when that profile is not
+registered. A movie's own exemplar makes its run pick the owner's earlier choice, so only blind
+runs measure taste.
+
+**Agreement** (`marquee/taste/agreement.py`) is counted over events that are not revoked, on
+blind runs, the first such event of each run: agreed when the chosen file is the run's pick, in
+the top 3 when the chosen candidate ranked 3 or better; a `reject` is reviewed and neither.
+Reviews of runs that were not blind, or unknown, are counted apart. Counts are always given
+("3 of 4"), a percentage only from 10 reviews, in total and by profile and month.
+
+**The residual** is not trained yet. `feedback.residual_events` gives the stored events in the
+shape `marquee.ml.residual.build_residual_pairs` reads (a revoked event names the revoke that
+revoked it, and gives no pairs), and `marquee taste status` reports how many subjects and
+pairs they make against `RESIDUAL_MIN_SUBJECTS` and `RESIDUAL_MIN_PAIRS`.
 
 ## The HTTP API
 
@@ -413,11 +516,19 @@ of it. `marquee api` serves it under uvicorn.
 | `POST /api/movies/{id}/run` | yes | queues a run of the movie: 202 with the job, 200 with the run already queued or running; 409 when the movie cannot be run |
 | `POST /api/runs/batch` | yes | `{"scope": "never-run"\|"no-poster"\|"all", "limit": N}` or `{"movie_ids": [...]}`: 202 with the batch's parent job and how many runs were queued; 422 names movies that cannot be run |
 | `GET /api/runs` | yes | one page of runs, newest first, with `movie_id` and `state` filters |
-| `GET /api/runs/{id}` | yes | one run and its candidates, ranked ones first |
+| `GET /api/runs/{id}` | yes | one run and its candidates, ranked ones first, whether it was blind, and whether it is reviewed |
 | `GET /api/runs/{id}/candidates/{candidate_id}/image` | yes | the 500 px file the run downloaded, confined to the runs directory and checked against its recorded hash (the ETag) |
 | `POST /api/runs/{id}/deploy` | yes | `{"candidate_id": N}` optional (the pick by default): queues the owner's deploy, 202; 200 with the movie's write already queued or running; 409 when the candidate cannot be deployed |
 | `GET /api/deployments` | yes | one page of deployments, newest first, with a `movie_id` filter |
-| `POST /api/deployments/{id}/restore` | yes | queues a restore, 202; 409 unless it is the movie's newest deployment |
+| `POST /api/deployments/{id}/restore` | yes | queues a restore of any deployment, 202; 200 with the movie's write already queued or running |
+| `GET /api/review` | yes | movies whose latest completed run has no feedback that stands, policy deploys first |
+| `POST /api/runs/{id}/feedback` | yes | `{"action", "candidate_id", "order", "hated", "shown", "deploy" (default true), "idempotency_key" (required)}`: 201 with the event, the exemplar changes, and the job ids; 200 with the same body when the key was used before; 404 for an unknown run or candidate; 409 with the reason when refused; 422 for a malformed body |
+| `GET /api/runs/{id}/feedback` | yes | the run's events and the revokes of them |
+| `POST /api/feedback/{id}/revoke` | yes | revokes one event: 201, or 200 when it was revoked under the same key; 409 when it is a revoke or already revoked |
+| `GET /api/taste` | yes | what `marquee taste status` prints |
+| `POST /api/taste/rebuild` | yes | `{"force": bool}` optional: queues a rebuild, 202; 200 with the one already queued |
+| `GET /api/taste/exemplars` | yes | one page of exemplars, newest first, with `movie_id`, `state`, and `polarity` filters |
+| `GET /api/taste/exemplars/{id}/image` | yes | the kept image, checked against its hash (the ETag) |
 
 Every `/api` route requires the key in `API_KEY`, as `Authorization: Bearer <key>` or
 `X-Api-Key: <key>`, compared in constant time: missing or wrong is 401, and with no key
@@ -439,11 +550,15 @@ the repository, never committed). Only `marquee/config/` builds these paths.
 data/
   models/     ONNX and other model files, manifest.json (their checksums and where each came
               from), and paddlex/, the OCR weights
-  ml/         taste profiles, residual artifacts, zero-shot axes, and seed/: the staged
+  ml/         the taste profile, residual artifacts, zero-shot axes, seed/: the staged
               copies of the library posters the first profile was built from (movies/) and
-              the record of what was seeded (movies.json)
+              the record of what was seeded (movies.json), exemplars/: each exemplar's kept
+              image (<sha256>.<ext>), and profiles/: a copy of each profile built or
+              registered (<sha256>.npz; the five newest, the seed's, and the active one)
   cache/      embeddings (keyed by model and file hash), poster downloads, thumbnails,
-              deploys/ (originals a deploy fetched, until it records its write), and in a
+              deploys/ (originals a deploy fetched and the write's intent, <job id>.json, until
+              it records its write), taste-build/<job id>/ (a rebuild's staged exemplars and
+              its build, removed once published), and in a
               container cuda-jit/, the CUDA driver's kernel cache (the image points the
               driver there, not Marquee)
   runs/       one folder per run, named <run id, 8 digits>-<title slug>: the candidates it

@@ -93,7 +93,7 @@ unreached. `taste/map.py` still builds poster links in the old API's shape
 | Poster write path | `backend/marquee/core/jobs/handlers_poster_mutations.py`, `mutation_documents.py` | Keep backup, validate, atomic publish, restore. Strip fencing, evidence documents, artifacts |
 | Heal and rescan | `backend/marquee/core/jobs/{handlers_rescan,handlers_maintenance}.py`, `schedules.py` | Keep the logic and the three schedules |
 | Library taste seed | `backend/marquee/core/tv_taste_scan.py`, `api/routes/onboarding.py`, `core/onboarding_review.py` | The "library" path is the chosen seed; extend it to movies |
-| Feedback events | `backend/marquee/api/routes/feedback.py`, `models/taste_preference.py`, `core/taste_preferences.py` | Keep append-only events with exposed candidates, order, and hates. Drop successors, coordinators, publications, acknowledgements |
+| Residual evidence and readiness | `models/taste_preference.py`, `core/taste_preferences.py`, `core/jobs/handlers_ml.py` | Reference for M5c: freezing evidence, readiness thresholds, and training the residual as a job. M5b wrote feedback events, exemplars, and the profile rebuild new; drop successors, coordinators, publications, acknowledgements |
 | Run records | `backend/marquee/models/pipeline_run.py`, `core/jobs/poster_pipeline*.py`, `api/results.py`, `api/explanations.py` | Keep one row per run plus the JSON archive; drop job, attempt, and fence columns |
 | Multi-title batching | `backend/marquee/pipeline/poster_group_runner.py` | Stage-major batching keeps models loaded across titles. Worth keeping for GPU throughput |
 | Request limits | `backend/marquee/api/{request_limits,deps}.py` | Rate limiting and lockout wait for M6 and M8. The API-key auth became `api/auth.py` in M3, without its bypasses, and was deleted |
@@ -126,6 +126,18 @@ above still describe what M5b's review needs (`models/pipeline_run.py`, `api/res
 `_save_cached_embedding` and `_load_cached_embedding` take the file's SHA-256, so the salvaged
 `tests/test_poster_group_runner.py`, which saves one under a file name, no longer matches the
 live engine (`load_run_embedding(<file name>)` still works within a run).
+
+M5b wrote review and learning new: preference events, exemplar records with kept images, the
+seed import, the `taste_rebuild` job, agreement, and the review routes and commands
+(`marquee/taste/{exemplars,feedback,rebuild,agreement}.py`, `marquee/jobs/review.py`,
+`marquee/api/routes/taste.py`). It took three rules from the salvaged feedback code (at most
+100 shown candidates per event, at most 8 active negatives per movie, an idempotency key of at
+most 160 characters) and copied nothing. It deleted `api/routes/feedback.py` and
+`tests/test_feedback.py`, which the new routes replace; the salvaged `api/routes/pipeline.py`
+still imports the deleted route, as other salvaged files import modules that are gone.
+`models/taste_preference.py` and `core/taste_preferences.py` stay for M5c, with
+`core/jobs/handlers_ml.py`, which trains the residual from them, and
+`tests/test_taste_authority.py`.
 
 Partly lifted test files in `_salvage/tests/`: `test_sync.py` keeps its TV tests, the three
 movie poster-path tests that wait for poster naming, and the no-clients test;
@@ -187,8 +199,9 @@ Docker. The milestones, in order:
    and media-write.
 6. **M5, the product loop**, in two sessions. **M5a** (done): runs as jobs with their records
    in the database, batches, deploy with a content-addressed backup, restore, and a deploy
-   policy that is off unless turned on. **M5b**: review and re-rank, feedback events,
-   exemplars, and the learning loop.
+   policy that is off unless turned on. **M5b** (done): review and re-rank, feedback events,
+   exemplars as records, the profile rebuilt by a job, and agreement. **M5c** (after M6): a
+   blind evaluation and the residual.
 7. **M6, frontend**: shell, library, review and rank, taste, a small activity view, trimmed
    settings.
 8. **M8, packaging and production hardening**: the full Compose stack, a fresh-machine path

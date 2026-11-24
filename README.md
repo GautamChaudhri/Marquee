@@ -12,9 +12,11 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > from the posters already in your library, and ranks a movie's TMDB posters as a job: one
 > movie or a batch, with every run and its candidates recorded in the database. A pick can be
 > written into the movie's folder, with the poster it replaces backed up, and any write can
-> be undone byte for byte. Nothing is written to your library unless you ask for it or turn
-> on `DEPLOY_POLICY`. Review, re-ranking, learning from feedback, and the web interface are
-> being rebuilt on top of it.
+> be undone byte for byte. You can review each run (approve the pick, choose another, re-rank
+> with a hate pile, reject them all, or take any of that back), and the taste profile is
+> rebuilt from your feedback. Nothing is written to your library unless you ask for it or turn
+> on `DEPLOY_POLICY`. The web interface, and the learned correction to the score, are being
+> rebuilt on top of it.
 
 ## Why
 
@@ -95,17 +97,21 @@ uv run marquee taste seed
 uv run marquee sync --dry-run       # see what would change; writes nothing
 uv run marquee sync
 
-# 7. Check the machine.
+# 7. Make the seeded posters the first exemplar records, matched to movies by IMDb id.
+uv run marquee taste import-seed
+
+# 8. Check the machine.
 uv run marquee doctor
 
-# 8. Run the job queue (in its own terminal, or as a service). Ctrl-C stops it gracefully.
+# 9. Run the job queue (in its own terminal, or as a service). Ctrl-C stops it gracefully.
 uv run marquee worker
 
-# 9. Rank one movie's posters (the worker runs it), then put the pick in its folder.
+# 10. Rank one movie's posters (the worker runs it), then review the pick.
 uv run marquee run "Die Hard"
-uv run marquee deploy <run id>      # the run id is in the summary `marquee run` prints
+uv run marquee review show <run id> # the run id is in the summary `marquee run` prints
+uv run marquee review approve <run id>
 
-# 10. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
+# 11. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
 uv run marquee api
 ```
 
@@ -144,10 +150,42 @@ its file and the sync has fetched its TMDB details.
 original-size file of the candidate (it must be a JPEG, and it is never converted), backs up
 the `poster.jpg` already there to `data/backups/`, writes the new file under a temporary name
 and renames it into place, reads it back to check it, and records the write.
-`marquee deployments list` shows every write, and `marquee restore <deployment id>` undoes a
-movie's newest one: it backs up what is there now and puts back exactly what was there
-before, or removes the poster if there was none. Deploys and restores are jobs too, one at a
-time, and never two for the same movie.
+`marquee deployments list` shows every write and what a restore of it would put back, and
+`marquee restore <deployment id>` restores any of them, not only the newest: it backs up what
+is there now and puts back exactly what was in the folder before that deployment, or removes
+the poster if there was none. Deploys and restores are jobs too, one at a time, and never
+two for the same movie. A write records what it is about to do before it renames the new
+file into place, so a write interrupted at any point finishes correctly on its next attempt.
+
+`marquee taste import-seed` turns the posters `marquee taste seed` staged into exemplar
+records, one per movie, each keeping a copy of its image under `data/ml/exemplars/`, and
+registers the taste profile file as it is. From then on the profile is built from those
+records, and `marquee taste seed` is refused in every form.
+
+`marquee review list` shows the movies whose latest run you have not reviewed, the ones the
+deploy policy deployed first, and `marquee review show <run>` shows a run's ranked candidates
+with their ids. Each act of feedback goes to a movie's latest run and is recorded once, with
+a copy of everything you were shown:
+
+- `review approve <run>`: you keep the pick. It becomes the movie's exemplar at weight 0.75,
+  unless the movie already has one.
+- `review pick <run> --candidate <id>`: you choose another poster. It replaces the movie's
+  exemplar at full weight.
+- `review rank <run> --order <ids> [--hate <ids>]`: best first, with a hate pile. The first
+  replaces the movie's exemplar; each hated poster the AI ranked in its top 10 becomes a
+  negative exemplar (at most 8 per movie).
+- `review reject <run> [--hate <ids>]`: none of them; the hated ones (all, by default) become
+  negatives the same way.
+- `review revoke <event>`: takes one of those back. Its exemplars are revoked and the one its
+  choice replaced comes back. It does not touch your library; `marquee restore` does that.
+
+Approve, pick, and rank also deploy the chosen poster unless given `--no-deploy`. Whenever
+the exemplars change, a `taste_rebuild` job builds a new taste profile from them on the GPU
+and swaps it in with one rename; `marquee taste rebuild [--force]` asks for one by hand.
+`marquee taste status` shows the exemplars, the active profile, whether a rebuild is due, and
+the agreement: how often you kept the AI's pick, counted only on runs made while the movie
+had no exemplar of its own (a percentage appears from ten reviews). It also says how much
+evidence the learned score correction would have; that correction is not trained yet.
 
 Two settings decide what happens without you asking. `DEPLOY_POLICY` (default `off`) makes a
 finished run deploy its pick by itself: `missing` only where the folder has no poster or the
@@ -179,7 +217,8 @@ different path than Marquee does (Radarr in a container, for example), set
 `marquee worker` runs the job queue. It queues a library sync by itself every
 `SYNC_INTERVAL_MINUTES` (default 360; 0 turns it off), runs GPU jobs in a child process that
 keeps its models loaded between jobs and stops after `GPU_IDLE_SECONDS` (default 300) without
-one, retries failed jobs with a growing delay, and, after a crash or a restart, picks up the
+one or once it holds more than `GPU_CHILD_MAX_RSS_MB` of memory (default 4096), retries
+failed jobs with a growing delay, and, after a crash or a restart, picks up the
 jobs it was running. Only one worker runs at a time. `marquee jobs list`, `show`, `enqueue`,
 `cancel`, and `retry` work on the queue from the command line; for example
 `uv run marquee jobs enqueue gpu_selftest` checks that the GPU works in the child process.
@@ -189,7 +228,10 @@ under `/api`, the movie list (`/api/movies`, with search, filters, sorting, and 
 movie, and its poster; runs (`POST /api/movies/{id}/run`, `POST /api/runs/batch`,
 `/api/runs`, one run with its candidates, and each candidate's image), deploys
 (`POST /api/runs/{id}/deploy`), the deployments and restoring one
-(`POST /api/deployments/{id}/restore`); the jobs (`/api/jobs`, one job, its events, and a
+(`POST /api/deployments/{id}/restore`); review (`/api/review`, `POST` and `GET`
+`/api/runs/{id}/feedback`, `POST /api/feedback/{id}/revoke`) and taste (`/api/taste`,
+`POST /api/taste/rebuild`, `/api/taste/exemplars` and each one's image); the jobs
+(`/api/jobs`, one job, its events, and a
 feed of every job's events after a cursor), cancel and retry, `POST /api/sync` to queue a
 sync, and `/api/worker`. Every `/api` request must carry the key in `API_KEY`, as
 `Authorization: Bearer <key>` or `X-Api-Key: <key>`; with no key configured the API answers
@@ -197,8 +239,9 @@ sync, and `/api/worker`. Every `/api` request must carry the key in `API_KEY`, a
 `development`.
 
 `marquee doctor` prints one line per check (Python, settings, data directory, backups,
-models, model manifest, taste profile, ONNX Runtime, GPU, OCR, database and its schema, the worker and the
-queue, media roots, TMDB, Radarr, path mapping) with `PASS`, `WARN`, or `FAIL`, and exits
+models, model manifest, taste profile and whether it is the registered build, ONNX Runtime,
+GPU, OCR, database and its schema, the worker and the queue, media roots, TMDB, Radarr, path
+mapping) with `PASS`, `WARN`, or `FAIL`, and exits
 non-zero if anything fails. `--json`
 prints the same report as JSON. It never writes to a media folder and never prints a secret.
 
