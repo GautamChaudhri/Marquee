@@ -407,7 +407,15 @@ def train_residual(
     min_improvement: float = 0.02,
     active_residual: ResidualArtifact | None = None,
 ) -> tuple[ResidualArtifact | None, dict[str, Any]]:
-    """Fit a regularized baseline-offset pairwise residual and evaluate held-out subjects."""
+    """Fit a regularized baseline-offset pairwise residual and evaluate held-out subjects.
+
+    It trains exactly what scoring computes (:func:`score_residual_candidate`): each
+    candidate's correction is ``weights · x + bias``, clamped at ``delta_max``, and a pair's
+    logit is the baseline's logit margin plus ``alpha`` times the difference of the two
+    clamped corrections. The features are centred on the mean of the training partition's
+    distinct candidates, and the bias, ``-(weights · mean)``, carries that centring into
+    scoring. A clamped candidate passes no gradient, as scoring's clamp is hard.
+    """
     subjects = {pair.subject for pair in pairs}
     if len(subjects) < min_subjects or len(pairs) < min_pairs:
         return None, {
@@ -425,30 +433,48 @@ def train_residual(
     test = [pair for pair in pairs if split[pair.subject] == "test"]
     if not train or not validation or not test:
         return None, {"outcome": "no_change", "reason": "insufficient_held_out_subjects"}
-    diffs = np.asarray(
-        [[pair.winner[name] - pair.loser[name] for name in common] for pair in train],
-        dtype=np.float64,
+    mean = _distinct_candidate_mean(train, common)
+    winners = np.asarray(
+        [[pair.winner[name] for name in common] for pair in train], dtype=np.float64
     )
+    losers = np.asarray([[pair.loser[name] for name in common] for pair in train], dtype=np.float64)
+    winners -= mean
+    losers -= mean
     margins = np.asarray([_baseline_logit_margin(pair) for pair in train], dtype=np.float64)
     sample_weights = np.asarray([pair.weight for pair in train], dtype=np.float64)
     coefficients = np.zeros(len(common), dtype=np.float64)
     weight_total = float(sample_weights.sum()) or 1.0
     for _iteration in range(2000):
-        raw_delta = np.clip(diffs @ coefficients, -delta_max, delta_max)
-        logits = margins + alpha * raw_delta
+        logits, winner_free, loser_free = _pair_logits(
+            winners, losers, margins, coefficients, alpha=alpha, delta_max=delta_max
+        )
         probabilities = 1.0 / (1.0 + np.exp(-np.clip(logits, -30, 30)))
-        gradient = -(((1.0 - probabilities) * sample_weights) @ diffs) / weight_total
+        pull = (1.0 - probabilities) * sample_weights
+        gradient = (
+            -alpha * ((pull * winner_free) @ winners - (pull * loser_free) @ losers) / weight_total
+        )
         gradient += 0.05 * coefficients / len(train)
         step = 0.1 * gradient
         coefficients -= step
         if float(np.linalg.norm(step)) < 1e-8:
             break
+    bias = -float(coefficients @ mean)
     weights = {name: float(weight) for name, weight in zip(common, coefficients, strict=True)}
     validation_metrics = _evaluate_partition(
-        validation, weights, alpha=alpha, delta_max=delta_max, active_residual=active_residual
+        validation,
+        weights,
+        bias=bias,
+        alpha=alpha,
+        delta_max=delta_max,
+        active_residual=active_residual,
     )
     test_metrics = _evaluate_partition(
-        test, weights, alpha=alpha, delta_max=delta_max, active_residual=active_residual
+        test,
+        weights,
+        bias=bias,
+        alpha=alpha,
+        delta_max=delta_max,
+        active_residual=active_residual,
     )
     evaluation = ResidualEvaluation(
         baseline_accuracy=validation_metrics["baseline_accuracy"],
@@ -467,6 +493,8 @@ def train_residual(
         "outcome": "candidate",
         "evaluation": asdict(evaluation),
         "feature_names": common,
+        "bias": bias,
+        "feature_means": {name: float(value) for name, value in zip(common, mean, strict=True)},
         "partitions": partitions,
         "partition_overlap_proof": overlap_proof,
     }
@@ -480,7 +508,7 @@ def train_residual(
             namespace=namespace,
             feature_names=common,
             weights=coefficients,
-            bias=0.0,
+            bias=bias,
             alpha=alpha,
             delta_max=delta_max,
             baseline_signature=baseline,
@@ -494,6 +522,38 @@ def train_residual(
         ),
         {**report, "outcome": "activate"},
     )
+
+
+def _distinct_candidate_mean(pairs: list[ResidualPair], names: list[str]) -> np.ndarray:
+    """The mean feature vector of the pairs' distinct candidates (one subject's one feature
+    vector over ``names``), each counted once however many pairs it is in."""
+    distinct: dict[tuple[str, tuple[float, ...]], tuple[float, ...]] = {}
+    for pair in pairs:
+        for side in (pair.winner, pair.loser):
+            values = tuple(side[name] for name in names)
+            distinct.setdefault((pair.subject, values), values)
+    return np.asarray(list(distinct.values()), dtype=np.float64).mean(axis=0)
+
+
+def _pair_logits(
+    winners: np.ndarray,
+    losers: np.ndarray,
+    margins: np.ndarray,
+    coefficients: np.ndarray,
+    *,
+    alpha: float,
+    delta_max: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Each pair's logit as scoring computes it, from centred winner and loser features:
+    the baseline's logit margin plus ``alpha`` times the difference of the two clamped
+    corrections. Also whether each side's raw correction is strictly inside the clamp (only
+    such a side passes a gradient)."""
+    winner_raw = winners @ coefficients
+    loser_raw = losers @ coefficients
+    logits = margins + alpha * (
+        np.clip(winner_raw, -delta_max, delta_max) - np.clip(loser_raw, -delta_max, delta_max)
+    )
+    return logits, np.abs(winner_raw) < delta_max, np.abs(loser_raw) < delta_max
 
 
 def _pair_baseline_probabilities(pair: ResidualPair) -> tuple[float, float]:
@@ -527,6 +587,7 @@ def _evaluate_partition(
     pairs: list[ResidualPair],
     weights: dict[str, float],
     *,
+    bias: float,
     alpha: float,
     delta_max: float,
     active_residual: ResidualArtifact | None = None,
@@ -536,13 +597,14 @@ def _evaluate_partition(
     weighted_active = 0.0
     total_weight = 0.0
     adjustments: list[float] = []
+    clamped = 0
     for pair in pairs:
         winner_probability, loser_probability = _pair_baseline_probabilities(pair)
         winner = score_residual_candidate(
             baseline_probability=winner_probability,
             normalized_features={name: pair.winner[name] for name in weights},
             weights=weights,
-            bias=0.0,
+            bias=bias,
             alpha=alpha,
             delta_max=delta_max,
         )
@@ -550,7 +612,7 @@ def _evaluate_partition(
             baseline_probability=loser_probability,
             normalized_features={name: pair.loser[name] for name in weights},
             weights=weights,
-            bias=0.0,
+            bias=bias,
             alpha=alpha,
             delta_max=delta_max,
         )
@@ -592,6 +654,7 @@ def _evaluate_partition(
                 active_winner.final_logit > active_loser.final_logit
             )
         adjustments.extend((winner.delta * alpha, loser.delta * alpha))
+        clamped += (abs(winner.raw_delta) >= delta_max) + (abs(loser.raw_delta) >= delta_max)
     denominator = total_weight or 1.0
     baseline_accuracy = weighted_baseline / denominator
     candidate_accuracy = weighted_candidate / denominator
@@ -603,6 +666,7 @@ def _evaluate_partition(
         "improvement": candidate_accuracy - baseline_accuracy,
         "mean_abs_adjustment": float(np.mean(np.abs(adjustments))),
         "max_abs_adjustment": float(np.max(np.abs(adjustments))),
+        "clamped_share": clamped / len(adjustments),
     }
     if active_residual is not None:
         result["active_accuracy"] = weighted_active / denominator
