@@ -5,19 +5,22 @@ from __future__ import annotations
 from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, UniqueConstraint
 
 from marquee.db.base import Base
-from marquee.db.models import Artwork, Job, JobEvent, Movie
+from marquee.db.models import Artwork, Deployment, Job, JobEvent, Movie, PosterRun, RunCandidate
 
 # taste/map.py and taste/profile_enrich.py query these by name.
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 
 
-def test_only_the_library_and_job_tables_exist() -> None:
+def test_only_the_library_job_and_run_tables_exist() -> None:
     assert set(Base.metadata.tables) == {
         "movies",
         "artwork",
         "jobs",
         "job_events",
         "job_schedules",
+        "poster_runs",
+        "run_candidates",
+        "deployments",
     }
 
 
@@ -26,9 +29,11 @@ def test_taste_code_column_names_exist() -> None:
 
 
 def test_no_column_holds_a_local_path() -> None:
-    names = set(Movie.__table__.columns.keys()) | set(Artwork.__table__.columns.keys())
+    names: set[str] = set()
+    for model in (Movie, Artwork, PosterRun, RunCandidate, Deployment):
+        names |= set(model.__table__.columns.keys())
     assert "radarr_path" in names
-    assert not {"folder_path", "local_path", "poster_path", "path"} & names
+    assert not {"folder_path", "local_path", "poster_path", "path", "run_path"} & names
 
 
 def test_every_timestamp_is_timezone_aware() -> None:
@@ -99,3 +104,34 @@ def test_repr_names_the_movie_and_never_a_path() -> None:
     assert "Movie" in text
     assert "Dune" in text
     assert "/data/movies" not in text
+
+
+def test_run_and_deployment_constraints_and_cascades() -> None:
+    runs = PosterRun.__table__
+    assert {c.name for c in runs.constraints if isinstance(c, UniqueConstraint)} == {
+        "uq_poster_runs_job_id"
+    }
+    assert {i.name for i in runs.indexes} == {"ix_poster_runs_movie_id"}
+    (movie,) = runs.c.movie_id.foreign_keys
+    assert movie.ondelete is None
+    (job,) = runs.c.job_id.foreign_keys
+    assert job.ondelete == "SET NULL"
+
+    candidates = RunCandidate.__table__
+    assert {i.name for i in candidates.indexes} == {
+        "ix_run_candidates_run_id",
+        "ix_run_candidates_pick",
+    }
+    (run,) = candidates.c.run_id.foreign_keys
+    assert run.ondelete == "CASCADE"
+
+    deployments = Deployment.__table__
+    assert "updated_at" not in deployments.c
+    (movie,) = deployments.c.movie_id.foreign_keys
+    assert movie.ondelete is None
+    for column in ("run_id", "candidate_id", "job_id"):
+        (key,) = deployments.c[column].foreign_keys
+        assert key.ondelete == "SET NULL", column
+    assert {c.name for c in deployments.constraints if isinstance(c, UniqueConstraint)} == {
+        "uq_deployments_job_id"
+    }

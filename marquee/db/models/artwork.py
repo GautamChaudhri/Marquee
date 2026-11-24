@@ -19,11 +19,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from marquee.db.base import Base, TimestampMixin
 
-# Each is the only value its column accepts today. Adding one is a migration.
+# The values each column accepts. Adding one is a migration.
 SUBJECT_MOVIE = "movie"
 ARTWORK_POSTER = "poster"
 ORIGIN_LIBRARY = "library"
 """Found in the movie folder by a sync, not written by Marquee."""
+ORIGIN_MARQUEE = "marquee"
+"""Written into the movie folder by a Marquee deploy."""
+ORIGINS = (ORIGIN_LIBRARY, ORIGIN_MARQUEE)
 
 
 class Artwork(TimestampMixin, Base):
@@ -39,7 +42,7 @@ class Artwork(TimestampMixin, Base):
         UniqueConstraint("movie_id", "artwork_kind"),
         CheckConstraint(f"subject_kind = '{SUBJECT_MOVIE}'", name="subject_kind"),
         CheckConstraint(f"artwork_kind = '{ARTWORK_POSTER}'", name="artwork_kind"),
-        CheckConstraint(f"origin = '{ORIGIN_LIBRARY}'", name="origin"),
+        CheckConstraint(f"origin IN ('{ORIGIN_LIBRARY}', '{ORIGIN_MARQUEE}')", name="origin"),
         CheckConstraint("sha256 ~ '^[0-9a-f]{64}$'", name="sha256"),
         CheckConstraint(
             "file_name <> '' AND file_name NOT IN ('.', '..') AND strpos(file_name, '/') = 0",

@@ -13,13 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from marquee.db import migrate
 from marquee.db.base import Base
-from marquee.db.models import Artwork, Movie
+from marquee.db.models import Artwork, Deployment, Movie, PosterRun, RunCandidate
 
 pytestmark = pytest.mark.db
 
 SHA = "a" * 64
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 JOB_TABLES = {"jobs", "job_events", "job_schedules"}
+RUN_TABLES = {"poster_runs", "run_candidates", "deployments"}
 
 
 def _sync_engine(url: str):  # noqa: ANN202 - a sqlalchemy Engine
@@ -76,8 +77,14 @@ def test_the_migration_applies_to_an_empty_database(empty_database_url: str) -> 
 
     after = migrate.upgrade(url=empty_database_url)
     assert after.at_head
-    assert after.current == migrate.head_revision() == "0002"
-    assert _tables(empty_database_url) == {"alembic_version", "movies", "artwork", *JOB_TABLES}
+    assert after.current == migrate.head_revision() == "0003"
+    assert _tables(empty_database_url) == {
+        "alembic_version",
+        "movies",
+        "artwork",
+        *JOB_TABLES,
+        *RUN_TABLES,
+    }
 
 
 def test_downgrade_then_upgrade_works(empty_database_url: str) -> None:
@@ -88,7 +95,47 @@ def test_downgrade_then_upgrade_works(empty_database_url: str) -> None:
 
     up = migrate.upgrade(url=empty_database_url)
     assert up.at_head
-    assert {"movies", "artwork", *JOB_TABLES} <= _tables(empty_database_url)
+    assert {"movies", "artwork", *JOB_TABLES, *RUN_TABLES} <= _tables(empty_database_url)
+
+
+def test_the_runs_migration_downgrades_to_the_jobs_schema(empty_database_url: str) -> None:
+    migrate.upgrade(url=empty_database_url)
+    down = migrate.downgrade("0002", url=empty_database_url)
+    assert down.current == "0002"
+    assert _tables(empty_database_url) == {"alembic_version", "movies", "artwork", *JOB_TABLES}
+    assert _check_definition(empty_database_url, "ck_artwork_origin") == (
+        "CHECK ((origin = 'library'::text))"
+    )
+
+    assert migrate.upgrade(url=empty_database_url).at_head
+    assert "marquee" in _check_definition(empty_database_url, "ck_artwork_origin")
+
+
+def test_the_runs_migration_refuses_to_forget_a_marquee_poster(empty_database_url: str) -> None:
+    migrate.upgrade(url=empty_database_url)
+    engine = _sync_engine(empty_database_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "insert into movies (radarr_id, title, sort_title, radarr_path, has_file, "
+                    "last_seen_at) values (1, 'M', 'm', '/r/M', true, now())"
+                )
+            )
+            conn.execute(
+                text(
+                    "insert into artwork (movie_id, artwork_kind, file_name, sha256, size_bytes, "
+                    "file_modified_at, origin, first_seen_at, last_seen_at) "
+                    "select id, 'poster', 'poster.jpg', :sha, 1, now(), 'marquee', now(), now() "
+                    "from movies"
+                ),
+                {"sha": SHA},
+            )
+    finally:
+        engine.dispose()
+    with pytest.raises(IntegrityError):
+        migrate.downgrade("0002", url=empty_database_url)
+    assert migrate.status(url=empty_database_url).current == "0003"
 
 
 def test_the_jobs_migration_downgrades_to_the_baseline(empty_database_url: str) -> None:
@@ -129,6 +176,21 @@ def _check_constraints(url: str, table: str) -> set[str]:
         engine.dispose()
 
 
+def _check_definition(url: str, name: str) -> str:
+    engine = _sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "select pg_get_constraintdef(oid) from pg_constraint "
+                    "where conname = :name and contype = 'c'"
+                ),
+                {"name": name},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+
 def test_check_constraints_are_in_the_database(database_url: str) -> None:
     # Autogenerate does not compare CHECK constraints, so look for them by name.
     assert _check_constraints(database_url, "artwork") == {
@@ -141,6 +203,32 @@ def test_check_constraints_are_in_the_database(database_url: str) -> None:
     }
     assert _check_constraints(database_url, "jobs") == {"ck_jobs_job_class", "ck_jobs_state"}
     assert _check_constraints(database_url, "job_events") == {"ck_job_events_type"}
+    assert _check_constraints(database_url, "poster_runs") == {
+        "ck_poster_runs_subject_kind",
+        "ck_poster_runs_state",
+        "ck_poster_runs_run_folder",
+        "ck_poster_runs_profile_sha256",
+    }
+    assert _check_constraints(database_url, "run_candidates") == {
+        "ck_run_candidates_sha256",
+        "ck_run_candidates_source_file",
+    }
+    assert _check_constraints(database_url, "deployments") == {
+        "ck_deployments_subject_kind",
+        "ck_deployments_artwork_kind",
+        "ck_deployments_action",
+        "ck_deployments_initiated_by",
+        "ck_deployments_previous_origin",
+        "ck_deployments_new_sha256",
+        "ck_deployments_previous_sha256",
+        "ck_deployments_new_file",
+        "ck_deployments_file_name",
+        "ck_deployments_backup_file",
+        "ck_deployments_restores",
+    }
+    assert _check_definition(database_url, "ck_artwork_origin") == (
+        "CHECK ((origin = ANY (ARRAY['library'::text, 'marquee'::text])))"
+    )
 
 
 def test_the_job_indexes_are_in_the_database(database_url: str) -> None:
@@ -159,6 +247,34 @@ def test_the_job_indexes_are_in_the_database(database_url: str) -> None:
     assert "priority DESC, id" in indexes["ix_jobs_claim"]
     assert "WHERE (state = 'queued'" in indexes["ix_jobs_claim"]
     assert "parent_id" in indexes["ix_jobs_parent_id"]
+
+
+def _indexes(url: str, table: str) -> dict[str, str]:
+    engine = _sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            return dict(
+                conn.execute(
+                    text("select indexname, indexdef from pg_indexes where tablename = :t"),
+                    {"t": table},
+                ).all()
+            )
+    finally:
+        engine.dispose()
+
+
+def test_the_run_and_deployment_indexes_are_in_the_database(database_url: str) -> None:
+    runs = _indexes(database_url, "poster_runs")
+    assert "(movie_id)" in runs["ix_poster_runs_movie_id"]
+    assert "UNIQUE" in runs["uq_poster_runs_job_id"]
+    candidates = _indexes(database_url, "run_candidates")
+    assert "(run_id)" in candidates["ix_run_candidates_run_id"]
+    assert "UNIQUE" in candidates["uq_run_candidates_run_id_source_file"]
+    assert "UNIQUE" in candidates["ix_run_candidates_pick"]
+    assert "WHERE is_pick" in candidates["ix_run_candidates_pick"]
+    deployments = _indexes(database_url, "deployments")
+    assert "(movie_id)" in deployments["ix_deployments_movie_id"]
+    assert "UNIQUE" in deployments["uq_deployments_job_id"]
 
 
 def test_the_taste_code_columns_exist(database_url: str) -> None:
@@ -188,7 +304,7 @@ def test_every_timestamp_column_is_timestamptz(database_url: str) -> None:
 
 
 def test_the_next_revision_is_numbered_after_the_newest() -> None:
-    assert migrate._next_revision_id() == "0003"
+    assert migrate._next_revision_id() == "0004"
 
 
 # ── Constraints ───────────────────────────────────────────────────────────
@@ -227,6 +343,7 @@ async def test_tmdb_id_is_not_unique(db_session: AsyncSession) -> None:
         {"subject_kind": "series"},
         {"artwork_kind": "backdrop"},
         {"origin": "deployed"},
+        {"origin": "policy"},
         {"sha256": "not-a-digest"},
         {"sha256": "A" * 64},
         {"file_name": "folder/poster.jpg"},
@@ -266,3 +383,203 @@ async def test_artwork_goes_with_its_movie(
         await conn.execute(text("delete from movies"))
         remaining = (await conn.execute(text("select count(*) from artwork"))).scalar_one()
     assert remaining == 0
+
+
+async def test_artwork_accepts_origin_marquee(db_session: AsyncSession) -> None:
+    movie = _movie()
+    db_session.add(movie)
+    await db_session.flush()
+    db_session.add(_poster(movie.id, origin="marquee"))
+    await db_session.flush()
+
+
+# ── Runs, candidates, and deployments ─────────────────────────────────────
+
+
+def _run(movie_id: int, **values: object) -> PosterRun:
+    defaults: dict[str, object] = {
+        "movie_id": movie_id,
+        "state": "running",
+        "run_folder": "00000001-movie",
+        "started_at": _now(),
+    }
+    return PosterRun(**{**defaults, **values})
+
+
+def _candidate(run_id: int, **values: object) -> RunCandidate:
+    defaults: dict[str, object] = {"run_id": run_id, "source_file": "a.jpg"}
+    return RunCandidate(**{**defaults, **values})
+
+
+def _deployment(movie_id: int, **values: object) -> Deployment:
+    defaults: dict[str, object] = {
+        "movie_id": movie_id,
+        "artwork_kind": "poster",
+        "action": "deploy",
+        "initiated_by": "owner",
+        "file_name": "poster.jpg",
+        "new_sha256": SHA,
+        "new_size_bytes": 10,
+    }
+    return Deployment(**{**defaults, **values})
+
+
+async def _with_movie(session: AsyncSession) -> Movie:
+    movie = _movie()
+    session.add(movie)
+    await session.flush()
+    return movie
+
+
+async def test_run_defaults_fill_in(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    run = _run(movie.id)
+    db_session.add(run)
+    await db_session.flush()
+    await db_session.refresh(run)
+    assert run.subject_kind == "movie"
+    assert run.job_id is None
+    candidate = _candidate(run.id)
+    db_session.add(candidate)
+    await db_session.flush()
+    await db_session.refresh(candidate)
+    assert candidate.is_pick is False
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"subject_kind": "series"},
+        {"state": "queued"},
+        {"run_folder": "runs/00000001-movie"},
+        {"run_folder": ".."},
+        {"run_folder": ""},
+        {"profile_sha256": "abc"},
+    ],
+)
+async def test_run_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    movie = await _with_movie(db_session)
+    await _flush_fails(db_session, _run(movie.id, **values))
+
+
+async def test_a_job_has_at_most_one_run(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    await db_session.execute(
+        text(
+            "insert into jobs (id, kind, job_class, state) values (5, 'poster_run', 'gpu', 'running')"
+        )
+    )
+    await _flush_fails(db_session, _run(movie.id, job_id=5), _run(movie.id, job_id=5))
+
+
+async def test_a_candidate_file_appears_once_per_run(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    run = _run(movie.id)
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add_all(
+        [_candidate(run.id, source_file="a.jpg"), _candidate(run.id, source_file="b.jpg")]
+    )
+    await db_session.flush()
+    await _flush_fails(db_session, _candidate(run.id, source_file="a.jpg"))
+
+
+async def test_a_run_has_one_pick(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    run = _run(movie.id)
+    db_session.add(run)
+    await db_session.flush()
+    await _flush_fails(
+        db_session,
+        _candidate(run.id, source_file="a.jpg", is_pick=True),
+        _candidate(run.id, source_file="b.jpg", is_pick=True),
+    )
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"sha256": "nope"},
+        {"source_file": "dir/a.jpg"},
+        {"source_file": ""},
+    ],
+)
+async def test_candidate_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    movie = await _with_movie(db_session)
+    run = _run(movie.id)
+    db_session.add(run)
+    await db_session.flush()
+    await _flush_fails(db_session, _candidate(run.id, **values))
+
+
+async def test_candidates_go_with_their_run_and_runs_stay_with_their_movie(
+    db_engine: AsyncEngine, db_session: AsyncSession
+) -> None:
+    movie = await _with_movie(db_session)
+    run = _run(movie.id)
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add(_candidate(run.id))
+    await db_session.commit()
+
+    async with db_engine.begin() as conn:
+        await conn.execute(text("delete from poster_runs"))
+        remaining = (await conn.execute(text("select count(*) from run_candidates"))).scalar_one()
+    assert remaining == 0
+
+    db_session.add(_run(movie.id))
+    await db_session.commit()
+    with pytest.raises(IntegrityError):
+        async with db_engine.begin() as conn:
+            await conn.execute(text("delete from movies"))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"subject_kind": "series"},
+        {"artwork_kind": "backdrop"},
+        {"action": "heal"},
+        {"initiated_by": "schedule"},
+        {"previous_origin": "tmdb"},
+        {"new_sha256": "x"},
+        {"previous_sha256": "x"},
+        {"new_sha256": None},
+        {"new_size_bytes": None},
+        {"file_name": "a/poster.jpg"},
+        {"backup_file": "/abs/x.jpg"},
+        {"backup_file": "posters/../x.jpg"},
+        {"backup_file": ""},
+        {"action": "restore"},
+    ],
+)
+async def test_deployment_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    movie = await _with_movie(db_session)
+    await _flush_fails(db_session, _deployment(movie.id, **values))
+
+
+async def test_a_restore_names_the_row_it_undoes(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    deploy = _deployment(movie.id, backup_file="posters/1/" + SHA + ".jpg", previous_sha256=SHA)
+    db_session.add(deploy)
+    await db_session.flush()
+    restore = _deployment(
+        movie.id,
+        action="restore",
+        restores_deployment_id=deploy.id,
+        new_sha256=None,
+        new_size_bytes=None,
+    )
+    db_session.add(restore)
+    await db_session.flush()
+    await _flush_fails(db_session, _deployment(movie.id, restores_deployment_id=deploy.id))
+
+
+async def test_a_job_writes_at_most_one_deployment(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    await db_session.execute(
+        text(
+            "insert into jobs (id, kind, job_class, state) values (7, 'poster_deploy', 'media_write', 'running')"
+        )
+    )
+    await _flush_fails(db_session, _deployment(movie.id, job_id=7), _deployment(movie.id, job_id=7))
