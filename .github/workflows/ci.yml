@@ -20,8 +20,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
+    # A throwaway database server for the db-marked tests. Its credentials exist only on
+    # the runner, for the length of the job; they are not secrets.
+    services:
+      postgres:
+        image: postgres:19
+        env:
+          POSTGRES_USER: marquee
+          POSTGRES_PASSWORD: ci-throwaway
+          POSTGRES_DB: marquee
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U marquee -d marquee"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       PYTHONUNBUFFERED: "1"
+      # The test fixture creates and drops marquee_test_* databases on this server, and
+      # fails rather than skips when it cannot reach it.
+      MARQUEE_TEST_DATABASE_URL: postgresql+psycopg://marquee:ci-throwaway@127.0.0.1:5432/marquee
 
     steps:
       - name: Check out repository
@@ -53,5 +73,5 @@ jobs:
         run: uv run --no-sync lint-imports
 
       - name: Tests
-        # No GPU, no model files, and no database on the runner.
-        run: uv run --no-sync pytest -rsxX -m "not gpu and not models and not db"
+        # No GPU and no model files on the runner; the database tests use the service above.
+        run: uv run --no-sync pytest -rsxX -m "not gpu and not models"
