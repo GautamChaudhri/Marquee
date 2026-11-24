@@ -187,8 +187,10 @@ async def test_one_movie_and_its_poster_object(
         "file_name": "poster.jpg",
         "sha256": hashlib.sha256(b"alpha poster").hexdigest(),
         "size_bytes": len(b"alpha poster"),
+        "origin": "library",
         "url": f"/api/movies/{alpha.id}/poster",
     }
+    assert (body["poster_origin"], body["latest_run_id"]) == ("library", None)
 
 
 async def test_no_response_carries_a_path(

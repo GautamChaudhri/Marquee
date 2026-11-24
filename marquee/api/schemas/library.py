@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,9 @@ class Poster(BaseModel):
     file_name: str = Field(description="The file's name inside the movie folder")
     sha256: str
     size_bytes: int
+    origin: Literal["library", "marquee"] = Field(
+        description="library: found in the folder (the owner's); marquee: written by a deploy"
+    )
     url: str = Field(description="Where to fetch the image, with the API key")
 
 
@@ -32,6 +36,10 @@ class MovieItem(BaseModel):
     production_companies: list[str] | None
     tagline: str | None
     poster: Poster | None
+    poster_origin: Literal["library", "marquee"] | None = Field(
+        description="Who put the poster there; null when there is none"
+    )
+    latest_run_id: int | None = Field(description="The movie's newest run, if it has one")
 
     @classmethod
     def build(cls, row: MovieWithPoster) -> MovieItem:
@@ -41,6 +49,7 @@ class MovieItem(BaseModel):
                 file_name=artwork.file_name,
                 sha256=artwork.sha256,
                 size_bytes=artwork.size_bytes,
+                origin=artwork.origin,  # type: ignore[arg-type]
                 url=f"/api/movies/{movie.id}/poster",
             )
             if artwork is not None
@@ -62,6 +71,8 @@ class MovieItem(BaseModel):
             production_companies=movie.production_companies,
             tagline=movie.tagline,
             poster=poster,
+            poster_origin=artwork.origin if artwork is not None else None,  # type: ignore[arg-type]
+            latest_run_id=row.latest_run_id,
         )
 
 

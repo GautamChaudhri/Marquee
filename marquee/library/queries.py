@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
-from marquee.db.models import ARTWORK_POSTER, Artwork, Movie
+from marquee.db.models import ARTWORK_POSTER, Artwork, Movie, PosterRun
 
 MovieSort = Literal["title", "year", "added"]
 
@@ -23,6 +23,7 @@ MovieSort = Literal["title", "year", "added"]
 class MovieWithPoster:
     movie: Movie
     poster: Artwork | None
+    latest_run_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,13 @@ def _order(sort: MovieSort) -> tuple[ColumnElement, ...]:
     return (Movie.sort_title, Movie.id)
 
 
-def _with_poster() -> Select[tuple[Movie, Artwork]]:
-    return select(Movie, Artwork).outerjoin(Artwork, _poster_join())
+def _with_poster() -> Select[tuple[Movie, Artwork, int | None]]:
+    latest_run = (
+        select(func.max(PosterRun.id)).where(PosterRun.movie_id == Movie.id).scalar_subquery()
+    )
+    return select(Movie, Artwork, latest_run.label("latest_run_id")).outerjoin(
+        Artwork, _poster_join()
+    )
 
 
 async def list_movies(
@@ -89,7 +95,7 @@ async def list_movies(
     )
     return MoviePage(
         total=total or 0,
-        items=[MovieWithPoster(movie, poster) for movie, poster in rows],
+        items=[MovieWithPoster(movie, poster, latest) for movie, poster, latest in rows],
     )
 
 
@@ -100,4 +106,4 @@ async def get_movie(session: AsyncSession, movie_id: int) -> MovieWithPoster | N
             _with_poster().where(Movie.id == movie_id, Movie.is_present.is_(True))
         )
     ).first()
-    return MovieWithPoster(row[0], row[1]) if row else None
+    return MovieWithPoster(row[0], row[1], row[2]) if row else None
