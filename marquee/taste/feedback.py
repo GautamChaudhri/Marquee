@@ -166,13 +166,50 @@ def _finite(value: Any) -> dict[str, float]:
     return out
 
 
-def exposed_row(row: RunCandidate, archived: dict[str, Any] | None) -> dict[str, Any]:
-    """One shown candidate, as an event keeps it."""
+BASELINE_SCORE = "baseline_score"
+"""The weighted scorer's score, which the residual scorer keeps in a candidate's
+contributions (``pipeline/scorer.py::ResidualScorer``)."""
+
+
+def baseline_of(archived: dict[str, dict[str, Any]]) -> dict[str, tuple[int, float]]:
+    """For a run the residual ranked: each ranked candidate's weighted score, and its rank by
+    that score (ties by the run's rank). The residual trains from these, never from its own
+    scores, or each training would learn from the one before."""
+    scores: dict[str, float] = {}
+    ranks: dict[str, int] = {}
+    for name, row in archived.items():
+        rank = row.get("rank")
+        if rank is None:
+            continue
+        value = (row.get("contributions") or {}).get(BASELINE_SCORE)
+        if isinstance(value, bool) or not isinstance(value, int | float) or value != value:
+            raise FeedbackRefusedError(
+                f"the run's archive does not hold the weighted score of {name}; the residual "
+                "ranked it, so its baseline cannot be recorded"
+            )
+        scores[name], ranks[name] = float(value), int(rank)
+    order = sorted(scores, key=lambda name: (-scores[name], ranks[name], name))
+    return {name: (position, scores[name]) for position, name in enumerate(order, 1)}
+
+
+def exposed_row(
+    row: RunCandidate,
+    archived: dict[str, Any] | None,
+    baseline: dict[str, tuple[int, float]] | None = None,
+) -> dict[str, Any]:
+    """One shown candidate, as an event keeps it.
+
+    ``baseline_rank`` and ``baseline_score`` are the weighted scorer's: the run's own rank and
+    score, unless the residual ranked the run, when ``baseline`` (:func:`baseline_of`) holds
+    them. ``rank`` is always the run's own rank, the order the owner was shown.
+    """
+    weighted = (baseline or {}).get(row.source_file)
     return {
         "candidate_id": row.source_file,
         "sha256": row.sha256,
-        "baseline_rank": row.rank,
-        "baseline_score": row.final_score,
+        "rank": row.rank,
+        "baseline_rank": weighted[0] if weighted else row.rank,
+        "baseline_score": weighted[1] if weighted else row.final_score,
         "stack": _stack(row),
         "normalized_features": _finite((archived or {}).get("normalized_features")),
     }
@@ -298,7 +335,8 @@ async def record(
             )
 
     archived = await asyncio.to_thread(_archive_rows, folder)
-    exposed = [exposed_row(row, archived.get(row.source_file)) for row in shown_rows]
+    baseline = baseline_of(archived) if run.scorer_name == "residual" else None
+    exposed = [exposed_row(row, archived.get(row.source_file), baseline) for row in shown_rows]
     context: dict[str, Any] = {
         "order": [by_id[n].source_file for n in order_ids],
         "hated": [by_id[n].source_file for n in hated_ids],

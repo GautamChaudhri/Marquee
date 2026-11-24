@@ -187,6 +187,7 @@ async def test_rank_keeps_what_was_shown_and_makes_a_positive_and_a_negative(
     assert first == {
         "candidate_id": "r1.jpg",
         "sha256": hashlib.sha256(f"{ids['run']}:r1.jpg".encode()).hexdigest(),
+        "rank": 1,
         "baseline_rank": 1,
         "baseline_score": 0.99,
         "stack": "1A",
@@ -681,3 +682,72 @@ async def test_a_masked_run_is_blind_whatever_its_profile_says(db_session: Async
     run = await db_session.get(PosterRun, masked["run"])
     assert run is not None
     assert await feedback.blind_for(db_session, run) is True
+
+
+# ── Decision 16: the baseline stays the weighted scorer's ─────────────────
+
+
+async def _residual_run(session: AsyncSession, movie_id: int) -> dict[str, Any]:
+    """A run the residual ranked in a different order from its weighted baseline: the
+    archive's contributions hold each candidate's weighted score, highest for r3."""
+    ids = await _run(session, movie_id, ranked=4, rejected=0)
+    run = await session.get(PosterRun, ids["run"])
+    assert run is not None
+    run.scorer_name = "residual"
+    archive = ids["folder"] / "pipeline_run.json"
+    payload = json.loads(archive.read_text())
+    weighted = {"r1.jpg": 0.60, "r2.jpg": 0.55, "r3.jpg": 0.70, "r4.jpg": 0.40}
+    for row in payload["diagnostic_ledger"]["candidates"]:
+        if row["orig_filename"] in weighted:
+            row["contributions"] = {
+                "baseline_score": weighted[row["orig_filename"]],
+                "residual_delta": 0.1,
+            }
+    archive.write_text(json.dumps(payload))
+    await session.flush()
+    return ids
+
+
+async def test_an_event_on_a_residual_ranked_run_keeps_the_weighted_baseline(
+    db_session: AsyncSession,
+) -> None:
+    movie_id = await _movie(db_session)
+    await _profile(db_session, [])
+    ids = await _residual_run(db_session, movie_id)
+    outcome = await feedback.record(
+        db_session,
+        run_id=ids["run"],
+        action="rank",
+        idempotency_key="res-1",
+        order=[ids["r2.jpg"], ids["r1.jpg"]],
+        hated=[],
+    )
+    event = outcome.event
+    assert event.scorer_name == "residual"
+    shown = {row["candidate_id"]: row for row in event.exposed}
+    # The run (the residual) ranked r1 first; by the weighted score r3 is first.
+    assert [shown[n]["rank"] for n in ("r1.jpg", "r2.jpg", "r3.jpg", "r4.jpg")] == [1, 2, 3, 4]
+    assert [shown[n]["baseline_rank"] for n in ("r1.jpg", "r2.jpg", "r3.jpg", "r4.jpg")] == [
+        2,
+        3,
+        1,
+        4,
+    ]
+    assert shown["r3.jpg"]["baseline_score"] == 0.70
+    assert shown["r1.jpg"]["baseline_score"] == 0.60  # not the run's final score, 0.99
+    pairs = build_residual_pairs([feedback.residual_event(event, None)])
+    assert pairs and pairs[0].winner_baseline_probability == 0.55
+
+
+async def test_a_residual_ranked_run_without_its_weighted_scores_is_refused(
+    db_session: AsyncSession,
+) -> None:
+    movie_id = await _movie(db_session)
+    await _profile(db_session, [])
+    ids = await _run(db_session, movie_id, ranked=3, rejected=0)
+    run = await db_session.get(PosterRun, ids["run"])
+    assert run is not None
+    run.scorer_name = "residual"
+    await db_session.flush()
+    with pytest.raises(feedback.FeedbackRefusedError, match="weighted score"):
+        await feedback.record(db_session, run_id=ids["run"], action="approval", idempotency_key="x")
