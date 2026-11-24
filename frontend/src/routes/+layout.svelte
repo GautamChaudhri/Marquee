@@ -39,7 +39,8 @@
 			count: $pendingReviews || null
 		},
 		{ href: '/taste', label: 'Taste', icon: 'taste', active: route === '/taste' },
-		{ href: '/activity', label: 'Activity', icon: 'activity', active: route === '/activity' }
+		{ href: '/activity', label: 'Activity', icon: 'activity', active: route === '/activity' },
+		{ href: '/system', label: 'System', icon: 'settings', active: route === '/system' }
 	]);
 
 	// The Review entry's number: read when the shell loads, and after each answer.
