@@ -69,25 +69,44 @@ def calculate_text_residual(
     )
 
 
+def file_sha256(path: Path) -> str:
+    """SHA-256 of a file's bytes: the embedding cache's content key."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            hasher.update(block)
+    return hasher.hexdigest()
+
+
+def embedding_cache_path(sha256: str, config: PipelineSettings = pipeline_settings) -> Path:
+    """Where the embedding of the file with these bytes lives under the configured model.
+
+    The key is the model name (the directory) plus the SHA-256 of the file's bytes, not
+    TMDB's file name: TMDB serves different bytes under one name, and a name key would mix
+    an embedding of one encoding with features measured on another.
+    """
+    return config.EMBEDDING_CACHE_DIR / config.AI_MODEL / f"{sha256}.npz"
+
+
 def load_cached_embedding(
-    orig_filename: str,
+    sha256: str,
     config: PipelineSettings = pipeline_settings,
 ) -> np.ndarray | None:
-    """Load a candidate's CLIP embedding from the on-disk run cache.
+    """Load the CLIP embedding of the file with these bytes from the on-disk cache.
 
     The pipeline persists every candidate's embedding here during the style
     stage, so the feedback path can add an approved poster to the taste
-    profile without re-encoding on the GPU. Returns None if not cached.
+    profile without re-encoding on the GPU. Returns None if not cached, and
+    for an entry written under another model or for other bytes.
     """
-    key = hashlib.sha256(f"{config.AI_MODEL}:{orig_filename}".encode()).hexdigest()
-    cache_path = config.EMBEDDING_CACHE_DIR / config.AI_MODEL / f"{key}.npz"
+    cache_path = embedding_cache_path(sha256, config)
     if not cache_path.exists():
         return None
     try:
         with np.load(cache_path, allow_pickle=False) as cached:
             model_name = str(np.asarray(cached["model_name"]).item())
-            cached_filename = str(np.asarray(cached["orig_filename"]).item())
-            if model_name == config.AI_MODEL and cached_filename == orig_filename:
+            cached_sha256 = str(np.asarray(cached["sha256"]).item())
+            if model_name == config.AI_MODEL and cached_sha256 == sha256:
                 return np.asarray(cached["embedding"], dtype=np.float32)
     except (OSError, ValueError, KeyError):
         logger.warning("Discarding invalid embedding cache: %s", cache_path)
@@ -118,7 +137,11 @@ class FeatureExtractor:
         self.embedding_cache_enabled = embedding_cache_enabled
         # Contained runners disable the disk cache but still need CLIP vectors
         # for STACK_SIGNAL=clip (and DINO fallback) later in the same run.
+        # Keyed by content hash, like the disk cache.
         self._memory_embeddings: dict[str, np.ndarray] = {}
+        # TMDB file name -> SHA-256 of the bytes the style phase read, so later
+        # stages of the same run find an embedding by name without hashing again.
+        self._run_sha256: dict[str, str] = {}
         self.encoder = encoder or CLIPImageEncoder()
         self.aesthetic = aesthetic or AestheticPredictor()
         self.face_detector = face_detector or FaceDetector()
@@ -305,8 +328,16 @@ class FeatureExtractor:
         miss_indices: list[int] = []
         miss_pixels: list[np.ndarray] = []
 
+        digests: dict[int, str] = {}
         for index, (image_path, _candidate) in enumerate(items):
-            cached = self._load_cached_embedding(image_path.name)
+            try:
+                digest = file_sha256(image_path)
+            except Exception as exc:  # per-candidate data problem
+                results[index] = exc
+                continue
+            digests[index] = digest
+            self._run_sha256[image_path.name] = digest
+            cached = self._load_cached_embedding(digest)
             if cached is not None:
                 embeddings[index] = cached
                 continue
@@ -321,7 +352,7 @@ class FeatureExtractor:
             encoded = self.encoder.encode_batch(miss_pixels)
             for index, vector in zip(miss_indices, encoded, strict=True):
                 embeddings[index] = vector
-                self._save_cached_embedding(items[index][0].name, vector)
+                self._save_cached_embedding(digests[index], vector)
 
         primary_embedding: np.ndarray | None = None
         if primary_name is not None:
@@ -584,41 +615,33 @@ class FeatureExtractor:
     # ------------------------------------------------------------------
 
     def load_run_embedding(self, orig_filename: str) -> np.ndarray | None:
-        """Return the CLIP vector retained by this extractor for the current run."""
-        return self._load_cached_embedding(orig_filename)
+        """Return the CLIP vector of a candidate the style phase read in the current run.
 
-    def _load_cached_embedding(self, orig_filename: str) -> np.ndarray | None:
-        if not self.embedding_cache_enabled:
-            return self._memory_embeddings.get(orig_filename)
-        cache_path = self._cache_path(orig_filename)
-        if not cache_path.exists():
+        The candidate is named by its TMDB file name; the embedding is found by the
+        hash of the bytes the style phase read under that name.
+        """
+        digest = self._run_sha256.get(orig_filename)
+        if digest is None:
             return None
-        try:
-            with np.load(cache_path, allow_pickle=False) as cached:
-                model_name = str(np.asarray(cached["model_name"]).item())
-                cached_filename = str(np.asarray(cached["orig_filename"]).item())
-                if model_name == self.config.AI_MODEL and cached_filename == orig_filename:
-                    return np.asarray(cached["embedding"], dtype=np.float32)
-        except (OSError, ValueError, KeyError):
-            logger.warning("Discarding invalid embedding cache: %s", cache_path)
-        return None
+        return self._load_cached_embedding(digest)
 
-    def _save_cached_embedding(self, orig_filename: str, embedding: np.ndarray) -> None:
+    def _load_cached_embedding(self, sha256: str) -> np.ndarray | None:
         if not self.embedding_cache_enabled:
-            self._memory_embeddings[orig_filename] = embedding
+            return self._memory_embeddings.get(sha256)
+        return load_cached_embedding(sha256, self.config)
+
+    def _save_cached_embedding(self, sha256: str, embedding: np.ndarray) -> None:
+        if not self.embedding_cache_enabled:
+            self._memory_embeddings[sha256] = embedding
             return
-        cache_path = self._cache_path(orig_filename)
+        cache_path = embedding_cache_path(sha256, self.config)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             cache_path,
             embedding=embedding,
             model_name=np.asarray(self.config.AI_MODEL),
-            orig_filename=np.asarray(orig_filename),
+            sha256=np.asarray(sha256),
         )
-
-    def _cache_path(self, orig_filename: str) -> Path:
-        key = hashlib.sha256(f"{self.config.AI_MODEL}:{orig_filename}".encode()).hexdigest()
-        return self.config.EMBEDDING_CACHE_DIR / self.config.AI_MODEL / f"{key}.npz"
 
     def _language_match(self, language: str | None) -> float:
         if language == self.config.PREFERRED_LANG:

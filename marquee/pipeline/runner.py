@@ -46,7 +46,7 @@ from marquee.config.pipeline import pipeline_settings
 from marquee.fs.download_guard import ensure_image_response
 from marquee.integrations.tmdb.client import PosterCandidate, TMDBClient
 from marquee.pipeline.deduper import DedupRemoval, PosterDeduper
-from marquee.pipeline.features import FeatureExtractor, load_cached_embedding
+from marquee.pipeline.features import FeatureExtractor, file_sha256, load_cached_embedding
 from marquee.pipeline.gate import PosterGate
 from marquee.pipeline.ocr_filter import OcrPool, PosterTextFilter
 from marquee.pipeline.output import OutputResult, place_gated, place_ranked
@@ -796,7 +796,9 @@ def _stack_signal_value(
     stacker leaves that poster as its own singleton.
     """
     signal = pipeline_settings.STACK_SIGNAL
-    load_embedding = embedding_loader or load_cached_embedding
+    load_embedding = embedding_loader or (
+        lambda _name: load_cached_embedding(file_sha256(image_path))
+    )
     if signal == "phash":
         import imagehash  # noqa: PLC0415
         from PIL import Image  # noqa: PLC0415
