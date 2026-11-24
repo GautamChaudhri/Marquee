@@ -191,18 +191,35 @@ async def test_a_ninth_negative_ends_the_oldest_and_an_image_is_one_negative(
     db_session: AsyncSession,
 ) -> None:
     movie_id = await _movie(db_session)
-    event_id = await _event(db_session, movie_id, "a")
     changes = exemplars.Changes()
+    events = [await _event(db_session, movie_id, f"e{n}") for n in range(1, 10)]
     made = [
-        await _negative(db_session, movie_id, event_id, SHA[n], changes, NOW + timedelta(minutes=n))
+        await _negative(
+            db_session, movie_id, events[n - 1], SHA[n], changes, NOW + timedelta(minutes=n)
+        )
         for n in range(1, 10)
     ]
     assert all(row is not None for row in made)
     active = await exemplars.active_negatives(db_session, movie_id)
     assert len(active) == exemplars.MAX_ACTIVE_NEGATIVES
     assert made[0].state == "superseded" and made[0] not in active  # type: ignore[union-attr]
+    assert made[0].ended_by_event_id == events[8]  # type: ignore[union-attr]
     assert changes.ended == [made[0]]
-    assert await _negative(db_session, movie_id, event_id, SHA[9], changes) is None
+    assert await _negative(db_session, movie_id, events[8], SHA[9], changes) is None
+    assert len(await exemplars.active_negatives(db_session, movie_id)) == 8
+
+
+@pytest.mark.db
+async def test_one_event_never_ends_a_negative_it_made(db_session: AsyncSession) -> None:
+    movie_id = await _movie(db_session)
+    event_id = await _event(db_session, movie_id, "a")
+    changes = exemplars.Changes()
+    made = [
+        await _negative(db_session, movie_id, event_id, SHA[n], changes, NOW + timedelta(minutes=n))
+        for n in range(1, 10)
+    ]
+    assert all(row is not None for row in made[:8]) and made[8] is None
+    assert changes.ended == []
     assert len(await exemplars.active_negatives(db_session, movie_id)) == 8
 
 

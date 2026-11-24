@@ -16,7 +16,9 @@ reject     none                 none                         the same, from ever
 ========== ==================== ============================ =================================
 
 An override that names the pick is recorded as an approval. A hated candidate whose bytes are
-the movie's active positive ends that positive. A revoke brings back what its event ended, as far as the
+the movie's active positive ends that positive. When one event hates more hard negatives than
+a movie may hold, the best-ranked :data:`~marquee.taste.exemplars.MAX_ACTIVE_NEGATIVES` become
+negatives and the rest make nothing. A revoke brings back what its event ended, as far as the
 rules allow (:func:`marquee.taste.exemplars.revoke_event`). Feedback goes to a movie's latest
 completed run only. An event keeps its own copy of what was shown, because ``run_candidates`` rows go
 when their run does: each shown candidate by TMDB's file name, with its hash, rank, score,
@@ -178,6 +180,18 @@ def _ids(value: list[int] | None, what: str) -> list[int]:
     return ids
 
 
+def hard_negatives(hated: list[RunCandidate]) -> list[RunCandidate]:
+    """The hated candidates that become negative exemplars: those ranked
+    ``FEEDBACK_HARD_NEGATIVE_RANK_MAX`` or better, best-ranked first, at most as many as a
+    movie may hold. An easy negative informs the order, not the exemplars."""
+    hard_max = pipeline_settings.FEEDBACK_HARD_NEGATIVE_RANK_MAX
+    hard = sorted(
+        (row for row in hated if row.rank is not None and row.rank <= hard_max),
+        key=lambda row: (row.rank, row.id),
+    )
+    return hard[: exemplars.MAX_ACTIVE_NEGATIVES]
+
+
 async def record(
     session: AsyncSession,
     *,
@@ -324,15 +338,14 @@ async def record(
             source_file=chosen.source_file,
             now=now,
         )
-    hard_max = pipeline_settings.FEEDBACK_HARD_NEGATIVE_RANK_MAX
-    for n in hated_ids:
-        row = by_id[n]
+    hated_rows = [by_id[n] for n in dict.fromkeys(hated_ids)]
+    for row in hated_rows:
         assert row.sha256 is not None
         await exemplars.end_positive_with_image(
             session, changes, movie_id=movie.id, sha256=row.sha256, event_id=event.id, now=now
         )
-        if row.rank is None or row.rank > hard_max:
-            continue  # an easy negative: it informs the order, not the exemplars
+    for row in hard_negatives(hated_rows):
+        assert row.sha256 is not None
         kept = await asyncio.to_thread(exemplars.keep_file, folder / row.source_file, row.sha256)
         await exemplars.add_negative(
             session,

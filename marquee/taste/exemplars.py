@@ -10,7 +10,7 @@ The rules (decisions 3 and 8 of the M5b brief, 7 and 8 of the M6a brief):
 - a movie has at most one active positive; a new one supersedes it and names it as the
   exemplar it replaced;
 - a movie has at most :data:`MAX_ACTIVE_NEGATIVES` active negatives; one more ends the
-  oldest;
+  oldest, never one the same event made;
 - every exemplar an act of feedback ends records that event (``ended_by_event_id``);
 - revoking an event revokes the exemplars it created. Then a superseded exemplar of the
   movie whose ending event is revoked is eligible again: the newest eligible positive
@@ -260,10 +260,16 @@ async def add_negative(
     now: datetime,
 ) -> Exemplar | None:
     """A disliked candidate becomes an active negative of the movie, unless that image
-    already is one. Past :data:`MAX_ACTIVE_NEGATIVES`, the oldest ends."""
+    already is one. Past :data:`MAX_ACTIVE_NEGATIVES`, the oldest ends, but never one this
+    same event made: when only those are left, nothing is made (the caller asks for at most
+    that many per event)."""
     negatives = await active_negatives(session, movie_id)
     if any(row.sha256 == sha256 for row in negatives):
         return None
+    excess = max(0, len(negatives) + 1 - MAX_ACTIVE_NEGATIVES)
+    older = [other for other in negatives if other.event_id != event_id]
+    if excess > len(older):
+        return None  # the event already made as many as a movie may hold
     row = Exemplar(
         movie_id=movie_id,
         polarity=POLARITY_NEGATIVE,
@@ -279,7 +285,7 @@ async def add_negative(
     session.add(row)
     await session.flush()
     changes.created.append(row)
-    for oldest in negatives[: max(0, len(negatives) + 1 - MAX_ACTIVE_NEGATIVES)]:
+    for oldest in older[:excess]:
         _end(oldest, STATE_SUPERSEDED, now, event_id)
         changes.ended.append(oldest)
     return row

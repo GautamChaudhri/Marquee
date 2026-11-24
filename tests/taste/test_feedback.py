@@ -309,10 +309,30 @@ async def test_reject_with_none_named_hates_every_shown_one(db_session: AsyncSes
     assert outcome.event.chosen_source_file is None and outcome.deploy_candidate_id is None
     assert outcome.event.context["hated"] == [f"r{n}.jpg" for n in range(1, 13)]
     negatives = [row for row in await _exemplars(db_session) if row.state == "active"]
-    # Ten ranked hard negatives, of which the movie keeps the newest eight.
-    assert len(outcome.changes.created) == 10
+    # Ten ranked hard negatives: the best-ranked eight are kept, ranks 9 and 10 make nothing,
+    # and no exemplar is made and ended by the same event.
+    assert [row.source_file for row in outcome.changes.created] == [
+        f"r{n}.jpg" for n in range(1, 9)
+    ]
+    assert outcome.changes.ended == []
     assert len(negatives) == exemplars.MAX_ACTIVE_NEGATIVES
     assert {row.polarity for row in negatives} == {"negative"}
+    assert {row.source_file for row in negatives} == {f"r{n}.jpg" for n in range(1, 9)}
+
+
+async def test_a_reject_of_many_named_keeps_the_best_ranked_whatever_the_order(
+    db_session: AsyncSession,
+) -> None:
+    movie_id = await _movie(db_session)
+    ids = await _run(db_session, movie_id, ranked=12)
+    worst_first = [ids[f"r{n}.jpg"] for n in range(12, 0, -1)]
+    outcome = await feedback.record(
+        db_session, run_id=ids["run"], action="reject", hated=worst_first, idempotency_key="k"
+    )
+    assert sorted(row.source_file for row in outcome.changes.created) == sorted(
+        f"r{n}.jpg" for n in range(1, 9)
+    )
+    assert outcome.changes.ended == []
 
 
 async def test_hating_the_active_positive_ends_it(db_session: AsyncSession) -> None:
