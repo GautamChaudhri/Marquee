@@ -64,6 +64,9 @@
 
 	const readOnly = $derived.by(() => {
 		if (!run) return null;
+		if (run.masked) {
+			return 'This is a masked run of a blind evaluation: the movie was run without its own posters in the taste profile, to measure the picks. It is read-only, and nothing is deployed from it.';
+		}
 		if (run.state !== 'completed') {
 			return `This run is ${run.state}. Only a completed run can be answered.`;
 		}
