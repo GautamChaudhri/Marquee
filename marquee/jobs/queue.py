@@ -68,7 +68,7 @@ async def _finished(session: AsyncSession, job: Job) -> None:
         await batch.finish_parent_if_done(session, job.parent_id)
 
 
-async def enqueue(
+async def add_job(
     session: AsyncSession,
     kind: JobKind,
     payload: dict[str, Any] | None = None,
@@ -77,11 +77,7 @@ async def enqueue(
     dedupe_key: str | None = None,
     run_after: datetime | None = None,
 ) -> tuple[Job, bool]:
-    """Queue a job; returns it and whether it is new.
-
-    With a dedupe key (the argument, else the kind's), a job already queued or running
-    under that key is returned instead of adding another.
-    """
+    """:func:`enqueue` without the commit, for a caller composing a larger transaction."""
     payload = payload or {}
     check_json(payload, "payload")
     key = dedupe_key if dedupe_key is not None else kind.dedupe_key
@@ -107,16 +103,35 @@ async def enqueue(
         if job is not None:
             await add_event(session, job.id, "queued", data={"priority": priority})
             await notify(session, f"new {job.id}")
-            await session.commit()
             return job, True
         existing = await session.scalar(
             select(Job).where(Job.dedupe_key == key, Job.state.in_(ACTIVE_STATES)),
             execution_options=FRESH,
         )
         if existing is not None:
-            await session.commit()
             return existing, False
     raise JobStateError(f"could not queue a {kind.name} job under the key {key!r}")
+
+
+async def enqueue(
+    session: AsyncSession,
+    kind: JobKind,
+    payload: dict[str, Any] | None = None,
+    *,
+    priority: int = 0,
+    dedupe_key: str | None = None,
+    run_after: datetime | None = None,
+) -> tuple[Job, bool]:
+    """Queue a job; returns it and whether it is new.
+
+    With a dedupe key (the argument, else the kind's), a job already queued or running
+    under that key is returned instead of adding another.
+    """
+    job, created = await add_job(
+        session, kind, payload, priority=priority, dedupe_key=dedupe_key, run_after=run_after
+    )
+    await session.commit()
+    return job, created
 
 
 async def claim(session: AsyncSession, classes: Collection[str]) -> Job | None:

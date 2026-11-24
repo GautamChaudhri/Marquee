@@ -136,6 +136,13 @@ def test_api_settings_defaults() -> None:
     assert settings.API_PORT == 8000
 
 
+def test_job_settings_defaults_and_bounds() -> None:
+    assert _settings().SYNC_INTERVAL_MINUTES == 360
+    assert _settings(SYNC_INTERVAL_MINUTES=0).SYNC_INTERVAL_MINUTES == 0
+    with pytest.raises(ValidationError):
+        _settings(SYNC_INTERVAL_MINUTES=-1)
+
+
 def test_secret_values_lists_every_secret_that_is_set() -> None:
     settings = _settings(
         POSTGRES_PASSWORD="db-secret",

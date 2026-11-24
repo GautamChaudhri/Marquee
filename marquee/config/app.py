@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     API_HOST: str = "127.0.0.1"
     API_PORT: int = 8000
 
+    # How often the worker queues a library sync by itself; 0 turns the schedule off.
+    SYNC_INTERVAL_MINUTES: int = Field(default=360, ge=0)
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_file_encoding="utf-8",
