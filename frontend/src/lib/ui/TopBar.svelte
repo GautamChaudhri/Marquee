@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { theme, toggleTheme } from '$lib/theme';
+	import { theme, toggleTheme } from '$lib/stores/theme';
 	import type { Snippet } from 'svelte';
 	import Icon from './Icon.svelte';
 
