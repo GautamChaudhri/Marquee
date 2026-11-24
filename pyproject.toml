@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "marquee"
 dynamic = ["version"]
-description = "Poster artwork selection for Radarr and Sonarr media libraries"
+description = "Poster artwork selection for Radarr movie libraries"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "GPL-3.0-only"

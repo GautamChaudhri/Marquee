@@ -24,7 +24,7 @@ RANKED_SHOWN = 10
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="marquee", description="Poster artwork for Radarr and Sonarr."
+        prog="marquee", description="Poster artwork for Radarr movie libraries."
     )
     parser.add_argument("--version", action="version", version=f"marquee {__version__}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
