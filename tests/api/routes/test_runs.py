@@ -310,16 +310,15 @@ async def test_deployments_list_and_restore(
         "total"
     ] == 0
 
+    # Any deployment can be restored, not only the newest.
     old = await client.post(f"/api/deployments/{first.id}/restore", headers=headers)
-    assert old.status_code == 409
-    assert old.json()["detail"] == (
-        f"deployment {first.id} is not the newest for Alpha; only the newest, "
-        f"deployment {second.id}, can be undone"
-    )
+    assert old.status_code == 202
+    assert old.json()["kind"] == "poster_restore"
+    assert old.json()["payload"] == {"deployment_id": first.id, "movie_id": ids["movie"]}
+    # One write per movie at a time: the newest answers with the restore already queued.
     newest = await client.post(f"/api/deployments/{second.id}/restore", headers=headers)
-    assert newest.status_code == 202
-    assert newest.json()["kind"] == "poster_restore"
-    assert newest.json()["payload"] == {"deployment_id": second.id, "movie_id": ids["movie"]}
+    assert newest.status_code == 200
+    assert newest.json()["id"] == old.json()["id"]
     assert (await client.post("/api/deployments/999/restore", headers=headers)).status_code == 404
 
 

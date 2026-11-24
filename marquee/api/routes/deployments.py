@@ -42,11 +42,12 @@ async def list_deployments(
     responses={
         200: {"description": "A write of this movie was already queued or running; that job"},
         404: {"description": "No such deployment"},
-        409: {"description": "Only a movie's newest deployment can be undone"},
+        409: {"description": "The deployment cannot be restored"},
     },
 )
 async def queue_restore(session: Session, deployment_id: int, response: Response) -> JobItem:
-    """Queue a restore that puts back what this deployment replaced."""
+    """Queue a restore that puts back what was in the folder before this deployment (any
+    deployment of a movie, not only the newest)."""
     if await session.get(Deployment, deployment_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="deployment not found")
     try:

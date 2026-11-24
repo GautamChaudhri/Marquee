@@ -130,10 +130,11 @@ def _build_parser() -> argparse.ArgumentParser:
     deployments_list.add_argument("--json", action="store_true", help="print them as JSON")
     restore_cmd = commands.add_parser(
         "restore",
-        help="undo a movie's newest deployment, as a job",
-        description="Queue a restore that puts back what the deployment replaced, from its "
-        "backup, or removes the poster when there was none. What is in the folder now is "
-        "backed up first. Only a movie's newest deployment can be undone.",
+        help="put back what a deployment replaced, as a job",
+        description="Queue a restore that puts back what was in the folder before the "
+        "deployment, from its backup, or removes the poster when there was none. Any "
+        "deployment of a movie can be restored, not only the newest. What is in the folder now "
+        "is backed up first.",
     )
     restore_cmd.add_argument("deployment_id", type=int)
 
@@ -731,19 +732,27 @@ def _deployment_dict(row: Any) -> dict[str, Any]:
         "previous_origin": row.previous_origin,
         "backup_file": row.backup_file,
         "restores_deployment_id": row.restores_deployment_id,
+        "restore_puts_back": row.previous_sha256,
         "created_at": row.created_at.isoformat(),
     }
 
 
 def _print_deployments(page: Any) -> None:
-    print(f"{'id':>6}  {'movie':>6}  {'action':<8} {'by':<7} {'created (UTC)':<19}  new -> was")
+    print(
+        f"{'id':>6}  {'movie':>6}  {'action':<8} {'by':<7} {'created (UTC)':<19}  "
+        f"{'wrote':<12}  a restore of it puts back"
+    )
     for row in page.items:
         new = (row.new_sha256 or "no poster")[:12]
-        was = (row.previous_sha256 or "no poster")[:12]
-        undoes = f" (undoes {row.restores_deployment_id})" if row.restores_deployment_id else ""
+        back = (
+            f"{row.previous_sha256[:12]} ({row.previous_origin})"
+            if row.previous_sha256
+            else "no poster"
+        )
+        undoes = f"  (undid {row.restores_deployment_id})" if row.restores_deployment_id else ""
         print(
             f"{row.id:>6}  {row.movie_id:>6}  {row.action:<8} {row.initiated_by:<7} "
-            f"{_when(row.created_at):<19}  {new} -> {was}{undoes}"
+            f"{_when(row.created_at):<19}  {new:<12}  {back}{undoes}"
         )
     print(f"{len(page.items)} of {page.total} deployment(s)")
 

@@ -581,3 +581,16 @@ def test_run_and_deployment_commands(
     code, _, err = run("restore", "999")
     assert code == 1 and "no deployment 999" in err
     assert pick
+
+    # The list says, for each row, what a restore of it would put back.
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        conn.execute(
+            "insert into deployments (movie_id, artwork_kind, action, initiated_by, file_name, "
+            "new_sha256, new_size_bytes, previous_sha256, previous_origin, backup_file) values "
+            "(%s, 'poster', 'deploy', 'owner', 'poster.jpg', %s, 4, %s, 'library', %s)",
+            [movie_id, "2" * 64, "3" * 64, f"posters/{movie_id}/{'3' * 64}.jpg"],
+        )
+    code, out, _ = run("deployments", "list", "--movie-id", str(movie_id))
+    assert code == 0 and "a restore of it puts back" in out
+    assert "222222222222  333333333333 (library)" in out
+    assert json.loads(run("deployments", "list", "--json")[1])[0]["restore_puts_back"] == "3" * 64

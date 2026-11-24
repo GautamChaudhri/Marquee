@@ -186,7 +186,6 @@ async def poster_restore(ctx: JobContext) -> dict[str, Any]:
             movie = await session.get(Movie, undone.movie_id)
             assert movie is not None
             own = await session.scalar(select(Deployment).where(Deployment.job_id == ctx.job_id))
-            newest = await deploy.newest_deployment(session, movie.id)
             await session.commit()
         if movie.id != movie_id:
             raise PermanentJobError(f"deployment {deployment_id} is not movie {movie_id}'s")
@@ -194,10 +193,6 @@ async def poster_restore(ctx: JobContext) -> dict[str, Any]:
         if own is not None:
             result = deploy.recorded(own, "already_recorded", "this job already made its write")
             return {**base, **result.to_dict()}
-        try:
-            check_newest(undone, newest, movie)
-        except WriteRefusedError as exc:
-            raise PermanentJobError(str(exc)) from exc
         data: bytes | None = None
         if undone.previous_sha256 is not None:
             if undone.backup_file is None:
@@ -222,15 +217,6 @@ async def poster_restore(ctx: JobContext) -> dict[str, Any]:
         raise PermanentJobError(str(exc)) from exc
     finally:
         await engine.dispose()
-
-
-def check_newest(undone: Deployment, newest: Deployment | None, movie: Movie) -> None:
-    """Only a movie's newest deployment can be undone."""
-    if newest is not None and newest.id != undone.id:
-        raise WriteRefusedError(
-            f"deployment {undone.id} is not the newest for {movie.title}; only the newest, "
-            f"deployment {newest.id}, can be undone"
-        )
 
 
 POSTER_DEPLOY = JobKind(
@@ -269,13 +255,13 @@ async def enqueue_deploy(
 
 
 async def enqueue_restore(session: AsyncSession, deployment_id: int) -> tuple[Job, bool]:
-    """Queue a restore of a deployment, which must be its movie's newest."""
+    """Queue a restore of any deployment of a movie: it puts back what was in the folder
+    before that deployment."""
     undone = await session.get(Deployment, deployment_id)
     if undone is None:
         raise WriteRefusedError(f"no deployment {deployment_id}")
     movie = await session.get(Movie, undone.movie_id)
     assert movie is not None
-    check_newest(undone, await deploy.newest_deployment(session, movie.id), movie)
     return await queue.enqueue(
         session, POSTER_RESTORE, {"deployment_id": deployment_id, "movie_id": movie.id}
     )

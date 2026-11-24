@@ -292,23 +292,36 @@ async def test_missing_writes_into_an_empty_folder_but_not_over_a_late_poster(
     assert (await _deploy(sessions, ids, "other", by="owner"))["outcome"] == "written"
 
 
-async def test_only_the_newest_deployment_can_be_undone_and_a_restore_can_be_undone(
+async def test_any_deployment_can_be_restored_and_a_restore_can_be_undone(
     library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
 ) -> None:
     ids = await _setup(sessions, library, owners_poster=True)
-    deployed = await _deploy(sessions, ids, "other")
-    restored = await _restore(sessions, ids, deployed["deployment_id"])
+    first = await _deploy(sessions, ids, "other")
+    second = await _deploy(sessions, ids, "pick")
+    assert (library / "poster.jpg").read_bytes() == PICK
 
-    with pytest.raises(PermanentJobError) as refused:
-        await _restore(sessions, ids, deployed["deployment_id"])
-    assert str(refused.value) == (
-        f"deployment {deployed['deployment_id']} is not the newest for Heat; only the newest, "
-        f"deployment {restored['deployment_id']}, can be undone"
-    )
+    # Restoring the older deployment puts back what was there before it: the owner's.
+    restored = await _restore(sessions, ids, first["deployment_id"])
+    assert restored["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == OWNERS
+    assert (await _row(sessions)).origin == "library"  # type: ignore[union-attr]
+    async with sessions() as session:
+        row = await session.get(Deployment, restored["deployment_id"])
+    assert row is not None and row.restores_deployment_id == first["deployment_id"]
+    assert row.previous_sha256 == backup.sha256_of(PICK) == second["new_sha256"]
+    assert backup.exists(ids["movie"], backup.sha256_of(PICK))
 
-    again = await _restore(sessions, ids, restored["deployment_id"])
-    assert again["outcome"] == "written"
-    assert (library / "poster.jpg").read_bytes() == OTHER
+    # The same restore again, in a row, writes nothing.
+    count = await _deployment_count(sessions)
+    again = await _restore(sessions, ids, first["deployment_id"])
+    assert again["outcome"] == "already_deployed"
+    assert again["deployment_id"] == restored["deployment_id"]
+    assert await _deployment_count(sessions) == count
+
+    # A restore is a deployment too: undoing it puts the pick back.
+    undone = await _restore(sessions, ids, restored["deployment_id"])
+    assert undone["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == PICK
     assert (await _row(sessions)).origin == "marquee"  # type: ignore[union-attr]
 
 
