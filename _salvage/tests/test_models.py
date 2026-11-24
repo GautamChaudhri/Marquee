@@ -55,33 +55,6 @@ async def test_all_tables_created(db):
 
 
 @pytest.mark.asyncio
-async def test_movie_columns(db):
-    """Movie table should have domain columns + poster columns."""
-    cols = await _column_names("movies")
-    # Domain
-    assert "id" in cols
-    assert "title" in cols
-    assert "year" in cols
-    assert "tmdb_id" in cols
-    assert "imdb_id" in cols
-    assert "folder_path" in cols
-    assert "movie_file_path" in cols
-    assert "radarr_id" in cols
-    assert "director" in cols
-    assert "production_companies_json" in cols
-    assert "tagline" in cols
-    assert "text_profile_id" in cols
-    # ArtworkMixin
-    assert "poster_path" in cols
-    assert "poster_source" in cols
-    assert "poster_ai_selected" in cols
-    assert "poster_embedding" in cols
-    # Timestamps
-    assert "created_at" in cols
-    assert "updated_at" in cols
-
-
-@pytest.mark.asyncio
 async def test_series_columns(db):
     """Series table should have domain + poster columns."""
     cols = await _column_names("series")
@@ -124,29 +97,6 @@ async def test_episode_columns(db):
 # ---------------------------------------------------------------------------
 # ArtworkMixin
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_needs_poster_defaults_true(db: AsyncSession):
-    """A new Movie should report needs_poster=True."""
-    movie = Movie(title="Test", year=2024, folder_path="/movies/Test")
-    db.add(movie)
-    await db.flush()
-
-    assert movie.needs_poster is True
-    assert movie.poster_path is None
-    assert movie.poster_ai_selected is False
-
-
-@pytest.mark.asyncio
-async def test_needs_poster_false_after_set(db: AsyncSession):
-    """Setting poster_path should make needs_poster=False."""
-    movie = Movie(title="Test", year=2024, folder_path="/movies/Test")
-    movie.poster_path = "/movies/Test/poster.jpg"
-    db.add(movie)
-    await db.flush()
-
-    assert movie.needs_poster is False
 
 
 # ---------------------------------------------------------------------------
@@ -244,14 +194,6 @@ async def test_cascade_delete_episodes(db: AsyncSession):
 # ---------------------------------------------------------------------------
 
 
-def test_movie_repr():
-    m = Movie(id=1, title="Dune", year=2021, folder_path="/m/dune", tmdb_id=438631)
-    r = repr(m)
-    assert "Movie" in r
-    assert "Dune" in r
-    assert "438631" in r
-
-
 def test_series_repr():
     s = Series(id=1, title="Breaking Bad", year=2008, series_path="/tv/bb", tvdb_id=81189)
     r = repr(s)
@@ -270,16 +212,3 @@ def test_episode_repr():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_partial_indexes_exist():
-    """Verify the missing-poster partial indexes are created on each table."""
-    engine = _get_engine()
-    async with engine.connect() as conn:
-
-        def _sync(conn):
-            inspector = inspect(conn)
-            index_names = {idx["name"] for idx in inspector.get_indexes("movies")}
-            return index_names
-
-        movie_indexes = await conn.run_sync(_sync)
-    assert "ix_movies_missing_poster" in movie_indexes

@@ -67,3 +67,11 @@ def test_tmdb_id_is_indexed_but_not_unique() -> None:
 def test_artwork_cascades_with_its_movie() -> None:
     (foreign_key,) = Artwork.__table__.c.movie_id.foreign_keys
     assert foreign_key.ondelete == "CASCADE"
+
+
+def test_repr_names_the_movie_and_never_a_path() -> None:
+    movie = Movie(id=1, radarr_id=7, title="Dune", radarr_path="/data/movies/Dune (2021)")
+    text = repr(movie)
+    assert "Movie" in text
+    assert "Dune" in text
+    assert "/data/movies" not in text
