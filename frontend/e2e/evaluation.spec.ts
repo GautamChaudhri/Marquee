@@ -31,6 +31,17 @@ test('a finished evaluation reads as a sentence, beside the one before', async (
 	await expect(page).toHaveURL('/taste/evaluations/2');
 });
 
+test('a cancelled or failed evaluation is never the headline', async ({ page }) => {
+	await resetBackend({ evaluations: 'stopped' });
+	await page.goto('/taste');
+	await expect(page.getByTestId('evaluation-headline')).toContainText('On 3 posters');
+	await expect(page.getByTestId('evaluation-previous')).toContainText('Before: Evaluation 1:');
+	await page.getByRole('link', { name: 'See every poster' }).click();
+	await expect(page).toHaveURL('/taste/evaluations/2');
+	await page.goto('/taste/evaluations/3');
+	await expect(page.getByTestId('evaluation-summary')).toContainText('Blind evaluation 3');
+});
+
 test('the results page lists every poster, filters, and opens a masked run', async ({ page }) => {
 	await resetBackend({ evaluations: 'finished' });
 	await page.goto('/taste/evaluations/2');

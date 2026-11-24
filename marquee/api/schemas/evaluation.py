@@ -107,7 +107,8 @@ class EvaluationResultList(BaseModel):
 
 
 class EvaluationHeadline(BaseModel):
-    """The latest finished evaluation's numbers, and the one before for comparison."""
+    """The latest evaluation that succeeded, the one that succeeded before it for
+    comparison, and one running. A cancelled or failed evaluation is neither headline."""
 
     latest: EvaluationItem | None
     previous: EvaluationItem | None

@@ -589,15 +589,22 @@ async def view(session: AsyncSession, row: Evaluation) -> EvaluationView:
     )
 
 
-async def latest_finished(session: AsyncSession) -> Evaluation | None:
-    """The newest evaluation whose batch has finished (succeeded, failed, or cancelled)."""
-    return await session.scalar(
+async def latest_succeeded(
+    session: AsyncSession, *, before: int | None = None
+) -> Evaluation | None:
+    """The newest evaluation whose batch succeeded (or the newest before ``before``). A
+    cancelled or failed evaluation is never a headline; it stays in the list and on its own
+    page."""
+    statement = (
         select(Evaluation)
         .join(Job, Job.id == Evaluation.job_id)
-        .where(Job.state.in_(("succeeded", "failed", "cancelled")))
+        .where(Job.state == "succeeded")
         .order_by(Evaluation.id.desc())
         .limit(1)
     )
+    if before is not None:
+        statement = statement.where(Evaluation.id < before)
+    return await session.scalar(statement)
 
 
 @dataclass(frozen=True)

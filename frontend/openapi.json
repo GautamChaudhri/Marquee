@@ -2872,7 +2872,7 @@
           "running"
         ],
         "title": "EvaluationHeadline",
-        "description": "The latest finished evaluation's numbers, and the one before for comparison."
+        "description": "The latest evaluation that succeeded, the one that succeeded before it for\ncomparison, and one running. A cancelled or failed evaluation is neither headline."
       },
       "EvaluationItem": {
         "properties": {

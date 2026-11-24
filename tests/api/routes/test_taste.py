@@ -502,6 +502,36 @@ async def test_an_evaluation_is_queued_once_and_refused_with_reasons(
     assert status["running"]["id"] == item["id"] and status["latest"] is None
 
 
+async def test_the_headline_is_the_latest_evaluation_that_succeeded(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
+) -> None:
+    from marquee.db.models import Evaluation, Job
+
+    ids: dict[str, int] = {}
+    for name in ("first", "second", "cancelled", "failed", "running"):
+        state = name if name in ("cancelled", "failed", "running") else "succeeded"
+        job = Job(kind="batch", job_class="batch", state=state)
+        db_session.add(job)
+        await db_session.flush()
+        row = Evaluation(
+            job_id=job.id, profile_sha256="a" * 64, scorer="weighted", movies=1, queued=1
+        )
+        db_session.add(row)
+        await db_session.flush()
+        ids[name] = row.id
+    await db_session.commit()
+
+    headline = (await client.get("/api/taste", headers=headers)).json()["evaluation"]
+    assert headline["latest"]["id"] == ids["second"]
+    assert headline["previous"]["id"] == ids["first"]
+    assert headline["running"]["id"] == ids["running"]
+    # The cancelled and the failed one are still listed and have their own pages.
+    listing = (await client.get("/api/taste/evaluations", headers=headers)).json()
+    assert {item["id"] for item in listing["items"]} == set(ids.values())
+    cancelled = await client.get(f"/api/taste/evaluations/{ids['cancelled']}", headers=headers)
+    assert cancelled.json()["state"] == "cancelled"
+
+
 async def test_an_evaluations_results_carry_the_images_to_show(
     client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
 ) -> None:

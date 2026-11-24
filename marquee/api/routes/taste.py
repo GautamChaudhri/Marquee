@@ -246,16 +246,9 @@ async def _evaluation_item(session: Session, row: Evaluation) -> EvaluationItem:
 
 
 async def _headline(session: Session) -> EvaluationHeadline:
-    latest = await evaluation.latest_finished(session)
+    latest = await evaluation.latest_succeeded(session)
     previous = (
-        await session.scalar(
-            select(Evaluation)
-            .where(Evaluation.id < latest.id, Evaluation.job_id.is_not(None))
-            .order_by(Evaluation.id.desc())
-            .limit(1)
-        )
-        if latest is not None
-        else None
+        await evaluation.latest_succeeded(session, before=latest.id) if latest is not None else None
     )
     running = await evaluation.running(session)
     return EvaluationHeadline(

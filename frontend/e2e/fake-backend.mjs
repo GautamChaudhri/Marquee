@@ -419,9 +419,10 @@ function summarize(rows) {
 	};
 }
 
-/** Give the fake's evaluations: none, two finished ones, or one finished and one running. */
+/** Give the fake's evaluations: none, two finished ones, those and one running, or those and
+ * a newer cancelled one and a newer failed one (`stopped`). */
 function seedEvaluations(state, how) {
-	if (how === 'finished' || how === 'running') {
+	if (how === 'finished' || how === 'running' || how === 'stopped') {
 		const first = addJob(state, 'batch', { evaluation_id: 1 }, { state: 'succeeded', auto: false });
 		const second = addJob(
 			state,
@@ -441,6 +442,16 @@ function seedEvaluations(state, how) {
 			}),
 			evaluationRow(2, second.id, { summary: summarize(state.evaluationResults[2]) })
 		);
+	}
+	if (how === 'stopped') {
+		for (const [id, jobState] of [
+			[3, 'cancelled'],
+			[4, 'failed']
+		]) {
+			const batch = addJob(state, 'batch', { evaluation_id: id }, { state: jobState, auto: false });
+			state.evaluationResults[id] = evaluationResults(id).slice(0, 1);
+			state.evaluations.push(evaluationRow(id, batch.id, { results: 1 }));
+		}
 	}
 	if (how === 'running') {
 		const batch = addJob(state, 'batch', { evaluation_id: 3 }, { state: 'running', auto: false });
@@ -796,9 +807,11 @@ function tasteStatus() {
 		})(),
 		pending_reviews: pendingReviews().length,
 		evaluation: (() => {
+			// The headline is the latest evaluation that succeeded; cancelled and failed ones
+			// stay in the list and on their own pages.
 			const done = state.evaluations
 				.map(publicEvaluation)
-				.filter((e) => e.state !== 'running')
+				.filter((e) => e.state === 'succeeded')
 				.sort((a, b) => b.id - a.id);
 			const running = state.evaluations.map(publicEvaluation).find((e) => e.state === 'running');
 			return { latest: done[0] ?? null, previous: done[1] ?? null, running: running ?? null };

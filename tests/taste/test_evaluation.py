@@ -436,7 +436,7 @@ async def test_the_view_counts_what_has_not_run(db_session: AsyncSession, data_d
     row = await db_session.get(Evaluation, ids["evaluation"])
     assert row is not None
     assert (await evaluation.running(db_session)).id == row.id  # type: ignore[union-attr]
-    assert await evaluation.latest_finished(db_session) is None
+    assert await evaluation.latest_succeeded(db_session) is None
     job = await db_session.get(Job, row.job_id)
     assert job is not None
     job.state = "cancelled"
@@ -444,7 +444,11 @@ async def test_the_view_counts_what_has_not_run(db_session: AsyncSession, data_d
     view = await evaluation.view(db_session, row)
     assert (view.state, view.results, view.not_run) == ("cancelled", 0, 1)
     assert await evaluation.running(db_session) is None
-    assert (await evaluation.latest_finished(db_session)).id == row.id  # type: ignore[union-attr]
+    assert await evaluation.latest_succeeded(db_session) is None  # cancelled: never a headline
+    job.state = "succeeded"
+    await db_session.commit()
+    assert (await evaluation.latest_succeeded(db_session)).id == row.id  # type: ignore[union-attr]
+    assert await evaluation.latest_succeeded(db_session, before=row.id) is None
 
 
 @pytest.mark.db
