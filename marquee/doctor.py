@@ -429,6 +429,44 @@ def check_radarr() -> CheckResult:
     return _arr_check("Radarr", settings.RADARR_URL, settings.RADARR_API_KEY)
 
 
+def _radarr_root_folders() -> object:
+    """Radarr's root folders, as Radarr reports them."""
+    with httpx.Client(timeout=NETWORK_TIMEOUT_S, follow_redirects=False) as client:
+        response = client.get(
+            f"{settings.RADARR_URL.rstrip('/')}/api/v3/rootfolder",  # type: ignore[union-attr]
+            headers={"X-Api-Key": settings.RADARR_API_KEY.get_secret_value()},  # type: ignore[union-attr]
+        )
+    response.raise_for_status()
+    return response.json()
+
+
+def check_path_mapping() -> CheckResult:
+    """Every root folder Radarr reports must map, through RADARR_MOVIE_ROOTS, to a folder here."""
+    from marquee.fs.paths import PathMapper, PathMappingError
+    from marquee.library.sync import SyncPathError, check_root_folders
+
+    name = "Path mapping"
+    if not settings.RADARR_URL or settings.RADARR_API_KEY is None:
+        return CheckResult(name, "WARN", "Radarr not configured")
+    try:
+        mapper = PathMapper.from_settings(settings)
+    except PathMappingError as exc:
+        return CheckResult(name, "FAIL", _error_text(exc))
+    try:
+        root_folders = _radarr_root_folders()
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        return CheckResult(name, "FAIL", f"cannot list Radarr's root folders: {_error_text(exc)}")
+    try:
+        checked = _run_with_timeout(
+            lambda: check_root_folders(root_folders, mapper), MEDIA_LIST_TIMEOUT_S
+        )
+    except SyncPathError as exc:
+        return CheckResult(name, "FAIL", _scrub(str(exc)))
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        return CheckResult(name, "FAIL", f"{_error_text(exc)} (share unreachable?)")
+    return CheckResult(name, "PASS", f"{checked} Radarr root folders map to folders here")
+
+
 CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_python,
     check_settings,
@@ -444,6 +482,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_media_roots,
     check_tmdb,
     check_radarr,
+    check_path_mapping,
 )
 
 

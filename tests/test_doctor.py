@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from pydantic import SecretStr
@@ -276,3 +276,54 @@ def test_database_warns_when_not_migrated(
     assert result.status == "WARN"
     assert "schema at no revision, newest is 0001" in result.detail
     assert "marquee db upgrade" in result.detail
+
+
+def _radarr_configured(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    monkeypatch.setattr(doctor.settings, "RADARR_URL", "http://radarr.invalid:7878")
+    monkeypatch.setattr(doctor.settings, "RADARR_API_KEY", SecretStr("radarr-key"))
+    monkeypatch.setattr(doctor.settings, "MOVIE_ROOTS", [root])
+    monkeypatch.setattr(doctor.settings, "RADARR_MOVIE_ROOTS", [PurePosixPath("/data/movies")])
+
+
+def test_path_mapping_passes_and_shows_only_a_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_library(tmp_path)
+    _radarr_configured(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        doctor,
+        "_radarr_root_folders",
+        lambda: [{"path": "/data/movies/1080p"}, {"path": "/data/movies/4K"}],
+    )
+    result = doctor.check_path_mapping()
+    assert (result.status, result.detail) == ("PASS", "2 Radarr root folders map to folders here")
+
+
+def test_path_mapping_fails_when_a_folder_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_library(tmp_path)
+    _radarr_configured(monkeypatch, tmp_path)
+    monkeypatch.setattr(doctor, "_radarr_root_folders", lambda: [{"path": "/data/movies/720p"}])
+    result = doctor.check_path_mapping()
+    assert result.status == "FAIL"
+    assert "RADARR_MOVIE_ROOTS" in result.detail
+
+
+def test_path_mapping_fails_when_radarr_does_not_answer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _radarr_configured(monkeypatch, tmp_path)
+
+    def unreachable() -> object:
+        raise ConnectionError("refused, key radarr-key")
+
+    monkeypatch.setattr(doctor, "_radarr_root_folders", unreachable)
+    result = doctor.check_path_mapping()
+    assert result.status == "FAIL"
+    assert "radarr-key" not in result.detail
+
+
+def test_path_mapping_warns_without_radarr(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.settings, "RADARR_URL", None)
+    assert doctor.check_path_mapping().status == "WARN"

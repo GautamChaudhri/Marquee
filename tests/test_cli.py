@@ -187,3 +187,60 @@ def test_db_errors_never_show_the_password(
     captured = capsys.readouterr()
     assert "db-password-value" not in captured.out + captured.err
     assert "marquee db status:" in captured.err
+
+
+# ── marquee sync ──────────────────────────────────────────────────────────
+
+
+def _sync_returns(monkeypatch: pytest.MonkeyPatch, outcome: object) -> None:
+    from marquee.library import sync
+
+    async def fake(*, dry_run: bool = False, cancel: object = None) -> object:
+        if isinstance(outcome, Exception):
+            raise outcome
+        outcome.dry_run = dry_run  # type: ignore[attr-defined]
+        return outcome
+
+    monkeypatch.setattr(sync, "sync_from_settings", fake)
+
+
+def test_sync_prints_the_report_and_exits_0(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.library.sync import SyncReport
+
+    report = SyncReport(dry_run=False, movies_listed=3, created=3, with_file=2, posters_found=2)
+    report.folders_without_movie = ["4K/Extra (2020)"]
+    _sync_returns(monkeypatch, report)
+    assert cli.main(["sync", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "3 created" in out
+    assert "4K/Extra (2020)" in out
+    assert "nothing was written" in out
+
+
+def test_sync_json(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import json
+
+    from marquee.library.sync import SyncReport
+
+    _sync_returns(monkeypatch, SyncReport(dry_run=False, created=1))
+    assert cli.main(["sync", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["created"] == 1
+
+
+def test_sync_exits_1_when_a_movie_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marquee.library.sync import SyncReport
+
+    _sync_returns(monkeypatch, SyncReport(dry_run=False, failed=1, failed_radarr_ids=[7]))
+    assert cli.main(["sync"]) == 1
+
+
+def test_sync_exits_1_when_the_path_check_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.library.sync import SyncPathError
+
+    _sync_returns(monkeypatch, SyncPathError("Radarr's root folder /data/movies/4K is missing"))
+    assert cli.main(["sync"]) == 1
+    assert "marquee sync: Radarr's root folder /data/movies/4K" in capsys.readouterr().err

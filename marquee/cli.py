@@ -88,6 +88,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--json", action="store_true", help="print the summary as JSON")
 
+    sync = commands.add_parser(
+        "sync",
+        help="copy the movie list from Radarr and record the posters on disk",
+        description="Check that Radarr's root folders map to folders here, copy every movie "
+        "Radarr lists into the database, record each movie folder's poster.jpg (hashing only "
+        "new or changed files), and fetch TMDB details for movies never enriched. Writes "
+        "nothing to the media library. Exits 1 when a movie failed or the path check failed.",
+    )
+    sync.add_argument(
+        "--dry-run", action="store_true", help="do everything except write to the database"
+    )
+    sync.add_argument("--json", action="store_true", help="print the report as JSON")
+
     db = commands.add_parser("db", help="create and inspect the database schema")
     db_commands = db.add_subparsers(dest="db_command", required=True, metavar="command")
     db_commands.add_parser(
@@ -144,6 +157,58 @@ def _database_target() -> str:
         f"{settings.POSTGRES_USER}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}"
         f"/{settings.POSTGRES_DB}"
     )
+
+
+def _print_sync_report(report: Any) -> None:
+    print(
+        f"radarr    {report.movies_listed} movies listed; {report.root_folders_checked} root folders map to folders here"
+    )
+    print(
+        f"movies    {report.created} created, {report.updated} updated, "
+        f"{report.unchanged} unchanged, {report.retired} retired, {report.failed} failed"
+    )
+    if report.failed_radarr_ids:
+        print(f"          failed Radarr ids: {', '.join(str(i) for i in report.failed_radarr_ids)}")
+    print(f"with file {report.with_file}")
+    print(
+        f"posters   {report.posters_found} found, {report.posters_hashed} hashed, "
+        f"{report.posters_removed} removed, {report.posters_unreadable} unreadable"
+    )
+    if report.tmdb_skipped:
+        print("tmdb      skipped: TMDB_READ_ACCESS_TOKEN is not set")
+    else:
+        print(f"tmdb      {report.tmdb_enriched} enriched, {report.tmdb_failed} failed")
+    print(f"folders on disk with no Radarr movie: {len(report.folders_without_movie)}")
+    for name in report.folders_without_movie:
+        print(f"  {name}")
+    print(f"movies with a file whose folder was not found: {len(report.movies_without_folder)}")
+    for name in report.movies_without_folder:
+        print(f"  {name}")
+    print(f"took      {report.seconds:.1f} s")
+    if report.dry_run:
+        print("dry run   nothing was written to the database")
+
+
+def _sync(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from marquee.integrations.arr import ArrClientError
+    from marquee.library import sync
+
+    _quiet_logging("WARNING")
+    try:
+        report = asyncio.run(sync.sync_from_settings(dry_run=args.dry_run))
+    except sync.SyncError as exc:
+        return _fail("sync", str(exc))
+    except ArrClientError as exc:
+        return _fail("sync", f"Radarr: {_error_line(exc)}")
+    except SQLAlchemyError as exc:
+        return _fail("sync", f"{_database_target()}: {_error_line(exc)}")
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        _print_sync_report(report)
+    return 0 if report.ok else 1
 
 
 def _db(args: argparse.Namespace) -> int:
@@ -385,6 +450,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run(args)
     if args.command == "db":
         return _db(args)
+    if args.command == "sync":
+        return _sync(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 
