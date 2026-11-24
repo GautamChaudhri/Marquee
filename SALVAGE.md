@@ -139,6 +139,11 @@ still imports the deleted route, as other salvaged files import modules that are
 `core/jobs/handlers_ml.py`, which trains the residual from them, and
 `tests/test_taste_authority.py`.
 
+M6a lifted the same-origin API proxy, `frontend/src/routes/api/[...path]/+server.ts`, and its
+test, trimmed (no SSE exemption, no key file, a 502 when the API is down), into
+`frontend/src/lib/server/proxy.ts` behind a route at the same place, with the same-origin check
+moved to `frontend/src/hooks.server.ts`, and deleted both from `_salvage/`.
+
 Partly lifted test files in `_salvage/tests/`: `test_sync.py` keeps its TV tests, the three
 movie poster-path tests that wait for poster naming, and the no-clients test;
 `test_library_enrichment.py` keeps the poster-status, review, resolution, and poster reset
