@@ -24,8 +24,8 @@ rebuild has to attach before any of it runs.
 
 ```
 marquee/            the selection engine and the new skeleton, in the target layout
-                    (config/, fs/, integrations/, ml/, pipeline/, library/, taste/, api/,
-                    cli, doctor, model_fetch);
+                    (config/, db/, fs/, integrations/, ml/, pipeline/, library/, taste/,
+                    api/, cli, doctor, model_fetch);
                     docs/architecture.md describes each package
 tests/              mirrors marquee/: the original engine tests plus the engine tests
                     lifted from _salvage/tests/
@@ -56,7 +56,7 @@ in the M0+M1 session without logic changes; `git log --follow` reaches their his
 | Inference wrappers | `ml/embedding.py`, `dino.py`, `aesthetic.py`, `face.py`, `person.py`, `zeroshot.py`, `visual_features.py`, `hardware.py` | ONNX sessions with provider selection per hardware tier |
 | Knobs | `config/pipeline.py`, `config/pipeline_meta.py` | One settings class for every threshold and weight, with a reproducibility snapshot |
 | Integrations | `integrations/arr/`, `integrations/tmdb/` | Thin, correct HTTP clients with error wrapping |
-| Filesystem | `fs/boundary.py` | Confined read/write roots with symlink rejection. The base for media manipulation later |
+| Filesystem | `fs/boundary.py` | Confined read/write roots with symlink rejection. The base for media manipulation later. Its FastAPI file response moved to `api/files.py` in M3 |
 | Small leaves | `cancellation.py`, `fs/download_guard.py`, `pipeline/text_profiles.py`, `host_metrics.py`, `api/rate_limit.py`, `integrations/urls.py`, `logging.py` | No internal dependencies |
 
 No model file is carried over any more. Since M2, `marquee models fetch` builds or downloads
@@ -77,16 +77,18 @@ Closed. There are no dangling imports in `marquee/` or `tests/`.
 | `taste/map.py` | `marquee.core.runtime_settings` (`db_url_resolved`, `poster_cache_path`) | `settings.database_url_sync`, `settings.poster_cache_dir` |
 | `taste/profile_enrich.py` | `marquee.core.runtime_settings` (`db_url_resolved`, TMDB token) | `settings.database_url_sync`, `settings.TMDB_READ_ACCESS_TOKEN` |
 
-`taste/map.py` and `taste/profile_enrich.py` still query library tables (`movies`, `series`)
-that arrive with the database work; they import cleanly but cannot run until then.
+`taste/map.py` and `taste/profile_enrich.py` query library tables. `movies` exists since M3,
+with the five columns they read (`id`, `title`, `year`, `tmdb_id`, `genres`); `series` and
+`seasons` are never created while TV is out of scope, so their series branches stay
+unreached. `taste/map.py` still builds poster links in the old API's shape
+(`/api/library/movies/<id>/poster`); M3's route is `/api/movies/<id>/poster`.
 
 ## Mostly good, re-home (`_salvage/`)
 
 | Logic worth lifting | Where it is | What to change |
 |---|---|---|
-| Library models | `backend/marquee/models/{movie,series,season,episode,media_file,base}.py` | Keep nearly as-is on a new `Base`. `MediaFile` is the unit for future media work |
-| Radarr/Sonarr sync | `backend/marquee/core/sync_service.py` | Good upsert and TMDB enrichment logic; re-attach to new models and settings |
-| Path translation | `backend/marquee/core/path_utils.py`, `config.py` (`translate_*_path`, path mappings) | Keep the single-translation-point rule; drop the ceiling and catalog machinery around it |
+| Library models | `backend/marquee/models/{series,season,episode,media_file}.py` | The TV models wait for TV; `MediaFile` is the unit for future media work. `movie.py` and `base.py` became `marquee/db/` in M3 and were deleted |
+| Sonarr sync | `backend/marquee/core/sync_service.py` | The TV half. The movie half (upsert, retire, TMDB enrichment) became `library/sync.py` in M3 and was deleted; the shared poster-path helpers, `_upsert_movie_media_file` (media management), and `_extract_media_info` (video resolution) stay |
 | Poster naming | `backend/marquee/core/{poster_naming,poster_files,poster_subjects,poster_thumbs}.py` | Small and correct |
 | Poster write path | `backend/marquee/core/jobs/handlers_poster_mutations.py`, `mutation_documents.py` | Keep backup, validate, atomic publish, restore. Strip fencing, evidence documents, artifacts |
 | Heal and rescan | `backend/marquee/core/jobs/{handlers_rescan,handlers_maintenance}.py`, `schedules.py` | Keep the logic and the three schedules |
@@ -94,14 +96,26 @@ that arrive with the database work; they import cleanly but cannot run until the
 | Feedback events | `backend/marquee/api/routes/feedback.py`, `models/taste_preference.py`, `core/taste_preferences.py` | Keep append-only events with exposed candidates, order, and hates. Drop successors, coordinators, publications, acknowledgements |
 | Run records | `backend/marquee/models/pipeline_run.py`, `core/jobs/poster_pipeline*.py`, `api/results.py`, `api/explanations.py` | Keep one row per run plus the JSON archive; drop job, attempt, and fence columns |
 | Multi-title batching | `backend/marquee/pipeline/poster_group_runner.py` | Stage-major batching keeps models loaded across titles. Worth keeping for GPU throughput |
-| Auth and limits | `backend/marquee/api/{auth,request_limits,deps}.py` | API-key auth is fine; simplify |
+| Request limits | `backend/marquee/api/{request_limits,deps}.py` | Rate limiting and lockout wait for M6 and M8. The API-key auth became `api/auth.py` in M3, without its bypasses, and was deleted |
 | Review UI | `frontend/src/lib/components/pipeline/RunResultsView.svelte` (1,929 lines), `PosterRankPanel`, `PosterStack`, `PosterCandidateTile` | The drag-to-rank and hate-pile panel is the core of the new product. Split the big view |
 | Library and taste pages | `frontend/src/routes/{films,television,taste}/` and their components | Trim; rebuild against the new API types |
 | Settings | `frontend/src/routes/settings/`, `components/settings/` | About 4,200 lines for eight tabs. Cut to connections, paths, naming, and a few knobs |
 | Deployment | `deploy/` | Shape is right (postgres, api, worker, web); scheduler folds into the worker |
 | CI extras | `ci/codeql.yml`, `ci/dependabot.yml` | The main workflow is re-homed in `.github/workflows/ci.yml`; these two wait for M8 |
 
-Partly lifted test files in `_salvage/tests/`: `test_pipeline.py` keeps 1 of its 78 tests
+M3 also lifted, and deleted from `_salvage/`: `core/path_utils.py` and its tests (now
+`fs/paths.py`), `database.py` and `alembic.ini` (now `marquee/db/`), and `api/auth.py` and its
+tests (now `api/auth.py`). The movie list, detail, and poster routes left
+`api/routes/library.py` (now `api/routes/library.py`; the series and season routes and the
+poster reset routes stay). `api/library_serializers.py`, `core/movie_queries.py`, and
+`core/sort_title.py` stay whole: the salvaged pipeline and onboarding routes still use them,
+and Radarr supplies the sort title.
+
+Partly lifted test files in `_salvage/tests/`: `test_sync.py` keeps its TV tests, the three
+movie poster-path tests that wait for poster naming, and the no-clients test;
+`test_library_enrichment.py` keeps the poster-status, review, resolution, and poster reset
+tests that wait for M5; `test_models.py` keeps the TV model tests.
+`test_pipeline.py` keeps 1 of its 78 tests
 (the system OCR status API route; a stale assertion on the old `Settings.runs_work_path` was
 deleted in M2);
 `test_text_profiles.py` keeps 8 of its 30 (six API tests that need the app, ORM, and
