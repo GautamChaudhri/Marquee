@@ -77,9 +77,10 @@ class Job(TimestampMixin, Base):
     payload: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    result: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    # None is SQL NULL in these columns, not the JSON value null.
+    result: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     run_after: Mapped[datetime] = mapped_column(
@@ -114,7 +115,7 @@ class JobEvent(Base):
     )
     type: Mapped[str] = mapped_column(Text, nullable=False)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    data: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    data: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True), nullable=True)
 
 
 class JobSchedule(Base):

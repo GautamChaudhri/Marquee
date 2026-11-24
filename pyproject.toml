@@ -160,7 +160,7 @@ markers = [
 ]
 
 # Layering (see docs/architecture.md). Imports only point downward. Packages that do not
-# exist yet (artwork, jobs) join their layer when they arrive.
+# exist yet (artwork) join their layer when they arrive.
 [tool.importlinter]
 root_package = "marquee"
 include_external_packages = true
@@ -170,6 +170,7 @@ name = "Layers only import downward"
 type = "layers"
 layers = [
     "marquee.api : marquee.cli : marquee.doctor : marquee.model_fetch",
+    "marquee.jobs",
     "marquee.taste",
     "marquee.library",
     "marquee.pipeline",
@@ -192,6 +193,7 @@ source_modules = [
     "marquee.cli",
     "marquee.doctor",
     "marquee.model_fetch",
+    "marquee.jobs",
     "marquee.taste",
     "marquee.library",
     "marquee.pipeline",
@@ -216,6 +218,7 @@ source_modules = [
     "marquee.cli",
     "marquee.doctor",
     "marquee.model_fetch",
+    "marquee.jobs",
     "marquee.taste",
     "marquee.library",
     "marquee.pipeline",
