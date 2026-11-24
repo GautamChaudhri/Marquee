@@ -3,9 +3,11 @@
 	import { api, call } from '$lib/api/client';
 	import type { Job, TasteStatus } from '$lib/api/types';
 	import { describeJob, followJob, isFinal } from '$lib/features/jobs/jobs';
+	import EvaluationPanel from '$lib/features/taste/EvaluationPanel.svelte';
 	import ExemplarGrid from '$lib/features/taste/ExemplarGrid.svelte';
 	import RecentFeedback from '$lib/features/taste/RecentFeedback.svelte';
-	import { agreementLines, exemplarCounts, residualLine } from '$lib/features/taste/taste';
+	import ResidualPanel from '$lib/features/taste/ResidualPanel.svelte';
+	import { agreementLines, exemplarCounts } from '$lib/features/taste/taste';
 	import { formatWhen } from '$lib/format';
 	import { refreshPendingReviews } from '$lib/stores/review';
 	import { toast } from '$lib/stores/toast';
@@ -133,13 +135,21 @@
 			{#each agreement?.blind ?? [] as line (line)}<p class="line strong">{line}</p>{/each}
 			{#each agreement?.apart ?? [] as line (line)}<p class="line">{line}</p>{/each}
 			<h3>Residual</h3>
-			<p class="line" data-testid="residual">{residualLine(status.residual)}</p>
+			<ResidualPanel residual={status.residual} />
 			<p class="line">
 				{status.pending_reviews}
 				{status.pending_reviews === 1 ? 'run waits' : 'runs wait'} for a review.
 				<a href="/review">Review</a>
 			</p>
 		</section>
+	</div>
+
+	<div class="block">
+		<EvaluationPanel
+			evaluation={status.evaluation}
+			evaluable={status.exemplars.active?.positive ?? 0}
+			onChanged={() => void load()}
+		/>
 	</div>
 
 	<section class="block">

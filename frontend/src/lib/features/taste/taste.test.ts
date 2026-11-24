@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TasteStatus } from '$lib/api/types';
-import {
-	agreementLines,
-	exemplarCounts,
-	exemplarEnding,
-	exemplarSource,
-	residualLine
-} from './taste';
+import { agreementLines, exemplarCounts, exemplarEnding, exemplarSource } from './taste';
 
 const tally = (reviewed: number, agreed: number, top3: number, percent: number | null = null) => ({
 	reviewed,
@@ -56,11 +50,7 @@ describe('agreement', () => {
 });
 
 describe('the residual and exemplars', () => {
-	it('shows the residual against its thresholds', () => {
-		expect(
-			residualLine({ subjects: 3, pairs: 40, min_subjects: 25, min_pairs: 200, trained: false })
-		).toBe('Not trained yet. 3 of 25 titles and 40 of 200 ranked pairs needed.');
-	});
+	// The residual's lines moved to evaluation.ts (residualLines), with its state and why.
 
 	it('counts exemplars by state and polarity', () => {
 		expect(

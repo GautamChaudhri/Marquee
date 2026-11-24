@@ -48,12 +48,6 @@ function tallyLine(t: Tally, what: string): string {
 	return `${plural(t.reviewed, what)} (pick kept in ${t.agreed})`;
 }
 
-/** The residual's evidence against its thresholds. */
-export function residualLine(residual: TasteStatus['residual']): string {
-	const state = residual.trained ? 'Trained.' : 'Not trained yet.';
-	return `${state} ${residual.subjects} of ${residual.min_subjects} titles and ${residual.pairs} of ${residual.min_pairs} ranked pairs needed.`;
-}
-
 /** Exemplar counts by state, as one line: "Active: 148 liked, 2 disliked · Superseded: 1". */
 export function exemplarCounts(counts: TasteStatus['exemplars']): string {
 	const order = ['active', 'superseded', 'revoked'];
