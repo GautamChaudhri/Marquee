@@ -467,3 +467,48 @@ def test_run_reports_a_failed_job(
     finally:
         thread.join()
     assert "failed: TMDB: 503" in capsys.readouterr().err
+
+
+# ── marquee taste seed --rescan ───────────────────────────────────────────
+
+
+@pytest.mark.db
+def test_rescan_is_refused_once_marquee_has_written_a_poster(
+    jobs_database: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import psycopg
+
+    from marquee.taste import seed
+
+    ran: list[str] = []
+    monkeypatch.setattr(seed, "run_seed", lambda mode, dry_run: ran.append(mode) or 0)
+
+    assert cli.main(["taste", "seed", "--rescan"]) == 0
+    assert ran == ["rescan"]
+
+    movie_id = _add_movie(1, "Heat", 1995)
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        conn.execute(
+            "insert into deployments (movie_id, artwork_kind, action, initiated_by, file_name, "
+            "new_sha256, new_size_bytes) values (%s, 'poster', 'deploy', 'owner', 'poster.jpg', "
+            "%s, 1)",
+            [movie_id, "a" * 64],
+        )
+    assert cli.main(["taste", "seed", "--rescan"]) == 1
+    assert "--rescan is refused: Marquee has written to the library" in capsys.readouterr().err
+    assert ran == ["rescan"]
+    assert cli.main(["taste", "seed", "--reuse"]) == 0
+    assert ran == ["rescan", "reuse"]
+
+
+def test_rescan_is_refused_when_the_database_cannot_be_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.taste import seed
+
+    monkeypatch.setattr(settings, "POSTGRES_HOST", "127.0.0.1")
+    monkeypatch.setattr(settings, "POSTGRES_PORT", 1)
+    monkeypatch.setattr(seed, "run_seed", lambda mode, dry_run: pytest.fail("must not run"))
+
+    assert cli.main(["taste", "seed", "--rescan"]) == 1
+    assert "--rescan needs the database" in capsys.readouterr().err

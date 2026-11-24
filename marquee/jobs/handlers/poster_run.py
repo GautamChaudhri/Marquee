@@ -25,6 +25,7 @@ from marquee.db.engine import create_engine, create_session_factory
 from marquee.db.models import Job, Movie
 from marquee.jobs import batch, queue
 from marquee.jobs.gpu_child import describe_error
+from marquee.jobs.handlers.poster_write import WriteRefusedError, queue_policy_deploy
 from marquee.jobs.registry import JobContext, JobKind, PermanentJobError
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,20 @@ async def _end_run(
             await runs.fail(session, run_id, describe_error(exc))
 
 
+async def _policy(
+    sessions: async_sessionmaker[AsyncSession], movie_id: int, pick_id: int | None
+) -> dict[str, Any] | None:
+    """Queue the deploy DEPLOY_POLICY calls for. The run is already complete, so a refusal is
+    reported in the result rather than failing the run."""
+    if pick_id is None:
+        return None
+    async with sessions() as session:
+        try:
+            return await queue_policy_deploy(session, movie_id, pick_id)
+        except WriteRefusedError as exc:
+            return {"queued": False, "note": str(exc)}
+
+
 async def poster_run(ctx: JobContext) -> dict[str, Any]:
     movie_id = movie_id_of(ctx.payload)
     started = time.perf_counter()
@@ -104,6 +119,7 @@ async def poster_run(ctx: JobContext) -> dict[str, Any]:
             with contextlib.suppress(Exception):
                 await _end_run(sessions, ctx, run_id, exc)
             raise
+        deployed = await _policy(sessions, movie_id, pick_id)
         pick_row = next((row for row in read.ranked if row["file"] == result.pick_file), None)
         return {
             "run_id": run_id,
@@ -116,6 +132,7 @@ async def poster_run(ctx: JobContext) -> dict[str, Any]:
             "ranked_total": read.ranked_total,
             "ranked": read.ranked,
             "pick": {"candidate_id": pick_id, **pick_row} if pick_row else None,
+            "deploy": deployed,
             "seconds": round(time.perf_counter() - started, 1),
         }
     finally:

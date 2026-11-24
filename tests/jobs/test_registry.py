@@ -59,6 +59,8 @@ def test_the_kinds_of_this_milestone() -> None:
         "library_sync": ("network", 3, 900, "library_sync"),
         "gpu_selftest": ("gpu", 1, 300, None),
         "poster_run": ("gpu", 2, 600, "poster_run:{movie_id}"),
+        "poster_deploy": ("media_write", 3, 300, "poster_write:{movie_id}"),
+        "poster_restore": ("media_write", 3, 300, "poster_write:{movie_id}"),
     }
     assert kinds["gpu_selftest"].gpu_function == "marquee.jobs.handlers.gpu:gpu_selftest"
     assert kinds["poster_run"].handler is not None

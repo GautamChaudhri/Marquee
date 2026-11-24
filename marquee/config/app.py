@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 from urllib.parse import quote
 
 from pydantic import Field, SecretStr, field_validator, model_validator
@@ -72,6 +72,9 @@ class Settings(BaseSettings):
     GPU_IDLE_SECONDS: int = Field(default=300, ge=0)
     # When true, a library sync that succeeds queues a run of every movie never run before.
     RUN_NEW_MOVIES: bool = False
+    # What a finished run deploys by itself: off (nothing; every deploy is asked for), missing
+    # (only where there is no poster, or Marquee's own), all (also replaces the owner's).
+    DEPLOY_POLICY: Literal["off", "missing", "all"] = "off"
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
@@ -155,6 +158,12 @@ class Settings(BaseSettings):
     @property
     def backups_dir(self) -> Path:
         return self.DATA_DIR / "backups"
+
+    @property
+    def deploy_staging_dir(self) -> Path:
+        """Originals a deploy fetched, kept until the job records its write, so a retry
+        writes the same bytes (TMDB's CDN can serve other bytes under one name)."""
+        return self.cache_dir / "deploys"
 
     @property
     def text_profiles_path(self) -> Path:

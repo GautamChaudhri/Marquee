@@ -596,6 +596,43 @@ def _run(args: argparse.Namespace) -> int:
         return _fail("run", "stopped following; the job goes on (`marquee jobs show <id>`)")
 
 
+def _rescan_refusal() -> str | None:
+    """Why ``taste seed --rescan`` must not run, or ``None``.
+
+    Once Marquee has written a poster, the library holds the AI's picks beside the owner's,
+    so scanning it again would read Marquee's picks as the owner's. If the database cannot
+    be asked, that cannot be ruled out, and the rescan is refused too.
+    """
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.db.models import Deployment
+
+    async def count() -> int:
+        engine = create_engine()
+        try:
+            async with create_session_factory(engine)() as session:
+                return int(await session.scalar(select(func.count()).select_from(Deployment)) or 0)
+        finally:
+            await engine.dispose()
+
+    try:
+        deployed = asyncio.run(count())
+    except (SQLAlchemyError, OSError) as exc:
+        return (
+            f"--rescan needs the database to confirm Marquee has written no poster yet; "
+            f"{_database_target()}: {_error_line(exc)}"
+        )
+    if deployed:
+        return (
+            f"--rescan is refused: Marquee has written to the library ({deployed} deployment "
+            "row(s)), so it now holds the AI's picks beside yours. The staged set in "
+            "data/ml/seed/ stays the record of your own picks; use --reuse to rebuild from it"
+        )
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -615,6 +652,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _quiet_logging()
         mode: seed.Mode = "rescan" if args.rescan else "reuse" if args.reuse else "first"
+        if mode == "rescan" and (refusal := _rescan_refusal()) is not None:
+            print(f"marquee taste seed: {refusal}", file=sys.stderr)
+            return 1
         try:
             return seed.run_seed(mode=mode, dry_run=args.dry_run)
         except (seed.SeedError, LibraryRootError) as exc:
