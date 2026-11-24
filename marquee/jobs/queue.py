@@ -410,3 +410,17 @@ async def requeue(session: AsyncSession, job_ids: Sequence[int]) -> list[Job]:
             await _finished(session, job)
     await session.commit()
     return list(jobs)
+
+
+async def cancels_requested(session: AsyncSession, job_ids: Collection[int]) -> list[int]:
+    """Which of these running jobs have been asked to stop."""
+    if not job_ids:
+        return []
+    asked = await session.scalars(
+        select(Job.id).where(
+            Job.id.in_(list(job_ids)), Job.state == "running", Job.cancel_requested
+        )
+    )
+    result = list(asked)
+    await session.commit()
+    return result
