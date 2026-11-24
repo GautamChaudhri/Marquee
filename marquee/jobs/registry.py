@@ -78,3 +78,10 @@ Registry = Mapping[str, JobKind]
 def free_classes(running: Mapping[str, int], limits: Mapping[str, int] = CLASS_LIMITS) -> list[str]:
     """The classes with a free slot, given how many jobs of each are running."""
     return [name for name, limit in limits.items() if running.get(name, 0) < limit]
+
+
+def default_registry() -> dict[str, JobKind]:
+    """Every job kind Marquee has, by name."""
+    from marquee.jobs.handlers import KINDS
+
+    return {kind.name: kind for kind in KINDS}

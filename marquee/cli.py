@@ -268,35 +268,12 @@ def _db(args: argparse.Namespace) -> int:
     raise AssertionError(f"unhandled db command {args.db_command!r}")
 
 
-def _stack_ranks(payload: dict[str, Any]) -> dict[str, int]:
-    """File name -> design stack rank, from the run archive's diagnostic ledger."""
-    ledger = payload.get("diagnostic_ledger")
-    candidates = ledger.get("candidates", []) if isinstance(ledger, dict) else []
-    return {
-        str(c["orig_filename"]): int(c["stack_rank"])
-        for c in candidates
-        if isinstance(c, dict) and c.get("stack_rank") is not None
-    }
-
-
-def _ranked_row(row: dict[str, Any] | None, stack_ranks: dict[str, int]) -> dict[str, Any] | None:
-    """One ranked candidate with its full stack label (``1A``: design stack 1, variant A)."""
-    if row is None:
-        return None
-    stack = stack_ranks.get(str(row["orig_filename"]))
-    letter = row.get("stack_label") or ""
-    return {
-        "rank": row["rank"],
-        "stack": f"{stack}{letter}" if stack is not None else letter or None,
-        "score": row["final_score"],
-        "file": row["orig_filename"],
-    }
-
-
 def _run_summary(
     subject: Any, output: Any, run_dir: Path, stages: list[Any], seconds: float
 ) -> dict[str, Any]:
-    stack_ranks = _stack_ranks(output.payload)
+    from marquee.library.title_run import ranked_row, stack_ranks
+
+    ranks = stack_ranks(output.payload)
     return {
         "subject": {
             "title": subject.title,
@@ -312,8 +289,8 @@ def _run_summary(
             {"stage": e.stage, "survivors": e.survivors, "seconds": e.elapsed_s} for e in stages
         ],
         "ranked_total": len(output.ranked),
-        "ranked": [_ranked_row(row, stack_ranks) for row in output.ranked[:RANKED_SHOWN]],
-        "pick": _ranked_row(output.recommendation, stack_ranks),
+        "ranked": [ranked_row(row, ranks) for row in output.ranked[:RANKED_SHOWN]],
+        "pick": ranked_row(output.recommendation, ranks),
         "run_dir": str(run_dir),
         "seconds": round(seconds, 1),
     }

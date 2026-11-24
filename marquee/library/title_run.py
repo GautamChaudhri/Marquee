@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from marquee.config import pipeline_settings, settings
 from marquee.library.subjects import ResolvedSubject, normalise_title
@@ -51,6 +51,31 @@ def run_folder_name(title: str, now: datetime) -> str:
     """``<UTC timestamp>-<title slug>``, the name of a new run folder."""
     slug = re.sub(r"[^a-z0-9]+", "-", normalise_title(title)).strip("-") or "untitled"
     return f"{now.strftime('%Y%m%dT%H%M%SZ')}-{slug[:60]}"
+
+
+def stack_ranks(payload: dict[str, Any]) -> dict[str, int]:
+    """File name -> design stack rank, from the run archive's diagnostic ledger."""
+    ledger = payload.get("diagnostic_ledger")
+    candidates = ledger.get("candidates", []) if isinstance(ledger, dict) else []
+    return {
+        str(c["orig_filename"]): int(c["stack_rank"])
+        for c in candidates
+        if isinstance(c, dict) and c.get("stack_rank") is not None
+    }
+
+
+def ranked_row(row: dict[str, Any] | None, ranks: dict[str, int]) -> dict[str, Any] | None:
+    """One ranked candidate with its full stack label (``1A``: design stack 1, variant A)."""
+    if row is None:
+        return None
+    stack = ranks.get(str(row["orig_filename"]))
+    letter = row.get("stack_label") or ""
+    return {
+        "rank": row["rank"],
+        "stack": f"{stack}{letter}" if stack is not None else letter or None,
+        "score": row["final_score"],
+        "file": row["orig_filename"],
+    }
 
 
 def _tmdb_token() -> str:

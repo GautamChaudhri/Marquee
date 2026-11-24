@@ -50,6 +50,7 @@ from marquee.jobs.registry import (
     JobKind,
     PermanentJobError,
     Registry,
+    default_registry,
     free_classes,
 )
 from marquee.jobs.store import CHANNEL
@@ -143,7 +144,7 @@ class Worker:
     def __init__(
         self,
         *,
-        registry: Registry,
+        registry: Registry | None = None,
         database_url: str | None = None,
         schedules: Sequence[schedules.Schedule] = schedules.SCHEDULES,
         drain: bool = False,
@@ -151,7 +152,7 @@ class Worker:
         stop_grace_s: float = STOP_GRACE_S,
         gpu_idle_s: float | None = None,
     ) -> None:
-        self._registry = registry
+        self._registry = default_registry() if registry is None else registry
         self._url = database_url or settings.database_url
         # A drain empties the queue as it is; it does not queue scheduled work.
         self._schedules = () if drain else schedules
