@@ -65,6 +65,13 @@ export function describeJob(
 	}
 }
 
+/** The line at the top of a job's detail, where its error is shown in full just below. */
+export function detailHeadline(
+	job: Pick<Job, 'state' | 'progress' | 'error' | 'result' | 'cancel_requested'>
+): string {
+	return job.state === 'failed' ? 'Failed' : describeJob(job);
+}
+
 /** Read a job every `intervalMs` until it reaches a final state; `onUpdate` sees each read,
  *  `onError` each failed read. Returns a function that stops following it. */
 export function followJob(

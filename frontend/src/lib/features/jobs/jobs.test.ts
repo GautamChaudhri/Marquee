@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canCancel, canRetry, describeJob, isFinal, kindLabel } from './jobs';
+import { canCancel, canRetry, describeJob, detailHeadline, isFinal, kindLabel } from './jobs';
 
 const base = { progress: null, error: null, result: null, cancel_requested: false };
 
@@ -42,6 +42,11 @@ describe('jobs', () => {
 			'Failed · timed out after 600 s'
 		);
 		expect(describeJob({ ...base, state: 'cancelled' })).toBe('Cancelled');
+	});
+
+	it('leave the error out of the detail headline, which shows it below', () => {
+		expect(detailHeadline({ ...base, state: 'failed', error: 'timed out' })).toBe('Failed');
+		expect(detailHeadline({ ...base, state: 'queued' })).toBe('Queued');
 	});
 
 	it('name the kinds', () => {

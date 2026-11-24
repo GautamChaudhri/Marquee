@@ -3,7 +3,7 @@
 	import { formatDuration, formatWhen } from '$lib/format';
 	import Button from '$lib/ui/Button.svelte';
 	import Notice from '$lib/ui/Notice.svelte';
-	import { canCancel, canRetry, describeJob, kindLabel } from './jobs';
+	import { canCancel, canRetry, detailHeadline, kindLabel } from './jobs';
 	import StateBadge from './StateBadge.svelte';
 
 	/** One job: its state, error, and events, with Cancel and Retry where the API allows. */
@@ -32,7 +32,7 @@
 		<StateBadge state={job.state} />
 		<button class="close" onclick={onClose} aria-label="Close the job">×</button>
 	</header>
-	<p class="line">{describeJob(job)}</p>
+	<p class="line">{detailHeadline(job)}</p>
 	{#if job.error}<p class="error" role="alert">{job.error}</p>{/if}
 	<dl>
 		<dt>Queued</dt>
