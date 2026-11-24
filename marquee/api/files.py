@@ -14,7 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from marquee.fs.boundary import ClassifiedPath, FilesystemBoundary, FilesystemBoundaryError
 
 
-def _etag_matches(if_none_match: str, etag: str) -> bool:
+def etag_matches(if_none_match: str, etag: str) -> bool:
     """RFC 9110 If-None-Match: weak comparison against a list or ``*``."""
     if if_none_match.strip() == "*":
         return True
@@ -71,7 +71,7 @@ def file_response(
         safe_name = Path(filename).name
         headers["content-disposition"] = f"attachment; filename*=UTF-8''{quote(safe_name)}"
 
-    if if_none_match is not None and _etag_matches(if_none_match, strong_etag):
+    if if_none_match is not None and etag_matches(if_none_match, strong_etag):
         os.close(fd)
         return Response(status_code=304, headers=headers)
 

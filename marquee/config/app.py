@@ -171,6 +171,11 @@ class Settings(BaseSettings):
         return self.cache_dir / "posters"
 
     @property
+    def thumbnail_cache_dir(self) -> Path:
+        """Small copies of library posters for the web app, named by the poster's hash."""
+        return self.cache_dir / "thumbs"
+
+    @property
     def runs_dir(self) -> Path:
         return self.DATA_DIR / "runs"
 

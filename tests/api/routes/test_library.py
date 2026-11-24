@@ -5,11 +5,13 @@ fields went with the columns they read."""
 from __future__ import annotations
 
 import hashlib
+import io
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
@@ -189,6 +191,7 @@ async def test_one_movie_and_its_poster_object(
         "size_bytes": len(b"alpha poster"),
         "origin": "library",
         "url": f"/api/movies/{alpha.id}/poster",
+        "version": hashlib.sha256(b"alpha poster").hexdigest()[:12],
     }
     assert (body["poster_origin"], body["latest_run_id"]) == ("library", None)
 
@@ -297,3 +300,104 @@ async def test_a_symlinked_poster_is_not_served(
     poster.unlink()
     poster.symlink_to(outside)
     assert (await client.get(f"/api/movies/{movie.id}/poster", headers=headers)).status_code == 404
+
+
+# ── Thumbnails ────────────────────────────────────────────────────────────
+
+
+def _jpeg(width: int, height: int) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", (width, height), (200, 30, 30)).save(out, format="JPEG")
+    return out.getvalue()
+
+
+def _dimensions(data: bytes) -> tuple[int, int]:
+    with Image.open(io.BytesIO(data)) as image:
+        assert image.format == "JPEG"
+        return image.size
+
+
+@pytest.fixture
+def thumbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+    return tmp_path / "data" / "cache" / "thumbs"
+
+
+async def test_a_thumbnail_is_made_once_kept_and_revalidated(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, library: Path, thumbs: Path
+) -> None:
+    data = _jpeg(600, 900)
+    sha = hashlib.sha256(data).hexdigest()
+    movie = await _movie_with_poster_file(db_session, library, data)
+    url = f"/api/movies/{movie.id}/poster"
+
+    response = await client.get(url, headers=headers, params={"width": 320})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/jpeg"
+    assert response.headers["etag"] == f'"{sha}-320"'
+    assert response.headers["cache-control"] == "private, no-cache"
+    assert _dimensions(response.content) == (320, 480)
+    assert (thumbs / f"{sha}-320.jpg").read_bytes() == response.content
+
+    again = await client.get(
+        url, headers={**headers, "If-None-Match": f'"{sha}-320"'}, params={"width": 320}
+    )
+    assert again.status_code == 304 and again.content == b""
+    # A kept thumbnail is served without reading the share again.
+    (library / "4K" / "Alpha" / "poster.jpg").unlink()
+    kept = await client.get(url, headers=headers, params={"width": 320})
+    assert kept.status_code == 200 and kept.content == response.content
+    assert (await client.get(url, headers=headers)).status_code == 404  # the file itself
+
+
+async def test_a_current_version_may_be_cached_for_a_year(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, library: Path, thumbs: Path
+) -> None:
+    data = _jpeg(600, 900)
+    sha = hashlib.sha256(data).hexdigest()
+    movie = await _movie_with_poster_file(db_session, library, data)
+    url = f"/api/movies/{movie.id}/poster"
+    for params in ({"width": 160, "v": sha[:12]}, {"v": sha[:12]}):
+        response = await client.get(url, headers=headers, params=params)
+        assert response.status_code == 200
+        assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+    stale = await client.get(url, headers=headers, params={"width": 160, "v": "0" * 12})
+    assert stale.headers["cache-control"] == "private, no-cache"
+
+
+async def test_a_narrow_poster_is_served_at_its_own_width(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, library: Path, thumbs: Path
+) -> None:
+    movie = await _movie_with_poster_file(db_session, library, _jpeg(500, 750))
+    response = await client.get(
+        f"/api/movies/{movie.id}/poster", headers=headers, params={"width": 640}
+    )
+    assert response.status_code == 200 and _dimensions(response.content) == (500, 750)
+
+
+async def test_thumbnail_refusals(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, library: Path, thumbs: Path
+) -> None:
+    movie = await _movie_with_poster_file(db_session, library)  # bytes that are no image
+    url = f"/api/movies/{movie.id}/poster"
+    assert (await client.get(url, headers=headers, params={"width": 500})).status_code == 422
+    broken = await client.get(url, headers=headers, params={"width": 320})
+    assert broken.status_code == 409
+    assert broken.json() == {"detail": "the poster file does not decode"}
+    assert not thumbs.exists() or not list(thumbs.iterdir())
+    assert (await client.get(url, params={"width": 320})).status_code == 401
+
+
+async def test_a_thumbnail_of_a_poster_changed_since_the_sync_is_404(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, library: Path, thumbs: Path
+) -> None:
+    data = _jpeg(600, 900)
+    movie = await _movie_with_poster_file(db_session, library, data)
+    # Same size, other bytes: only the hash tells them apart.
+    (library / "4K" / "Alpha" / "poster.jpg").write_bytes(data[:-3] + b"xyz")
+    response = await client.get(
+        f"/api/movies/{movie.id}/poster", headers=headers, params={"width": 320}
+    )
+    assert response.status_code == 404
+    assert not thumbs.exists() or not list(thumbs.iterdir())

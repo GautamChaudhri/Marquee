@@ -17,7 +17,11 @@ class Poster(BaseModel):
     origin: Literal["library", "marquee"] = Field(
         description="library: found in the folder (the owner's); marquee: written by a deploy"
     )
-    url: str = Field(description="Where to fetch the image, with the API key")
+    url: str = Field(
+        description="Where to fetch the image, with the API key. Add width=160, 320, or 640 "
+        "for a JPEG thumbnail, and v=<version> to let the answer be cached for a year"
+    )
+    version: str = Field(description="The first 12 hex of sha256: the value for v=")
 
 
 class MovieItem(BaseModel):
@@ -51,6 +55,7 @@ class MovieItem(BaseModel):
                 size_bytes=artwork.size_bytes,
                 origin=artwork.origin,  # type: ignore[arg-type]
                 url=f"/api/movies/{movie.id}/poster",
+                version=artwork.sha256[:12],
             )
             if artwork is not None
             else None

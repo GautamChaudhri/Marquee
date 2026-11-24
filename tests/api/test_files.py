@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from marquee.api.files import _etag_matches, file_response
+from marquee.api.files import etag_matches, file_response
 from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
 
 
@@ -22,7 +22,7 @@ from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
     ],
 )
 def test_etag_matching_follows_weak_comparison(if_none_match: str, matches: bool) -> None:
-    assert _etag_matches(if_none_match, '"abc"') is matches
+    assert etag_matches(if_none_match, '"abc"') is matches
 
 
 def test_response_carries_validators_and_content_length(tmp_path: Path) -> None:

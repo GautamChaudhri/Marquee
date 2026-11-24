@@ -109,7 +109,7 @@ def original_url(source_file: str) -> str:
 
 
 @contextlib.contextmanager
-def _strict_decoding() -> Iterator[None]:
+def strict_decoding() -> Iterator[None]:
     """Make Pillow refuse truncated data while decoding here.
 
     The engine sets ``ImageFile.LOAD_TRUNCATED_IMAGES`` to true for the whole process when it
@@ -128,7 +128,7 @@ def _strict_decoding() -> Iterator[None]:
 def validate_jpeg(data: bytes) -> tuple[int, int]:
     """Decode ``data`` fully and return its size; raise :class:`NotAJpegError` unless it is a
     JPEG between :data:`MIN_SIDE` and :data:`MAX_SIDE` pixels on each side. Blocking."""
-    with _strict_decoding():
+    with strict_decoding():
         return _validate_jpeg(data)
 
 
