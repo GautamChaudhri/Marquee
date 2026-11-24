@@ -95,4 +95,9 @@ test('Rebuild now follows its job to the end', async ({ page }) => {
 	await page.goto('/taste');
 	await page.getByRole('button', { name: 'Rebuild now' }).click();
 	await expect(page.getByTestId('rebuild-job')).toContainText('Done', { timeout: 10_000 });
+	// Asked again while one is queued: the API returns that job, and the page says so until
+	// it ends.
+	await page.getByRole('button', { name: 'Rebuild now' }).click();
+	await expect(page.getByTestId('rebuild-job')).toContainText('Done', { timeout: 10_000 });
+	await expect(page.getByText('A rebuild is already')).toHaveCount(0);
 });

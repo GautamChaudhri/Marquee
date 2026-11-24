@@ -860,6 +860,10 @@ function route(req, res, url) {
 	if (path === '/api/feedback' && method === 'GET') return send(res, 200, feedbackList(query));
 	if (path === '/api/taste' && method === 'GET') return send(res, 200, tasteStatus());
 	if (path === '/api/taste/rebuild' && method === 'POST') {
+		const active = state.jobs.find(
+			(j) => j.kind === 'taste_rebuild' && ['queued', 'running'].includes(j.state)
+		);
+		if (active) return send(res, 200, publicJob(active));
 		return send(res, 202, publicJob(addJob(state, 'taste_rebuild', { force: false })));
 	}
 	if (path === '/api/taste/exemplars' && method === 'GET') {

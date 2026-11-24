@@ -56,6 +56,7 @@
 				rebuildJob = job;
 				if (!isFinal(job.state)) return;
 				rebuildBusy = false;
+				rebuildNote = null;
 				toast(
 					`Rebuild job ${job.id}: ${describeJob(job)}`,
 					job.state === 'succeeded' ? 'good' : 'bad'
