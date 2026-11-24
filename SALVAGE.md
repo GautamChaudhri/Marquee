@@ -140,6 +140,10 @@ path mappings) are still in `Marquee.old/` for when the new config needs them.
 
 ## Found along the way
 
+These notes describe the old installation as it was when it was salvaged, not this machine
+as it is now. Several no longer hold: M2 built the taste profile and fetched the DINOv2 and
+YOLO person models, for example.
+
 - There is no taste profile on this machine. The sidebar's "~430 exemplars" is hardcoded text.
 - The DINOv2 and YOLO person models are missing, so `dino_knn` (weight 0.12) and the person
   features are off, and design stacking falls back to CLIP vectors.
@@ -161,8 +165,8 @@ Docker. The milestones, in order:
 3. **M2b, container proof** (done): one image on a slim Python base, with CUDA from the
    Python wheels, that runs the doctor, fetches the models, and completes a run inside a
    container with the GPU.
-4. **M3, database and movie library**: one baseline migration, library and artwork tables,
-   path translation, Radarr sync, and an API skeleton with key auth.
+4. **M3, database and movie library** (done): one baseline migration, library and artwork
+   tables, path translation, Radarr sync, and an API skeleton with key auth.
 5. **M4, jobs**: the small Postgres queue, with classes for GPU, network, media-read, and
    media-write.
 6. **M5, the product loop**: runs as jobs, deploy with backup and restore, review and
