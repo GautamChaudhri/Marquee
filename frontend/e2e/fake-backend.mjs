@@ -151,13 +151,484 @@ function initialState() {
 			created_at: iso(NOW - 2_400_000)
 		}
 	];
+	Object.assign(runs, reviewRuns());
 	const jobs = [];
 	const events = [];
-	const state = { movies, runs, deployments, jobs, events, nextJob: 30, nextEvent: 1, last: {} };
+	const state = {
+		movies,
+		runs,
+		deployments,
+		jobs,
+		events,
+		nextJob: 30,
+		nextEvent: 1,
+		last: {},
+		// What the review routes keep: answers, exemplars, keys used, request bodies received,
+		// and requests told to fail once.
+		feedback: [],
+		nextFeedback: 1,
+		exemplars: seedExemplars(movies),
+		nextExemplar: 1000,
+		keys: {},
+		received: {},
+		failNext: {},
+		systemProblems: false
+	};
 	addJob(state, 'poster_run', { movie_id: 1 }, { state: 'succeeded', auto: false, finished: true });
 	addJob(state, 'library_sync', {}, { state: 'failed', auto: false, error: 'Radarr answered 503' });
 	addJob(state, 'poster_run', { movie_id: 3 }, { state: 'queued', auto: false });
 	return state;
+}
+
+// ── Review: runs to answer ────────────────────────────────────────────────
+
+function candidateRow(runId, id, rank, stack, { sha = true, pick = false } = {}) {
+	return {
+		id,
+		source_file: `r${runId}-${id}.jpg`,
+		sha256: sha ? String(id).padStart(64, 'c') : null,
+		stage_reached: rank === null ? 'style_gate' : 'ranked',
+		gate_decision: rank === null ? 'reject' : 'pass',
+		rejection_reason: rank === null ? 'text_heavy' : null,
+		rank,
+		final_score: rank === null ? null : 0.95 - rank / 50,
+		stack,
+		is_pick: pick,
+		image_url: sha ? `/api/runs/${runId}/candidates/${id}/image` : null
+	};
+}
+
+function runRow(id, movieId, state, candidates, extra = {}) {
+	const ranked = candidates.filter((c) => c.rank !== null).length;
+	return {
+		id,
+		movie_id: movieId,
+		job_id: 200 + id,
+		state,
+		run_folder: `000000${id}-film`,
+		engine_run_id: `r${id}`,
+		engine_status: ranked ? 'completed' : 'flagged_manual',
+		scorer_name: 'weighted',
+		ai_model: 'clip-vit-b-32',
+		profile_sha256: 'e'.repeat(64),
+		counts: {},
+		stages: [],
+		candidate_count: candidates.length,
+		ranked_count: ranked,
+		error: null,
+		started_at: iso(NOW - (100 - id) * 60_000),
+		finished_at: state === 'running' ? null : iso(NOW - (100 - id) * 60_000 + 20_000),
+		blind: true,
+		reviewed: false,
+		policy_deployed: false,
+		candidates,
+		...extra
+	};
+}
+
+/** Run 12 (Film 05) has six designs: three stacks of two, one never downloaded, and two
+ *  alone. Run 13 (Film 06) has three, and the deploy policy wrote its pick. Run 10 is Film
+ *  05's older run, 16 is still running, and 17 ranked nothing. */
+function reviewRuns() {
+	return {
+		10: runRow(10, 5, 'completed', [candidateRow(10, 1001, 1, '1A', { pick: true })]),
+		12: runRow(12, 5, 'completed', [
+			candidateRow(12, 1201, 1, '1A', { pick: true }),
+			candidateRow(12, 1202, 2, '2A'),
+			candidateRow(12, 1203, 3, '1B'),
+			candidateRow(12, 1204, 4, '3A'),
+			candidateRow(12, 1205, 5, '2B'),
+			candidateRow(12, 1206, 6, '4A', { sha: false }),
+			candidateRow(12, 1207, 7, '5A'),
+			candidateRow(12, 1208, 8, '3B'),
+			candidateRow(12, 1209, 9, null),
+			candidateRow(12, 1210, null, null)
+		]),
+		13: runRow(
+			13,
+			6,
+			'completed',
+			[
+				candidateRow(13, 1301, 1, '1A', { pick: true }),
+				candidateRow(13, 1302, 2, '2A'),
+				candidateRow(13, 1303, 3, '3A')
+			],
+			{ blind: false, policy_deployed: true }
+		),
+		16: runRow(16, 7, 'running', []),
+		17: runRow(17, 8, 'completed', [candidateRow(17, 1701, null, null)])
+	};
+}
+
+function seedExemplars(movies) {
+	return movies.map((movie, i) => ({
+		id: i + 1,
+		movie_id: movie.id,
+		title: movie.title,
+		year: movie.year,
+		polarity: 'positive',
+		weight: 1,
+		source: 'seed',
+		event_id: null,
+		state: i === 1 ? 'superseded' : 'active',
+		sha256: String(i + 1).padStart(64, 'd'),
+		staged_name: `${movie.title} (${movie.year})`,
+		source_file: null,
+		replaced_exemplar_id: null,
+		created_at: iso(NOW - 86_400_000),
+		updated_at: iso(NOW - 86_400_000),
+		ended_at: i === 1 ? iso(NOW - 3_600_000) : null,
+		ended_by_event_id: null,
+		image_url: `/api/taste/exemplars/${i + 1}/image`
+	}));
+}
+
+/** The run a movie's feedback goes to: its latest completed one. */
+function latestCompleted(movieId) {
+	const ids = Object.values(state.runs)
+		.filter((r) => r.movie_id === movieId && r.state === 'completed')
+		.map((r) => r.id);
+	return ids.length ? Math.max(...ids) : null;
+}
+
+function standing(runId) {
+	return state.feedback.some(
+		(e) => e.run_id === runId && e.action !== 'revoke' && e.revoked_by === null
+	);
+}
+
+function pendingReviews() {
+	const movieIds = [...new Set(Object.values(state.runs).map((r) => r.movie_id))];
+	return movieIds
+		.map((movieId) => latestCompleted(movieId))
+		.filter((runId) => runId !== null && !standing(runId))
+		.map((runId) => {
+			const run = state.runs[runId];
+			const movie = state.movies.find((m) => m.id === run.movie_id);
+			const pick = run.candidates.find((c) => c.is_pick && c.sha256);
+			return {
+				movie_id: movie.id,
+				title: movie.title,
+				year: movie.year,
+				run_id: run.id,
+				ranked: run.ranked_count,
+				finished_at: run.finished_at,
+				policy_deployed: run.policy_deployed,
+				blind: run.blind,
+				poster: movie.poster,
+				pick_image_url: pick ? pick.image_url : null
+			};
+		})
+		.sort((a, b) => Number(b.policy_deployed) - Number(a.policy_deployed) || b.run_id - a.run_id);
+}
+
+function publicRun(run) {
+	return { ...run, reviewed: standing(run.id) };
+}
+
+function feedbackResult(event, created, ended, reactivated, jobs, status) {
+	return {
+		status,
+		body: {
+			event,
+			exemplars: { created, ended, reactivated },
+			jobs,
+			deploy_note: null
+		}
+	};
+}
+
+function newExemplar(event, movie, candidate, polarity, weight) {
+	const now = new Date().toISOString();
+	const row = {
+		id: state.nextExemplar++,
+		movie_id: movie.id,
+		title: movie.title,
+		year: movie.year,
+		polarity,
+		weight,
+		source: 'feedback',
+		event_id: event.id,
+		state: 'active',
+		sha256: candidate.sha256,
+		staged_name: polarity === 'positive' ? `${movie.title} (${movie.year})` : null,
+		source_file: candidate.source_file,
+		replaced_exemplar_id: null,
+		created_at: now,
+		updated_at: now,
+		ended_at: null,
+		ended_by_event_id: null,
+		image_url: `/api/taste/exemplars/${state.nextExemplar - 1}/image`
+	};
+	state.exemplars.unshift(row);
+	return row;
+}
+
+function endExemplar(row, how, eventId) {
+	const now = new Date().toISOString();
+	Object.assign(row, { state: how, ended_at: now, updated_at: now, ended_by_event_id: eventId });
+	return row;
+}
+
+/** POST /api/runs/{id}/feedback, as the real API answers it (a smaller rule set). */
+function recordFeedback(run, body) {
+	const used = state.keys[body.idempotency_key];
+	if (used) return { status: 200, body: used };
+	const movie = state.movies.find((m) => m.id === run.movie_id);
+	if (latestCompleted(movie.id) !== run.id)
+		return {
+			status: 409,
+			body: { detail: `run ${run.id} is not the movie's latest completed run` }
+		};
+	const byId = new Map(run.candidates.map((c) => [c.id, c]));
+	const pick = run.candidates.find((c) => c.is_pick);
+	let action = body.action;
+	let chosen = null;
+	if (action === 'override') chosen = byId.get(body.candidate_id);
+	if (action === 'override' && chosen?.id === pick?.id) action = 'approval';
+	if (action === 'approval') chosen = pick;
+	if (action === 'rank') chosen = byId.get(body.order?.[0]);
+	const shown = (body.shown ?? []).map((id) => byId.get(id));
+	if (shown.some((c) => !c))
+		return { status: 404, body: { detail: 'not a candidate of this run' } };
+	let hated = (body.hated ?? []).map((id) => byId.get(id));
+	if (action === 'reject' && hated.length === 0) hated = shown.filter((c) => c.sha256);
+	for (const c of [chosen, ...hated].filter(Boolean)) {
+		if (!c.sha256)
+			return {
+				status: 409,
+				body: { detail: `candidate ${c.id} has no downloaded file; it cannot be chosen or hated` }
+			};
+	}
+	const event = {
+		id: state.nextFeedback++,
+		movie_id: movie.id,
+		run_id: run.id,
+		action,
+		chosen_source_file: chosen?.source_file ?? null,
+		chosen_sha256: chosen?.sha256 ?? null,
+		pick_source_file: pick?.source_file ?? null,
+		profile_sha256: run.profile_sha256,
+		scorer_name: 'weighted',
+		blind: run.blind,
+		exposed: shown.map((c) => ({
+			candidate_id: c.source_file,
+			sha256: c.sha256,
+			baseline_rank: c.rank,
+			baseline_score: c.final_score,
+			stack: c.stack
+		})),
+		context: {
+			order: (body.order ?? []).map((id) => byId.get(id)?.source_file),
+			hated: hated.map((c) => c.source_file),
+			selected_candidate: chosen?.source_file ?? null
+		},
+		revokes_event_id: null,
+		revoked_by: null,
+		created_at: new Date().toISOString()
+	};
+	state.feedback.push(event);
+	const created = [];
+	const ended = [];
+	const active = state.exemplars.find(
+		(x) => x.movie_id === movie.id && x.polarity === 'positive' && x.state === 'active'
+	);
+	if (chosen && (action !== 'approval' || !active)) {
+		if (active) ended.push(endExemplar(active, 'superseded', event.id));
+		created.push(newExemplar(event, movie, chosen, 'positive', action === 'approval' ? 0.75 : 1));
+	}
+	for (const c of hated.filter((c) => c.rank !== null && c.rank <= 10).slice(0, 8)) {
+		created.push(newExemplar(event, movie, c, 'negative', 1));
+	}
+	const jobs = { deploy: null, rebuild: null };
+	if (chosen && action !== 'reject' && body.deploy !== false) {
+		jobs.deploy = addJob(state, 'poster_deploy', {
+			candidate_id: chosen.id,
+			initiated_by: 'owner',
+			movie_id: movie.id,
+			event_id: event.id
+		}).id;
+	}
+	if (created.length || ended.length) jobs.rebuild = addJob(state, 'taste_rebuild', {}).id;
+	const result = feedbackResult(event, created, ended, [], jobs, 201);
+	state.keys[body.idempotency_key] = result.body;
+	return result;
+}
+
+function revokeFeedback(event) {
+	const key = `revoke:${event.id}`;
+	if (state.keys[key]) return { status: 200, body: state.keys[key] };
+	if (event.action === 'revoke')
+		return { status: 409, body: { detail: `event ${event.id} is a revoke; it cannot be revoked` } };
+	if (event.revoked_by !== null)
+		return {
+			status: 409,
+			body: { detail: `event ${event.id} was already revoked by event ${event.revoked_by}` }
+		};
+	const revoke = {
+		...event,
+		id: state.nextFeedback++,
+		action: 'revoke',
+		chosen_source_file: null,
+		chosen_sha256: null,
+		exposed: [],
+		context: {},
+		revokes_event_id: event.id,
+		revoked_by: null,
+		created_at: new Date().toISOString()
+	};
+	state.feedback.push(revoke);
+	event.revoked_by = revoke.id;
+	const ended = state.exemplars
+		.filter((x) => x.event_id === event.id && x.state === 'active')
+		.map((x) => endExemplar(x, 'revoked', revoke.id));
+	const reactivated = state.exemplars
+		.filter((x) => x.ended_by_event_id === event.id && x.state === 'superseded')
+		.map((x) => Object.assign(x, { state: 'active', ended_at: null, ended_by_event_id: null }));
+	const rebuild = addJob(state, 'taste_rebuild', {}).id;
+	const result = feedbackResult(revoke, [], ended, reactivated, { deploy: null, rebuild }, 201);
+	state.keys[key] = result.body;
+	return result;
+}
+
+function tasteStatus() {
+	const counts = {};
+	for (const x of state.exemplars) {
+		counts[x.state] ??= {};
+		counts[x.state][x.polarity] = (counts[x.state][x.polarity] ?? 0) + 1;
+	}
+	const tally = () => ({ reviewed: 0, agreed: 0, top3: 0, percent: null });
+	const blind = tally();
+	const notBlind = tally();
+	const seen = new Set();
+	for (const e of state.feedback) {
+		if (e.action === 'revoke' || e.revoked_by !== null || seen.has(e.run_id)) continue;
+		seen.add(e.run_id);
+		const t = e.blind ? blind : notBlind;
+		t.reviewed += 1;
+		if (e.action !== 'reject' && e.chosen_source_file === e.pick_source_file) t.agreed += 1;
+		const rank = e.exposed.find((x) => x.candidate_id === e.chosen_source_file)?.baseline_rank;
+		if (e.action !== 'reject' && rank !== undefined && rank <= 3) t.top3 += 1;
+	}
+	const active = counts.active ?? {};
+	return {
+		exemplars: counts,
+		profile: {
+			id: 2,
+			sha256: '670b7c07'.padEnd(64, '0'),
+			source: 'rebuild',
+			revision: 'f'.repeat(64),
+			positives: active.positive ?? 0,
+			negatives: active.negative ?? 0,
+			created_at: iso(NOW - 7_200_000)
+		},
+		revision: state.feedback.length ? 'a'.repeat(64) : 'f'.repeat(64),
+		rebuild_due: state.feedback.length > 0,
+		agreement: { blind, by_profile: {}, by_month: {}, not_blind: notBlind, unknown: tally() },
+		residual: {
+			subjects: seen.size,
+			pairs: seen.size * 3,
+			min_subjects: 25,
+			min_pairs: 200,
+			trained: false
+		},
+		pending_reviews: pendingReviews().length
+	};
+}
+
+function feedbackList(query) {
+	const movieId = query.get('movie_id');
+	const items = [...state.feedback]
+		.filter((e) => movieId === null || e.movie_id === Number(movieId))
+		.sort((a, b) => b.id - a.id)
+		.map((e) => {
+			const movie = state.movies.find((m) => m.id === e.movie_id);
+			return {
+				id: e.id,
+				movie_id: e.movie_id,
+				title: movie.title,
+				year: movie.year,
+				run_id: e.run_id,
+				action: e.action,
+				chosen_source_file: e.chosen_source_file,
+				pick_source_file: e.pick_source_file,
+				blind: e.blind,
+				shown: e.exposed.length,
+				context: e.context,
+				revokes_event_id: e.revokes_event_id,
+				revoked_by: e.revoked_by,
+				created_at: e.created_at
+			};
+		});
+	return page(items, query);
+}
+
+function systemInfo() {
+	const problems = state.systemProblems;
+	return {
+		version: '0.1.0',
+		environment: 'development',
+		schema: { current: problems ? '0004' : '0005', head: '0005', at_head: !problems },
+		settings: {
+			deploy_policy: 'off',
+			run_new_movies: false,
+			sync_interval_minutes: 360,
+			movie_roots: ['/srv/media/movies/1080p', '/srv/media/movies/4K'],
+			data_dir: '/srv/marquee/data'
+		},
+		library: {
+			movies: state.movies.length,
+			movies_with_file: state.movies.length,
+			posters: { library: 58, marquee: 1 },
+			runs: { completed: 5, running: 1 },
+			deployments: state.deployments.length,
+			exemplars: tasteStatus().exemplars,
+			preference_events: state.feedback.length
+		},
+		models: {
+			manifest: 'found',
+			files: [
+				{
+					item: 'clip',
+					path: 'models/clip-vit-b-32.onnx',
+					kind: 'file',
+					present: true,
+					size_bytes: 351_000_000,
+					expected_size_bytes: 351_000_000
+				},
+				{
+					item: 'dinov2',
+					path: 'models/dinov2-vits14.onnx',
+					kind: 'file',
+					present: !problems,
+					size_bytes: problems ? null : 88_000_000,
+					expected_size_bytes: 88_000_000
+				},
+				{
+					item: 'ocr',
+					path: 'models/paddlex',
+					kind: 'folder',
+					present: true,
+					size_bytes: 138_000_000,
+					expected_size_bytes: 138_000_000
+				}
+			]
+		},
+		last_sync: {
+			job_id: 31,
+			state: 'failed',
+			created_at: iso(NOW - 600_000),
+			started_at: iso(NOW - 590_000),
+			finished_at: iso(NOW - 580_000)
+		},
+		storage: {
+			runs: 741_000_000,
+			backups: 2_000_000,
+			cache: 520_000_000,
+			ml: 161_000_000,
+			measured_at: iso(NOW)
+		}
+	};
 }
 
 function addEvent(state, jobId, type, message = null) {
@@ -175,7 +646,8 @@ const CLASSES = {
 	library_sync: 'network',
 	poster_run: 'gpu',
 	poster_restore: 'media_write',
-	poster_deploy: 'media_write'
+	poster_deploy: 'media_write',
+	taste_rebuild: 'gpu'
 };
 
 function addJob(
@@ -350,10 +822,55 @@ function route(req, res, url) {
 	}
 	if ((m = path.match(/^\/api\/runs\/(\d+)$/)) && method === 'GET') {
 		const run = state.runs[Number(m[1])];
-		return run ? send(res, 200, run) : send(res, 404, { detail: 'run not found' });
+		return run ? send(res, 200, publicRun(run)) : send(res, 404, { detail: 'run not found' });
 	}
 	if (path.match(/^\/api\/runs\/\d+\/candidates\/\d+\/image$/) && method === 'GET')
 		return send(res, 200, IMAGE);
+	if (path === '/api/runs' && method === 'GET') {
+		const movieId = query.get('movie_id');
+		const wanted = query.get('state');
+		const items = Object.values(state.runs)
+			.filter((r) => movieId === null || r.movie_id === Number(movieId))
+			.filter((r) => wanted === null || r.state === wanted)
+			.sort((a, b) => b.id - a.id)
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+			.map(({ candidates, blind, reviewed, policy_deployed, ...run }) => run);
+		return send(res, 200, page(items, query));
+	}
+	if (path === '/api/review' && method === 'GET')
+		return send(res, 200, { items: pendingReviews() });
+	if ((m = path.match(/^\/api\/runs\/(\d+)\/feedback$/))) {
+		const run = state.runs[Number(m[1])];
+		if (!run) return send(res, 404, { detail: 'run not found' });
+		if (method === 'GET') {
+			const own = state.feedback.filter((e) => e.run_id === run.id);
+			return send(res, 200, { items: own.sort((a, b) => a.id - b.id) });
+		}
+		if (method === 'POST') {
+			const result = recordFeedback(run, req.body ?? {});
+			return send(res, result.status, result.body);
+		}
+	}
+	if ((m = path.match(/^\/api\/feedback\/(\d+)\/revoke$/)) && method === 'POST') {
+		const event = state.feedback.find((e) => e.id === Number(m[1]));
+		if (!event) return send(res, 404, { detail: 'no such event' });
+		const result = revokeFeedback(event);
+		return send(res, result.status, result.body);
+	}
+	if (path === '/api/feedback' && method === 'GET') return send(res, 200, feedbackList(query));
+	if (path === '/api/taste' && method === 'GET') return send(res, 200, tasteStatus());
+	if (path === '/api/taste/rebuild' && method === 'POST') {
+		return send(res, 202, publicJob(addJob(state, 'taste_rebuild', { force: false })));
+	}
+	if (path === '/api/taste/exemplars' && method === 'GET') {
+		let items = state.exemplars;
+		if (query.get('polarity')) items = items.filter((x) => x.polarity === query.get('polarity'));
+		if (query.get('state')) items = items.filter((x) => x.state === query.get('state'));
+		return send(res, 200, page(items, query));
+	}
+	if (path.match(/^\/api\/taste\/exemplars\/\d+\/image$/) && method === 'GET')
+		return send(res, 200, IMAGE);
+	if (path === '/api/system' && method === 'GET') return send(res, 200, systemInfo());
 	if (path === '/api/deployments' && method === 'GET') {
 		const movieId = query.get('movie_id');
 		const items = state.deployments.filter(
@@ -385,8 +902,8 @@ function route(req, res, url) {
 	if (path === '/api/worker' && method === 'GET') {
 		const count = (s) => state.jobs.filter((j) => j.state === s).length;
 		return send(res, 200, {
-			running: true,
-			since: iso(NOW),
+			running: !state.systemProblems,
+			since: state.systemProblems ? null : iso(NOW),
 			queued: count('queued'),
 			running_jobs: count('running'),
 			failed: count('failed')
@@ -451,6 +968,22 @@ createServer((req, res) => {
 	}
 	if (url.pathname === '/__fake/reset' && req.method === 'POST') {
 		state = initialState();
+		if (url.searchParams.get('review') === 'none') {
+			for (const id of Object.keys(state.runs)) if (Number(id) !== 11) delete state.runs[id];
+			state.runs[11].state = 'running';
+		}
+		state.systemProblems = url.searchParams.get('problems') === '1';
+		return send(res, 200, { ok: true });
+	}
+	// Every JSON body the fake received for a path, oldest first.
+	if (url.pathname === '/__fake/received') {
+		return send(res, 200, state.received[url.searchParams.get('path') ?? ''] ?? []);
+	}
+	// The next request with this method to a path is received, then answered with this status
+	// and no effect.
+	if (url.pathname === '/__fake/fail-next' && req.method === 'POST') {
+		const key = `${url.searchParams.get('method') ?? 'POST'} ${url.searchParams.get('path') ?? ''}`;
+		state.failNext[key] = Number(url.searchParams.get('status'));
 		return send(res, 200, { ok: true });
 	}
 	if (!url.pathname.startsWith('/api/')) return send(res, 404, { detail: 'Not Found' });
@@ -463,6 +996,24 @@ createServer((req, res) => {
 	};
 	if (req.headers['x-api-key'] !== KEY)
 		return send(res, 401, { detail: 'a valid API key is required' });
-	req.resume();
-	req.on('end', () => route(req, res, url));
+	const chunks = [];
+	req.on('data', (chunk) => chunks.push(chunk));
+	req.on('end', () => {
+		const raw = Buffer.concat(chunks).toString('utf8');
+		if (raw) {
+			try {
+				req.body = JSON.parse(raw);
+			} catch {
+				return send(res, 422, { detail: 'the body is not JSON' });
+			}
+			(state.received[url.pathname] ??= []).push(req.body);
+		}
+		const failKey = `${req.method} ${url.pathname}`;
+		const failWith = state.failNext[failKey];
+		if (failWith) {
+			delete state.failNext[failKey];
+			return send(res, failWith, { detail: 'the fake failed this request on purpose' });
+		}
+		return route(req, res, url);
+	});
 }).listen(PORT, '127.0.0.1');

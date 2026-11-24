@@ -1,8 +1,28 @@
 import { expect, type Page } from '@playwright/test';
 import { E2E_API_KEY, FAKE_URL } from '../playwright.config';
 
-export async function resetBackend(): Promise<void> {
-	const response = await fetch(`${FAKE_URL}/__fake/reset`, { method: 'POST' });
+/** Start the fake backend afresh. `review: 'none'` leaves no run waiting for a review;
+ *  `problems` makes the system summary report a schema behind and a missing model. */
+export async function resetBackend(
+	options: { review?: 'none'; problems?: boolean } = {}
+): Promise<void> {
+	const params = new URLSearchParams();
+	if (options.review) params.set('review', options.review);
+	if (options.problems) params.set('problems', '1');
+	const response = await fetch(`${FAKE_URL}/__fake/reset?${params}`, { method: 'POST' });
+	expect(response.ok).toBe(true);
+}
+
+/** Every JSON body the fake backend received for `path`, oldest first. */
+export async function receivedBodies(path: string): Promise<Record<string, unknown>[]> {
+	return (await fetch(`${FAKE_URL}/__fake/received?path=${encodeURIComponent(path)}`)).json();
+}
+
+/** Make the fake answer the next `method` request for `path` with `status`, after
+ *  receiving it. */
+export async function failNext(path: string, status: number, method = 'POST'): Promise<void> {
+	const params = new URLSearchParams({ path, status: String(status), method });
+	const response = await fetch(`${FAKE_URL}/__fake/fail-next?${params}`, { method: 'POST' });
 	expect(response.ok).toBe(true);
 }
 

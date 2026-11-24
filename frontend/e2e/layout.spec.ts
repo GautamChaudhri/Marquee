@@ -28,5 +28,37 @@ for (const width of [390, 1440]) {
 		await expect(page.getByTestId('job-detail')).toBeVisible();
 		await expect(page.getByTestId('job-row').first()).toBeVisible();
 		expect(await overflowsSideways(page)).toBe(false);
+
+		await page.goto('/review');
+		await expect(page.getByTestId('review-row').first()).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+
+		await page.goto('/review/12');
+		await expect(page.getByTestId('review-card').first()).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Keep the pick' })).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+		const cardColumns = await page
+			.getByTestId('order-list')
+			.evaluate((zone) => getComputedStyle(zone).gridTemplateColumns.split(' ').length);
+		expect(cardColumns).toBeGreaterThanOrEqual(width < 500 ? 2 : 6);
+		await page.getByTestId('deploy-checkbox').uncheck();
+		await page.getByRole('button', { name: 'Keep the pick' }).click();
+		await expect(page.getByTestId('answer-result')).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+
+		await page.goto('/taste');
+		await expect(page.getByTestId('exemplar').first()).toBeVisible();
+		await expect(page.getByTestId('recent-feedback')).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+
+		await page.goto('/system');
+		await expect(page.getByTestId('models')).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+
+		// Every page is in the navigation, and at this width it fits.
+		const nav = page.getByRole('navigation', { name: 'Main' });
+		for (const name of ['Library', 'Review', 'Taste', 'Activity', 'System']) {
+			await expect(nav.getByRole('link', { name: new RegExp(`^${name}`) })).toBeVisible();
+		}
 	});
 }
