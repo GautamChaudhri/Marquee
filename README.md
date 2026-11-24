@@ -11,8 +11,9 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > **Status: mid-rebuild.** The selection engine runs from the command line: it builds its
 > models, seeds a taste profile from the posters already in your library, and ranks one
 > movie's TMDB posters at a time. The database holds your Radarr movie list and the posters
-> already on disk, and a small HTTP API serves them. The job queue, deploy-and-review loop,
-> and web interface are being rebuilt on top of it. Nothing writes to a media library yet.
+> already on disk, a small HTTP API serves them, and a job queue with one worker keeps the
+> list in sync and runs GPU work in a child process. The deploy-and-review loop and the web
+> interface are being rebuilt on top of it. Nothing writes to a media library yet.
 
 ## Why
 
@@ -101,6 +102,9 @@ uv run marquee run "Die Hard"
 
 # 9. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
 uv run marquee api
+
+# 10. Run the job queue (in its own terminal, or as a service). Ctrl-C stops it gracefully.
+uv run marquee worker
 ```
 
 `marquee models fetch` builds every model that is missing and leaves alone what is present:
@@ -145,16 +149,27 @@ The database stores paths as Radarr reports them. If Radarr sees your library at
 different path than Marquee does (Radarr in a container, for example), set
 `RADARR_MOVIE_ROOTS` to the folders in `MOVIE_ROOTS` as Radarr sees them, in the same order.
 
+`marquee worker` runs the job queue. It queues a library sync by itself every
+`SYNC_INTERVAL_MINUTES` (default 360; 0 turns it off), runs GPU jobs in a child process that
+keeps its models loaded between jobs and stops after `GPU_IDLE_SECONDS` (default 300) without
+one, retries failed jobs with a growing delay, and, after a crash or a restart, picks up the
+jobs it was running. Only one worker runs at a time. `marquee jobs list`, `show`, `enqueue`,
+`cancel`, and `retry` work on the queue from the command line; for example
+`uv run marquee jobs enqueue gpu_selftest` checks that the GPU works in the child process.
+
 `marquee api` serves a small HTTP API: `/health/live` and `/health/ready` for probes, and,
 under `/api`, the movie list (`/api/movies`, with search, filters, sorting, and paging), one
-movie, and its poster. Every `/api` request must carry the key in `API_KEY`, as
+movie, and its poster; the jobs (`/api/jobs`, one job, its events, and a feed of every job's
+events after a cursor), cancel and retry, `POST /api/sync` to queue a sync, and
+`/api/worker`. Every `/api` request must carry the key in `API_KEY`, as
 `Authorization: Bearer <key>` or `X-Api-Key: <key>`; with no key configured the API answers
 503. The interactive documentation (`/docs`) is served only when `MARQUEE_ENVIRONMENT` is
 `development`.
 
 `marquee doctor` prints one line per check (Python, settings, data directory, models, model
-manifest, taste profile, ONNX Runtime, GPU, OCR, database and its schema, media roots, TMDB,
-Radarr, path mapping) with `PASS`, `WARN`, or `FAIL`, and exits non-zero if anything fails. `--json`
+manifest, taste profile, ONNX Runtime, GPU, OCR, database and its schema, the worker and the
+queue, media roots, TMDB, Radarr, path mapping) with `PASS`, `WARN`, or `FAIL`, and exits
+non-zero if anything fails. `--json`
 prints the same report as JSON. It never writes to a media folder and never prints a secret.
 
 Use `uv sync --extra nvidia` (or `--extra cpu`) whenever you sync: a plain `uv sync` removes
