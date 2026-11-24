@@ -643,3 +643,41 @@ async def test_recorded_events_are_in_the_shape_the_residual_reads(
         evidence_revision="r",
     )
     assert artifact is None and report["reason"] == "insufficient_evidence"
+
+
+# ── Masked runs are never part of the review loop ─────────────────────────
+
+
+async def _masked(session: AsyncSession, run_id: int) -> None:
+    run = await session.get(PosterRun, run_id)
+    assert run is not None
+    run.masked = True
+    await session.flush()
+
+
+async def test_a_masked_run_is_never_the_run_feedback_goes_to(db_session: AsyncSession) -> None:
+    movie_id = await _movie(db_session)
+    await _profile(db_session, [])
+    normal = await _run(db_session, movie_id, folder_name="00000001-normal")
+    masked = await _run(db_session, movie_id, folder_name="00000002-masked")
+    await _masked(db_session, masked["run"])
+
+    assert await feedback.latest_completed_run_id(db_session, movie_id) == normal["run"]
+    with pytest.raises(feedback.FeedbackRefusedError, match="masked run of a blind evaluation"):
+        await feedback.record(
+            db_session, run_id=masked["run"], action="approval", idempotency_key="m1"
+        )
+    outcome = await feedback.record(
+        db_session, run_id=normal["run"], action="approval", idempotency_key="m2"
+    )
+    assert outcome.event.run_id == normal["run"]
+
+
+async def test_a_masked_run_is_blind_whatever_its_profile_says(db_session: AsyncSession) -> None:
+    movie_id = await _movie(db_session)
+    await _profile(db_session, [movie_id])  # the profile has the movie's own exemplar
+    masked = await _run(db_session, movie_id)
+    await _masked(db_session, masked["run"])
+    run = await db_session.get(PosterRun, masked["run"])
+    assert run is not None
+    assert await feedback.blind_for(db_session, run) is True

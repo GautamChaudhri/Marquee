@@ -11,6 +11,7 @@ from marquee.api.schemas.jobs import JobItem
 from marquee.db.models import Deployment, PosterRun, RunCandidate
 
 RunState = Literal["running", "completed", "failed", "cancelled"]
+MaskedFilter = Literal["false", "true", "any"]
 Scope = Literal["never-run", "no-poster", "all"]
 
 
@@ -36,6 +37,14 @@ class RunItem(BaseModel):
     error: str | None
     started_at: datetime
     finished_at: datetime | None
+    masked: bool = Field(
+        description="A blind evaluation's run, without the movie's own exemplars: read-only, "
+        "never reviewed, never deployed from"
+    )
+    residual_id: int | None = Field(
+        description="The residual training whose artifact ranked the run, when scorer_name "
+        "is residual"
+    )
 
 
 class CandidateItem(BaseModel):

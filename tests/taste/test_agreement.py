@@ -181,3 +181,18 @@ async def test_the_review_list(db_session: AsyncSession) -> None:
     assert status.pending_reviews == 4
     assert status.profile is None and not status.rebuild_due
     assert status.residual_pairs == 0 and status.residual_min_subjects == 25
+
+
+async def test_a_masked_run_never_enters_the_review_queue(db_session: AsyncSession) -> None:
+    movie_id = await _movie(db_session, 1)
+    normal = await _run(db_session, movie_id)
+    masked = await _run(db_session, movie_id)
+    row = await db_session.get(PosterRun, masked)
+    assert row is not None
+    row.masked = True
+    await db_session.flush()
+
+    pending = await agreement.pending_reviews(db_session)
+    assert [p.run_id for p in pending] == [normal]
+    await _event(db_session, movie_id, normal, chosen_rank=1)
+    assert await agreement.pending_reviews(db_session) == []

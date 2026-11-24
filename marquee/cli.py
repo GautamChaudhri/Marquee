@@ -123,6 +123,13 @@ def _build_parser() -> argparse.ArgumentParser:
     runs_list = runs_commands.add_parser("list", help=f"the newest {JOBS_SHOWN} runs")
     runs_list.add_argument("--movie-id", type=int, help="only this movie's runs")
     runs_list.add_argument("--state", choices=RUN_STATES, help="only runs in this state")
+    runs_list.add_argument(
+        "--masked",
+        choices=("false", "true", "any"),
+        default="false",
+        help="false (default): the product loop's runs; true: blind evaluations' masked runs; "
+        "any: both",
+    )
     runs_list.add_argument("--json", action="store_true", help="print the runs as JSON")
     runs_show = runs_commands.add_parser("show", help="one run and its candidates")
     runs_show.add_argument("id", type=int)
@@ -782,7 +789,7 @@ def _print_runs(page: Any) -> None:
         ranked = "-" if run.ranked_count is None else run.ranked_count
         print(
             f"{run.id:>6}  {run.movie_id:>6}  {run.state:<10} {ranked:>6}  "
-            f"{_when(run.started_at):<19}  {run.run_folder}"
+            f"{_when(run.started_at):<19}  {run.run_folder}{'  (masked)' if run.masked else ''}"
         )
     print(f"{len(page.items)} of {page.total} run(s)")
 
@@ -797,6 +804,9 @@ def _run_dict(run: Any) -> dict[str, Any]:
         "engine_status": run.engine_status,
         "ranked_count": run.ranked_count,
         "candidate_count": run.candidate_count,
+        "scorer_name": run.scorer_name,
+        "residual_id": run.residual_id,
+        "masked": run.masked,
         "error": run.error,
         "started_at": run.started_at.isoformat(),
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
@@ -822,7 +832,12 @@ def _print_run(run: Any, candidates: list[Any]) -> None:
     from marquee.config import settings
 
     print(f"run       {run.id} of movie {run.movie_id} (job {run.job_id})")
+    if run.masked:
+        print("masked    a blind evaluation's run, without the movie's own exemplars")
     print(f"state     {run.state}{f' ({run.engine_status})' if run.engine_status else ''}")
+    if run.scorer_name:
+        residual = f" (training {run.residual_id})" if run.residual_id else ""
+        print(f"scorer    {run.scorer_name}{residual}")
     print(f"started   {_when(run.started_at)}  finished {_when(run.finished_at)}")
     if run.error:
         print(f"error     {run.error}")
@@ -890,7 +905,11 @@ async def _artwork_async(args: argparse.Namespace) -> int:
         async with create_session_factory(engine)() as session:
             if args.command == "runs" and args.runs_command == "list":
                 page = await runs.list_runs(
-                    session, movie_id=args.movie_id, state=args.state, page_size=JOBS_SHOWN
+                    session,
+                    movie_id=args.movie_id,
+                    state=args.state,
+                    masked={"false": False, "true": True, "any": None}[args.masked],
+                    page_size=JOBS_SHOWN,
                 )
                 if args.json:
                     print(json.dumps([_run_dict(run) for run in page.items], indent=2))

@@ -870,3 +870,41 @@ def test_a_rebuild_that_reproduces_the_active_profile_says_so(
     assert "replaces  profile 3" in capsys.readouterr().out
     cli._print_rebuild(SimpleNamespace(result={"skipped": "up to date", "revision": "c" * 64}))
     assert capsys.readouterr().out == f"skipped   up to date (revision {'c' * 12})\n"
+
+
+@pytest.mark.db
+def test_masked_runs_appear_only_where_asked(
+    jobs_database: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    import psycopg
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+
+    def run(*argv: str) -> tuple[int, str, str]:
+        code = cli.main(list(argv))
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    movie_id = _add_movie(1, "Heat", 1995)
+    ids = _review_run(movie_id, tmp_path / "data" / "runs")
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        masked = conn.execute(
+            "insert into poster_runs (movie_id, state, run_folder, started_at, finished_at, "
+            "ranked_count, masked) values (%s, 'completed', '00000002-heat', now(), now(), 3, "
+            "true) returning id",
+            [movie_id],
+        ).fetchone()[0]
+
+    assert [r["id"] for r in json.loads(run("runs", "list", "--json")[1])] == [ids["run"]]
+    shown = json.loads(run("runs", "list", "--masked", "true", "--json")[1])
+    assert [r["id"] for r in shown] == [masked] and shown[0]["masked"] is True
+    code, out, _ = run("runs", "list", "--masked", "any")
+    assert code == 0 and "(masked)" in out and out.splitlines()[-1] == "2 of 2 run(s)"
+    assert "blind evaluation's run" in run("runs", "show", str(masked))[1]
+    # The review list still names the normal run, not the newer masked one.
+    assert json.loads(run("review", "list", "--json")[1])[0]["run_id"] == ids["run"]

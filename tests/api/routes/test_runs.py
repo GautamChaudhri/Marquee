@@ -336,3 +336,43 @@ async def test_movie_items_carry_their_poster_origin_and_latest_run(
     listing = (await client.get("/api/movies", headers=headers)).json()
     assert listing["items"][0]["latest_run_id"] == ids["run"]
     assert (await db_session.scalar(select(PosterRun.id))) == ids["run"]
+
+
+async def test_a_masked_run_is_listed_when_asked_read_only_and_never_deployed_from(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, runs_dir: Path
+) -> None:
+    ids = await _run(db_session, runs_dir)
+    run = await db_session.get(PosterRun, ids["run"])
+    assert run is not None
+    run.masked = True
+    await db_session.commit()
+
+    def listed(params: dict) -> list[int]:
+        return [item["id"] for item in params["items"]]
+
+    default = (await client.get("/api/runs", headers=headers)).json()
+    assert default["total"] == 0
+    masked = (await client.get("/api/runs", headers=headers, params={"masked": "true"})).json()
+    assert listed(masked) == [ids["run"]] and masked["items"][0]["masked"] is True
+    anything = (await client.get("/api/runs", headers=headers, params={"masked": "any"})).json()
+    assert listed(anything) == [ids["run"]]
+    assert (
+        await client.get("/api/runs", headers=headers, params={"masked": "maybe"})
+    ).status_code == 422
+
+    detail = (await client.get(f"/api/runs/{ids['run']}", headers=headers)).json()
+    assert detail["masked"] is True and detail["blind"] is True
+    assert detail["residual_id"] is None
+    image = await client.get(
+        f"/api/runs/{ids['run']}/candidates/{ids['pick']}/image", headers=headers
+    )
+    assert image.status_code == 200
+
+    deploy = await client.post(f"/api/runs/{ids['run']}/deploy", headers=headers)
+    assert deploy.status_code == 409 and "masked run" in deploy.json()["detail"]
+    answer = await client.post(
+        f"/api/runs/{ids['run']}/feedback",
+        headers=headers,
+        json={"action": "approval", "idempotency_key": "masked-1", "deploy": False},
+    )
+    assert answer.status_code == 409 and "masked run" in answer.json()["detail"]

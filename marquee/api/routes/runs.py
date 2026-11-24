@@ -20,6 +20,7 @@ from marquee.api.schemas.runs import (
     BatchQueued,
     BatchRequest,
     DeployRequest,
+    MaskedFilter,
     RunDetail,
     RunItem,
     RunList,
@@ -108,12 +109,21 @@ async def list_runs(
     session: Session,
     movie_id: int | None = None,
     state: RunState | None = None,
+    masked: Annotated[
+        MaskedFilter,
+        Query(description="false: runs of the product loop; true: blind evaluations' runs; any"),
+    ] = "false",
     page: Annotated[int, Query(ge=1, description="Page number, from 1")] = 1,
     page_size: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> RunList:
-    """Runs, newest first."""
+    """Runs, newest first. A blind evaluation's masked runs only when asked."""
     result = await runs.list_runs(
-        session, movie_id=movie_id, state=state, page=page, page_size=page_size
+        session,
+        movie_id=movie_id,
+        state=state,
+        masked={"false": False, "true": True, "any": None}[masked],
+        page=page,
+        page_size=page_size,
     )
     return RunList(
         total=result.total,

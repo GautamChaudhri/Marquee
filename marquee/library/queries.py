@@ -16,6 +16,7 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
 
 from marquee.db.models import ARTWORK_POSTER, Artwork, Movie, PosterRun
+from marquee.db.models.run import in_product_loop
 
 MovieSort = Literal["title", "year", "added"]
 PosterOrigin = Literal["library", "marquee"]
@@ -53,7 +54,8 @@ def _has_poster(origin: PosterOrigin | None = None) -> ColumnElement[bool]:
 
 
 def _has_run() -> ColumnElement[bool]:
-    return exists(select(PosterRun.id).where(PosterRun.movie_id == Movie.id))
+    """A run of the product loop: a masked run does not count."""
+    return exists(select(PosterRun.id).where(PosterRun.movie_id == Movie.id, in_product_loop()))
 
 
 def _order(sort: MovieSort) -> tuple[ColumnElement, ...]:
@@ -66,7 +68,9 @@ def _order(sort: MovieSort) -> tuple[ColumnElement, ...]:
 
 def _with_poster() -> Select[tuple[Movie, Artwork, int | None]]:
     latest_run = (
-        select(func.max(PosterRun.id)).where(PosterRun.movie_id == Movie.id).scalar_subquery()
+        select(func.max(PosterRun.id))
+        .where(PosterRun.movie_id == Movie.id, in_product_loop())
+        .scalar_subquery()
     )
     return select(Movie, Artwork, latest_run.label("latest_run_id")).outerjoin(
         Artwork, _poster_join()

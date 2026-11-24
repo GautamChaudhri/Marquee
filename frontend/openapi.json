@@ -979,7 +979,7 @@
           "runs"
         ],
         "summary": "List Runs",
-        "description": "Runs, newest first.",
+        "description": "Runs, newest first. A blind evaluation's masked runs only when asked.",
         "operationId": "list_runs_api_runs_get",
         "security": [
           {
@@ -1027,6 +1027,23 @@
               ],
               "title": "State"
             }
+          },
+          {
+            "name": "masked",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "false",
+                "true",
+                "any"
+              ],
+              "type": "string",
+              "description": "false: runs of the product loop; true: blind evaluations' runs; any",
+              "default": "false",
+              "title": "Masked"
+            },
+            "description": "false: runs of the product loop; true: blind evaluations' runs; any"
           },
           {
             "name": "page",
@@ -4571,6 +4588,23 @@
             ],
             "title": "Finished At"
           },
+          "masked": {
+            "type": "boolean",
+            "title": "Masked",
+            "description": "A blind evaluation's run, without the movie's own exemplars: read-only, never reviewed, never deployed from"
+          },
+          "residual_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residual Id",
+            "description": "The residual training whose artifact ranked the run, when scorer_name is residual"
+          },
           "blind": {
             "anyOf": [
               {
@@ -4615,6 +4649,8 @@
           "error",
           "started_at",
           "finished_at",
+          "masked",
+          "residual_id",
           "blind",
           "reviewed",
           "candidates"
@@ -4790,6 +4826,23 @@
               }
             ],
             "title": "Finished At"
+          },
+          "masked": {
+            "type": "boolean",
+            "title": "Masked",
+            "description": "A blind evaluation's run, without the movie's own exemplars: read-only, never reviewed, never deployed from"
+          },
+          "residual_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residual Id",
+            "description": "The residual training whose artifact ranked the run, when scorer_name is residual"
           }
         },
         "type": "object",
@@ -4810,7 +4863,9 @@
           "ranked_count",
           "error",
           "started_at",
-          "finished_at"
+          "finished_at",
+          "masked",
+          "residual_id"
         ],
         "title": "RunItem"
       },

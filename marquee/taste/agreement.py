@@ -30,7 +30,7 @@ from marquee.db.models import (
     TasteProfile,
 )
 from marquee.db.models.deployment import INITIATED_BY_POLICY
-from marquee.db.models.run import RUN_COMPLETED
+from marquee.db.models.run import RUN_COMPLETED, in_product_loop
 from marquee.db.models.taste import ACTION_REJECT, ACTION_REVOKE
 from marquee.library.queries import posters_of
 from marquee.taste import exemplars, feedback, rebuild
@@ -166,7 +166,7 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
     deploy policy deployed first, then the newest runs."""
     latest = (
         select(PosterRun.movie_id, func.max(PosterRun.id).label("run_id"))
-        .where(PosterRun.state == RUN_COMPLETED)
+        .where(PosterRun.state == RUN_COMPLETED, in_product_loop())
         .group_by(PosterRun.movie_id)
         .subquery()
     )

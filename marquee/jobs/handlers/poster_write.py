@@ -85,6 +85,10 @@ async def _candidate(
     assert run is not None
     movie = await session.get(Movie, run.movie_id)
     assert movie is not None
+    if run.masked:
+        raise WriteRefusedError(
+            f"run {run.id} is a masked run of a blind evaluation; nothing is deployed from it"
+        )
     if run.state != RUN_COMPLETED:
         raise WriteRefusedError(f"run {run.id} is {run.state}; only a completed run's candidate")
     if candidate.sha256 is None:

@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.artwork import runs
 from marquee.config import pipeline_settings
 from marquee.db.models import Exemplar, PosterRun, PreferenceEvent, RunCandidate
-from marquee.db.models.run import RUN_COMPLETED
+from marquee.db.models.run import RUN_COMPLETED, in_product_loop
 from marquee.db.models.taste import (
     ACTION_APPROVAL,
     ACTION_OVERRIDE,
@@ -115,16 +115,21 @@ async def event_by_key(session: AsyncSession, key: str) -> PreferenceEvent | Non
 
 
 async def latest_completed_run_id(session: AsyncSession, movie_id: int) -> int | None:
+    """The run feedback goes to: the movie's latest completed run of the product loop (a
+    masked run never counts)."""
     return await session.scalar(
         select(func.max(PosterRun.id)).where(
-            PosterRun.movie_id == movie_id, PosterRun.state == RUN_COMPLETED
+            PosterRun.movie_id == movie_id, PosterRun.state == RUN_COMPLETED, in_product_loop()
         )
     )
 
 
 async def blind_for(session: AsyncSession, run: PosterRun) -> bool | None:
     """Whether the run's profile had no positive exemplar of its movie; ``None`` when that
-    profile is not registered, so nobody can say."""
+    profile is not registered, so nobody can say. A masked run is blind by construction:
+    its movie's exemplars were left out of the profile it scored against."""
+    if run.masked:
+        return True
     profile = await rebuild.profile_by_sha(session, run.profile_sha256)
     if profile is None:
         return None
@@ -219,6 +224,11 @@ async def record(
         raise UnknownRunError(f"no run {run_id}")
     movie = await exemplars.lock_movie(session, run.movie_id)
     assert movie is not None
+    if run.masked:
+        raise FeedbackRefusedError(
+            f"run {run.id} is a masked run of a blind evaluation; feedback goes to the "
+            f"latest run of {movie.title}"
+        )
     if run.state != RUN_COMPLETED:
         raise FeedbackRefusedError(f"run {run.id} is {run.state}; feedback goes to a completed run")
     latest = await latest_completed_run_id(session, movie.id)

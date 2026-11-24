@@ -818,3 +818,30 @@ async def test_the_policy_after_a_run(
         if queued
         else []
     )
+
+
+async def test_nothing_is_deployed_from_a_masked_run(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=False)
+    async with sessions() as session:
+        run = await session.get(PosterRun, ids["run"])
+        assert run is not None
+        run.masked = True
+        await session.commit()
+    async with sessions() as session:
+        with pytest.raises(handler.WriteRefusedError, match="masked run of a blind evaluation"):
+            await handler.enqueue_deploy(session, ids["pick"])
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    async with sessions() as session:
+        with pytest.raises(handler.WriteRefusedError, match="masked run"):
+            await handler.queue_policy_deploy(session, ids["movie"], ids["pick"])
+    # A job queued before the run was known to be masked refuses when it runs.
+    with pytest.raises(PermanentJobError, match="masked run"):
+        await _deploy(sessions, ids)
+    assert not (library / "poster.jpg").exists()
+    assert fetched == []
+    assert await _deployment_count(sessions) == 0
