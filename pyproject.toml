@@ -160,7 +160,7 @@ markers = [
 ]
 
 # Layering (see docs/architecture.md). Imports only point downward. Packages that do not
-# exist yet (db, artwork, jobs) join their layer when they arrive.
+# exist yet (artwork, jobs) join their layer when they arrive.
 [tool.importlinter]
 root_package = "marquee"
 include_external_packages = true
@@ -174,7 +174,7 @@ layers = [
     "marquee.library",
     "marquee.pipeline",
     "marquee.ml",
-    "marquee.fs | marquee.integrations",
+    "marquee.fs | marquee.integrations | marquee.db",
     "marquee.config | marquee.logging | marquee.cancellation | marquee.host_metrics",
 ]
 
@@ -182,7 +182,7 @@ layers = [
 name = "The engine does not know a database exists"
 type = "forbidden"
 source_modules = ["marquee.ml", "marquee.pipeline"]
-forbidden_modules = ["sqlalchemy", "asyncpg", "psycopg"]
+forbidden_modules = ["marquee.db", "sqlalchemy", "asyncpg", "psycopg", "alembic"]
 
 [[tool.importlinter.contracts]]
 name = "Only marquee.config reads settings from the environment"
@@ -198,6 +198,7 @@ source_modules = [
     "marquee.ml",
     "marquee.fs",
     "marquee.integrations",
+    "marquee.db",
     "marquee.logging",
     "marquee.cancellation",
     "marquee.host_metrics",
@@ -221,6 +222,7 @@ source_modules = [
     "marquee.ml",
     "marquee.fs",
     "marquee.integrations",
+    "marquee.db",
     "marquee.config",
     "marquee.logging",
     "marquee.cancellation",
