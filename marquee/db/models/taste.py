@@ -156,6 +156,7 @@ class Exemplar(Base):
             f"(polarity = '{POLARITY_POSITIVE}') = (staged_name IS NOT NULL)", name="staged"
         ),
         CheckConstraint(f"(state = '{STATE_ACTIVE}') = (ended_at IS NULL)", name="ended"),
+        CheckConstraint(f"state <> '{STATE_ACTIVE}' OR ended_by_event_id IS NULL", name="ended_by"),
         CheckConstraint(f"sha256 {SHA256_CHECK}", name="sha256"),
         CheckConstraint(plain_name("file_name"), name="file_name"),
         CheckConstraint(plain_name("staged_name"), name="staged_name"),
@@ -195,8 +196,16 @@ class Exemplar(Base):
     staged_name: Mapped[str | None] = mapped_column(Text)
     source_file: Mapped[str | None] = mapped_column(Text)
     replaced_exemplar_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("exemplars.id"))
+    ended_by_event_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("preference_events.id")
+    )
+    """The act of feedback that ended it (superseded or revoked). Null while it is active, and
+    for rows ended before this column existed."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -245,6 +254,9 @@ class TasteProfile(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
     def __repr__(self) -> str:

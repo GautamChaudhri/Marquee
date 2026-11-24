@@ -16,8 +16,9 @@ reject     none                 none                         the same, from ever
 ========== ==================== ============================ =================================
 
 An override that names the pick is recorded as an approval. A hated candidate whose bytes are
-the movie's active positive ends that positive. Feedback goes to a movie's latest completed
-run only. An event keeps its own copy of what was shown, because ``run_candidates`` rows go
+the movie's active positive ends that positive. A revoke brings back what its event ended, as far as the
+rules allow (:func:`marquee.taste.exemplars.revoke_event`). Feedback goes to a movie's latest
+completed run only. An event keeps its own copy of what was shown, because ``run_candidates`` rows go
 when their run does: each shown candidate by TMDB's file name, with its hash, rank, score,
 stack, and the normalised features from the run's archive.
 
@@ -50,8 +51,6 @@ from marquee.db.models.taste import (
     ACTION_REVOKE,
     MAX_EXPOSED,
     MAX_IDEMPOTENCY_KEY,
-    POLARITY_POSITIVE,
-    STATE_ACTIVE,
 )
 from marquee.taste import exemplars, rebuild
 
@@ -330,7 +329,7 @@ async def record(
         row = by_id[n]
         assert row.sha256 is not None
         await exemplars.end_positive_with_image(
-            session, changes, movie_id=movie.id, sha256=row.sha256, now=now
+            session, changes, movie_id=movie.id, sha256=row.sha256, event_id=event.id, now=now
         )
         if row.rank is None or row.rank > hard_max:
             continue  # an easy negative: it informs the order, not the exemplars
@@ -383,20 +382,27 @@ async def revoke(
     if earlier is not None:
         raise FeedbackRefusedError(f"event {event_id} was already revoked by event {earlier}")
     now = datetime.now(UTC)
+    revision_before = await exemplars.revision(session)
+    changes = exemplars.Changes()
+    newly_ended = await exemplars.revoke_event(session, changes, event_id=target.id, now=now)
+    # The event is written once, after the exemplars changed, so its context can say what
+    # came back: the table is append-only.
     event = PreferenceEvent(
         movie_id=target.movie_id,
         run_id=target.run_id,
         action=ACTION_REVOKE,
         exposed=[],
-        context={},
+        context={"reactivated": [row.id for row in changes.reactivated]},
         revokes_event_id=target.id,
         idempotency_key=key,
         created_at=now,
     )
     session.add(event)
     await session.flush()
-    outcome = Outcome(event=event, revision_before=await exemplars.revision(session))
-    await exemplars.revoke_event(session, outcome.changes, event_id=target.id, now=now)
+    for row in newly_ended:
+        row.ended_by_event_id = event.id
+    await session.flush()
+    outcome = Outcome(event=event, changes=changes, revision_before=revision_before)
     outcome.revision_after = await exemplars.revision(session)
     logger.info(
         "FEEDBACK | event %d revokes event %d; %d exemplar(s) revoked, %d active again",
@@ -423,13 +429,11 @@ async def replay(session: AsyncSession, event: PreferenceEvent) -> Outcome:
             )
         )
         changes.ended = [row for row in made if row.ended_at == event.created_at]
-        replaced = {r.replaced_exemplar_id for r in made if r.polarity == POLARITY_POSITIVE}
-        if replaced - {None}:
+        reactivated = event.context.get("reactivated") or []
+        if reactivated:
             changes.reactivated = list(
                 await session.scalars(
-                    select(Exemplar).where(
-                        Exemplar.id.in_(replaced - {None}), Exemplar.state == STATE_ACTIVE
-                    )
+                    select(Exemplar).where(Exemplar.id.in_(reactivated)).order_by(Exemplar.id)
                 )
             )
     else:

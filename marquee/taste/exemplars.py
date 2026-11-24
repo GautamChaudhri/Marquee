@@ -5,15 +5,17 @@ written under a temporary name, renamed, then read back and checked, the way a p
 is. A profile is rebuilt from those copies alone, so it never depends on a run folder or a
 media folder still holding the file.
 
-The rules (decisions 3 and 8 of the M5b brief):
+The rules (decisions 3 and 8 of the M5b brief, 7 and 8 of the M6a brief):
 
 - a movie has at most one active positive; a new one supersedes it and names it as the
   exemplar it replaced;
 - a movie has at most :data:`MAX_ACTIVE_NEGATIVES` active negatives; one more ends the
   oldest;
-- revoking an event revokes the exemplars it created, and when its positive was still
-  active, the exemplar that positive replaced becomes active again if it is still only
-  superseded.
+- every exemplar an act of feedback ends records that event (``ended_by_event_id``);
+- revoking an event revokes the exemplars it created. Then a superseded exemplar of the
+  movie whose ending event is revoked is eligible again: the newest eligible positive
+  becomes active if the movie has none, and eligible negatives become active, newest
+  first, up to the limit.
 
 :func:`revision` is a hash of the active set: what a profile built now would be built from.
 Nothing here commits; the caller owns the transaction.
@@ -32,11 +34,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.db.models import Exemplar, Movie
+from marquee.db.models import Exemplar, Movie, PreferenceEvent
 from marquee.db.models.taste import (
     POLARITY_NEGATIVE,
     POLARITY_POSITIVE,
@@ -193,9 +195,17 @@ async def active_negatives(session: AsyncSession, movie_id: int) -> list[Exempla
     return list(rows)
 
 
-def _end(row: Exemplar, state: str, now: datetime) -> None:
+def _end(row: Exemplar, state: str, now: datetime, event_id: int | None) -> None:
     row.state = state
     row.ended_at = now
+    row.ended_by_event_id = event_id
+
+
+def _bring_back(row: Exemplar, changes: Changes) -> None:
+    row.state = STATE_ACTIVE
+    row.ended_at = None
+    row.ended_by_event_id = None
+    changes.reactivated.append(row)
 
 
 async def set_positive(
@@ -215,7 +225,7 @@ async def set_positive(
     any, is superseded and named as the one it replaced."""
     old = await active_positive(session, movie_id)
     if old is not None:
-        _end(old, STATE_SUPERSEDED, now)
+        _end(old, STATE_SUPERSEDED, now, event_id)
         changes.ended.append(old)
         await session.flush()
     row = Exemplar(
@@ -270,19 +280,25 @@ async def add_negative(
     await session.flush()
     changes.created.append(row)
     for oldest in negatives[: max(0, len(negatives) + 1 - MAX_ACTIVE_NEGATIVES)]:
-        _end(oldest, STATE_SUPERSEDED, now)
+        _end(oldest, STATE_SUPERSEDED, now, event_id)
         changes.ended.append(oldest)
     return row
 
 
 async def end_positive_with_image(
-    session: AsyncSession, changes: Changes, *, movie_id: int, sha256: str, now: datetime
+    session: AsyncSession,
+    changes: Changes,
+    *,
+    movie_id: int,
+    sha256: str,
+    event_id: int,
+    now: datetime,
 ) -> Exemplar | None:
     """A hated candidate whose bytes are the movie's active positive ends that positive."""
     row = await active_positive(session, movie_id)
     if row is None or row.sha256 != sha256:
         return None
-    _end(row, STATE_SUPERSEDED, now)
+    _end(row, STATE_SUPERSEDED, now, event_id)
     changes.ended.append(row)
     await session.flush()
     return row
@@ -290,45 +306,77 @@ async def end_positive_with_image(
 
 async def revoke_event(
     session: AsyncSession, changes: Changes, *, event_id: int, now: datetime
-) -> None:
-    """Revoke the exemplars an event created; bring back what its active positive replaced.
+) -> list[Exemplar]:
+    """Revoke the exemplars an event created, then bring back what revoked events ended.
 
-    The replaced exemplar comes back only if it is still superseded (not revoked by an event
-    of its own) and the movie has no other active positive.
+    Returns the exemplars this revoke ended (the ones that were still active), for the
+    caller to name the revoke as what ended them once it is recorded. ``event_id`` counts as
+    revoked here even before its revoke is recorded.
     """
+    event = await session.get(PreferenceEvent, event_id)
+    if event is None:
+        return []
     rows = list(
         await session.scalars(
             select(Exemplar).where(Exemplar.event_id == event_id).order_by(Exemplar.id)
         )
     )
-    replaced_id = next(
-        (
-            row.replaced_exemplar_id
-            for row in rows
-            if row.polarity == POLARITY_POSITIVE and row.state == STATE_ACTIVE
-        ),
-        None,
-    )
-    movie_id = rows[0].movie_id if rows else None
+    newly_ended: list[Exemplar] = []
     for row in rows:
         if row.state == STATE_REVOKED:
             continue
+        if row.state == STATE_ACTIVE:
+            newly_ended.append(row)
         row.state = STATE_REVOKED
         row.ended_at = row.ended_at or now
         changes.ended.append(row)
     await session.flush()
-    if replaced_id is None or movie_id is None:
+    await _bring_back_eligible(session, changes, movie_id=event.movie_id, revoked_id=event_id)
+    return newly_ended
+
+
+async def _bring_back_eligible(
+    session: AsyncSession, changes: Changes, *, movie_id: int, revoked_id: int
+) -> None:
+    """A superseded exemplar of the movie whose ending event is revoked is eligible again:
+    the newest eligible positive becomes active if the movie has none, and eligible
+    negatives become active, newest first, up to :data:`MAX_ACTIVE_NEGATIVES`."""
+    revoked = select(PreferenceEvent.revokes_event_id).where(
+        PreferenceEvent.revokes_event_id.is_not(None)
+    )
+    eligible = list(
+        await session.scalars(
+            select(Exemplar)
+            .where(
+                Exemplar.movie_id == movie_id,
+                Exemplar.state == STATE_SUPERSEDED,
+                or_(
+                    Exemplar.ended_by_event_id == revoked_id,
+                    Exemplar.ended_by_event_id.in_(revoked),
+                ),
+            )
+            .order_by(Exemplar.created_at.desc(), Exemplar.id.desc())
+            .with_for_update()
+        )
+    )
+    if not eligible:
         return
-    replaced = await session.get(Exemplar, replaced_id, with_for_update=True)
-    if (
-        replaced is not None
-        and replaced.state == STATE_SUPERSEDED
-        and await active_positive(session, movie_id) is None
-    ):
-        replaced.state = STATE_ACTIVE
-        replaced.ended_at = None
-        changes.reactivated.append(replaced)
-        await session.flush()
+    if await active_positive(session, movie_id) is None:
+        positive = next((row for row in eligible if row.polarity == POLARITY_POSITIVE), None)
+        if positive is not None:
+            _bring_back(positive, changes)
+    negatives = await active_negatives(session, movie_id)
+    held = {row.sha256 for row in negatives}
+    room = MAX_ACTIVE_NEGATIVES - len(negatives)
+    for row in eligible:
+        if room <= 0:
+            break
+        if row.polarity != POLARITY_NEGATIVE or row.sha256 in held:
+            continue
+        _bring_back(row, changes)
+        held.add(row.sha256)
+        room -= 1
+    await session.flush()
 
 
 # ── The active set ────────────────────────────────────────────────────────

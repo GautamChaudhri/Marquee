@@ -453,6 +453,109 @@ async def test_revoke_undoes_the_exemplars_and_brings_back_the_replaced_one(
     ]
 
 
+async def test_revokes_out_of_order_leave_the_seed_exemplar_active(
+    db_session: AsyncSession,
+) -> None:
+    """Pick A, pick B, revoke A, revoke B: the seed poster is the movie's positive again."""
+    movie_id = await _movie(db_session)
+    seed = await _seed_positive(db_session, movie_id)
+    ids = await _run(db_session, movie_id)
+    a = await feedback.record(
+        db_session,
+        run_id=ids["run"],
+        action="override",
+        candidate_id=ids["r2.jpg"],
+        idempotency_key="a",
+    )
+    assert seed.state == "superseded" and seed.ended_by_event_id == a.event.id
+    b = await feedback.record(
+        db_session,
+        run_id=ids["run"],
+        action="override",
+        candidate_id=ids["r3.jpg"],
+        idempotency_key="b",
+    )
+    (picked_a,) = a.changes.created
+    (picked_b,) = b.changes.created
+    assert picked_a.ended_by_event_id == b.event.id
+
+    first = await feedback.revoke(db_session, event_id=a.event.id)
+    assert picked_b.state == "active" and first.changes.reactivated == []
+    # It was already ended, by B; the revoke changes its state, not what ended it.
+    assert picked_a.state == "revoked" and picked_a.ended_by_event_id == b.event.id
+
+    second = await feedback.revoke(db_session, event_id=b.event.id)
+
+    assert seed.state == "active" and seed.ended_at is None and seed.ended_by_event_id is None
+    assert picked_b.state == "revoked" and picked_b.ended_by_event_id == second.event.id
+    assert second.changes.reactivated == [seed]
+    assert second.event.context == {"reactivated": [seed.id]}
+    assert await exemplars.active_positive(db_session, movie_id) is seed
+    assert second.revision_after == await exemplars.revision(db_session)
+    again = await feedback.revoke(db_session, event_id=b.event.id)
+    assert again.replayed and [r.id for r in again.changes.reactivated] == [seed.id]
+    assert [r.id for r in again.changes.ended] == [r.id for r in second.changes.ended]
+
+
+async def test_revoking_a_reject_that_hated_the_positive_brings_it_back(
+    db_session: AsyncSession,
+) -> None:
+    movie_id = await _movie(db_session)
+    ids = await _run(db_session, movie_id)
+    sha = hashlib.sha256(f"{ids['run']}:r4.jpg".encode()).hexdigest()
+    seed = await _seed_positive(db_session, movie_id, sha)
+    rejected = await feedback.record(
+        db_session, run_id=ids["run"], action="reject", hated=[ids["r4.jpg"]], idempotency_key="k"
+    )
+    assert seed.state == "superseded" and seed.ended_by_event_id == rejected.event.id
+
+    undone = await feedback.revoke(db_session, event_id=rejected.event.id)
+
+    assert seed.state == "active" and undone.changes.reactivated == [seed]
+    assert {row.state for row in rejected.changes.created} == {"revoked"}
+
+
+async def test_the_limit_of_eight_negatives_holds_after_a_revoke(
+    db_session: AsyncSession,
+) -> None:
+    """R1 hates eight; R2, on a newer run, hates eight more and ends R1's; R3 hates two more
+    and ends two of R2's. Revoking R2 brings back R1's newest six: eight are active."""
+    movie_id = await _movie(db_session)
+    run1 = await _run(db_session, movie_id, folder_name="00000001-a")
+    r1 = await feedback.record(
+        db_session,
+        run_id=run1["run"],
+        action="reject",
+        hated=[run1[f"r{n}.jpg"] for n in range(1, 9)],
+        idempotency_key="r1",
+    )
+    run2 = await _run(db_session, movie_id, folder_name="00000002-b")
+    r2 = await feedback.record(
+        db_session,
+        run_id=run2["run"],
+        action="reject",
+        hated=[run2[f"r{n}.jpg"] for n in range(1, 9)],
+        idempotency_key="r2",
+    )
+    assert {row.ended_by_event_id for row in r1.changes.created} == {r2.event.id}
+    r3 = await feedback.record(
+        db_session,
+        run_id=run2["run"],
+        action="reject",
+        hated=[run2["r9.jpg"], run2["r10.jpg"]],
+        idempotency_key="r3",
+    )
+    assert len(await exemplars.active_negatives(db_session, movie_id)) == 8
+
+    undone = await feedback.revoke(db_session, event_id=r2.event.id)
+
+    active = await exemplars.active_negatives(db_session, movie_id)
+    assert len(active) == exemplars.MAX_ACTIVE_NEGATIVES
+    newest_six = sorted(r1.changes.created, key=lambda row: row.id)[-6:]
+    assert sorted(r.id for r in undone.changes.reactivated) == [r.id for r in newest_six]
+    assert {r.id for r in active} == {r.id for r in newest_six} | {r.id for r in r3.changes.created}
+
+
 # ── The residual's shape ──────────────────────────────────────────────────
 
 

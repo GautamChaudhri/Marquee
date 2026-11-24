@@ -87,7 +87,7 @@ def test_the_migration_applies_to_an_empty_database(empty_database_url: str) -> 
 
     after = migrate.upgrade(url=empty_database_url)
     assert after.at_head
-    assert after.current == migrate.head_revision() == "0004"
+    assert after.current == migrate.head_revision() == "0005"
     assert _tables(empty_database_url) == {
         "alembic_version",
         "movies",
@@ -124,6 +124,49 @@ def test_the_taste_migration_downgrades_to_the_runs_schema(empty_database_url: s
     }
     assert migrate.upgrade(url=empty_database_url).at_head
     assert _tables(empty_database_url) >= TASTE_TABLES
+
+
+def _columns(url: str, table: str) -> set[str]:
+    engine = _sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            return {column["name"] for column in inspect(conn).get_columns(table)}
+    finally:
+        engine.dispose()
+
+
+def test_the_exemplar_endings_migration_keeps_ended_rows_and_downgrades(
+    empty_database_url: str,
+) -> None:
+    migrate.upgrade("0004", url=empty_database_url)
+    engine = _sync_engine(empty_database_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "insert into movies (radarr_id, title, sort_title, radarr_path, has_file, "
+                    "last_seen_at) values (1, 'M', 'm', '/r/M', true, now())"
+                )
+            )
+            conn.execute(
+                text(
+                    "insert into exemplars (movie_id, polarity, weight, source, state, sha256, "
+                    "file_name, staged_name, ended_at) select id, 'positive', 1, 'seed', "
+                    "'superseded', :sha, :name, 'M.png', now() from movies"
+                ),
+                {"sha": SHA, "name": f"{SHA}.png"},
+            )
+        assert migrate.upgrade(url=empty_database_url).current == "0005"
+        with engine.connect() as conn:
+            row = conn.execute(text("select ended_by_event_id, updated_at from exemplars")).one()
+        assert row.ended_by_event_id is None and row.updated_at is not None
+    finally:
+        engine.dispose()
+
+    assert migrate.downgrade("0004", url=empty_database_url).current == "0004"
+    assert {"ended_by_event_id", "updated_at"}.isdisjoint(_columns(empty_database_url, "exemplars"))
+    assert "updated_at" not in _columns(empty_database_url, "taste_profiles")
+    assert migrate.upgrade(url=empty_database_url).at_head
 
 
 def test_the_runs_migration_downgrades_to_the_jobs_schema(empty_database_url: str) -> None:
@@ -164,7 +207,7 @@ def test_the_runs_migration_refuses_to_forget_a_marquee_poster(empty_database_ur
     with pytest.raises(IntegrityError):
         migrate.downgrade("0002", url=empty_database_url)
     # The whole downgrade is one transaction: nothing was undone.
-    assert migrate.status(url=empty_database_url).current == "0004"
+    assert migrate.status(url=empty_database_url).current == "0005"
     assert _tables(empty_database_url) >= TASTE_TABLES
 
 
@@ -281,6 +324,7 @@ def test_check_constraints_are_in_the_database(database_url: str) -> None:
         "ck_exemplars_feedback_file",
         "ck_exemplars_staged",
         "ck_exemplars_ended",
+        "ck_exemplars_ended_by",
         "ck_exemplars_sha256",
         "ck_exemplars_file_name",
         "ck_exemplars_staged_name",
@@ -390,7 +434,7 @@ def test_every_timestamp_column_is_timestamptz(database_url: str) -> None:
 
 
 def test_the_next_revision_is_numbered_after_the_newest() -> None:
-    assert migrate._next_revision_id() == "0005"
+    assert migrate._next_revision_id() == "0006"
 
 
 # ── Constraints ───────────────────────────────────────────────────────────

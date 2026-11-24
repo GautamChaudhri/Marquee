@@ -305,7 +305,7 @@ def test_database_passes_at_the_newest_schema(
     _point_settings_at(monkeypatch, database_url)
     result = doctor.check_database()
     assert result.status == "PASS"
-    assert "schema at 0004 (newest)" in result.detail
+    assert "schema at 0005 (newest)" in result.detail
 
 
 @pytest.mark.db
@@ -315,7 +315,7 @@ def test_database_warns_when_not_migrated(
     _point_settings_at(monkeypatch, empty_database_url)
     result = doctor.check_database()
     assert result.status == "WARN"
-    assert "schema at no revision, newest is 0004" in result.detail
+    assert "schema at no revision, newest is 0005" in result.detail
     assert "marquee db upgrade" in result.detail
 
 

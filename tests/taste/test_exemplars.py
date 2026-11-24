@@ -212,17 +212,18 @@ async def test_hating_the_active_positive_ends_it(db_session: AsyncSession) -> N
     seed = _seed(movie_id, SHA[1])
     db_session.add(seed)
     await db_session.flush()
+    event_id = await _event(db_session, movie_id, "a")
     changes = exemplars.Changes()
     assert (
         await exemplars.end_positive_with_image(
-            db_session, changes, movie_id=movie_id, sha256=SHA[2], now=NOW
+            db_session, changes, movie_id=movie_id, sha256=SHA[2], event_id=event_id, now=NOW
         )
         is None
     )
     ended = await exemplars.end_positive_with_image(
-        db_session, changes, movie_id=movie_id, sha256=SHA[1], now=NOW
+        db_session, changes, movie_id=movie_id, sha256=SHA[1], event_id=event_id, now=NOW
     )
-    assert ended is seed and seed.state == "superseded"
+    assert ended is seed and seed.state == "superseded" and seed.ended_by_event_id == event_id
     assert await exemplars.active_positive(db_session, movie_id) is None
 
 
