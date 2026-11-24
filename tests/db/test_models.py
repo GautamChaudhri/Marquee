@@ -5,14 +5,20 @@ from __future__ import annotations
 from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, UniqueConstraint
 
 from marquee.db.base import Base
-from marquee.db.models import Artwork, Movie
+from marquee.db.models import Artwork, Job, JobEvent, Movie
 
 # taste/map.py and taste/profile_enrich.py query these by name.
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 
 
-def test_only_the_movie_tables_exist() -> None:
-    assert set(Base.metadata.tables) == {"movies", "artwork"}
+def test_only_the_library_and_job_tables_exist() -> None:
+    assert set(Base.metadata.tables) == {
+        "movies",
+        "artwork",
+        "jobs",
+        "job_events",
+        "job_schedules",
+    }
 
 
 def test_taste_code_column_names_exist() -> None:
@@ -62,6 +68,24 @@ def test_tmdb_id_is_indexed_but_not_unique() -> None:
     column = Movie.__table__.c.tmdb_id
     assert column.index and not column.unique
     assert Movie.__table__.c.radarr_id.unique
+
+
+def test_job_constraints_and_cascades() -> None:
+    jobs = Job.__table__
+    assert jobs.primary_key.name == "pk_jobs"
+    assert {c.name for c in jobs.constraints if isinstance(c, CheckConstraint)} == {
+        "ck_jobs_job_class",
+        "ck_jobs_state",
+    }
+    assert {i.name for i in jobs.indexes} == {
+        "ix_jobs_dedupe_key_active",
+        "ix_jobs_claim",
+        "ix_jobs_parent_id",
+    }
+    (parent,) = jobs.c.parent_id.foreign_keys
+    assert parent.ondelete == "CASCADE"
+    (owner,) = JobEvent.__table__.c.job_id.foreign_keys
+    assert owner.ondelete == "CASCADE"
 
 
 def test_artwork_cascades_with_its_movie() -> None:
