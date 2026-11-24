@@ -101,6 +101,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sync.add_argument("--json", action="store_true", help="print the report as JSON")
 
+    api = commands.add_parser(
+        "api",
+        help="serve the HTTP API",
+        description="Serve the HTTP API under uvicorn until interrupted. Every /api route "
+        "needs API_KEY; /health/live and /health/ready do not.",
+    )
+    api.add_argument("--host", help="address to listen on (default: API_HOST)")
+    api.add_argument("--port", type=int, help="port to listen on (default: API_PORT)")
+
     db = commands.add_parser("db", help="create and inspect the database schema")
     db_commands = db.add_subparsers(dest="db_command", required=True, metavar="command")
     db_commands.add_parser(
@@ -209,6 +218,20 @@ def _sync(args: argparse.Namespace) -> int:
     else:
         _print_sync_report(report)
     return 0 if report.ok else 1
+
+
+def _api(args: argparse.Namespace) -> int:
+    from marquee.api.app import serve
+    from marquee.config import settings
+    from marquee.logging import setup_logging
+
+    setup_logging(level=settings.LOG_LEVEL)
+    if settings.API_KEY is None:
+        print(
+            "marquee api: API_KEY is not set; every /api request will answer 503", file=sys.stderr
+        )
+    serve(args.host or settings.API_HOST, args.port or settings.API_PORT)
+    return 0
 
 
 def _db(args: argparse.Namespace) -> int:
@@ -452,6 +475,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _db(args)
     if args.command == "sync":
         return _sync(args)
+    if args.command == "api":
+        return _api(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 

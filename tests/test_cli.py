@@ -244,3 +244,30 @@ def test_sync_exits_1_when_the_path_check_fails(
     _sync_returns(monkeypatch, SyncPathError("Radarr's root folder /data/movies/4K is missing"))
     assert cli.main(["sync"]) == 1
     assert "marquee sync: Radarr's root folder /data/movies/4K" in capsys.readouterr().err
+
+
+# ── marquee api ───────────────────────────────────────────────────────────
+
+
+def test_api_defaults_to_the_configured_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marquee.api import app
+
+    served: list[tuple[str, int]] = []
+    monkeypatch.setattr(app, "serve", lambda host, port: served.append((host, port)))
+    monkeypatch.setattr(settings, "API_KEY", SecretStr("k"))
+    monkeypatch.setattr(settings, "API_HOST", "127.0.0.1")
+    monkeypatch.setattr(settings, "API_PORT", 8000)
+    assert cli.main(["api"]) == 0
+    assert cli.main(["api", "--host", "0.0.0.0", "--port", "9000"]) == 0
+    assert served == [("127.0.0.1", 8000), ("0.0.0.0", 9000)]
+
+
+def test_api_warns_when_no_key_is_configured(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.api import app
+
+    monkeypatch.setattr(app, "serve", lambda host, port: None)
+    monkeypatch.setattr(settings, "API_KEY", None)
+    assert cli.main(["api"]) == 0
+    assert "API_KEY is not set" in capsys.readouterr().err
