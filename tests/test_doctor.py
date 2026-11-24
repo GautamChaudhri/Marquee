@@ -229,3 +229,50 @@ def test_taste_profile_check(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     other_clip = doctor.check_taste_profile()
     assert other_clip.status == "FAIL"
     assert "model mismatch" in other_clip.detail
+
+
+def test_settings_warn_when_the_api_key_is_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor, "ENV_FILE", None)
+    _configure_every_optional_setting(monkeypatch)
+    monkeypatch.setattr(doctor.settings, "API_KEY", None)
+    result = doctor.check_settings()
+    assert result.status == "WARN"
+    assert "unset: API_KEY" in result.detail
+
+
+def test_error_text_scrubs_the_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.settings, "API_KEY", SecretStr("the-api-key-value"))
+    text = doctor._error_text(RuntimeError("header carried the-api-key-value"))
+    assert "the-api-key-value" not in text
+
+
+def _point_settings_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    monkeypatch.setattr(doctor.settings, "POSTGRES_USER", parsed.username)
+    monkeypatch.setattr(doctor.settings, "POSTGRES_PASSWORD", SecretStr(parsed.password or ""))
+    monkeypatch.setattr(doctor.settings, "POSTGRES_HOST", parsed.host)
+    monkeypatch.setattr(doctor.settings, "POSTGRES_PORT", parsed.port)
+    monkeypatch.setattr(doctor.settings, "POSTGRES_DB", parsed.database)
+
+
+@pytest.mark.db
+def test_database_passes_at_the_newest_schema(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    _point_settings_at(monkeypatch, database_url)
+    result = doctor.check_database()
+    assert result.status == "PASS"
+    assert "schema at 0001 (newest)" in result.detail
+
+
+@pytest.mark.db
+def test_database_warns_when_not_migrated(
+    monkeypatch: pytest.MonkeyPatch, empty_database_url: str
+) -> None:
+    _point_settings_at(monkeypatch, empty_database_url)
+    result = doctor.check_database()
+    assert result.status == "WARN"
+    assert "schema at no revision, newest is 0001" in result.detail
+    assert "marquee db upgrade" in result.detail

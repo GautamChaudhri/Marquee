@@ -40,22 +40,9 @@ class CheckResult:
     detail: str
 
 
-def _secret_values() -> list[str]:
-    """Every secret value currently configured, so error text can be scrubbed."""
-    values = []
-    for field in (
-        "POSTGRES_PASSWORD",
-        "TMDB_READ_ACCESS_TOKEN",
-        "RADARR_API_KEY",
-    ):
-        secret = getattr(settings, field)
-        if secret is not None and secret.get_secret_value():
-            values.append(secret.get_secret_value())
-    return values
-
-
 def _scrub(text: str) -> str:
-    for value in _secret_values():
+    """``text`` with every configured secret (passwords, tokens, keys) blanked out."""
+    for value in settings.secret_values():
         text = text.replace(value, "***")
     return text
 
@@ -81,6 +68,7 @@ _OPTIONAL_SETTINGS = (
     "TMDB_READ_ACCESS_TOKEN",
     "RADARR_URL",
     "RADARR_API_KEY",
+    "API_KEY",
 )
 
 
@@ -295,16 +283,34 @@ def check_database() -> CheckResult:
     try:
         import psycopg
 
+        from marquee.db import migrate
+
+        head = migrate.head_revision()
         with psycopg.connect(
             settings.database_url_sync, connect_timeout=int(NETWORK_TIMEOUT_S)
         ) as conn:
             (one,) = conn.execute("select 1").fetchone()
             server = conn.info.parameter_status("server_version")
+            (versioned,) = conn.execute("select to_regclass('alembic_version')").fetchone()
+            revision = (
+                conn.execute("select version_num from alembic_version").fetchone()
+                if versioned
+                else None
+            )
     except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
         return CheckResult("Database", "FAIL", f"{target}: {_error_text(exc)}")
     if one != 1:
         return CheckResult("Database", "FAIL", f"{target}: select 1 returned {one!r}")
-    return CheckResult("Database", "PASS", f"{target}; select 1 ok; PostgreSQL {server}")
+    current = revision[0] if revision else None
+    reached = f"{target}; select 1 ok; PostgreSQL {server}"
+    if current != head:
+        return CheckResult(
+            "Database",
+            "WARN",
+            f"{reached}; schema at {current or 'no revision'}, newest is {head}; "
+            "run `marquee db upgrade`",
+        )
+    return CheckResult("Database", "PASS", f"{reached}; schema at {current} (newest)")
 
 
 def _run_with_timeout[T](func: Callable[[], T], timeout: float) -> T:
