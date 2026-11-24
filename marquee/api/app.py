@@ -21,7 +21,7 @@ from fastapi.responses import Response
 
 from marquee import __version__
 from marquee.api.auth import require_api_key
-from marquee.api.routes import health, library
+from marquee.api.routes import health, jobs, library
 from marquee.config import settings
 from marquee.db import migrate
 from marquee.db.engine import create_engine, create_session_factory
@@ -75,6 +75,7 @@ def create_app(*, database_url: str | None = None) -> FastAPI:
     app.include_router(health.router)
     api = APIRouter(prefix="/api", dependencies=[Depends(require_api_key)])
     api.include_router(library.router)
+    api.include_router(jobs.router)
     app.include_router(api)
     return app
 

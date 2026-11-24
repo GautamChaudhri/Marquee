@@ -111,6 +111,9 @@ poster reset routes stay). `api/library_serializers.py`, `core/movie_queries.py`
 `core/sort_title.py` stay whole: the salvaged pipeline and onboarding routes still use them,
 and Radarr supplies the sort title.
 
+M4 deleted `api/routes/sync.py` from `_salvage/`: `POST /api/sync` queues the sync as a job now.
+The old job platform was not lifted; M4's queue (`marquee/jobs/`) was written new.
+
 Partly lifted test files in `_salvage/tests/`: `test_sync.py` keeps its TV tests, the three
 movie poster-path tests that wait for poster naming, and the no-clients test;
 `test_library_enrichment.py` keeps the poster-status, review, resolution, and poster reset
