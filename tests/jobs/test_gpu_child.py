@@ -184,6 +184,23 @@ async def test_the_child_can_run_asyncio(child: GpuChild) -> None:
     assert await _run(child, "uses_asyncio") == {"value": 7}
 
 
+async def test_jobs_share_the_childs_event_loop(child: GpuChild) -> None:
+    # A semaphore made at import binds to the first loop that waits on it; with a new loop
+    # per job, the second job's downloads would fail past the first two.
+    first = await _run(child, "semaphore_downloads")
+    second = await _run(child, "semaphore_downloads")
+
+    assert first == second == {"downloaded": 8}
+
+
+async def test_tasks_a_job_leaves_behind_are_cancelled(child: GpuChild) -> None:
+    first = await _run(child, "leaves_a_task")
+    second = await _run(child, "leaves_a_task")
+
+    assert first == {"tasks": 2, "cancelled_before": 0}
+    assert second == {"tasks": 2, "cancelled_before": 1}
+
+
 def test_a_dead_worker_takes_its_child_and_grandchildren_with_it(fakes_on_path: None) -> None:
     import gpu_fakes  # type: ignore[import-not-found]
 

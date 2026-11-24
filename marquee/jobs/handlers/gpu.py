@@ -6,11 +6,11 @@ JSON-able result. None of them uses the database.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 from typing import Any
 
+from marquee.jobs.gpu_child import run_async
 from marquee.jobs.registry import PermanentJobError, ProgressFn
 
 SELFTEST_BATCH = 8
@@ -88,7 +88,7 @@ def engine_probe(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> 
 
     started = time.perf_counter()
     try:
-        run = asyncio.run(
+        run = run_async(
             run_title(
                 title, year=year, tmdb_id=tmdb_id, progress=on_event, should_cancel=cancel.is_set
             )

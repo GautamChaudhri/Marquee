@@ -18,6 +18,11 @@ The child leads a process group of its own, which its OCR workers join. So:
 Messages, parent to child: ``("run", function, payload)`` or ``("stop",)``. Child to
 parent: any number of ``("progress", current, total, message)``, then one of
 ``("result", value)``, ``("cancelled", message)``, or ``("error", message, permanent)``.
+
+A function that needs asyncio runs its coroutine with :func:`run_async`, on the one event
+loop the child keeps for its whole life, never with ``asyncio.run``: the engine creates
+asyncio semaphores when it is imported, a semaphore binds to the first loop that waits on
+it, and a second loop in the same process then fails every download past the first few.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ import os
 import signal
 import threading
 import time
+from collections.abc import Coroutine
 from multiprocessing.connection import Connection
 from typing import Any
 
@@ -262,6 +268,29 @@ def _child_logging() -> None:
     setup_logging(level="WARNING")
     logging.getLogger("marquee").setLevel(logging.INFO)
     logging.captureWarnings(True)
+
+
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def run_async[T](coroutine: Coroutine[Any, Any, T]) -> T:
+    """Run ``coroutine`` to the end on this child's one event loop.
+
+    Like ``asyncio.run``, it then cancels whatever tasks the coroutine left behind, so
+    nothing from one job runs into the next; unlike it, the loop is kept.
+    """
+    global _loop
+    if _loop is None:
+        _loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_loop)
+    try:
+        return _loop.run_until_complete(coroutine)
+    finally:
+        leftovers = asyncio.all_tasks(_loop)
+        for task in leftovers:
+            task.cancel()
+        if leftovers:
+            _loop.run_until_complete(asyncio.gather(*leftovers, return_exceptions=True))
 
 
 def _resolve(function: str) -> Any:

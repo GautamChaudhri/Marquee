@@ -79,6 +79,48 @@ def uses_asyncio(payload: dict, cancel: Any, progress: Any) -> dict:
     return {"value": asyncio.run(work())}
 
 
+# Created at import, as the engine creates its download semaphores.
+_IMPORT_TIME_SEMAPHORE = asyncio.Semaphore(2)
+
+
+def semaphore_downloads(payload: dict, cancel: Any, progress: Any) -> dict:
+    """Waits on an import-time semaphore, as the engine's downloads do."""
+    from marquee.jobs.gpu_child import run_async
+
+    async def download(n: int) -> int:
+        async with _IMPORT_TIME_SEMAPHORE:
+            await asyncio.sleep(0.01)
+            return n
+
+    async def all_downloads() -> list[int]:
+        return await asyncio.gather(*(download(n) for n in range(8)))
+
+    return {"downloaded": len(run_async(all_downloads()))}
+
+
+def leaves_a_task(payload: dict, cancel: Any, progress: Any) -> dict:
+    """Leaves a task running when its coroutine ends; it must not survive into the next job."""
+    from marquee.jobs.gpu_child import run_async
+
+    async def lingering() -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            _left_behind["cancelled"] += 1
+            raise
+
+    async def main() -> int:
+        asyncio.get_running_loop().create_task(lingering())
+        await asyncio.sleep(0)
+        return len(asyncio.all_tasks())
+
+    cancelled_before = _left_behind["cancelled"]
+    return {"tasks": run_async(main()), "cancelled_before": cancelled_before}
+
+
+_left_behind = {"cancelled": 0}
+
+
 def _sleep_forever() -> None:
     time.sleep(120)
 
