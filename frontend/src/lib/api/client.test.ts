@@ -66,4 +66,15 @@ describe('a 401', () => {
 	it('goes to plain sign-in from the library', () => {
 		expect(signInUrl({ pathname: '/', search: '' })).toBe('/signin');
 	});
+
+	it('only ever names a path of this site', () => {
+		// A browser's location.pathname is already parsed: no tab, line break, or backslash
+		// survives in it. Whatever it holds, the answer is this site's sign-in page.
+		for (const pathname of ['//elsewhere.test/x', '/%09/elsewhere.test', '/.//x', '/a\\b']) {
+			const url = signInUrl({ pathname, search: '?q=%0a' });
+			expect(url.startsWith('/signin?next='), pathname).toBe(true);
+			expect(new URL(url, 'http://localhost:3000').origin).toBe('http://localhost:3000');
+			expect(new URL(url, 'http://localhost:3000').pathname).toBe('/signin');
+		}
+	});
 });

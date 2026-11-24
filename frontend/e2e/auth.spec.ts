@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { APP_URL } from '../playwright.config';
+import { APP_URL, E2E_API_KEY } from '../playwright.config';
 import { lastBackendRequest, resetBackend, signIn } from './helpers';
 
 test.beforeEach(async () => {
@@ -18,6 +18,37 @@ test('a page without a session goes to sign-in, and comes back after it', async 
 
 	await signIn(page, '/movies/1');
 	await expect(page.getByRole('heading', { name: /Heat/ })).toBeVisible();
+});
+
+test('sign-in never sends the browser to another site', async ({ page, request }) => {
+	// A tab, a line feed, or a backslash in `next` used to come back in `Location`, where a
+	// browser reads `/<tab>/elsewhere.test` as `//elsewhere.test`, or the server failed.
+	await page.goto(`/signin?next=${encodeURIComponent('/\t/elsewhere.test')}`);
+	await page.getByLabel('API key').fill(E2E_API_KEY);
+	await page.getByRole('button', { name: 'Sign in' }).click();
+	await page.waitForURL(`${APP_URL}/`);
+
+	// The form's answer itself, for each kind of `next`.
+	const signInTo = (next: string) =>
+		request.post(`/signin?next=${encodeURIComponent(next)}`, {
+			form: { key: E2E_API_KEY },
+			headers: { origin: APP_URL, accept: 'text/html' },
+			maxRedirects: 0
+		});
+	for (const next of [
+		'/\t/elsewhere.test',
+		'/\n/x',
+		'/\r\nSet-Cookie: x=1',
+		'/\\elsewhere.test',
+		'//elsewhere.test',
+		'/.//elsewhere.test',
+		'https://elsewhere.test/'
+	]) {
+		const response = await signInTo(next);
+		expect(response.status(), JSON.stringify(next)).toBe(303);
+		expect(response.headers()['location'], JSON.stringify(next)).toBe('/');
+	}
+	expect((await signInTo('/movies/1?x=1')).headers()['location']).toBe('/movies/1?x=1');
 });
 
 test('/api without a session is 401 and reaches nothing', async ({ request }) => {

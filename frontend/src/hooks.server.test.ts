@@ -1,6 +1,6 @@
 import { isRedirect } from '@sveltejs/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SESSION_COOKIE, createSession } from '$lib/server/session';
+import { SESSION_COOKIE, createSession, safeNext } from '$lib/server/session';
 
 const settings = vi.hoisted(() => ({ key: 'the-api-key' as string | null }));
 vi.mock('$lib/server/env', () => ({
@@ -50,6 +50,24 @@ describe('the hooks', () => {
 		expect(redirect?.status).toBe(303);
 		expect(redirect?.location).toBe('/signin?next=%2Fmovies%2F3%3Ftab%3Druns');
 		expect((await run('/')).redirect?.location).toBe('/signin');
+	});
+
+	it("sends any odd path to this site's sign-in, and sign-in back to this site", async () => {
+		const base = 'http://localhost:3000';
+		for (const path of [
+			'//elsewhere.test/x',
+			'/%09/elsewhere.test',
+			'/\\elsewhere.test',
+			'/.//x?a=%0a'
+		]) {
+			const { redirect } = await run(path);
+			expect(redirect?.status, path).toBe(303);
+			const location = new URL(redirect!.location, base);
+			expect(location.origin, path).toBe(base);
+			expect(location.pathname, path).toBe('/signin');
+			const after = new URL(safeNext(location.searchParams.get('next')), base);
+			expect(after.origin, path).toBe(base);
+		}
 	});
 
 	it('answers /api without a session with 401, and with a bad or expired one too', async () => {

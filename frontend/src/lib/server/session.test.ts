@@ -46,12 +46,59 @@ describe('the key typed at sign-in', () => {
 });
 
 describe('where sign-in goes next', () => {
-	it('stays on this site', () => {
+	it('keeps a path of this site, with its query and fragment', () => {
 		expect(safeNext('/movies/3?x=1')).toBe('/movies/3?x=1');
 		expect(safeNext('/activity')).toBe('/activity');
-		for (const away of [null, '', 'https://elsewhere.test/', '//elsewhere.test', '/\\x', 'x']) {
-			expect(safeNext(away)).toBe('/');
+		expect(safeNext('/review/12?from=queue#panel')).toBe('/review/12?from=queue#panel');
+		expect(safeNext('/movies/../activity')).toBe('/activity');
+	});
+
+	it('never leaves this site', () => {
+		for (const away of [
+			null,
+			'',
+			'x',
+			'https://elsewhere.test/',
+			'http://localhost:3000/movies/3',
+			'//elsewhere.test',
+			'///elsewhere.test',
+			'/\\elsewhere.test',
+			'/\\/elsewhere.test',
+			'\\\\elsewhere.test',
+			'/\t/elsewhere.test',
+			'/\t\t/elsewhere.test',
+			'/\n/elsewhere.test',
+			'/\r/elsewhere.test',
+			'/movies/3\r\nSet-Cookie: x=1',
+			'/\u0000/elsewhere.test',
+			'/\u007f/elsewhere.test',
+			'/\u0085/elsewhere.test',
+			'javascript:alert(1)',
+			'/.//elsewhere.test',
+			'/..//elsewhere.test',
+			'/x/..//elsewhere.test'
+		]) {
+			const next = safeNext(away);
+			expect.soft(next, JSON.stringify(away)).toBe('/');
 		}
+	});
+
+	it('does not go back to sign-in', () => {
+		expect(safeNext('/signin')).toBe('/');
 		expect(safeNext('/signin?next=/')).toBe('/');
+		expect(safeNext('/signin/')).toBe('/');
+	});
+
+	it('gives only an answer a browser resolves to this site', () => {
+		const base = 'http://localhost:3000';
+		for (const given of ['/%09/elsewhere.test', '/%2F%2Felsewhere.test', '/a//b', '/movies/3#x']) {
+			const next = safeNext(given);
+			expect(next.startsWith('/') && !next.startsWith('//'), given).toBe(true);
+			expect(new URL(next, base).origin, given).toBe(base);
+			expect(
+				[...next].some((c) => c.charCodeAt(0) < 0x20 || c === '\\'),
+				given
+			).toBe(false);
+		}
 	});
 });

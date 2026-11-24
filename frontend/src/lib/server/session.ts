@@ -48,10 +48,33 @@ export function keyMatches(given: string, apiKey: string): boolean {
 	return timingSafeEqual(a, b);
 }
 
-/** Where to go after signing in: a path on this site, never another site. */
+const NEXT_BASE = 'http://marquee.invalid';
+/** Whether `text` holds a C0 or C1 control character or a backslash. A browser drops a tab
+ *  or a line break from an address and reads a backslash as a slash, so `/<tab>/elsewhere`
+ *  would become `//elsewhere`, another site; a line break in a header is a server error. */
+function hasUnsafeCharacter(text: string): boolean {
+	for (const char of text) {
+		const code = char.codePointAt(0)!;
+		if (code <= 0x1f || (code >= 0x7f && code <= 0x9f) || char === '\\') return true;
+	}
+	return false;
+}
+
+/** Where to go after signing in: a path on this site, never another site.
+ *
+ *  `next` is resolved against a fixed base and accepted only when the result keeps that
+ *  base's origin and its path cannot be read as another host (`//...`, which `/.//x`
+ *  becomes once its dot segment is removed). The answer is the resolved path, query, and
+ *  fragment, never `next` as given. */
 export function safeNext(next: string | null): string {
-	if (!next || !next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) {
+	if (!next || !next.startsWith('/') || hasUnsafeCharacter(next)) return '/';
+	let url: URL;
+	try {
+		url = new URL(next, NEXT_BASE);
+	} catch {
 		return '/';
 	}
-	return next.startsWith('/signin') ? '/' : next;
+	if (url.origin !== NEXT_BASE || url.pathname.startsWith('//')) return '/';
+	if (url.pathname.startsWith('/signin')) return '/';
+	return `${url.pathname}${url.search}${url.hash}`;
 }
