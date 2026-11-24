@@ -22,7 +22,11 @@ BATCH = "batch"
 """The kind and class of a batch's parent row, which the worker never runs."""
 
 
-class PermanentJobError(Exception):
+class JobError(Exception):
+    """A failure whose message already says what happened; it is stored as it is."""
+
+
+class PermanentJobError(JobError):
     """A failure no retry can fix: the job fails without using its remaining attempts."""
 
 

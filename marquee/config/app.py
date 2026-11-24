@@ -67,6 +67,9 @@ class Settings(BaseSettings):
 
     # How often the worker queues a library sync by itself; 0 turns the schedule off.
     SYNC_INTERVAL_MINUTES: int = Field(default=360, ge=0)
+    # The worker stops the GPU child process after this long without a GPU job, which frees
+    # the GPU memory its models hold.
+    GPU_IDLE_SECONDS: int = Field(default=300, ge=0)
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
