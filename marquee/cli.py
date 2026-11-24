@@ -222,7 +222,8 @@ def _print_sync_report(report: Any) -> None:
     print(f"with file {report.with_file}")
     print(
         f"posters   {report.posters_found} found, {report.posters_hashed} hashed, "
-        f"{report.posters_removed} removed, {report.posters_unreadable} unreadable"
+        f"{report.posters_removed} removed, {report.posters_unreadable} unreadable, "
+        f"{report.posters_replaced_by_hand} of Marquee's replaced by hand"
     )
     if report.tmdb_skipped:
         print("tmdb      skipped: TMDB_READ_ACCESS_TOKEN is not set")

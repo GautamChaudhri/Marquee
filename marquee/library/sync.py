@@ -17,7 +17,9 @@ One sync, in order:
    path. A ``poster.jpg`` is stat'ed, and read and hashed only when there is no row for it
    yet or its size or modification time changed (compared for equality: the share holds
    files dated in the future). When the file is gone from a folder the scan found, its row
-   is deleted. A row whose origin is not ``library`` is never changed.
+   is deleted. A poster Marquee wrote (origin ``marquee``) is treated the same way, with one
+   difference: when its bytes changed, the owner replaced it by hand, so its row becomes
+   origin ``library`` and the report counts it. The ``deployments`` audit is never touched.
 5. **TMDB details** (director, production companies, tagline) for movies with a file that
    were never enriched, at most five requests at a time. A failure is logged and does not
    fail the sync.
@@ -45,7 +47,15 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from marquee.cancellation import CancellationSignal, raise_if_cancelled
-from marquee.db.models import ARTWORK_POSTER, ORIGIN_LIBRARY, SUBJECT_MOVIE, Artwork, Movie
+from marquee.db.models import (
+    ARTWORK_POSTER,
+    ORIGIN_LIBRARY,
+    ORIGIN_MARQUEE,
+    SUBJECT_MOVIE,
+    Artwork,
+    Movie,
+)
+from marquee.db.models.artwork import ORIGINS
 from marquee.fs.boundary import FilesystemBoundary, FilesystemBoundaryError, boundary_for_roots
 from marquee.fs.paths import PathMapper, PathMappingError, UnsafePathError
 from marquee.library.folders import POSTER_NAME, LibraryRootError, MovieFolder, scan_movie_roots
@@ -106,6 +116,8 @@ class SyncReport:
     posters_removed: int = 0
     posters_unreadable: int = 0
     """Posters that could not be stat'ed or read this time; their rows were left alone."""
+    posters_replaced_by_hand: int = 0
+    """Posters Marquee wrote whose bytes changed since: the owner's again (origin library)."""
     tmdb_enriched: int = 0
     tmdb_failed: int = 0
     tmdb_skipped: bool = False
@@ -313,7 +325,7 @@ def hash_poster(boundary: FilesystemBoundary, path: Path) -> tuple[str, PosterSt
 
 class PosterAction(StrEnum):
     LEAVE = "leave"
-    """Not Marquee's to change (another origin), or nothing there and no row."""
+    """An origin the sync does not know, or nothing there and no row."""
     DELETE = "delete"
     KEEP = "keep"
     """Unchanged since it was hashed: only its last-seen time moves."""
@@ -321,8 +333,12 @@ class PosterAction(StrEnum):
 
 
 def poster_action(row: Artwork | None, poster: PosterStat | None) -> PosterAction:
-    """What the sync does with a folder's poster, given its row and the file's stat."""
-    if row is not None and row.origin != ORIGIN_LIBRARY:
+    """What the sync does with a folder's poster, given its row and the file's stat.
+
+    A row of origin ``library`` or ``marquee`` is kept, hashed again, or deleted the same way;
+    what a new hash means for a ``marquee`` row is decided after hashing.
+    """
+    if row is not None and row.origin not in ORIGINS:
         return PosterAction.LEAVE
     if poster is None:
         return PosterAction.LEAVE if row is None else PosterAction.DELETE
@@ -469,6 +485,11 @@ async def _sync_posters(
                     first_seen_at=now,
                 )
                 session.add(row)
+            elif row.origin == ORIGIN_MARQUEE and row.sha256 != digest:
+                # Not the bytes Marquee wrote: the owner put a poster there by hand.
+                row.origin = ORIGIN_LIBRARY
+                report.posters_replaced_by_hand += 1
+                logger.info("SYNC | poster of %s was replaced by hand", _label(movie))
             row.file_name = POSTER_NAME
             row.sha256 = digest
             row.size_bytes = hashed.size_bytes

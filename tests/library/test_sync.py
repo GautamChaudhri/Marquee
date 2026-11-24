@@ -12,7 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from marquee.cancellation import JobCancelledError
@@ -187,7 +187,11 @@ def _row(**values: Any) -> Artwork:
         (_row(size_bytes=11), _STAT, PosterAction.HASH),
         (_row(file_modified_at=datetime(2098, 1, 1, tzinfo=UTC)), _STAT, PosterAction.HASH),
         (_row(), None, PosterAction.DELETE),
-        # Never Marquee's to change, whatever is on disk.
+        # A poster Marquee wrote is kept, hashed again, or deleted the same way.
+        (_row(origin="marquee"), _STAT, PosterAction.KEEP),
+        (_row(origin="marquee", size_bytes=11), _STAT, PosterAction.HASH),
+        (_row(origin="marquee"), None, PosterAction.DELETE),
+        # An origin the sync does not know is never changed, whatever is on disk.
         (_row(origin="deployed"), None, PosterAction.LEAVE),
         (_row(origin="deployed", size_bytes=99), _STAT, PosterAction.LEAVE),
     ],
@@ -459,6 +463,64 @@ async def test_a_changed_poster_is_hashed_again(
     assert report.posters_hashed == 1
     (row,) = await _artwork(factory)
     assert row.sha256 == hashlib.sha256(b"\xff\xd8a different poster").hexdigest()
+
+
+async def _make_marquees(factory: async_sessionmaker[AsyncSession]) -> None:
+    """Mark every poster row as one Marquee wrote, as a deploy leaves it."""
+    async with factory() as session:
+        await session.execute(update(Artwork).values(origin="marquee"))
+        await session.commit()
+
+
+@pytest.mark.db
+async def test_a_poster_marquee_wrote_keeps_its_origin_while_its_bytes_hold(
+    run: Run, factory: async_sessionmaker, library: Path
+) -> None:
+    await run(FakeRadarr([_radarr_movie()]))
+    await _make_marquees(factory)
+    poster = library / "4K" / "Dune (2021)" / "poster.jpg"
+
+    report = await run(FakeRadarr([_radarr_movie()]))
+    assert (report.posters_hashed, report.posters_replaced_by_hand) == (0, 0)
+
+    # Touched but the same bytes: the new time is recorded and the origin stays.
+    os.utime(poster, ns=(1_800_000_000_000_000_000, 1_800_000_000_000_000_000))
+    report = await run(FakeRadarr([_radarr_movie()]))
+    assert (report.posters_hashed, report.posters_replaced_by_hand) == (1, 0)
+    (row,) = await _artwork(factory)
+    assert row.origin == "marquee"
+    assert row.file_modified_at == stat_poster(poster).modified_at  # type: ignore[union-attr]
+
+
+@pytest.mark.db
+async def test_a_poster_marquee_wrote_then_replaced_by_hand_is_the_owners_again(
+    run: Run, factory: async_sessionmaker, library: Path
+) -> None:
+    await run(FakeRadarr([_radarr_movie()]))
+    await _make_marquees(factory)
+    poster = library / "4K" / "Dune (2021)" / "poster.jpg"
+    poster.write_bytes(b"\xff\xd8the owner's own pick")
+
+    report = await run(FakeRadarr([_radarr_movie()]))
+
+    assert (report.posters_hashed, report.posters_replaced_by_hand) == (1, 1)
+    (row,) = await _artwork(factory)
+    assert row.origin == "library"
+    assert row.sha256 == hashlib.sha256(b"\xff\xd8the owner's own pick").hexdigest()
+
+
+@pytest.mark.db
+async def test_a_poster_marquee_wrote_that_is_gone_loses_its_row(
+    run: Run, factory: async_sessionmaker, library: Path
+) -> None:
+    await run(FakeRadarr([_radarr_movie()]))
+    await _make_marquees(factory)
+    (library / "4K" / "Dune (2021)" / "poster.jpg").unlink()
+
+    report = await run(FakeRadarr([_radarr_movie()]))
+
+    assert report.posters_removed == 1
+    assert await _artwork(factory) == []
 
 
 @pytest.mark.db
