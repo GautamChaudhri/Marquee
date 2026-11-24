@@ -17,6 +17,9 @@ from marquee import __version__
 
 MODEL_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr", "aesthetic", "face")
 RANKED_SHOWN = 10
+JOBS_SHOWN = 50
+# The states in marquee.db.models.job, repeated so building the parser imports no database code.
+JOB_STATES = ("queued", "running", "succeeded", "failed", "cancelled")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -106,6 +109,46 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     api.add_argument("--host", help="address to listen on (default: API_HOST)")
     api.add_argument("--port", type=int, help="port to listen on (default: API_PORT)")
+
+    worker = commands.add_parser(
+        "worker",
+        help="run the job queue",
+        description="Run queued jobs until stopped; SIGTERM or Ctrl-C stops it gracefully, "
+        "putting unfinished jobs back in the queue. Only one worker runs at a time. GPU jobs "
+        "run in a child process, stopped after GPU_IDLE_SECONDS without a job.",
+    )
+    worker.add_argument(
+        "--drain",
+        action="store_true",
+        help="exit once nothing in the queue is runnable; scheduled work is not queued",
+    )
+
+    jobs = commands.add_parser("jobs", help="list, inspect, queue, cancel, and retry jobs")
+    jobs_commands = jobs.add_subparsers(dest="jobs_command", required=True, metavar="command")
+    jobs_list = jobs_commands.add_parser("list", help=f"the newest {JOBS_SHOWN} jobs")
+    jobs_list.add_argument("--state", choices=JOB_STATES, help="only jobs in this state")
+    jobs_list.add_argument("--kind", help="only jobs of this kind")
+    jobs_list.add_argument("--json", action="store_true", help="print the jobs as JSON")
+    jobs_show = jobs_commands.add_parser("show", help="one job and its events")
+    jobs_show.add_argument("id", type=int)
+    jobs_enqueue = jobs_commands.add_parser(
+        "enqueue",
+        help="queue a job of a registered kind",
+        description="Queue a job: library_sync, gpu_selftest, or engine_probe (whose payload "
+        'needs a title, e.g. {"title": "Die Hard"}). A kind that allows one active job '
+        "returns the one already queued or running.",
+    )
+    jobs_enqueue.add_argument("kind")
+    jobs_enqueue.add_argument("--payload", default="{}", help="a JSON object (default {})")
+    jobs_enqueue.add_argument("--priority", type=int, default=0, help="higher runs first")
+    jobs_cancel = jobs_commands.add_parser(
+        "cancel", help="cancel a queued job, or ask a running one to stop"
+    )
+    jobs_cancel.add_argument("id", type=int)
+    jobs_retry = jobs_commands.add_parser(
+        "retry", help="queue a failed or cancelled job again, as new"
+    )
+    jobs_retry.add_argument("id", type=int)
 
     db = commands.add_parser("db", help="create and inspect the database schema")
     db_commands = db.add_subparsers(dest="db_command", required=True, metavar="command")
@@ -229,6 +272,136 @@ def _api(args: argparse.Namespace) -> int:
         )
     serve(args.host or settings.API_HOST, args.port or settings.API_PORT)
     return 0
+
+
+def _worker(args: argparse.Namespace) -> int:
+    import psycopg
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from marquee.config import settings
+    from marquee.jobs.worker import (
+        Worker,
+        WorkerAlreadyRunningError,
+        WorkerLostLockError,
+        serve,
+    )
+    from marquee.logging import setup_logging
+
+    setup_logging(level=settings.LOG_LEVEL)
+    try:
+        asyncio.run(serve(Worker(drain=args.drain)))
+    except (WorkerAlreadyRunningError, WorkerLostLockError) as exc:
+        return _fail("worker", str(exc))
+    except (SQLAlchemyError, psycopg.Error, OSError) as exc:
+        return _fail("worker", f"{_database_target()}: {_error_line(exc)}")
+    return 0
+
+
+def _when(value: Any) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S") if value is not None else "-"
+
+
+def _print_jobs(page: Any) -> None:
+    print(f"{'id':>6}  {'kind':<14} {'state':<10} {'try':<5} {'created (UTC)':<19}  error")
+    for job in page.items:
+        tries = f"{job.attempt}/{job.max_attempts}"
+        error = (job.error or "")[:60]
+        print(
+            f"{job.id:>6}  {job.kind:<14} {job.state:<10} {tries:<5} "
+            f"{_when(job.created_at):<19}  {error}"
+        )
+    print(f"{len(page.items)} of {page.total} job(s)")
+
+
+def _print_job(job: Any, events: list[Any]) -> None:
+    print(f"job       {job.id} {job.kind} ({job.job_class})")
+    print(f"state     {job.state}{' (cancel requested)' if job.cancel_requested else ''}")
+    print(f"attempt   {job.attempt} of {job.max_attempts}; priority {job.priority}")
+    if job.parent_id is not None:
+        print(f"batch     {job.parent_id}")
+    print(f"payload   {json.dumps(job.payload)}")
+    print(
+        f"created   {_when(job.created_at)}  started {_when(job.started_at)}  "
+        f"finished {_when(job.finished_at)}"
+    )
+    if job.state == "queued":
+        print(f"runs from {_when(job.run_after)}")
+    if job.progress is not None:
+        print(f"progress  {json.dumps(job.progress)}")
+    if job.error is not None:
+        print(f"error     {job.error}")
+    if job.result is not None:
+        print(f"result    {json.dumps(job.result, indent=2)}")
+    print("events")
+    for event in events:
+        detail = " ".join(
+            part
+            for part in (event.message or "", json.dumps(event.data) if event.data else "")
+            if part
+        )
+        print(f"  {event.id:>6}  {_when(event.at)}  {event.type:<16} {detail}")
+
+
+async def _jobs_async(args: argparse.Namespace) -> int:
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.jobs import queries, queue
+    from marquee.jobs.registry import default_registry
+
+    command = f"jobs {args.jobs_command}"
+    if args.jobs_command == "enqueue":
+        kinds = default_registry()
+        if args.kind not in kinds:
+            return _fail(command, f"unknown job kind {args.kind!r}; one of {', '.join(kinds)}")
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as exc:
+            return _fail(command, f"--payload is not JSON: {exc}")
+        if not isinstance(payload, dict):
+            return _fail(command, "--payload must be a JSON object")
+    engine = create_engine()
+    try:
+        async with create_session_factory(engine)() as session:
+            if args.jobs_command == "list":
+                page = await queries.list_jobs(
+                    session, state=args.state, kind=args.kind, page_size=JOBS_SHOWN
+                )
+                if args.json:
+                    print(json.dumps([queries.job_dict(job) for job in page.items], indent=2))
+                else:
+                    _print_jobs(page)
+            elif args.jobs_command == "show":
+                job = await queries.get_job(session, args.id)
+                if job is None:
+                    return _fail(command, f"no job {args.id}")
+                _print_job(job, await queries.job_events(session, args.id))
+            elif args.jobs_command == "enqueue":
+                job, created = await queue.enqueue(
+                    session, kinds[args.kind], payload, priority=args.priority
+                )
+                said = "queued" if created else f"already {job.state}; not queued again"
+                print(f"job {job.id} {job.kind} {said}")
+            elif args.jobs_command == "cancel":
+                job = await queue.request_cancel(session, args.id)
+                said = "cancelled" if job.state == "cancelled" else "asked to stop"
+                print(f"job {job.id} {job.kind} {said}")
+            elif args.jobs_command == "retry":
+                job = await queue.retry(session, args.id)
+                print(f"job {job.id} {job.kind} queued again")
+    except (queue.JobNotFoundError, queue.JobStateError, ValueError) as exc:
+        return _fail(command, str(exc))
+    finally:
+        await engine.dispose()
+    return 0
+
+
+def _jobs(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    try:
+        return asyncio.run(_jobs_async(args))
+    except SQLAlchemyError as exc:
+        return _fail(f"jobs {args.jobs_command}", f"{_database_target()}: {_error_line(exc)}")
 
 
 def _db(args: argparse.Namespace) -> int:
@@ -415,6 +588,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _sync(args)
     if args.command == "api":
         return _api(args)
+    if args.command == "worker":
+        return _worker(args)
+    if args.command == "jobs":
+        return _jobs(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 

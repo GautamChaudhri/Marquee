@@ -53,11 +53,10 @@ from marquee.jobs.registry import (
     default_registry,
     free_classes,
 )
-from marquee.jobs.store import CHANNEL
+from marquee.jobs.store import CHANNEL, WORKER_LOCK_KEY
 
 logger = logging.getLogger(__name__)
 
-WORKER_LOCK_KEY = int.from_bytes(b"mqworker", "big")
 APPLICATION_NAME = "marquee-worker"
 POLL_S = 5.0
 STOP_GRACE_S = 10.0

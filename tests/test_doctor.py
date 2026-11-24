@@ -327,3 +327,64 @@ def test_path_mapping_fails_when_radarr_does_not_answer(
 def test_path_mapping_warns_without_radarr(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor.settings, "RADARR_URL", None)
     assert doctor.check_path_mapping().status == "WARN"
+
+
+def _libpq(url: str) -> str:
+    from sqlalchemy.engine import make_url
+
+    return make_url(url).set(drivername="postgresql").render_as_string(hide_password=False)
+
+
+@pytest.mark.db
+def test_worker_warns_when_no_worker_runs(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    import psycopg
+
+    _point_settings_at(monkeypatch, database_url)
+    with psycopg.connect(_libpq(database_url), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO jobs (kind, job_class, state) VALUES "
+            "('a', 'network', 'queued'), ('b', 'gpu', 'failed'), ('batch', 'batch', 'running')"
+        )
+        try:
+            result = doctor.check_worker()
+        finally:
+            conn.execute("TRUNCATE jobs RESTART IDENTITY CASCADE")
+    assert result.status == "WARN"
+    assert result.detail == "no worker running (`marquee worker`); 1 queued, 0 running, 1 failed"
+
+
+@pytest.mark.db
+def test_worker_passes_while_a_worker_holds_the_lock(
+    monkeypatch: pytest.MonkeyPatch, database_url: str
+) -> None:
+    import psycopg
+
+    from marquee.jobs.store import WORKER_LOCK_KEY
+
+    _point_settings_at(monkeypatch, database_url)
+    with psycopg.connect(_libpq(database_url), autocommit=True) as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", [WORKER_LOCK_KEY])
+        result = doctor.check_worker()
+    assert result.status == "PASS"
+    assert result.detail.startswith("running since ")
+    assert result.detail.endswith("UTC; 0 queued, 0 running, 0 failed")
+    assert doctor.check_worker().status == "WARN"  # the lock went with the connection
+
+
+@pytest.mark.db
+def test_worker_warns_before_the_job_tables_exist(
+    monkeypatch: pytest.MonkeyPatch, empty_database_url: str
+) -> None:
+    _point_settings_at(monkeypatch, empty_database_url)
+    result = doctor.check_worker()
+    assert (result.status, result.detail) == ("WARN", "no job tables; run `marquee db upgrade`")
+
+
+def test_worker_fails_when_the_database_does_not_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.settings, "POSTGRES_HOST", "127.0.0.1")
+    monkeypatch.setattr(doctor.settings, "POSTGRES_PORT", 1)
+    result = doctor.check_worker()
+    assert result.status == "FAIL"
+    assert result.detail.startswith("cannot read the queue")

@@ -16,6 +16,7 @@ import time
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Literal
 
@@ -313,6 +314,38 @@ def check_database() -> CheckResult:
     return CheckResult("Database", "PASS", f"{reached}; schema at {current} (newest)")
 
 
+def check_worker() -> CheckResult:
+    """Whether a worker holds the single-worker lock, and what the queue holds."""
+    import asyncio
+
+    from sqlalchemy.exc import ProgrammingError
+
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.jobs.queries import WorkerStatus, worker_status
+
+    async def read() -> WorkerStatus:
+        engine = create_engine()
+        try:
+            async with create_session_factory(engine)() as session:
+                return await worker_status(session)
+        finally:
+            await engine.dispose()
+
+    try:
+        status = asyncio.run(read())
+    except ProgrammingError:
+        return CheckResult("Worker", "WARN", "no job tables; run `marquee db upgrade`")
+    except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
+        return CheckResult("Worker", "FAIL", f"cannot read the queue: {_error_text(exc)}")
+    queue = f"{status.queued} queued, {status.running_jobs} running, {status.failed} failed"
+    if not status.running:
+        return CheckResult("Worker", "WARN", f"no worker running (`marquee worker`); {queue}")
+    since = (
+        status.since.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC") if status.since else "unknown"
+    )
+    return CheckResult("Worker", "PASS", f"running since {since}; {queue}")
+
+
 def _run_with_timeout[T](func: Callable[[], T], timeout: float) -> T:
     """Run ``func`` in a daemon thread so a hung network mount cannot hang doctor."""
     outcome: dict[str, object] = {}
@@ -479,6 +512,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_gpu,
     check_ocr,
     check_database,
+    check_worker,
     check_media_roots,
     check_tmdb,
     check_radarr,

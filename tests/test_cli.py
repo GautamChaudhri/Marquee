@@ -244,3 +244,115 @@ def test_api_warns_when_no_key_is_configured(
     monkeypatch.setattr(settings, "API_KEY", None)
     assert cli.main(["api"]) == 0
     assert "API_KEY is not set" in capsys.readouterr().err
+
+
+# ── marquee worker and marquee jobs ───────────────────────────────────────
+
+
+def test_worker_and_jobs_arguments() -> None:
+    parse = cli._build_parser().parse_args
+    assert parse(["worker"]).drain is False
+    assert parse(["worker", "--drain"]).drain is True
+    listed = parse(["jobs", "list", "--state", "failed", "--kind", "library_sync", "--json"])
+    assert (listed.jobs_command, listed.state, listed.kind, listed.json) == (
+        "list",
+        "failed",
+        "library_sync",
+        True,
+    )
+    queued = parse(["jobs", "enqueue", "engine_probe", "--payload", '{"title": "Die Hard"}'])
+    assert (queued.kind, queued.payload, queued.priority) == (
+        "engine_probe",
+        '{"title": "Die Hard"}',
+        0,
+    )
+    assert parse(["jobs", "cancel", "7"]).id == 7
+    assert parse(["jobs", "retry", "7"]).id == 7
+    assert parse(["jobs", "show", "7"]).id == 7
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["jobs"], ["jobs", "list", "--state", "lost"], ["jobs", "cancel", "x"], ["jobs", "show"]],
+)
+def test_jobs_rejects_bad_arguments(argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli._build_parser().parse_args(argv)
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["jobs", "enqueue", "nope"], "unknown job kind 'nope'; one of library_sync"),
+        (["jobs", "enqueue", "gpu_selftest", "--payload", "{"], "--payload is not JSON"),
+        (["jobs", "enqueue", "gpu_selftest", "--payload", "[1]"], "must be a JSON object"),
+    ],
+)
+def test_jobs_enqueue_checks_before_it_connects(
+    argv: list[str], message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert cli.main(argv) == 1
+    assert message in capsys.readouterr().err
+
+
+@pytest.fixture
+def jobs_database(monkeypatch: pytest.MonkeyPatch, database_url: str) -> object:
+    """Settings pointed at the test database; the job tables are emptied afterwards."""
+    import psycopg
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(database_url)
+    monkeypatch.setattr(settings, "POSTGRES_USER", parsed.username)
+    monkeypatch.setattr(settings, "POSTGRES_PASSWORD", SecretStr(parsed.password or ""))
+    monkeypatch.setattr(settings, "POSTGRES_HOST", parsed.host)
+    monkeypatch.setattr(settings, "POSTGRES_PORT", parsed.port)
+    monkeypatch.setattr(settings, "POSTGRES_DB", parsed.database)
+    yield
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        conn.execute("TRUNCATE jobs, job_events, job_schedules RESTART IDENTITY CASCADE")
+
+
+@pytest.mark.db
+def test_jobs_commands_end_to_end(
+    jobs_database: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    def run(*argv: str) -> tuple[int, str, str]:
+        code = cli.main(list(argv))
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    code, out, err = run("jobs", "enqueue", "library_sync")
+    assert (code, out, err) == (0, "job 1 library_sync queued\n", "")
+    assert run("jobs", "enqueue", "library_sync")[1] == (
+        "job 1 library_sync already queued; not queued again\n"
+    )
+    code, out, _ = run("jobs", "enqueue", "engine_probe", "--payload", '{"title": "Die Hard"}')
+    assert code == 0 and out.endswith(" engine_probe queued\n")
+    probe = out.split()[1]
+
+    code, out, _ = run("jobs", "list")
+    assert code == 0
+    assert out.splitlines()[1].split()[:4] == [probe, "engine_probe", "queued", "0/1"]
+    assert out.splitlines()[-1] == "2 of 2 job(s)"
+    listed = json.loads(run("jobs", "list", "--kind", "engine_probe", "--json")[1])
+    assert [(job["id"], job["payload"]) for job in listed] == [(int(probe), {"title": "Die Hard"})]
+
+    assert run("jobs", "cancel", probe)[1] == f"job {probe} engine_probe cancelled\n"
+    assert run("jobs", "retry", probe)[1] == f"job {probe} engine_probe queued again\n"
+
+    code, out, _ = run("jobs", "show", probe)
+    assert code == 0
+    assert "state     queued" in out
+    assert [line.split()[3] for line in out.split("events\n")[1].splitlines()] == [
+        "queued",
+        "cancelled",
+        "retried",
+    ]
+
+    assert run("jobs", "show", "999") == (1, "", "marquee jobs show: no job 999\n")
+    code, _, err = run("jobs", "retry", "1")
+    assert code == 1
+    assert "job 1 is queued; only a failed or cancelled job can be retried" in err

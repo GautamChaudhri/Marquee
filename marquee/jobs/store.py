@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from marquee.db.models import JobEvent
 
 CHANNEL = "marquee_jobs"
+WORKER_LOCK_KEY = int.from_bytes(b"mqworker", "big")
+"""The advisory lock the one worker holds for its whole life."""
 FRESH = {"populate_existing": True, "synchronize_session": False}
 """Execution options for statements returning jobs: refresh any copy the session holds."""
 
