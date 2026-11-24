@@ -8,6 +8,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from marquee.api.schemas.evaluation import EvaluationHeadline
 from marquee.api.schemas.library import Poster
 from marquee.db.models import Exemplar, PreferenceEvent
 from marquee.db.models.taste import MAX_EXPOSED, MAX_IDEMPOTENCY_KEY
@@ -268,12 +269,48 @@ class ProfileItem(BaseModel):
     created_at: datetime
 
 
+class ResidualArtifactItem(BaseModel):
+    id: int = Field(description="The residual training that produced it")
+    trained_at: datetime
+    profile_id: int | None
+    subjects: int
+    pairs: int
+    baseline_accuracy: float | None = Field(description="On held-out movies, before")
+    candidate_accuracy: float | None = Field(description="On held-out movies, with it")
+    held_out_subjects: int | None
+    held_out_pairs: int | None
+    weights: dict[str, float] | None = Field(
+        description="Each feature it leans on, with its weight; null when its file is gone"
+    )
+
+
+class ResidualTrainingItem(BaseModel):
+    id: int
+    at: datetime
+    outcome: Literal["activate", "no_change", "failed"]
+    reason: str | None
+    subjects: int
+    pairs: int
+    profile_id: int | None
+
+
+class ResidualMissing(BaseModel):
+    subjects: int = Field(description="More movies with feedback needed")
+    pairs: int = Field(description="More pairs needed")
+
+
 class ResidualItem(BaseModel):
     subjects: int
     pairs: int
     min_subjects: int
     min_pairs: int
-    trained: bool
+    trained: bool = Field(description="An artifact is active")
+    scorer: str = Field(description="The SCORER setting: auto, weighted, or residual")
+    in_use: bool = Field(description="Runs rank with the residual")
+    why: str
+    active: ResidualArtifactItem | None
+    last_training: ResidualTrainingItem | None
+    missing: ResidualMissing
 
 
 class TasteStatus(BaseModel):
@@ -284,3 +321,4 @@ class TasteStatus(BaseModel):
     agreement: AgreementItem
     residual: ResidualItem
     pending_reviews: int
+    evaluation: EvaluationHeadline

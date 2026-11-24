@@ -90,9 +90,44 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     taste_status = taste_commands.add_parser(
         "status",
-        help="exemplars, the active profile, agreement, and what the residual would get",
+        help="exemplars, the active profile, agreement, and the residual's state",
     )
     taste_status.add_argument("--json", action="store_true", help="print it as JSON")
+    evaluate = taste_commands.add_parser(
+        "evaluate",
+        help="queue a blind evaluation: every movie run without its own exemplars",
+        description="Queue a masked run of every movie with a file and an active positive "
+        "exemplar (or of the movies named), as one batch, and record where the owner's poster "
+        "lands in each. It changes no poster, no feedback, and no profile. A whole library "
+        "takes about 20 s a movie on the GPU.",
+    )
+    evaluate.add_argument(
+        "--movie", type=int, action="append", dest="movies", metavar="ID", help="only this movie"
+    )
+    evaluate.add_argument("--limit", type=int, help="at most this many movies")
+    evaluate.add_argument("--wait", action="store_true", help="follow the batch to its end")
+    evaluation_cmd = taste_commands.add_parser(
+        "evaluation", help="a blind evaluation's summary (the newest by default)"
+    )
+    evaluation_cmd.add_argument("id", type=int, nargs="?", help="the evaluation's id")
+    evaluation_cmd.add_argument("--results", action="store_true", help="one line per movie")
+    evaluation_cmd.add_argument("--json", action="store_true", help="print it as JSON")
+    residual = taste_commands.add_parser("residual", help="the residual's state, or train it")
+    residual_commands = residual.add_subparsers(
+        dest="residual_command", required=True, metavar="command"
+    )
+    residual_status = residual_commands.add_parser(
+        "status", help="whether runs use the residual, and why"
+    )
+    residual_status.add_argument("--json", action="store_true", help="print it as JSON")
+    residual_commands.add_parser(
+        "train",
+        help="train the residual from the feedback now and record the training",
+        description="Train the bounded residual from every preference event, for the active "
+        "profile. The engine activates it only when it beats the weighted scorer on held-out "
+        "movies; with too little feedback it says what is missing and changes nothing. A "
+        "rebuild trains it by itself.",
+    )
     taste_commands.add_parser(
         "import-seed",
         help="make the staged seed the first exemplar records and register its profile",
@@ -1124,6 +1159,19 @@ def _print_rebuild(job: Any) -> None:
     elif previous:
         print(f"replaces  profile {previous}")
     print(f"took      {result['seconds']:.0f} s")
+    if (trained := result.get("residual")) is not None:
+        print(f"residual  {_training_text(trained)}")
+
+
+def _training_text(trained: dict[str, Any]) -> str:
+    if trained.get("outcome") == "failed":
+        return f"training failed: {trained.get('reason') or trained.get('error')}"
+    what = "activated" if trained.get("activated") else "no change"
+    reason = f" ({trained['reason']})" if trained.get("reason") else ""
+    return (
+        f"training {trained.get('training_id')}: {what}{reason}; "
+        f"{trained.get('subjects')} movie(s), {trained.get('pairs')} pair(s)"
+    )
 
 
 async def _taste_rebuild_async(args: argparse.Namespace) -> int:
@@ -1393,11 +1441,41 @@ def _print_status(status: Any) -> None:
     for key, tally in sorted(a.by_month.items()):
         print(f"          {key}: {tally.text()}")
     print(f"reviews   {status.pending_reviews} run(s) wait (`marquee review list`)")
+    _print_residual(status.residual)
+
+
+def _print_residual(state: dict[str, Any]) -> None:
+    used = "in use" if state["in_use"] else "not in use"
+    print(f"residual  {used}: {state['why']} (SCORER={state['scorer']})")
     print(
-        f"residual  not trained; the events give {status.residual_pairs} pair(s) over "
-        f"{status.residual_subjects} subject(s); it needs {status.residual_min_pairs} over "
-        f"{status.residual_min_subjects}"
+        f"          the events give {state['pairs']} pair(s) over {state['subjects']} movie(s); "
+        f"it needs {state['min_pairs']} over {state['min_subjects']}"
     )
+    missing = state["missing"]
+    if missing["subjects"] or missing["pairs"]:
+        print(
+            f"          missing: {missing['subjects']} movie(s) and {missing['pairs']} pair(s) "
+            "of feedback"
+        )
+    if (active := state.get("active")) is not None:
+        print(
+            f"active    training {active['id']} for profile {active['profile_id']}: held-out "
+            f"accuracy {active['baseline_accuracy']:.3f} -> {active['candidate_accuracy']:.3f}"
+        )
+        for name, weight in sorted(
+            (active.get("weights") or {}).items(), key=lambda kv: -abs(kv[1])
+        )[:6]:
+            print(f"          {name:<24} {weight:+.4f}")
+    if (last := state.get("last_training")) is not None:
+        reason = f" ({last['reason']})" if last["reason"] else ""
+        print(
+            f"last      training {last['id']} {_when_text(last['at'])}: {last['outcome']}{reason}; "
+            f"{last['subjects']} movie(s), {last['pairs']} pair(s)"
+        )
+
+
+def _when_text(value: str) -> str:
+    return value.replace("T", " ")[:19]
 
 
 async def _taste_status_async(args: argparse.Namespace) -> int:
@@ -1426,6 +1504,169 @@ def _taste_status(args: argparse.Namespace) -> int:
         return asyncio.run(_taste_status_async(args))
     except SQLAlchemyError as exc:
         return _fail("taste status", f"{_database_target()}: {_error_line(exc)}")
+
+
+def _tally_lines(name: str, tally: dict[str, Any]) -> list[str]:
+    n = tally["evaluated"]
+    if not n:
+        return [f"{name:<9} none evaluated"]
+    ranked = tally["ranked"] or 1
+
+    def share(k: int, of: int) -> str:
+        return f"{k} ({100 * k / of:.0f}%)" if of else str(k)
+
+    lines = [
+        f"{name:<9} {n} evaluated: {tally['ranked']} ranked, {tally['gated']} gated, "
+        f"{tally['not_offered']} not offered, {tally['failed']} failed",
+        f"{'':<9} of the ranked: pick is the poster {share(tally['exact'], ranked)}, the same "
+        f"design {share(tally['same_design'], ranked)}; in the first 3 cards "
+        f"{share(tally['top3'], ranked)}, first 5 {share(tally['top5'], ranked)}",
+        f"{'':<9} median card {tally['median_card']}, mean reciprocal card "
+        f"{tally['mean_reciprocal_card']}",
+    ]
+    for reason, count in tally["gated_by"].items():
+        lines.append(f"{'':<9} gated by {reason}: {count}")
+    return lines
+
+
+def _result_line(row: Any, title: str, year: int | None) -> str:
+    name = f"{title} ({year})" if year else title
+    if row.outcome == "ranked":
+        pick = "the pick" if row.pick_is_match else "same design" if row.same_design else ""
+        what = f"rank {row.rank} of {row.ranked_count}, card {row.card} of {row.cards} {pick}"
+    elif row.outcome == "gated":
+        what = f"removed at {row.stage}: {row.reason}"
+    elif row.outcome == "not_offered":
+        best = f"{row.best_cosine:.3f}" if row.best_cosine is not None else "none"
+        what = f"not among the candidates (closest {best})"
+    else:
+        what = f"failed: {row.reason}"
+    cosine = f" cos {row.match_cosine:.3f}" if row.match_cosine is not None else ""
+    return f"{row.movie_id:>6}  {row.exemplar_source or '?':<8} {row.outcome:<11} {what}{cosine}  {name}"
+
+
+async def _evaluation_async(args: argparse.Namespace) -> int:
+    from sqlalchemy import select
+
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.db.models import Evaluation
+    from marquee.jobs import queries
+    from marquee.jobs.handlers import poster_run
+    from marquee.taste import evaluation
+
+    engine = create_engine()
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions() as session:
+            if args.taste_command == "evaluate":
+                worker = await queries.worker_status(session)
+                try:
+                    row, parent, children = await poster_run.enqueue_evaluation(
+                        session, args.movies, limit=args.limit
+                    )
+                except poster_run.EvaluationRefusedError as exc:
+                    raise _CommandError(str(exc)) from exc
+                print(
+                    f"evaluation {row.id}: {len(children)} masked run(s) queued for "
+                    f"{row.movies} movie(s) (batch {parent.id}, scorer {row.scorer})"
+                )
+                if not worker.running:
+                    print("no worker is running; the runs wait for `marquee worker`")
+                if not args.wait:
+                    return 0
+                await _follow(sessions, parent.id, quiet=True)
+                evaluation_id = row.id
+            else:
+                evaluation_id = args.id or await session.scalar(
+                    select(Evaluation.id).order_by(Evaluation.id.desc()).limit(1)
+                )
+                if evaluation_id is None:
+                    raise _CommandError("no evaluation yet (`marquee taste evaluate`)")
+        async with sessions() as session:
+            row = await session.get(Evaluation, evaluation_id)
+            if row is None:
+                raise _CommandError(f"no evaluation {evaluation_id}")
+            view = await evaluation.view(session, row)
+            results = []
+            if getattr(args, "results", False):
+                _, results = await evaluation.results_page(
+                    session, row.id, page=1, page_size=10_000
+                )
+            await session.commit()
+    finally:
+        await engine.dispose()
+    if getattr(args, "json", False):
+        out = {
+            "id": row.id,
+            "state": view.state,
+            "movies": row.movies,
+            "queued": row.queued,
+            "results": view.results,
+            "not_run": view.not_run,
+            "scorer": row.scorer,
+            "profile_sha256": row.profile_sha256,
+            "summary": view.summary,
+        }
+        if results:
+            out["rows"] = [
+                {
+                    "movie_id": r.result.movie_id,
+                    "title": r.title,
+                    **evaluation.result_line(r.result),
+                }
+                for r in results
+            ]
+        print(json.dumps(out, indent=2))
+        return 0
+    print(
+        f"evaluation {row.id}: {view.state}; {view.results} of {row.queued} movie(s) have a "
+        f"result{f', {view.not_run} not run' if view.not_run else ''}; profile "
+        f"{row.profile_sha256[:12]}, scorer {row.scorer}"
+    )
+    for name in ("seed", "feedback", "all"):
+        for line in _tally_lines(name, view.summary[name]):
+            print(line)
+    for r in results:
+        print(_result_line(r.result, r.title, r.year))
+    return 0
+
+
+async def _residual_async(args: argparse.Namespace) -> int:
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.taste import residuals
+
+    engine = create_engine()
+    try:
+        async with create_session_factory(engine)() as session:
+            if args.residual_command == "train":
+                try:
+                    trained = await residuals.train(session)
+                except residuals.ResidualError as exc:
+                    raise _CommandError(str(exc)) from exc
+                print(f"residual  {_training_text(trained.to_dict())}")
+            state = await residuals.state(session)
+            await session.commit()
+    finally:
+        await engine.dispose()
+    if getattr(args, "json", False):
+        print(json.dumps(state, indent=2))
+    else:
+        _print_residual(state)
+    return 0
+
+
+def _taste_async_command(name: str, coroutine: Any) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    try:
+        return asyncio.run(coroutine)
+    except _CommandError as exc:
+        return _fail(name, str(exc))
+    except SQLAlchemyError as exc:
+        return _fail(name, f"{_database_target()}: {_error_line(exc)}")
+    except KeyboardInterrupt:
+        return _fail(name, "stopped following; the jobs go on")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1464,6 +1705,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _taste_rebuild(args)
     if args.command == "taste" and args.taste_command == "status":
         return _taste_status(args)
+    if args.command == "taste" and args.taste_command in ("evaluate", "evaluation"):
+        return _taste_async_command(f"taste {args.taste_command}", _evaluation_async(args))
+    if args.command == "taste" and args.taste_command == "residual":
+        return _taste_async_command(
+            f"taste residual {args.residual_command}", _residual_async(args)
+        )
     if args.command == "review":
         return _review(args)
     if args.command == "run":

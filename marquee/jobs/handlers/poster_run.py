@@ -351,6 +351,10 @@ class EvaluationRefusedError(Exception):
     """An evaluation cannot be queued now; the message says why."""
 
 
+class EvaluationMoviesError(EvaluationRefusedError):
+    """A movie named cannot be evaluated; the message names them."""
+
+
 async def enqueue_evaluation(
     session: AsyncSession, movie_ids: Sequence[int] | None = None, *, limit: int | None = None
 ) -> tuple[Evaluation, Job, list[Job]]:
@@ -377,7 +381,7 @@ async def enqueue_evaluation(
     if wanted is not None:
         refused = [movie_id for movie_id in wanted if movie_id not in set(found)]
         if refused:
-            raise EvaluationRefusedError(
+            raise EvaluationMoviesError(
                 "these movies cannot be evaluated (unknown, cannot be run, or no active "
                 f"positive exemplar): {refused[:50]}"
             )

@@ -246,7 +246,14 @@ async def test_taste_status_and_rebuild(
         "min_subjects": 25,
         "min_pairs": 200,
         "trained": False,
+        "scorer": "auto",
+        "in_use": False,
+        "why": "not trained yet",
+        "active": None,
+        "last_training": None,
+        "missing": {"subjects": 25, "pairs": 200},
     }
+    assert body["evaluation"] == {"latest": None, "previous": None, "running": None}
     first = await client.post("/api/taste/rebuild", headers=headers, json={"force": True})
     again = await client.post("/api/taste/rebuild", headers=headers)
     assert first.status_code == 202 and again.status_code == 200
@@ -395,3 +402,195 @@ async def test_feedback_is_listed_newest_first_with_its_movie(
         await client.get("/api/feedback", headers=headers, params={"page": 2, "page_size": 2})
     ).json()
     assert (second_page["total"], [e["id"] for e in second_page["items"]]) == (3, [approved])
+
+
+# ── Blind evaluations ─────────────────────────────────────────────────────
+
+
+async def _evaluable(session: AsyncSession, n: int = 1, *, profile: bool = True) -> int:
+    """A movie a run accepts, with an active seed positive, and (once) an active profile
+    built from the active exemplars."""
+    from marquee.db.models import Exemplar, TasteProfile
+    from marquee.taste import exemplars
+
+    now = datetime(2026, 11, 24, tzinfo=UTC)
+    movie = Movie(
+        radarr_id=100 + n,
+        title=f"Movie {n}",
+        sort_title=f"movie {n}",
+        year=2000 + n,
+        radarr_path=f"/radarr/Movie {n}",
+        has_file=True,
+        tmdb_id=500 + n,
+        tmdb_enriched_at=now,
+        last_seen_at=now,
+    )
+    session.add(movie)
+    await session.flush()
+    sha = hashlib.sha256(f"poster {n}".encode()).hexdigest()
+    session.add(
+        Exemplar(
+            movie_id=movie.id,
+            polarity="positive",
+            weight=1.0,
+            source="seed",
+            state="active",
+            sha256=sha,
+            file_name=f"{sha}.png",
+            staged_name=f"Movie {n} ({2000 + n}).png",
+        )
+    )
+    await session.flush()
+    if profile:
+        from sqlalchemy import update
+
+        await session.execute(update(TasteProfile).values(is_active=False))
+        session.add(
+            TasteProfile(
+                sha256=hashlib.sha256(f"profile {n}".encode()).hexdigest(),
+                revision=await exemplars.revision(session),
+                source="seed",
+                positives=n,
+                negatives=0,
+                positive_movie_ids=[movie.id],
+                file_name=f"{hashlib.sha256(f'profile {n}'.encode()).hexdigest()}.npz",
+                is_active=True,
+            )
+        )
+    await session.commit()
+    return movie.id
+
+
+async def test_an_evaluation_is_queued_once_and_refused_with_reasons(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
+) -> None:
+    none = await client.post("/api/taste/evaluations", headers=headers)
+    assert none.status_code == 409 and "no active taste profile" in none.json()["detail"]
+    first = await _evaluable(db_session, 1)
+    second = await _evaluable(db_session, 2, profile=False)  # the profile lacks its exemplar
+    due = await client.post("/api/taste/evaluations", headers=headers)
+    assert due.status_code == 409 and "rebuild it first" in due.json()["detail"]
+    await _evaluable(db_session, 3)  # a profile of every active exemplar now
+
+    unknown = await client.post(
+        "/api/taste/evaluations", headers=headers, json={"movie_ids": [first, 999]}
+    )
+    assert unknown.status_code == 422 and "999" in unknown.json()["detail"]
+    queued = await client.post("/api/taste/evaluations", headers=headers, json={"limit": 2})
+    assert queued.status_code == 202
+    body = queued.json()
+    assert body["batch"]["kind"] == "batch"
+    assert body["batch"]["payload"] == {"evaluation_id": body["evaluation"]["id"], "movies": 2}
+    item = body["evaluation"]
+    assert (item["movies"], item["queued"], item["state"], item["scorer"]) == (
+        2,
+        2,
+        "running",
+        "weighted",
+    )
+    assert item["progress"] == {"queued": 2}
+    jobs = (
+        await client.get("/api/jobs", headers=headers, params={"parent_id": body["batch"]["id"]})
+    ).json()["items"]
+    assert {job["kind"] for job in jobs} == {"poster_run_masked"}
+    assert sorted(job["payload"]["movie_id"] for job in jobs) == [first, second]
+    assert {job["payload"]["evaluation_id"] for job in jobs} == {item["id"]}
+
+    busy = await client.post("/api/taste/evaluations", headers=headers)
+    assert busy.status_code == 409 and "still running" in busy.json()["detail"]
+    status = (await client.get("/api/taste", headers=headers)).json()["evaluation"]
+    assert status["running"]["id"] == item["id"] and status["latest"] is None
+
+
+async def test_an_evaluations_results_carry_the_images_to_show(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
+) -> None:
+    from marquee.db.models import Evaluation, EvaluationResult, Exemplar, Job
+
+    movie_id = await _evaluable(db_session, 1)
+    other_id = await _evaluable(db_session, 2)
+    from sqlalchemy import select
+
+    exemplar = await db_session.scalar(select(Exemplar).where(Exemplar.movie_id == movie_id))
+    assert exemplar is not None
+    job = Job(kind="batch", job_class="batch", state="succeeded", finished_at=datetime.now(UTC))
+    db_session.add(job)
+    await db_session.flush()
+    row = Evaluation(job_id=job.id, profile_sha256="a" * 64, scorer="weighted", movies=3, queued=3)
+    run = PosterRun(
+        movie_id=movie_id,
+        state="completed",
+        run_folder="r",
+        started_at=job.created_at or datetime.now(UTC),
+        masked=True,
+    )
+    db_session.add_all([row, run])
+    await db_session.flush()
+    pick = RunCandidate(run_id=run.id, source_file="p.jpg", sha256="1" * 64, rank=1, is_pick=True)
+    match = RunCandidate(run_id=run.id, source_file="m.jpg", sha256="2" * 64, rank=4)
+    db_session.add_all([pick, match])
+    db_session.add_all(
+        [
+            EvaluationResult(
+                evaluation_id=row.id,
+                movie_id=movie_id,
+                exemplar_id=exemplar.id,
+                exemplar_source="seed",
+                run_id=run.id,
+                outcome="ranked",
+                matched_by="cosine",
+                match_file="m.jpg",
+                match_cosine=0.97,
+                rank=4,
+                ranked_count=16,
+                card=3,
+                cards=9,
+                pick_file="p.jpg",
+                pick_is_match=False,
+                same_design=False,
+            ),
+            EvaluationResult(
+                evaluation_id=row.id,
+                movie_id=other_id,
+                exemplar_source="seed",
+                outcome="gated",
+                match_file="g.jpg",
+                stage="ocr",
+                reason="text_heavy",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    one = (await client.get(f"/api/taste/evaluations/{row.id}", headers=headers)).json()
+    assert (one["state"], one["results"], one["not_run"]) == ("succeeded", 2, 1)
+    seed = one["summary"]["seed"]
+    assert (seed["evaluated"], seed["ranked"], seed["gated"], seed["top3"]) == (2, 1, 1, 1)
+    assert seed["gated_by"] == {"ocr: text_heavy": 1}
+
+    results = (await client.get(f"/api/taste/evaluations/{row.id}/results", headers=headers)).json()
+    assert results["total"] == 2
+    ranked = results["items"][0]
+    assert (ranked["title"], ranked["outcome"], ranked["card"]) == ("Movie 1", "ranked", 3)
+    assert ranked["exemplar_image_url"] == f"/api/taste/exemplars/{exemplar.id}/image"
+    assert ranked["match_image_url"] == f"/api/runs/{run.id}/candidates/{match.id}/image"
+    assert ranked["pick_image_url"] == f"/api/runs/{run.id}/candidates/{pick.id}/image"
+    gated = results["items"][1]
+    assert gated["run_id"] is None and gated["match_image_url"] is None
+    only = (
+        await client.get(
+            f"/api/taste/evaluations/{row.id}/results",
+            headers=headers,
+            params={"outcome": "gated", "source": "seed"},
+        )
+    ).json()
+    assert [r["movie_id"] for r in only["items"]] == [other_id]
+    listing = (await client.get("/api/taste/evaluations", headers=headers)).json()
+    assert listing["total"] == 1 and listing["items"][0]["id"] == row.id
+    headline = (await client.get("/api/taste", headers=headers)).json()["evaluation"]
+    assert headline["latest"]["id"] == row.id and headline["running"] is None
+    assert (await client.get("/api/taste/evaluations/999", headers=headers)).status_code == 404
+    assert (
+        await client.get("/api/taste/evaluations/999/results", headers=headers)
+    ).status_code == 404
+    assert str(data_dir) not in json.dumps(results)

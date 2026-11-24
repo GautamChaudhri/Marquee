@@ -89,9 +89,11 @@ class Agreement:
 
 
 def _chosen_rank(event: PreferenceEvent) -> int | None:
+    """The chosen candidate's rank in the run, as the owner saw it. Events from before M5c
+    have only ``baseline_rank``, which was the run's rank then."""
     for row in event.exposed or []:
         if isinstance(row, dict) and row.get("candidate_id") == event.chosen_source_file:
-            rank = row.get("baseline_rank")
+            rank = row.get("rank", row.get("baseline_rank"))
             return rank if isinstance(rank, int) and not isinstance(rank, bool) else None
     return None
 
@@ -288,6 +290,8 @@ class Status:
     residual_min_subjects: int
     residual_min_pairs: int
     pending_reviews: int
+    residual: dict[str, Any] = field(default_factory=dict)
+    """What :func:`marquee.taste.residuals.state` says."""
 
     def to_dict(self) -> dict[str, Any]:
         profile = self.profile
@@ -310,11 +314,12 @@ class Status:
             "rebuild_due": self.rebuild_due,
             "agreement": self.agreement.to_dict(),
             "residual": {
+                **self.residual,
                 "subjects": self.residual_subjects,
                 "pairs": self.residual_pairs,
                 "min_subjects": self.residual_min_subjects,
                 "min_pairs": self.residual_min_pairs,
-                "trained": False,
+                "trained": bool(self.residual.get("active")),
             },
             "pending_reviews": self.pending_reviews,
         }
@@ -322,8 +327,9 @@ class Status:
 
 async def status(session: AsyncSession) -> Status:
     """Exemplars by state and polarity, the active profile and whether a rebuild is due,
-    agreement, and what the residual would get from the events (it is not trained)."""
+    agreement, and the residual: what the events give it and its state."""
     from marquee.ml.residual import build_residual_pairs
+    from marquee.taste import residuals
 
     counts: dict[str, dict[str, int]] = {}
     rows = await session.execute(
@@ -351,4 +357,5 @@ async def status(session: AsyncSession) -> Status:
         residual_min_subjects=pipeline_settings.RESIDUAL_MIN_SUBJECTS,
         residual_min_pairs=pipeline_settings.RESIDUAL_MIN_PAIRS,
         pending_reviews=len(await pending_reviews(session)),
+        residual=await residuals.state(session),
     )

@@ -750,7 +750,9 @@ def test_review_commands(
     assert "exemplars revoked: 1 positive, 1 negative" in out
     assert "profile   none registered" in out
     assert "agreement blind runs: 0 reviewed" in out
-    assert "residual  not trained; the events give 0 pair(s) over 0 subject(s)" in out
+    assert "residual  not in use: not trained yet (SCORER=auto)" in out
+    assert "the events give 0 pair(s) over 0 movie(s); it needs 200 over 25" in out
+    assert "missing: 25 movie(s) and 200 pair(s) of feedback" in out
     status = json.loads(run("taste", "status", "--json")[1])
     assert status["residual"]["min_pairs"] == 200 and status["pending_reviews"] == 1
 
@@ -908,3 +910,80 @@ def test_masked_runs_appear_only_where_asked(
     assert "blind evaluation's run" in run("runs", "show", str(masked))[1]
     # The review list still names the normal run, not the newer masked one.
     assert json.loads(run("review", "list", "--json")[1])[0]["run_id"] == ids["run"]
+
+
+@pytest.mark.db
+def test_taste_evaluate_evaluation_and_residual_commands(
+    jobs_database: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import asyncio
+    import json
+
+    import psycopg
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+
+    def run(*argv: str) -> tuple[int, str, str]:
+        code = cli.main(list(argv))
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    assert run("taste", "evaluation") == (
+        1,
+        "",
+        "marquee taste evaluation: no evaluation yet (`marquee taste evaluate`)\n",
+    )
+    code, _, err = run("taste", "evaluate")
+    assert code == 1 and "no active taste profile" in err
+    code, _, err = run("taste", "residual", "train")
+    assert code == 1 and "no active taste profile" in err
+
+    movie_id = _add_movie(1, "Heat", 1995)
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        conn.execute(
+            "update movies set tmdb_id = 949, tmdb_enriched_at = now() where id = %s", [movie_id]
+        )
+        conn.execute(
+            "insert into exemplars (movie_id, polarity, weight, source, state, sha256, "
+            "file_name, staged_name) values (%s, 'positive', 1, 'seed', 'active', %s, %s, "
+            "'Heat (1995).png')",
+            [movie_id, "1" * 64, f"{'1' * 64}.png"],
+        )
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.taste import exemplars
+
+    async def revision() -> str:
+        engine = create_engine()
+        try:
+            async with create_session_factory(engine)() as session:
+                return await exemplars.revision(session)
+        finally:
+            await engine.dispose()
+
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        conn.execute(
+            "insert into taste_profiles (sha256, revision, source, positives, negatives, "
+            "positive_movie_ids, file_name, is_active) values (%s, %s, 'seed', 1, 0, %s, %s, "
+            "true)",
+            ["2" * 64, asyncio.run(revision()), json.dumps([movie_id]), f"{'2' * 64}.npz"],
+        )
+
+    code, out, _ = run("taste", "evaluate")
+    assert code == 0 and "1 masked run(s) queued for 1 movie(s)" in out
+    assert "no worker is running" in out
+    code, _, err = run("taste", "evaluate")
+    assert code == 1 and "still running" in err
+    code, out, _ = run("taste", "evaluation", "--results")
+    assert code == 0 and "running; 0 of 1 movie(s) have a result" in out
+    assert "seed      none evaluated" in out
+    shown = json.loads(run("taste", "evaluation", "--json")[1])
+    assert shown["state"] == "running" and shown["queued"] == 1
+
+    code, out, _ = run("taste", "residual", "train")
+    assert code == 0 and "no change (insufficient_evidence); 0 movie(s), 0 pair(s)" in out
+    state = json.loads(run("taste", "residual", "status", "--json")[1])
+    assert state["last_training"]["reason"] == "insufficient_evidence"
+    assert state["in_use"] is False

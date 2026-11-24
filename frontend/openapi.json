@@ -1765,7 +1765,7 @@
           "review"
         ],
         "summary": "Taste Status",
-        "description": "Exemplars, the active profile, whether a rebuild is due, agreement, and what the\nresidual would get from the events (it is not trained).",
+        "description": "Exemplars, the active profile, whether a rebuild is due, agreement, the residual's\nstate, and the latest blind evaluation's headline.",
         "operationId": "taste_status_api_taste_get",
         "responses": {
           "200": {
@@ -1787,6 +1787,299 @@
             "APIKeyHeader": []
           }
         ]
+      }
+    },
+    "/api/taste/evaluations": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Queue Evaluation",
+        "description": "Queue a blind evaluation: a masked run of every movie with an active positive\nexemplar (or of the movies named), as one batch. It changes nothing in the library, the\nfeedback, or the taste profile.",
+        "operationId": "queue_evaluation_api_taste_evaluations_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/EvaluationRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationQueued"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An evaluation is running, or the profile cannot be measured now"
+          },
+          "422": {
+            "description": "A movie named cannot be evaluated"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "List Evaluations",
+        "description": "Blind evaluations, newest first, each with its summary.",
+        "operationId": "list_evaluations_api_taste_evaluations_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/evaluations/{evaluation_id}": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Evaluation",
+        "description": "One blind evaluation and its summary.",
+        "operationId": "get_evaluation_api_taste_evaluations__evaluation_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Evaluation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/taste/evaluations/{evaluation_id}/results": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Evaluation Results",
+        "description": "One page of an evaluation's results, by title: for each movie, where the owner's\nposter landed, with the images to show.",
+        "operationId": "evaluation_results_api_taste_evaluations__evaluation_id__results_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "evaluation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Evaluation Id"
+            }
+          },
+          {
+            "name": "outcome",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "ranked",
+                    "gated",
+                    "not_offered",
+                    "failed"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Outcome"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "seed",
+                    "feedback"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvaluationResultList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/taste/rebuild": {
@@ -2538,6 +2831,704 @@
           "items"
         ],
         "title": "DeploymentList"
+      },
+      "EvaluationHeadline": {
+        "properties": {
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "running": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvaluationItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "latest",
+          "previous",
+          "running"
+        ],
+        "title": "EvaluationHeadline",
+        "description": "The latest finished evaluation's numbers, and the one before for comparison."
+      },
+      "EvaluationItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id",
+            "description": "The batch's parent job"
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "The batch's state: running, succeeded, failed, cancelled"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_sha256": {
+            "type": "string",
+            "title": "Profile Sha256"
+          },
+          "residual_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Residual Id"
+          },
+          "scorer": {
+            "type": "string",
+            "enum": [
+              "weighted",
+              "residual"
+            ],
+            "title": "Scorer",
+            "description": "What the runs were expected to use when it was queued"
+          },
+          "movies": {
+            "type": "integer",
+            "title": "Movies"
+          },
+          "queued": {
+            "type": "integer",
+            "title": "Queued"
+          },
+          "results": {
+            "type": "integer",
+            "title": "Results",
+            "description": "Movies with a result so far"
+          },
+          "not_run": {
+            "type": "integer",
+            "title": "Not Run",
+            "description": "Queued runs that ended without a result (cancelled)"
+          },
+          "progress": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Progress",
+            "description": "The batch's children by state"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/EvaluationSummary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "job_id",
+          "state",
+          "profile_id",
+          "profile_sha256",
+          "residual_id",
+          "scorer",
+          "movies",
+          "queued",
+          "results",
+          "not_run",
+          "progress",
+          "created_at",
+          "finished_at",
+          "summary"
+        ],
+        "title": "EvaluationItem"
+      },
+      "EvaluationList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "EvaluationList"
+      },
+      "EvaluationQueued": {
+        "properties": {
+          "evaluation": {
+            "$ref": "#/components/schemas/EvaluationItem"
+          },
+          "batch": {
+            "$ref": "#/components/schemas/JobItem"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evaluation",
+          "batch"
+        ],
+        "title": "EvaluationQueued"
+      },
+      "EvaluationRequest": {
+        "properties": {
+          "movie_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array",
+                "maxItems": 1000,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Movie Ids"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "At most this many movies"
+          }
+        },
+        "type": "object",
+        "title": "EvaluationRequest"
+      },
+      "EvaluationResultItem": {
+        "properties": {
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "exemplar_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exemplar Id"
+          },
+          "exemplar_source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "seed",
+                  "feedback"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exemplar Source"
+          },
+          "exemplar_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exemplar Image Url",
+            "description": "The owner's poster, as kept"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id",
+            "description": "The masked run; null once a newer one replaced it"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "ranked",
+              "gated",
+              "not_offered",
+              "failed"
+            ],
+            "title": "Outcome"
+          },
+          "matched_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "file",
+                  "cosine"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched By"
+          },
+          "match_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match File"
+          },
+          "match_cosine": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Cosine"
+          },
+          "best_cosine": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Cosine"
+          },
+          "best_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best File"
+          },
+          "unembedded": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unembedded"
+          },
+          "rank": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rank"
+          },
+          "ranked_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ranked Count"
+          },
+          "card": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card"
+          },
+          "cards": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cards"
+          },
+          "pick_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick File"
+          },
+          "pick_is_match": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Is Match"
+          },
+          "same_design": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Same Design"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "match_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Image Url"
+          },
+          "pick_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Image Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "movie_id",
+          "title",
+          "year",
+          "exemplar_id",
+          "exemplar_source",
+          "exemplar_image_url",
+          "run_id",
+          "outcome",
+          "matched_by",
+          "match_file",
+          "match_cosine",
+          "best_cosine",
+          "best_file",
+          "unembedded",
+          "rank",
+          "ranked_count",
+          "card",
+          "cards",
+          "pick_file",
+          "pick_is_match",
+          "same_design",
+          "stage",
+          "reason",
+          "match_image_url",
+          "pick_image_url"
+        ],
+        "title": "EvaluationResultItem"
+      },
+      "EvaluationResultList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationResultItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "EvaluationResultList"
+      },
+      "EvaluationSummary": {
+        "properties": {
+          "seed": {
+            "$ref": "#/components/schemas/EvaluationTally",
+            "description": "Posters the owner picked by hand: the headline"
+          },
+          "feedback": {
+            "$ref": "#/components/schemas/EvaluationTally",
+            "description": "Exemplars chosen from what Marquee showed"
+          },
+          "all": {
+            "$ref": "#/components/schemas/EvaluationTally"
+          }
+        },
+        "type": "object",
+        "required": [
+          "seed",
+          "feedback",
+          "all"
+        ],
+        "title": "EvaluationSummary"
+      },
+      "EvaluationTally": {
+        "properties": {
+          "evaluated": {
+            "type": "integer",
+            "title": "Evaluated"
+          },
+          "ranked": {
+            "type": "integer",
+            "title": "Ranked",
+            "description": "The owner's poster was among the ranked candidates"
+          },
+          "gated": {
+            "type": "integer",
+            "title": "Gated",
+            "description": "The owner's poster was a candidate a gate removed"
+          },
+          "gated_by": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Gated By",
+            "description": "\"stage: reason\" -> how many"
+          },
+          "not_offered": {
+            "type": "integer",
+            "title": "Not Offered",
+            "description": "No candidate was the owner's poster"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "description": "The masked run did not complete"
+          },
+          "exact": {
+            "type": "integer",
+            "title": "Exact",
+            "description": "Of the ranked: the blind pick is the owner's poster"
+          },
+          "same_design": {
+            "type": "integer",
+            "title": "Same Design",
+            "description": "Of the ranked: the pick is the owner's design"
+          },
+          "top3": {
+            "type": "integer",
+            "title": "Top3",
+            "description": "Of the ranked: the owner's design is in the first 3 cards"
+          },
+          "top5": {
+            "type": "integer",
+            "title": "Top5"
+          },
+          "median_card": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Card"
+          },
+          "mean_reciprocal_card": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean Reciprocal Card"
+          }
+        },
+        "type": "object",
+        "required": [
+          "evaluated",
+          "ranked",
+          "gated",
+          "gated_by",
+          "not_offered",
+          "failed",
+          "exact",
+          "same_design",
+          "top3",
+          "top5",
+          "median_card",
+          "mean_reciprocal_card"
+        ],
+        "title": "EvaluationTally"
       },
       "EventItem": {
         "properties": {
@@ -4364,6 +5355,114 @@
         "type": "object",
         "title": "RebuildRequest"
       },
+      "ResidualArtifactItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id",
+            "description": "The residual training that produced it"
+          },
+          "trained_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Trained At"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "subjects": {
+            "type": "integer",
+            "title": "Subjects"
+          },
+          "pairs": {
+            "type": "integer",
+            "title": "Pairs"
+          },
+          "baseline_accuracy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Accuracy",
+            "description": "On held-out movies, before"
+          },
+          "candidate_accuracy": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Accuracy",
+            "description": "On held-out movies, with it"
+          },
+          "held_out_subjects": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Out Subjects"
+          },
+          "held_out_pairs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held Out Pairs"
+          },
+          "weights": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weights",
+            "description": "Each feature it leans on, with its weight; null when its file is gone"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "trained_at",
+          "profile_id",
+          "subjects",
+          "pairs",
+          "baseline_accuracy",
+          "candidate_accuracy",
+          "held_out_subjects",
+          "held_out_pairs",
+          "weights"
+        ],
+        "title": "ResidualArtifactItem"
+      },
       "ResidualItem": {
         "properties": {
           "subjects": {
@@ -4384,7 +5483,45 @@
           },
           "trained": {
             "type": "boolean",
-            "title": "Trained"
+            "title": "Trained",
+            "description": "An artifact is active"
+          },
+          "scorer": {
+            "type": "string",
+            "title": "Scorer",
+            "description": "The SCORER setting: auto, weighted, or residual"
+          },
+          "in_use": {
+            "type": "boolean",
+            "title": "In Use",
+            "description": "Runs rank with the residual"
+          },
+          "why": {
+            "type": "string",
+            "title": "Why"
+          },
+          "active": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResidualArtifactItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_training": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResidualTrainingItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "missing": {
+            "$ref": "#/components/schemas/ResidualMissing"
           }
         },
         "type": "object",
@@ -4393,9 +5530,98 @@
           "pairs",
           "min_subjects",
           "min_pairs",
-          "trained"
+          "trained",
+          "scorer",
+          "in_use",
+          "why",
+          "active",
+          "last_training",
+          "missing"
         ],
         "title": "ResidualItem"
+      },
+      "ResidualMissing": {
+        "properties": {
+          "subjects": {
+            "type": "integer",
+            "title": "Subjects",
+            "description": "More movies with feedback needed"
+          },
+          "pairs": {
+            "type": "integer",
+            "title": "Pairs",
+            "description": "More pairs needed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subjects",
+          "pairs"
+        ],
+        "title": "ResidualMissing"
+      },
+      "ResidualTrainingItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "At"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "activate",
+              "no_change",
+              "failed"
+            ],
+            "title": "Outcome"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "subjects": {
+            "type": "integer",
+            "title": "Subjects"
+          },
+          "pairs": {
+            "type": "integer",
+            "title": "Pairs"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "outcome",
+          "reason",
+          "subjects",
+          "pairs",
+          "profile_id"
+        ],
+        "title": "ResidualTrainingItem"
       },
       "RevokeRequest": {
         "properties": {
@@ -5137,6 +6363,9 @@
           "pending_reviews": {
             "type": "integer",
             "title": "Pending Reviews"
+          },
+          "evaluation": {
+            "$ref": "#/components/schemas/EvaluationHeadline"
           }
         },
         "type": "object",
@@ -5147,7 +6376,8 @@
           "rebuild_due",
           "agreement",
           "residual",
-          "pending_reviews"
+          "pending_reviews",
+          "evaluation"
         ],
         "title": "TasteStatus"
       },

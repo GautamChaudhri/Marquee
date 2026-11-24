@@ -12,6 +12,18 @@ from sqlalchemy import func, select
 
 from marquee.api.files import file_response
 from marquee.api.routes.jobs import job_item
+from marquee.api.schemas.evaluation import (
+    EvaluationHeadline,
+    EvaluationItem,
+    EvaluationList,
+    EvaluationQueued,
+    EvaluationRequest,
+    EvaluationResultItem,
+    EvaluationResultList,
+    EvaluationSummary,
+    ExemplarSource,
+    Outcome,
+)
 from marquee.api.schemas.jobs import JobItem
 from marquee.api.schemas.library import Poster
 from marquee.api.schemas.taste import (
@@ -36,12 +48,17 @@ from marquee.api.schemas.taste import (
 from marquee.api.sessions import Session
 from marquee.artwork import runs
 from marquee.config import settings
-from marquee.db.models import Exemplar
+from marquee.db.models import Evaluation, Exemplar
 from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
 from marquee.jobs import review
+from marquee.jobs.handlers.poster_run import (
+    EvaluationMoviesError,
+    EvaluationRefusedError,
+    enqueue_evaluation,
+)
 from marquee.jobs.handlers.taste_rebuild import enqueue_rebuild
 from marquee.library.queries import movie_names
-from marquee.taste import agreement, exemplars, feedback
+from marquee.taste import agreement, evaluation, exemplars, feedback
 
 logger = logging.getLogger(__name__)
 
@@ -207,11 +224,181 @@ async def revoke_feedback(
     return await _result(session, result)
 
 
+async def _evaluation_item(session: Session, row: Evaluation) -> EvaluationItem:
+    view = await evaluation.view(session, row)
+    return EvaluationItem(
+        id=row.id,
+        job_id=row.job_id,
+        state=view.state,
+        profile_id=row.profile_id,
+        profile_sha256=row.profile_sha256,
+        residual_id=row.residual_id,
+        scorer=row.scorer,  # type: ignore[arg-type]
+        movies=row.movies,
+        queued=row.queued,
+        results=view.results,
+        not_run=view.not_run,
+        progress=view.progress,
+        created_at=row.created_at,
+        finished_at=view.finished_at,
+        summary=EvaluationSummary.model_validate(view.summary),
+    )
+
+
+async def _headline(session: Session) -> EvaluationHeadline:
+    latest = await evaluation.latest_finished(session)
+    previous = (
+        await session.scalar(
+            select(Evaluation)
+            .where(Evaluation.id < latest.id, Evaluation.job_id.is_not(None))
+            .order_by(Evaluation.id.desc())
+            .limit(1)
+        )
+        if latest is not None
+        else None
+    )
+    running = await evaluation.running(session)
+    return EvaluationHeadline(
+        latest=await _evaluation_item(session, latest) if latest else None,
+        previous=await _evaluation_item(session, previous) if previous else None,
+        running=await _evaluation_item(session, running) if running else None,
+    )
+
+
 @router.get("/taste")
 async def taste_status(session: Session) -> TasteStatus:
-    """Exemplars, the active profile, whether a rebuild is due, agreement, and what the
-    residual would get from the events (it is not trained)."""
-    return TasteStatus.model_validate((await agreement.status(session)).to_dict())
+    """Exemplars, the active profile, whether a rebuild is due, agreement, the residual's
+    state, and the latest blind evaluation's headline."""
+    status_ = (await agreement.status(session)).to_dict()
+    return TasteStatus.model_validate({**status_, "evaluation": await _headline(session)})
+
+
+@router.post(
+    "/taste/evaluations",
+    status_code=status.HTTP_202_ACCEPTED,
+    responses={
+        409: {"description": "An evaluation is running, or the profile cannot be measured now"},
+        422: {"description": "A movie named cannot be evaluated"},
+    },
+)
+async def queue_evaluation(
+    session: Session, request: EvaluationRequest | None = None
+) -> EvaluationQueued:
+    """Queue a blind evaluation: a masked run of every movie with an active positive
+    exemplar (or of the movies named), as one batch. It changes nothing in the library, the
+    feedback, or the taste profile."""
+    try:
+        row, parent, _ = await enqueue_evaluation(
+            session,
+            request.movie_ids if request is not None else None,
+            limit=request.limit if request is not None else None,
+        )
+    except EvaluationMoviesError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except EvaluationRefusedError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return EvaluationQueued(
+        evaluation=await _evaluation_item(session, row), batch=await job_item(session, parent)
+    )
+
+
+@router.get("/taste/evaluations")
+async def list_evaluations(
+    session: Session,
+    page: Annotated[int, Query(ge=1, description="Page number, from 1")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> EvaluationList:
+    """Blind evaluations, newest first, each with its summary."""
+    total = await session.scalar(select(func.count()).select_from(Evaluation))
+    rows = list(
+        await session.scalars(
+            select(Evaluation)
+            .order_by(Evaluation.id.desc())
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        )
+    )
+    return EvaluationList(
+        total=total or 0,
+        page=page,
+        page_size=page_size,
+        items=[await _evaluation_item(session, row) for row in rows],
+    )
+
+
+@router.get("/taste/evaluations/{evaluation_id}", responses={404: {"description": "No such"}})
+async def get_evaluation(session: Session, evaluation_id: int) -> EvaluationItem:
+    """One blind evaluation and its summary."""
+    row = await session.get(Evaluation, evaluation_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such evaluation")
+    return await _evaluation_item(session, row)
+
+
+@router.get(
+    "/taste/evaluations/{evaluation_id}/results", responses={404: {"description": "No such"}}
+)
+async def evaluation_results(
+    session: Session,
+    evaluation_id: int,
+    outcome: Outcome | None = None,
+    source: ExemplarSource | None = None,
+    page: Annotated[int, Query(ge=1, description="Page number, from 1")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> EvaluationResultList:
+    """One page of an evaluation's results, by title: for each movie, where the owner's
+    poster landed, with the images to show."""
+    if await session.get(Evaluation, evaluation_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such evaluation")
+    total, rows = await evaluation.results_page(
+        session, evaluation_id, outcome=outcome, source=source, page=page, page_size=page_size
+    )
+
+    def image(run_id: int | None, candidate_id: int | None) -> str | None:
+        if run_id is None or candidate_id is None:
+            return None
+        return f"/api/runs/{run_id}/candidates/{candidate_id}/image"
+
+    items = []
+    for row in rows:
+        result = row.result
+        run_id = result.run_id if row.run_exists else None
+        items.append(
+            EvaluationResultItem(
+                movie_id=result.movie_id,
+                title=row.title,
+                year=row.year,
+                exemplar_id=result.exemplar_id,
+                exemplar_source=result.exemplar_source,  # type: ignore[arg-type]
+                exemplar_image_url=(
+                    f"/api/taste/exemplars/{result.exemplar_id}/image"
+                    if result.exemplar_id is not None
+                    else None
+                ),
+                run_id=run_id,
+                outcome=result.outcome,  # type: ignore[arg-type]
+                matched_by=result.matched_by,  # type: ignore[arg-type]
+                match_file=result.match_file,
+                match_cosine=result.match_cosine,
+                best_cosine=result.best_cosine,
+                best_file=result.best_file,
+                unembedded=result.unembedded,
+                rank=result.rank,
+                ranked_count=result.ranked_count,
+                card=result.card,
+                cards=result.cards,
+                pick_file=result.pick_file,
+                pick_is_match=result.pick_is_match,
+                same_design=result.same_design,
+                stage=result.stage,
+                reason=result.reason,
+                match_image_url=image(run_id, row.match_candidate_id),
+                pick_image_url=image(run_id, row.pick_candidate_id),
+            )
+        )
+    return EvaluationResultList(total=total, page=page, page_size=page_size, items=items)
 
 
 @router.post(
