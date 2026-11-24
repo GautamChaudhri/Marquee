@@ -695,7 +695,7 @@ def test_review_commands(
     assert code == 1 and "no run 999" in err
 
     code, out, _ = run("review", "revoke", str(event_id))
-    assert code == 0 and f"revokes event {event_id} of Heat" in out
+    assert code == 0 and f"revoke of event {event_id} (Heat)" in out
     assert out.count("  revoked     exemplar") == 2
     code, out, _ = run("review", "revoke", str(event_id))
     assert code == 0 and "was recorded before with this key; nothing changed" in out
@@ -800,3 +800,29 @@ def test_run_and_deployment_commands(
     assert code == 0 and "a restore of it puts back" in out
     assert "222222222222  333333333333 (library)" in out
     assert json.loads(run("deployments", "list", "--json")[1])[0]["restore_puts_back"] == "3" * 64
+
+
+def test_a_rebuild_that_reproduces_the_active_profile_says_so(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from types import SimpleNamespace
+
+    result = {
+        "skipped": None,
+        "built": True,
+        "profile_id": 1,
+        "previous_profile_id": 1,
+        "sha256": "a" * 64,
+        "positives": 147,
+        "negatives": 0,
+        "movies": 147,
+        "revision": "b" * 64,
+        "seconds": 36.0,
+    }
+    cli._print_rebuild(SimpleNamespace(result=result))
+    out = capsys.readouterr().out
+    assert "same      the build is byte for byte the profile that was already active" in out
+    cli._print_rebuild(SimpleNamespace(result={**result, "previous_profile_id": 3}))
+    assert "replaces  profile 3" in capsys.readouterr().out
+    cli._print_rebuild(SimpleNamespace(result={"skipped": "up to date", "revision": "c" * 64}))
+    assert capsys.readouterr().out == f"skipped   up to date (revision {'c' * 12})\n"

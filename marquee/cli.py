@@ -1060,8 +1060,11 @@ def _print_rebuild(job: Any) -> None:
         f"{result['movies']} movies"
     )
     print(f"revision  {result['revision']}")
-    if result.get("previous_profile_id"):
-        print(f"replaces  profile {result['previous_profile_id']}")
+    previous = result.get("previous_profile_id")
+    if previous == result["profile_id"]:
+        print("same      the build is byte for byte the profile that was already active")
+    elif previous:
+        print(f"replaces  profile {previous}")
     print(f"took      {result['seconds']:.0f} s")
 
 
@@ -1121,13 +1124,11 @@ def _print_review_result(result: Any, title: str) -> None:
     event = result.outcome.event
     if not result.created:
         print(f"event     {event.id} was recorded before with this key; nothing changed")
-    blind = {True: "blind", False: "not blind", None: "blind unknown"}[event.blind]
-    target = (
-        f"revokes event {event.revokes_event_id}"
-        if event.revokes_event_id
-        else f"on run {event.run_id}"
-    )
-    print(f"event     {event.id} {event.action} {target} of {title} ({blind})")
+    if event.revokes_event_id:
+        print(f"event     {event.id} revoke of event {event.revokes_event_id} ({title})")
+    else:
+        blind = {True: "blind", False: "not blind", None: "blind unknown"}[event.blind]
+        print(f"event     {event.id} {event.action} on run {event.run_id} of {title} ({blind})")
     if event.chosen_source_file:
         same = " (the pick)" if event.chosen_source_file == event.pick_source_file else ""
         print(f"chosen    {event.chosen_source_file}{same}")
