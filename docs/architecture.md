@@ -48,8 +48,9 @@ marquee/
                    restore, the taste rebuild)
   api/             the HTTP API: the app factory, the server, and the OpenAPI document the
                    web app's types come from (app.py), API-key auth (auth.py),
-                   routes/ (health, library, jobs, runs, deployments, taste), schemas/ (response
-                   models), file responses (files.py), and a rate limiter
+                   routes/ (health, library, jobs, runs, deployments, taste, system),
+                   schemas/ (response models), the system summary (system.py), file
+                   responses (files.py), and a rate limiter
 ```
 
 ## Layering
@@ -128,7 +129,7 @@ Everything an operator runs goes through the `marquee` command:
 | `marquee sync [--dry-run] [--json]` | Checks that Radarr's root folders map to folders here, copies Radarr's movie list into the database, records each folder's poster, and fetches TMDB details once per movie; exits 1 when a movie failed or the path check failed |
 | `marquee api [--host] [--port]` | Serves the HTTP API under uvicorn, on `API_HOST` and `API_PORT` by default |
 | `marquee api-schema [--check] [--output PATH]` | Writes the API's OpenAPI document to `frontend/openapi.json`, which the web app's types are generated from; it needs no database and does not depend on `MARQUEE_ENVIRONMENT`. `--check` writes nothing and exits 1 when the file is missing or stale; the backend CI job runs it |
-| `marquee worker [--drain]` | Runs the job queue until SIGTERM or Ctrl-C, which stop it gracefully. Only one runs at a time; a second exits with "a worker is already running". `--drain` exits once nothing is runnable and queues no scheduled work |
+| `marquee worker [--drain]` | Runs the job queue until SIGTERM or Ctrl-C, which stop it gracefully. Only one runs at a time; a second exits with "a worker is already running". `--drain` exits once nothing is running and nothing queued can start (a job that finishes while the worker looks keeps it going), and queues no scheduled work |
 | `marquee jobs list [--state] [--kind] [--json]` | The newest 50 jobs |
 | `marquee jobs show <id>` | One job and its events |
 | `marquee jobs enqueue <kind> [--payload JSON] [--priority N]` | Queues a job of a registered kind; a kind that allows one active job returns the one already queued or running |
@@ -413,11 +414,21 @@ a restore is always queued, except a request identical to the movie's newest wri
 kind and payload) while that job is still queued, which is returned instead; requests for one
 movie are queued one at a time under a transaction-level advisory lock. A deploy that feedback
 asks for carries its event's id, so each act of feedback names its own deploy. When a write
-job starts, first attempt or retry, and a newer write job of the same movie is queued,
-running, or succeeded, the older one succeeds with `skipped: superseded by job N` and writes
-nothing, unless it already wrote its row (it is done) or kept an intent (it may have renamed
-its file into place, so it records that write first and the newer job writes over it). Two
-write jobs still never run at once: the class allows one.
+job starts, first attempt or retry, and another write job of the same movie wins over it, it
+succeeds with `skipped: superseded by job N` and writes nothing, unless it already wrote its
+row (it is done) or kept an intent (it may have renamed its file into place, so it records
+that write first and the winner writes over it). Two write jobs still never run at once: the
+class allows one.
+
+**An owner's request always beats the deploy policy.** Every restore and every deploy the
+owner asked for is the owner's; a deploy the policy queued is the policy's. An owner's job
+steps aside only for a newer owner's job that is queued, running, or succeeded. A policy
+deploy steps aside for any newer write job, and also for any owner's job of the movie,
+whatever its id, that is queued or running, or that succeeded after the policy deploy was
+queued. The worker runs the older job first, so when the owner picks and a run's policy deploy
+is queued just after, the owner's job writes and the policy's then steps aside instead of
+writing the engine's pick over it. A policy deploy queued after the owner's write had
+finished (a later run's) still deploys under the policy.
 
 **Restore** works on any deployment of a movie, not only the newest: restoring deployment N
 backs up what is in the folder now, whatever it is, and puts back what was there before N
@@ -527,7 +538,7 @@ of it. `marquee api` serves it under uvicorn.
 | `GET /api/movies` | yes | one page of movies with a file (`include_unavailable` adds the ones Radarr wants), with `q` (case-insensitive title search), `has_poster`, `origin` (`library` or `marquee`: whose poster it is), `has_run` (any run record), `sort` (`title`, `year`, `added`), `page`, and `page_size` (1 to 200). A movie's `poster` carries `version`, the first 12 hex of its hash |
 | `GET /api/movies/{id}` | yes | one movie; 404 when absent or retired |
 | `GET /api/movies/{id}/poster` | yes | the poster file, with its SHA-256 as the ETag; 404 when there is no poster row or the file is gone or changed. With `width` (160, 320, or 640; 422 otherwise) a JPEG thumbnail, never enlarged, ETag `"<sha256>-<width>"`, made once from the library file (whose bytes must hash to the row's) and kept in `data/cache/thumbs/`; 409 when the poster does not decode. With `v` equal to the poster's current `version`, the answer is `private, max-age=31536000, immutable`; otherwise `private, no-cache` |
-| `GET /api/jobs` | yes | one page of jobs, newest first, with `state`, `kind`, and `parent_id` filters and paging as for movies |
+| `GET /api/jobs` | yes | one page of jobs, newest first, with `state`, `kind`, and `parent_id` filters and paging as for movies. Every job answer, here and wherever a route returns a job, carries `subject`: the movie its payload names (id, title, year), or null; the movies of a page come from one query |
 | `GET /api/jobs/events` | yes | events of every job after the event id `after`, oldest first (`limit` 1 to 500), and the cursor for the next poll |
 | `GET /api/jobs/{id}` | yes | one job; 404 when absent |
 | `GET /api/jobs/{id}/events` | yes | one job's events, oldest first |
@@ -543,25 +554,40 @@ of it. `marquee api` serves it under uvicorn.
 | `POST /api/runs/{id}/deploy` | yes | `{"candidate_id": N}` optional (the pick by default): queues the owner's deploy, 202; 200 with the job when the same request is the movie's newest write and still queued; 409 when the candidate cannot be deployed |
 | `GET /api/deployments` | yes | one page of deployments, newest first, with a `movie_id` filter |
 | `POST /api/deployments/{id}/restore` | yes | queues a restore of any deployment, 202; 200 with the job when the same request is the movie's newest write and still queued |
-| `GET /api/review` | yes | movies whose latest completed run has no feedback that stands, policy deploys first |
+| `GET /api/review` | yes | movies whose latest completed run has no feedback that stands, policy deploys first, each with the movie's `poster` (as a movie item has it) and `pick_image_url`, the pick's 500 px file when it was downloaded |
 | `POST /api/runs/{id}/feedback` | yes | `{"action", "candidate_id", "order", "hated", "shown", "deploy" (default true), "idempotency_key" (required)}`: 201 with the event, the exemplar changes, and the job ids; 200 with the same body when the key was used before; 404 for an unknown run or candidate; 409 with the reason when refused; 422 for a malformed body |
 | `GET /api/runs/{id}/feedback` | yes | the run's events and the revokes of them |
+| `GET /api/feedback` | yes | every act of feedback, revokes included, newest first and paged, with an optional `movie_id`; each with its movie's title and year, how many candidates were shown (not the copy itself), and `revoked_by` |
 | `POST /api/feedback/{id}/revoke` | yes | revokes one event: 201, or 200 when it was revoked under the same key; 409 when it is a revoke or already revoked |
 | `GET /api/taste` | yes | what `marquee taste status` prints |
 | `POST /api/taste/rebuild` | yes | `{"force": bool}` optional: queues a rebuild, 202; 200 with the one already queued |
-| `GET /api/taste/exemplars` | yes | one page of exemplars, newest first, with `movie_id`, `state`, and `polarity` filters |
+| `GET /api/taste/exemplars` | yes | one page of exemplars, newest first, with `movie_id`, `state`, and `polarity` filters; each with its movie's title and year, `updated_at`, and `ended_by_event_id` |
 | `GET /api/taste/exemplars/{id}/image` | yes | the kept image, checked against its hash (the ETag) |
+| `GET /api/system` | yes | what this installation is and how it is set (below) |
 
 Every `/api` route requires the key in `API_KEY`, as `Authorization: Bearer <key>` or
 `X-Api-Key: <key>`, compared in constant time: missing or wrong is 401, and with no key
 configured the API answers 503. There is no bypass: not for debug mode, not for loopback
 clients, and never a key in a query string. Every response is a pydantic model, so the
-OpenAPI schema is fully typed, and no response carries a local path or Radarr's path. The
+OpenAPI schema is fully typed, and no response carries Radarr's path or a local path, except
+`GET /api/system`'s movie roots and data directory, which are its point. The
 interactive documentation and `/openapi.json` are served only when `MARQUEE_ENVIRONMENT` is
 `development`. Requests are logged as method, path, status, and time taken, never a header
 or a query string; uvicorn's own access log is off. Queries live in
 `marquee/library/queries.py` and `marquee/jobs/queries.py`, not in the routes. No route
 queues a job of an arbitrary kind.
+
+**`GET /api/system`** (`marquee/api/system.py`) is read-only and cheap: the version and
+environment; the database's schema revision against the newest in the code; the settings that
+shape behaviour (`DEPLOY_POLICY`, `RUN_NEW_MOVIES`, the sync interval, the movie roots, the
+data directory); library counts (movies, movies with a file, posters by origin, runs by state,
+deployments, exemplars by state and polarity, preference events); each file the model
+manifest lists, whether it is there and its size (a stat, never a hash); the newest
+`library_sync` job's state and times; and the size of `runs/`, `backups/`, `cache/`, and `ml/`,
+measured off the event loop and kept for a minute. Every field is named: nothing serialises
+the settings object, so no key, token, password, database URL, or environment variable can
+reach the answer; a test sets every secret and looks for each in it. It never runs the
+doctor or loads a model.
 
 ## The web app
 
@@ -608,8 +634,10 @@ sign-in. `src/lib/api/types.ts` only names schemas.
 **Layout of `src/lib/`:** `api/` (the client), `server/` (server-only: settings, session,
 rate limit, origin check, proxy), `ui/` (design-system primitives: buttons, notices, the top
 bar, navigation, toasts, the confirm dialog), `features/<area>/` (what knows about the library,
-runs, or jobs), and `stores/` (theme, toasts). Colours, radii, and fonts come from the tokens in
-`src/app.css`.
+runs, jobs, review, taste, or the system), and `stores/` (theme, toasts, how many reviews
+wait). Colours, radii, and fonts come from the tokens in `src/app.css`. The one runtime
+dependency besides `openapi-fetch` is `svelte-dnd-action`, for dragging a card in the rank
+panel.
 
 **The pages** render in the browser (`ssr = false`); the server still checks the session before
 it sends one.
@@ -618,18 +646,63 @@ it sends one.
 |---|---|---|
 | `/` Library | the grid of movies with a file, width-320 thumbnails with their `version`, title and year, a mark for no poster and for Marquee's poster; search, filters (poster, whose, runs), and sort, kept in the address; more load as the owner scrolls | Sync now (`POST /api/sync`), then follows the job |
 | `/movies/[id]` | the poster at width 640, the facts, the latest run (when, blind, reviewed, the ranked candidates with rank, score, stack, and the pick, read-only), and the poster history, newest first | Run (`POST /api/movies/{id}/run`, then follows the job and shows the new run); put back what was there before a deployment, behind a confirmation |
-| `/activity` | the worker's state; jobs newest first with kind, state, progress, and times, filtered by state and kind and paged; a job's events and error | Cancel and Retry where the API allows |
+| `/review` | the runs waiting for an answer: the movie's poster now and the pick, title and year, how many were ranked, a Blind mark, and a mark when the deploy policy already wrote the pick | opens a run's review |
+| `/review/[runId]` | the movie, its poster now and whose it is, the run's line, the run's earlier answers (newest first), and the rank panel | the four answers, Undo, Next (below) |
+| `/taste` | the active profile, the exemplars by state and whether a rebuild is due, agreement over blind reviews (a percentage from 10; the others apart), the residual's evidence against its thresholds, recent feedback, and a paged grid of exemplars filtered by polarity and state, each saying what ended it | Rebuild now (followed to its end); Undo on a recent answer |
+| `/activity` | the worker's state; jobs newest first with kind, the movie they are about (linked), state, progress, and times, filtered by state and kind and paged; a job's events and error | Cancel and Retry where the API allows |
+| `/system` | plain tables of `GET /api/system` and `GET /api/worker`; a schema behind the code, a missing model file or manifest, and a worker that is not running are listed first as problems, in words | nothing: it changes no setting |
 
-There is no deploy, pick, approve, reject, or revoke button: choosing a poster is feedback, and
-belongs to the review page. Activity polls `GET /api/jobs/events` every 2 s and reads again the
+The navigation is Library, Review (with the number waiting, read from `GET /api/taste` when
+the shell loads and after each answer), Taste, Activity, and System; on a narrow screen it
+shows icons, with the labels kept for screen readers. The Library pages have no deploy, pick,
+approve, reject, or revoke button: choosing a poster is feedback, and belongs to the review
+page. A movie's page links its latest run to its review when that run completed.
+
+**The rank panel** (`src/lib/features/review/`). One card is one design: a run's ranked
+candidates are grouped by design stack (`3B` is stack 3, variant B), and a card shows the
+stack's best-ranked variant until the owner opens the stack and makes another variant the
+one it shows. An answer names one candidate per card, the variant the card shows; the old app
+sent every variant of a stack, and eight near-identical negatives teach less than eight
+different ones. A card whose candidate was never downloaded says it cannot be chosen or hated.
+The cards stand in the owner's order, with a hate pile below; every card has buttons (move up,
+move down, hate, and in the pile bring back), and dragging a card by its handle, with the
+pointer, by touch, or from the keyboard, does the same. A line says whether the order differs
+from the engine's. The four answers, each `POST /api/runs/{id}/feedback`:
+
+| Button | `action` | Body besides the key |
+|---|---|---|
+| Keep the pick | `approval` | `shown`, `deploy` |
+| Use this one (on any card) | `override` | `candidate_id`, `shown`, `deploy` |
+| Save this ranking | `rank` | `order` (the cards not hated, in the owner's order), `hated`, `shown`, `deploy` |
+| None of these | `reject` | `shown` (the API hates every shown one and keeps the best-ranked 8) |
+
+`shown` is every card's shown candidate in the order the page first showed the cards (rank
+order), at most 100. `deploy` comes from a checkbox, "Write the chosen poster to the movie's
+folder", on by default. Saving a ranking and refusing all ask first, saying which poster is
+written (or that none is) and that the hated designs become examples of what the owner does
+not want; keeping the pick and using another ask only when the deploy is on and the folder
+holds the owner's own poster. Each answer gets its own idempotency key when the button is
+pressed, kept while that request is retried after a network failure (no answer, 502, 503,
+504) and replaced for the next answer; a 200 instead of a 201 means the key was used before,
+and the page shows the event it returned. After an answer the page says what happened until
+the owner moves on: the event the API recorded (an override that names the pick is recorded,
+and shown, as keeping it), the exemplars made, ended, and brought back, the deploy and rebuild
+jobs followed to their end, and why a deploy was refused. Undo revokes the answer and says, in
+one sentence with a link to the movie's poster history, that the poster was not put back;
+Next opens the next run waiting. A run already answered can be answered again: its earlier
+answers are listed above the panel, each with Undo unless it was undone or is an undo. The
+review page of a run that is not the movie's latest completed one, is not completed, or has no
+ranked candidate shows its candidates read-only and says why, with a link to the latest run. Activity polls `GET /api/jobs/events` every 2 s and reads again the
 jobs it mentions, and reads the whole list again every 15 s whatever the feed says, because the
 feed can skip an event; on opening it pages through the feed once to find where it ends.
 
 **Tests.** Unit tests (Vitest) cover the server code and the logic in `src/lib/`. End-to-end
 tests (Playwright, Chromium) run the built app against a small fake API in `frontend/e2e/`
-that refuses any request without the test key; they cover sign-in, the session and its
-cookie, the same-origin check, the proxy, both Library pages, and Activity, at 390 and
-1440 px. CI's `frontend` job runs `npm ci`, the types, `check`, `lint`, the unit tests, the
+that refuses any request without the test key and records every JSON body it receives; they
+cover sign-in, the session and its cookie, the same-origin check, the proxy, both Library
+pages, Activity, the review queue and each of the four answers' bodies (with buttons, from the
+keyboard, and by dragging), Undo, Next, a retried request keeping its key, Taste, and System,
+at 390 and 1440 px. CI's `frontend` job runs `npm ci`, the types, `check`, `lint`, the unit tests, the
 build, and the end-to-end tests.
 
 ## Runtime data

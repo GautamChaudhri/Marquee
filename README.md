@@ -15,9 +15,12 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > be undone byte for byte. You can review each run (approve the pick, choose another, re-rank
 > with a hate pile, reject them all, or take any of that back), and the taste profile is
 > rebuilt from your feedback. Nothing is written to your library unless you ask for it or turn
-> on `DEPLOY_POLICY`. A web interface shows the library, each movie's latest run and poster
-> history, and the job queue; the review page and the learned correction to the score are
-> being rebuilt on top of it.
+> on `DEPLOY_POLICY`, and your own choice always beats the policy's. A web interface shows
+> the library, each movie's latest run and poster history, and the job queue; its review page
+> answers a run (keep the pick, use another, rank the designs with a hate pile, or refuse them
+> all, then undo it), its taste page shows the profile, the agreement, and the exemplars, and
+> its system page shows how the installation is set. The learned correction to the score is
+> still to come.
 
 ## Why
 
@@ -232,8 +235,9 @@ movie, and its poster; runs (`POST /api/movies/{id}/run`, `POST /api/runs/batch`
 `/api/runs`, one run with its candidates, and each candidate's image), deploys
 (`POST /api/runs/{id}/deploy`), the deployments and restoring one
 (`POST /api/deployments/{id}/restore`); review (`/api/review`, `POST` and `GET`
-`/api/runs/{id}/feedback`, `POST /api/feedback/{id}/revoke`) and taste (`/api/taste`,
-`POST /api/taste/rebuild`, `/api/taste/exemplars` and each one's image); the jobs
+`/api/runs/{id}/feedback`, `/api/feedback`, `POST /api/feedback/{id}/revoke`) and taste
+(`/api/taste`, `POST /api/taste/rebuild`, `/api/taste/exemplars` and each one's image); a
+summary of the installation (`/api/system`); the jobs
 (`/api/jobs`, one job, its events, and a
 feed of every job's events after a cursor), cancel and retry, `POST /api/sync` to queue a
 sync, and `/api/worker`. Every `/api` request must carry the key in `API_KEY`, as
@@ -270,6 +274,17 @@ To serve the built app instead, `npm run build`, then
 default; without `HOST` it listens on every address; `ORIGIN` is the address the browser
 uses, which the server needs for its same-origin check when no proxy sets it). The `.env`
 file is gitignored; `frontend/.env.example` names both settings with placeholders.
+
+The pages: **Library** (the grid, and each movie's poster, latest run, and poster history,
+where any write can be put back), **Review** (the runs waiting for your answer; the number
+waiting is in the navigation), **Taste** (the profile, the agreement, recent feedback, and the
+exemplars), **Activity** (the job queue), and **System** (what the installation is and how it
+is set, read-only). On a run's review page each card is one design, its variants folded
+under it; keep the pick, use another design, put them in your order with a hate pile (with
+the buttons on each card, or by dragging), or refuse them all. "Write the chosen poster to
+the movie's folder" is on by default; the page asks first before anything replaces your own
+poster, and Undo takes an answer back without touching the folder (put the poster back from
+the movie's poster history).
 
 ## Development
 

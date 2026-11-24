@@ -97,7 +97,7 @@ unreached. `taste/map.py` still builds poster links in the old API's shape
 | Run records | `backend/marquee/models/pipeline_run.py`, `core/jobs/poster_pipeline*.py`, `api/results.py`, `api/explanations.py` | Keep one row per run plus the JSON archive; drop job, attempt, and fence columns |
 | Multi-title batching | `backend/marquee/pipeline/poster_group_runner.py` | Stage-major batching keeps models loaded across titles. Worth keeping for GPU throughput |
 | Request limits | `backend/marquee/api/{request_limits,deps}.py` | Rate limiting and lockout wait for M6 and M8. The API-key auth became `api/auth.py` in M3, without its bypasses, and was deleted |
-| Review UI | `frontend/src/lib/components/pipeline/RunResultsView.svelte` (1,929 lines), `PosterRankPanel`, `PosterStack`, `PosterCandidateTile` | The drag-to-rank and hate-pile panel is the core of the new product. Split the big view |
+| Run results view | `frontend/src/lib/components/pipeline/RunResultsView.svelte` (1,929 lines), `PosterCandidateTile` | The review and rank panel were rebuilt in M6b (below); what is left is the per-stage and per-candidate explanation of a run, which no milestone has yet |
 | Library and taste pages | `frontend/src/routes/{films,television,taste}/` and their components | Trim; rebuild against the new API types |
 | Settings | `frontend/src/routes/settings/`, `components/settings/` | About 4,200 lines for eight tabs. Cut to connections, paths, naming, and a few knobs |
 | Deployment | `deploy/` | Shape is right (postgres, api, worker, web); scheduler folds into the worker |
@@ -143,6 +143,16 @@ M6a lifted the same-origin API proxy, `frontend/src/routes/api/[...path]/+server
 test, trimmed (no SSE exemption, no key file, a 502 when the API is down), into
 `frontend/src/lib/server/proxy.ts` behind a route at the same place, with the same-origin check
 moved to `frontend/src/hooks.server.ts`, and deleted both from `_salvage/`.
+
+M6b wrote the review pages new (`frontend/src/lib/features/review/`, `src/routes/review/`),
+with the old rank panel as reference only: from `PosterRankPanel.svelte` it took the shape (an
+orderable list and a hate pile, dragging with `svelte-dnd-action`, a hated card leaving the
+order and coming back at its end) and nothing else; it now has a button for every move, sends
+one candidate per design instead of every variant of a stack, and answers through the typed
+client. It deleted `frontend/src/lib/components/PosterRankPanel.svelte` and `PosterStack.svelte`,
+which the new panel replaces; the salvaged `RunResultsView.svelte` still imports them, as other
+salvaged files import modules that are gone. The Taste page was written new too; the salvaged
+`routes/taste/` stays, because its residual retraining and taste map belong to M5c and later.
 
 Partly lifted test files in `_salvage/tests/`: `test_sync.py` keeps its TV tests, the three
 movie poster-path tests that wait for poster naming, and the no-clients test;
@@ -209,7 +219,8 @@ Docker. The milestones, in order:
    blind evaluation and the residual.
 7. **M6, frontend**, in two sessions. **M6a** (done): sign-in with the API key, a
    same-origin proxy that keeps the key on the server, generated API types, the shell, the
-   Library pages, and Activity. **M6b**: review and rank, taste, a small system page.
+   Library pages, and Activity. **M6b** (done): review and rank, taste, a small system
+   page.
 8. **M8, packaging and production hardening**: the full Compose stack, a fresh-machine path
    from the README, scheduled database backups, and `_salvage/` deleted.
 
