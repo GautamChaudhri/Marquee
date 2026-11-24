@@ -1,5 +1,6 @@
 <script lang="ts">
 	import '../app.css';
+	import '$lib/ui/controls.css';
 	import { page } from '$app/state';
 	import WorkerBadge from '$lib/features/jobs/WorkerBadge.svelte';
 	import Nav from '$lib/ui/Nav.svelte';

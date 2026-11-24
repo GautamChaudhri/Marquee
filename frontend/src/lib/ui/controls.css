@@ -1,0 +1,27 @@
+/* Form controls shared by every page: one look for text fields and selects. */
+
+.control {
+	min-height: 32px;
+	padding: 0 10px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--line2);
+	background: var(--panel);
+	color: var(--text);
+	font: inherit;
+	font-size: 13px;
+	min-width: 0;
+}
+.control:hover {
+	border-color: var(--faint);
+}
+select.control {
+	padding-right: 6px;
+}
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 11.5px;
+	color: var(--muted);
+	min-width: 0;
+}
