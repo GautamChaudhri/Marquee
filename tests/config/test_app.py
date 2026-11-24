@@ -134,3 +134,19 @@ def test_api_settings_defaults() -> None:
     assert settings.API_KEY is None
     assert settings.API_HOST == "127.0.0.1"
     assert settings.API_PORT == 8000
+
+
+def test_secret_values_lists_every_secret_that_is_set() -> None:
+    settings = _settings(
+        POSTGRES_PASSWORD="db-secret",
+        TMDB_READ_ACCESS_TOKEN="tmdb-secret",
+        RADARR_API_KEY="radarr-secret",
+        API_KEY="api-secret",
+    )
+    assert sorted(settings.secret_values()) == [
+        "api-secret",
+        "db-secret",
+        "radarr-secret",
+        "tmdb-secret",
+    ]
+    assert _settings().secret_values() == []

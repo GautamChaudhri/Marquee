@@ -152,6 +152,15 @@ class Settings(BaseSettings):
     def text_profiles_path(self) -> Path:
         return self.DATA_DIR / "text_profiles.json"
 
+    def secret_values(self) -> list[str]:
+        """Every secret value currently set, so text can be scrubbed before it is shown."""
+        values = []
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if isinstance(value, SecretStr) and value.get_secret_value():
+                values.append(value.get_secret_value())
+        return values
+
     # Database URLs. They embed the password: never log or print them.
 
     def _database_netloc(self) -> str:

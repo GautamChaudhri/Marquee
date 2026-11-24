@@ -87,6 +87,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tmdb-id", type=int, help="use this TMDB id and the title as typed; skip the library"
     )
     run.add_argument("--json", action="store_true", help="print the summary as JSON")
+
+    db = commands.add_parser("db", help="create and inspect the database schema")
+    db_commands = db.add_subparsers(dest="db_command", required=True, metavar="command")
+    db_commands.add_parser(
+        "upgrade",
+        help="apply every migration the database lacks",
+        description="Bring the database's schema up to the newest migration in the package.",
+    )
+    db_commands.add_parser(
+        "status",
+        help="show the database's schema revision; exit 1 unless it is the newest",
+    )
+    revision = db_commands.add_parser(
+        "revision",
+        help="write a new migration from the models (for developers)",
+        description="Compare the ORM models with a database at the newest revision and write "
+        "the difference as a new migration under marquee/db/migrations/versions/. Read and tidy "
+        "it before committing it.",
+    )
+    revision.add_argument("-m", "--message", required=True, help="what the migration does")
     return parser
 
 
@@ -102,6 +122,65 @@ def _quiet_logging(level: str = "ERROR") -> None:
 def _fail(command: str, message: str) -> int:
     print(f"marquee {command}: {message}", file=sys.stderr)
     return 1
+
+
+def _error_line(exc: BaseException) -> str:
+    """The first line of an error, with every configured secret blanked out."""
+    from marquee.config import settings
+
+    cause = getattr(exc, "orig", None) or exc
+    lines = str(cause).strip().splitlines()
+    text = f"{type(cause).__name__}: {lines[0]}" if lines else type(cause).__name__
+    for secret in settings.secret_values():
+        text = text.replace(secret, "***")
+    return text
+
+
+def _database_target() -> str:
+    """Where the database is, without the password."""
+    from marquee.config import settings
+
+    return (
+        f"{settings.POSTGRES_USER}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}"
+        f"/{settings.POSTGRES_DB}"
+    )
+
+
+def _db(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from marquee.db import migrate
+
+    _quiet_logging()
+    command = f"db {args.db_command}"
+    try:
+        if args.db_command == "status":
+            state = migrate.status()
+            print(f"database  {_database_target()}")
+            print(f"revision  {state.current or 'none'}")
+            print(f"head      {state.head}")
+            if not state.at_head:
+                print("status    behind; run `marquee db upgrade`")
+                return 1
+            print("status    at head")
+            return 0
+        if args.db_command == "upgrade":
+            before = migrate.status()
+            after = migrate.upgrade()
+            print(f"database  {_database_target()}")
+            print(f"before    {before.current or 'none'}")
+            print(f"after     {after.current or 'none'}")
+            print("status    at head" if after.at_head else "status    behind")
+            return 0 if after.at_head else 1
+        if args.db_command == "revision":
+            path = migrate.revision(args.message)
+            print(f"wrote     {path}")
+            return 0
+    except migrate.MigrationError as exc:
+        return _fail(command, str(exc))
+    except SQLAlchemyError as exc:
+        return _fail(command, f"{_database_target()}: {_error_line(exc)}")
+    raise AssertionError(f"unhandled db command {args.db_command!r}")
 
 
 @dataclass(frozen=True)
@@ -304,6 +383,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
     if args.command == "run":
         return _run(args)
+    if args.command == "db":
+        return _db(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 

@@ -141,3 +141,49 @@ def test_ranked_rows_carry_the_full_stack_label() -> None:
     assert ranks == {"a.jpg": 1, "b.jpg": 2}
     assert cli._ranked_row(row, ranks) == {"rank": 2, "stack": "2A", "score": 0.5, "file": "b.jpg"}
     assert cli._ranked_row(None, ranks) is None
+
+
+# ── marquee db ────────────────────────────────────────────────────────────
+
+
+def test_db_revision_needs_a_message() -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli._build_parser().parse_args(["db", "revision"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize(("current", "code"), [("0001", 0), (None, 1)])
+def test_db_status_exits_1_unless_at_head(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    current: str | None,
+    code: int,
+) -> None:
+    from marquee.db import migrate
+
+    monkeypatch.setattr(
+        migrate, "status", lambda: migrate.MigrationStatus(current=current, head="0001")
+    )
+    assert cli.main(["db", "status"]) == code
+    out = capsys.readouterr().out
+    assert f"revision  {current or 'none'}" in out
+    assert "head      0001" in out
+
+
+def test_db_errors_never_show_the_password(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from sqlalchemy.exc import OperationalError
+
+    from marquee.db import migrate
+
+    monkeypatch.setattr(settings, "POSTGRES_PASSWORD", SecretStr("db-password-value"))
+
+    def failing_status() -> migrate.MigrationStatus:
+        raise OperationalError("select 1", {}, Exception("auth failed for db-password-value"))
+
+    monkeypatch.setattr(migrate, "status", failing_status)
+    assert cli.main(["db", "status"]) == 1
+    captured = capsys.readouterr()
+    assert "db-password-value" not in captured.out + captured.err
+    assert "marquee db status:" in captured.err
