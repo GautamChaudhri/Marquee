@@ -19,6 +19,7 @@ function system(overrides: Partial<SystemInfo> = {}): SystemInfo {
 			movies_with_file: 1,
 			posters: {},
 			runs: {},
+			masked_runs: {},
 			deployments: 0,
 			exemplars: {},
 			preference_events: 0

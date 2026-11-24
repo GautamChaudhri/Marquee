@@ -14,6 +14,8 @@ test('System shows the installation in plain tables, and nothing is wrong', asyn
 	await expect(settings).toContainText('/srv/media/movies/4K');
 	await expect(settings).toContainText('/srv/marquee/data');
 	await expect(page.getByTestId('library')).toContainText('library 58, marquee 1');
+	// A blind evaluation's runs are counted on their own line, never among the runs.
+	await expect(page.getByTestId('masked-runs')).toHaveText('completed 147, failed 1');
 	await expect(page.getByTestId('models').locator('tbody tr')).toHaveCount(3);
 	await expect(page.getByTestId('storage')).toContainText('706.7 MB');
 	await expect(page.getByRole('link', { name: 'Job 31' })).toHaveAttribute(

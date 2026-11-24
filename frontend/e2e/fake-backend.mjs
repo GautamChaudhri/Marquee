@@ -455,6 +455,13 @@ function seedEvaluations(state, how) {
 	}
 	if (how === 'running') {
 		const batch = addJob(state, 'batch', { evaluation_id: 3 }, { state: 'running', auto: false });
+		const child = addJob(
+			state,
+			'poster_run_masked',
+			{ movie_id: 1, evaluation_id: 3 },
+			{ state: 'running', auto: false }
+		);
+		child.parent_id = batch.id;
 		state.evaluationResults[3] = evaluationResults(3).slice(0, 1);
 		state.evaluations.push(
 			evaluationRow(3, batch.id, {
@@ -884,6 +891,7 @@ function systemInfo() {
 			movies_with_file: state.movies.length,
 			posters: { library: 58, marquee: 1 },
 			runs: { completed: 5, running: 1 },
+			masked_runs: { completed: 147, failed: 1 },
 			deployments: state.deployments.length,
 			exemplars: tasteStatus().exemplars,
 			preference_events: state.feedback.length

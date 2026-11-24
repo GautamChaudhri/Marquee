@@ -40,6 +40,7 @@ from marquee.db.models import (
     PosterRun,
     PreferenceEvent,
 )
+from marquee.db.models.run import in_product_loop
 from marquee.ml import model_manifest
 
 STORAGE_TTL_S = 60.0
@@ -127,8 +128,8 @@ async def _count(session: AsyncSession, *conditions: object, model: type = Movie
     )
 
 
-async def _by(session: AsyncSession, column: object) -> dict[str, int]:
-    rows = await session.execute(select(column, func.count()).group_by(column))
+async def _by(session: AsyncSession, column: object, *conditions: object) -> dict[str, int]:
+    rows = await session.execute(select(column, func.count()).where(*conditions).group_by(column))
     return {str(key): int(count) for key, count in rows}
 
 
@@ -147,7 +148,8 @@ async def library_counts(session: AsyncSession) -> LibraryInfo:
             session, Movie.is_present.is_(True), Movie.has_file.is_(True)
         ),
         posters=await _by(session, Artwork.origin),
-        runs=await _by(session, PosterRun.state),
+        runs=await _by(session, PosterRun.state, in_product_loop()),
+        masked_runs=await _by(session, PosterRun.state, PosterRun.masked.is_(True)),
         deployments=await _count(session, model=Deployment),
         exemplars=exemplars,
         preference_events=await _count(session, model=PreferenceEvent),

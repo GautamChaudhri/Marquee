@@ -22,6 +22,7 @@ export function canRetry(job: Pick<Job, 'state'>): boolean {
 const KIND_LABELS: Record<string, string> = {
 	library_sync: 'Library sync',
 	poster_run: 'Run',
+	poster_run_masked: 'Blind run',
 	poster_deploy: 'Deploy',
 	poster_restore: 'Restore',
 	taste_rebuild: 'Taste rebuild',

@@ -4761,7 +4761,15 @@
             },
             "type": "object",
             "title": "Runs",
-            "description": "Runs by state"
+            "description": "The product loop's runs by state (not masked)"
+          },
+          "masked_runs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Masked Runs",
+            "description": "Blind evaluations' masked runs by state, counted apart"
           },
           "deployments": {
             "type": "integer",
@@ -4789,6 +4797,7 @@
           "movies_with_file",
           "posters",
           "runs",
+          "masked_runs",
           "deployments",
           "exemplars",
           "preference_events"

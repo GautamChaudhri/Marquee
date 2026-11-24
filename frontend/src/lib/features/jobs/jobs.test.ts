@@ -5,6 +5,7 @@ import {
 	describeJob,
 	detailHeadline,
 	isFinal,
+	KIND_NAMES,
 	kindLabel,
 	subjectLabel
 } from './jobs';
@@ -60,6 +61,8 @@ describe('jobs', () => {
 	it('name the kinds', () => {
 		expect(kindLabel('library_sync')).toBe('Library sync');
 		expect(kindLabel('poster_restore')).toBe('Restore');
+		expect(kindLabel('poster_run_masked')).toBe('Blind run');
+		expect(KIND_NAMES).toContain('poster_run_masked');
 		expect(kindLabel('something_new')).toBe('something new');
 	});
 

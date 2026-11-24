@@ -66,3 +66,15 @@ test('a job’s detail shows its events; Cancel and Retry work where allowed', a
 	await expect(detail.getByTestId('job-events')).toContainText('retried');
 	await expect(detail).toContainText('succeeded', { timeout: 10_000 });
 });
+
+test('a blind evaluation’s runs are named and can be filtered', async ({ page }) => {
+	await resetBackend({ evaluations: 'running' });
+	await page.goto('/activity');
+	const kind = page.getByLabel('Kind');
+	await expect(kind.locator('option', { hasText: 'Blind run' })).toHaveCount(1);
+	await kind.selectOption('poster_run_masked');
+	const rows = page.getByTestId('job-row');
+	await expect(rows).toHaveCount(1);
+	await expect(rows.first()).toContainText('Blind run');
+	await expect(rows.first()).not.toContainText('poster run masked');
+});

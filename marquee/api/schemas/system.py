@@ -32,7 +32,10 @@ class LibraryInfo(BaseModel):
     movies: int = Field(description="Movies Radarr lists")
     movies_with_file: int
     posters: dict[str, int] = Field(description="Poster rows by origin")
-    runs: dict[str, int] = Field(description="Runs by state")
+    runs: dict[str, int] = Field(description="The product loop's runs by state (not masked)")
+    masked_runs: dict[str, int] = Field(
+        description="Blind evaluations' masked runs by state, counted apart"
+    )
     deployments: int
     exemplars: dict[str, dict[str, int]] = Field(description="state -> polarity -> count")
     preference_events: int

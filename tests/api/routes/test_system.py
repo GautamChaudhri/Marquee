@@ -102,8 +102,27 @@ async def test_the_system_summary(
             last_seen_at=NOW,
         )
     )
-    db_session.add(
-        PosterRun(movie_id=movie.id, state="completed", run_folder="00000001-heat", started_at=NOW)
+    db_session.add_all(
+        [
+            PosterRun(
+                movie_id=movie.id, state="completed", run_folder="00000001-heat", started_at=NOW
+            ),
+            # Two masked runs of a blind evaluation: counted apart, never as the loop's runs.
+            PosterRun(
+                movie_id=movie.id,
+                state="completed",
+                run_folder="00000002-heat",
+                started_at=NOW,
+                masked=True,
+            ),
+            PosterRun(
+                movie_id=movie.id,
+                state="failed",
+                run_folder="00000003-heat",
+                started_at=NOW,
+                masked=True,
+            ),
+        ]
     )
     await db_session.commit()
     sync, _ = await queue.enqueue(db_session, default_registry()["library_sync"])
@@ -144,6 +163,7 @@ async def test_the_system_summary(
         "movies_with_file": 1,
         "posters": {"library": 1},
         "runs": {"completed": 1},
+        "masked_runs": {"completed": 1, "failed": 1},
         "deployments": 0,
         "exemplars": {},
         "preference_events": 0,

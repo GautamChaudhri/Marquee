@@ -132,6 +132,10 @@
 					<tr><th>With a file</th><td>{system.library.movies_with_file}</td></tr>
 					<tr><th>Posters</th><td>{countsLine(system.library.posters)}</td></tr>
 					<tr><th>Runs</th><td>{countsLine(system.library.runs)}</td></tr>
+					<tr>
+						<th>Blind runs</th>
+						<td data-testid="masked-runs">{countsLine(system.library.masked_runs)}</td>
+					</tr>
 					<tr><th>Deployments</th><td>{system.library.deployments}</td></tr>
 					<tr><th>Exemplars</th><td>{exemplarCounts(system.library.exemplars)}</td></tr>
 					<tr><th>Answers</th><td>{system.library.preference_events}</td></tr>
