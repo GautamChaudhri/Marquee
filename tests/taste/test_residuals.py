@@ -51,12 +51,8 @@ async def _events(
 ) -> None:
     """One ``rank`` per movie over :data:`CANDIDATES` candidates. The owner orders by
     ``aesthetic``; the baseline score runs (slightly) the other way unless
-    ``follows_baseline``.
-
-    The feature values stay near zero (0 to 0.2) on purpose: the engine clamps each
-    candidate's correction at ``delta_max``, and with values across 0 to 1 the learned weight
-    pushes both candidates of a pair to the clamp, so the held-out check sees no
-    improvement. That is the engine's behaviour, measured, not this module's."""
+    ``follows_baseline``. The feature values lie between 0.4 and 0.9, as real normalised
+    features mostly do."""
     for m in range(start, start + movies):
         movie = Movie(
             radarr_id=1000 + m,
@@ -70,7 +66,7 @@ async def _events(
         await session.flush()
         exposed = []
         for i in range(CANDIDATES):
-            aesthetic = 0.2 * (CANDIDATES - i) / CANDIDATES  # c0 is the owner's favourite
+            aesthetic = 0.9 - 0.5 * i / (CANDIDATES - 1)  # c0 is the owner's favourite
             step = 0.002 * i
             baseline = 0.5 - step if follows_baseline else 0.5 + step
             exposed.append(
@@ -81,7 +77,7 @@ async def _events(
                     "baseline_score": round(baseline, 4),
                     "normalized_features": {
                         "aesthetic": aesthetic,
-                        "knn_sim": 0.5,
+                        "knn_sim": 0.55 + 0.05 * ((m + i) % 5),
                     },
                 }
             )
