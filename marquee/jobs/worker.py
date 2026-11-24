@@ -239,6 +239,11 @@ class Worker:
             if listener.done():
                 cause = None if listener.cancelled() else listener.exception()
                 raise WorkerLostLockError("the worker's lock connection was lost") from cause
+            # A drain ends only after a pass that began with nothing running, claimed
+            # nothing, and ended with nothing running. A job that finishes during the pass
+            # may have held the only slot of its class while the claim ran, so the queue
+            # can still hold work; it sets the wake event, so the next pass comes at once.
+            busy = bool(self._running)
             claimed = 0
             try:
                 await self._run_schedules()
@@ -248,7 +253,7 @@ class Worker:
             except (SQLAlchemyError, OSError) as exc:
                 logger.warning("WORKER | database unavailable: %s", scrub(describe_error(exc)))
             else:
-                if self._drain and not self._running and not claimed:
+                if self._drain and not busy and not claimed and not self._running:
                     return
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), self._poll_s)

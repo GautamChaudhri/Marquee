@@ -386,6 +386,65 @@ async def test_a_class_never_runs_past_its_limit(
     assert {(await _job(sessions, job_id)).state for job_id in ids} == {"succeeded"}
 
 
+async def held(ctx: JobContext) -> dict:
+    await state["release"].wait()
+    return {"held": True}
+
+
+HELD_WRITE = JobKind("held_write", "media_write", handler=held)
+OK_WRITE = JobKind("ok_write", "media_write", handler=ok)
+
+
+class _FinishesTheHeldJobAfterAnEmptyClaim(Worker):
+    """A worker whose loop, once, lets the held job finish in the middle of a pass.
+
+    On the first pass whose claim found nothing while only the held job runs, it releases
+    that job and waits until it has finished, all before the pass decides whether a drain
+    is over. Nothing here depends on how long anything takes.
+    """
+
+    async def _claim(self) -> int:
+        claimed = await super()._claim()
+        held_id = state["held_id"]
+        if not claimed and not state["released"] and set(self._running) == {held_id}:
+            state["released"] = True
+            task = self._running[held_id].task
+            state["release"].set()
+            assert task is not None
+            await task
+        return claimed
+
+
+async def test_a_drain_goes_on_while_a_job_of_a_full_class_still_runs(
+    database_url: str, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # Two jobs of a class with limit 1, and one of another class. The second write job can
+    # only be claimed after the first finishes; when the first finishes during a pass that
+    # claimed nothing, the drain must go round again instead of ending with it queued.
+    state.update(release=asyncio.Event(), released=False)
+    state["held_id"] = await _enqueue(sessions, HELD_WRITE)
+    second = await _enqueue(sessions, OK_WRITE)
+    other = await _enqueue(sessions, OK)
+    registry = {**KINDS, HELD_WRITE.name: HELD_WRITE, OK_WRITE.name: OK_WRITE}
+    worker = _FinishesTheHeldJobAfterAnEmptyClaim(
+        registry=registry,
+        database_url=database_url,
+        schedules=(),
+        poll_s=0.2,
+        stop_grace_s=2.0,
+        gpu_idle_s=60.0,
+        drain=True,
+    )
+
+    await asyncio.wait_for(worker.run(), 30)
+
+    assert state["released"]
+    states = {
+        job_id: (await _job(sessions, job_id)).state for job_id in (state["held_id"], second, other)
+    }
+    assert states == {state["held_id"]: "succeeded", second: "succeeded", other: "succeeded"}
+
+
 async def test_a_batch_runs_to_completion(
     database_url: str, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
