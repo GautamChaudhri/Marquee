@@ -97,6 +97,7 @@ class _Progress:
         self._last = 0.0
         self._timer: asyncio.TimerHandle | None = None
         self._writes: set[asyncio.Task[None]] = set()
+        self._tail: asyncio.Task[None] | None = None
 
     def __call__(
         self, current: int | None = None, total: int | None = None, message: str | None = None
@@ -115,9 +116,17 @@ class _Progress:
         if value is None:
             return
         self._last = time.monotonic()
-        task = asyncio.ensure_future(self._write(value))
+        task = asyncio.ensure_future(self._write_after(self._tail, value))
+        self._tail = task
         self._writes.add(task)
         task.add_done_callback(self._writes.discard)
+
+    async def _write_after(self, previous: asyncio.Task[None] | None, value: tuple) -> None:
+        # Each write uses its own session; one at a time, so they commit in order and the
+        # newest value is the one left in the row.
+        if previous is not None:
+            await asyncio.gather(previous, return_exceptions=True)
+        await self._write(value)
 
     async def close(self) -> None:
         """Write what is pending, so the last progress is kept, and wait for the writes."""

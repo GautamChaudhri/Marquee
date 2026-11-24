@@ -355,6 +355,26 @@ async def test_progress_from_a_handler_thread(
     )
 
 
+async def test_progress_writes_land_in_order_even_when_the_first_is_slow() -> None:
+    from marquee.jobs.worker import _Progress
+
+    landed: list[tuple] = []
+
+    async def write(value: tuple) -> None:
+        if value[0] == 0:
+            await asyncio.sleep(0.2)  # the first write is slow to commit
+        landed.append(value)
+
+    progress = _Progress(write)
+    progress(0, 10, "step")
+    await asyncio.sleep(0.05)  # the first value is written at once, and its write is slow
+    for step in range(1, 10):
+        progress(step, 10, "step")
+    await progress.close()  # the last value is written now, while the first is still going
+
+    assert landed == [(0, 10, "step"), (9, 10, "step")]
+
+
 async def test_a_class_never_runs_past_its_limit(
     database_url: str, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
