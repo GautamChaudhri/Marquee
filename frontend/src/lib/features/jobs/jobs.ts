@@ -29,6 +29,9 @@ const KIND_LABELS: Record<string, string> = {
 	batch: 'Batch'
 };
 
+/** Every job kind the API knows, for the Activity page's filter. */
+export const KIND_NAMES: readonly string[] = Object.keys(KIND_LABELS);
+
 export function kindLabel(kind: string): string {
 	return KIND_LABELS[kind] ?? kind.replaceAll('_', ' ');
 }
