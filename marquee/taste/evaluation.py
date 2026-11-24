@@ -17,7 +17,8 @@ be matched by cosine, and is counted.
 **The outcome** (decision 8): ``ranked`` (its rank, of how many, and its card, where cards
 are design stacks in the order the Review page shows them), ``gated`` (the stage and reason
 that removed it), ``not_offered`` (no candidate reached the threshold; the closest is kept),
-or ``failed`` (the run did not complete).
+or ``failed`` (the run did not complete, or it ran against another taste profile than the
+evaluation names: a rebuild published while the evaluation ran).
 
 **The summary** (decision 9) is computed from the result rows whenever it is asked for, for
 seed exemplars (the posters the owner picked by hand, with nothing shown first), feedback
@@ -68,6 +69,7 @@ logger = logging.getLogger(__name__)
 MATCHED_BY_FILE = "file"
 MATCHED_BY_COSINE = "cosine"
 SOURCES = ("seed", "feedback")
+PROFILE_CHANGED = "the taste profile changed while the evaluation ran"
 
 
 class EvaluationError(Exception):
@@ -439,9 +441,17 @@ async def record_run(
     run = await session.get(PosterRun, run_id)
     if run is None or not run.masked or run.movie_id != movie_id:
         raise EvaluationError(f"run {run_id} is not a masked run of movie {movie_id}")
+    row = await session.get(Evaluation, evaluation_id)
+    if row is None:
+        raise EvaluationError(f"evaluation {evaluation_id} does not exist")
     exemplar = await _active_positive(session, movie_id)
     if run.state != RUN_COMPLETED:
         found = Outcome(outcome=OUTCOME_FAILED, reason=run.error or f"the run is {run.state}")
+        return await _store(session, evaluation_id, movie_id, exemplar, run_id, found)
+    if run.profile_sha256 != row.profile_sha256:
+        # A rebuild published while the evaluation ran (a review answered meanwhile queues
+        # one): this run measured another profile than the evaluation names.
+        found = Outcome(outcome=OUTCOME_FAILED, reason=PROFILE_CHANGED)
         return await _store(session, evaluation_id, movie_id, exemplar, run_id, found)
     if exemplar is None:
         found = Outcome(outcome=OUTCOME_FAILED, reason="the movie has no active positive exemplar")
@@ -463,9 +473,9 @@ async def record_run(
         )
     else:
         result = outcome_of(found, candidates)
-    row = await _store(session, evaluation_id, movie_id, exemplar, run_id, result)
-    logger.info("EVAL | evaluation %d, movie %d: %s", evaluation_id, movie_id, result_line(row))
-    return row
+    stored = await _store(session, evaluation_id, movie_id, exemplar, run_id, result)
+    logger.info("EVAL | evaluation %d, movie %d: %s", evaluation_id, movie_id, result_line(stored))
+    return stored
 
 
 async def record_failure(

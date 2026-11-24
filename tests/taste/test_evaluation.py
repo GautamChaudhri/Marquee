@@ -401,6 +401,25 @@ async def test_an_exemplar_missing_from_the_profile_is_a_failure_not_a_guess(
 
 
 @pytest.mark.db
+async def test_a_run_against_another_profile_is_a_failure(
+    db_session: AsyncSession, data_dir: Path
+) -> None:
+    # A review answered during the evaluation queued a rebuild, and this masked run started
+    # after it published: it measured another profile than the evaluation names.
+    ids = await _setup(db_session)
+    _kept_profile(["Heat (1995).png"], [_vec(1)])
+    _cache(_sha("pick.jpg"), _vec(1))
+    run = await db_session.get(PosterRun, ids["run"])
+    assert run is not None
+    run.profile_sha256 = "f" * 64
+    await db_session.commit()
+    row = await evaluation.record_run(db_session, ids["evaluation"], ids["movie"], ids["run"])
+    assert row.outcome == "failed"
+    assert row.reason == "the taste profile changed while the evaluation ran"
+    assert row.run_id == ids["run"] and row.rank is None
+
+
+@pytest.mark.db
 async def test_only_masked_runs_are_recorded(db_session: AsyncSession, data_dir: Path) -> None:
     ids = await _setup(db_session)
     run = await db_session.get(PosterRun, ids["run"])
