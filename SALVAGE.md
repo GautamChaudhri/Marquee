@@ -24,8 +24,8 @@ rebuild has to attach before any of it runs.
 
 ```
 marquee/            the selection engine and the new skeleton, in the target layout
-                    (config/, db/, fs/, integrations/, ml/, pipeline/, library/, taste/,
-                    api/, cli, doctor, model_fetch);
+                    (config/, db/, fs/, integrations/, ml/, pipeline/, library/, artwork/,
+                    taste/, jobs/, api/, cli, doctor, model_fetch);
                     docs/architecture.md describes each package
 tests/              mirrors marquee/: the original engine tests plus the engine tests
                     lifted from _salvage/tests/
@@ -114,6 +114,19 @@ and Radarr supplies the sort title.
 M4 deleted `api/routes/sync.py` from `_salvage/`: `POST /api/sync` queues the sync as a job now.
 The old job platform was not lifted; M4's queue (`marquee/jobs/`) was written new.
 
+M5a wrote the run job, the run and deployment tables, backups, deploy, and restore new, in
+`marquee/artwork/` and `marquee/jobs/handlers/`, using the old write path
+(`core/jobs/handlers_poster_mutations.py`), `core/poster_files.py`, and the old run job
+(`core/jobs/poster_pipeline.py`, `pipeline/poster_group_runner.py`) as reference only. None of
+it was copied, and nothing was deleted from `_salvage/`: the salvaged feedback routes
+(`api/routes/feedback.py`, which M5b's override needs as reference) and heal
+(`core/jobs/handlers_maintenance.py`, M8) still use the old write path, and the run-record rows
+above still describe what M5b's review needs (`models/pipeline_run.py`, `api/results.py`,
+`api/explanations.py`). The engine's embedding cache is now keyed by file content: `FeatureExtractor`'s private
+`_save_cached_embedding` and `_load_cached_embedding` take the file's SHA-256, so the salvaged
+`tests/test_poster_group_runner.py`, which saves one under a file name, no longer matches the
+live engine (`load_run_embedding(<file name>)` still works within a run).
+
 Partly lifted test files in `_salvage/tests/`: `test_sync.py` keeps its TV tests, the three
 movie poster-path tests that wait for poster naming, and the no-clients test;
 `test_library_enrichment.py` keeps the poster-status, review, resolution, and poster reset
@@ -170,10 +183,12 @@ Docker. The milestones, in order:
    container with the GPU.
 4. **M3, database and movie library** (done): one baseline migration, library and artwork
    tables, path translation, Radarr sync, and an API skeleton with key auth.
-5. **M4, jobs**: the small Postgres queue, with classes for GPU, network, media-read, and
-   media-write.
-6. **M5, the product loop**: runs as jobs, deploy with backup and restore, review and
-   re-rank, feedback events, exemplars, and the learning loop.
+5. **M4, jobs** (done): the small Postgres queue, with classes for GPU, network, media-read,
+   and media-write.
+6. **M5, the product loop**, in two sessions. **M5a** (done): runs as jobs with their records
+   in the database, batches, deploy with a content-addressed backup, restore, and a deploy
+   policy that is off unless turned on. **M5b**: review and re-rank, feedback events,
+   exemplars, and the learning loop.
 7. **M6, frontend**: shell, library, review and rank, taste, a small activity view, trimmed
    settings.
 8. **M8, packaging and production hardening**: the full Compose stack, a fresh-machine path

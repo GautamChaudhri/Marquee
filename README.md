@@ -8,12 +8,13 @@ winner into the media folder, and learns from how you re-rank or override its ch
 
 Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 
-> **Status: mid-rebuild.** The selection engine runs from the command line: it builds its
-> models, seeds a taste profile from the posters already in your library, and ranks one
-> movie's TMDB posters at a time. The database holds your Radarr movie list and the posters
-> already on disk, a small HTTP API serves them, and a job queue with one worker keeps the
-> list in sync and runs GPU work in a child process. The deploy-and-review loop and the web
-> interface are being rebuilt on top of it. Nothing writes to a media library yet.
+> **Status: mid-rebuild.** The selection engine builds its models, seeds a taste profile
+> from the posters already in your library, and ranks a movie's TMDB posters as a job: one
+> movie or a batch, with every run and its candidates recorded in the database. A pick can be
+> written into the movie's folder, with the poster it replaces backed up, and any write can
+> be undone byte for byte. Nothing is written to your library unless you ask for it or turn
+> on `DEPLOY_POLICY`. Review, re-ranking, learning from feedback, and the web interface are
+> being rebuilt on top of it.
 
 ## Why
 
@@ -97,14 +98,15 @@ uv run marquee sync
 # 7. Check the machine.
 uv run marquee doctor
 
-# 8. Rank one movie's posters.
-uv run marquee run "Die Hard"
-
-# 9. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
-uv run marquee api
-
-# 10. Run the job queue (in its own terminal, or as a service). Ctrl-C stops it gracefully.
+# 8. Run the job queue (in its own terminal, or as a service). Ctrl-C stops it gracefully.
 uv run marquee worker
+
+# 9. Rank one movie's posters (the worker runs it), then put the pick in its folder.
+uv run marquee run "Die Hard"
+uv run marquee deploy <run id>      # the run id is in the summary `marquee run` prints
+
+# 10. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
+uv run marquee api
 ```
 
 `marquee models fetch` builds every model that is missing and leaves alone what is present:
@@ -124,12 +126,36 @@ set exists the command refuses to scan the library again, because posters Marque
 written would look like your own picks: `--reuse` rebuilds the profile from the staged
 copies, and `--rescan` deliberately scans again.
 
-`marquee run "<title>"` finds the movie through its folder in your library (the IMDb id in
-the movie file's name), fetches its posters from TMDB, and prints each stage, the ranked
-table, and the pick. Everything lands in a new folder under `data/runs/`: the ranked
-posters, `pipeline.log`, and the run archive `pipeline_run.json`. `--year` picks between
-movies that share a title, `--tmdb-id` skips the library lookup, and `--json` prints the
-summary as JSON.
+`marquee run "<title>"` finds the movie in the database by its title as Radarr lists it
+(case ignored), queues a run of it, and follows the run to the end: the worker fetches the
+movie's posters from TMDB and ranks them, and the command prints each stage, the ranked
+table, and the pick (the highest-scoring candidate). `--year` or `--movie-id` picks between
+movies that share a title, `--no-wait` queues the run and returns, and `--json` prints the
+summary as JSON. It needs a running worker, unless `--no-wait` is given. Every run is
+recorded in the database with its candidates, and leaves a folder under `data/runs/`, named
+after the run (`00000042-die-hard`): the candidates it downloaded, the ranked posters,
+`pipeline.log`, and the run archive `pipeline_run.json`. `marquee runs list` and
+`marquee runs show <id>` show them, and `marquee runs batch --scope never-run|no-poster|all`
+queues runs of many movies at once (`--limit N` caps it). A movie can be run when Radarr has
+its file and the sync has fetched its TMDB details.
+
+`marquee deploy <run id>` writes the run's pick into the movie's folder as `poster.jpg`;
+`--candidate N` deploys another candidate of the run instead. The worker fetches TMDB's
+original-size file of the candidate (it must be a JPEG, and it is never converted), backs up
+the `poster.jpg` already there to `data/backups/`, writes the new file under a temporary name
+and renames it into place, reads it back to check it, and records the write.
+`marquee deployments list` shows every write, and `marquee restore <deployment id>` undoes a
+movie's newest one: it backs up what is there now and puts back exactly what was there
+before, or removes the poster if there was none. Deploys and restores are jobs too, one at a
+time, and never two for the same movie.
+
+Two settings decide what happens without you asking. `DEPLOY_POLICY` (default `off`) makes a
+finished run deploy its pick by itself: `missing` only where the folder has no poster or the
+poster there is Marquee's own, `all` everywhere, replacing your own posters too (each still
+backed up). `RUN_NEW_MOVIES` (default `false`) makes the worker run every movie that has
+never been run after each library sync. Once Marquee has written a poster,
+`marquee taste seed --rescan` is refused: the library then holds Marquee's picks beside
+yours, and the staged copies in `data/ml/seed/` stay the record of your own.
 
 `marquee db upgrade` brings the database's schema up to the newest migration, and
 `marquee db status` shows where it is (it exits non-zero when the schema is behind).
@@ -140,10 +166,11 @@ checks that every root folder Radarr reports maps to a folder Marquee can see, s
 share stops the sync instead of looking like an empty library. A poster is read and hashed
 only when it is new or its size or modification time changed, so a repeat sync over a
 network share only lists and stats. Movies Radarr no longer lists are kept and marked as
-retired. Movies with a file get their director, studios, and tagline from TMDB once. The
-report lists folders on disk that no Radarr movie points at, and movies whose folder was not
-found. `--dry-run` does everything except write to the database, and `--json` prints the
-report as JSON. The sync reads the library; it never writes to it.
+retired. Movies with a file get their director, studios, and tagline from TMDB once. A
+poster Marquee wrote that you have since replaced by hand counts as yours again. The report
+lists folders on disk that no Radarr movie points at, and movies whose folder was not found.
+`--dry-run` does everything except write to the database, and `--json` prints the report as
+JSON. The sync reads the library; it never writes to it.
 
 The database stores paths as Radarr reports them. If Radarr sees your library at a
 different path than Marquee does (Radarr in a container, for example), set
@@ -159,15 +186,18 @@ jobs it was running. Only one worker runs at a time. `marquee jobs list`, `show`
 
 `marquee api` serves a small HTTP API: `/health/live` and `/health/ready` for probes, and,
 under `/api`, the movie list (`/api/movies`, with search, filters, sorting, and paging), one
-movie, and its poster; the jobs (`/api/jobs`, one job, its events, and a feed of every job's
-events after a cursor), cancel and retry, `POST /api/sync` to queue a sync, and
-`/api/worker`. Every `/api` request must carry the key in `API_KEY`, as
+movie, and its poster; runs (`POST /api/movies/{id}/run`, `POST /api/runs/batch`,
+`/api/runs`, one run with its candidates, and each candidate's image), deploys
+(`POST /api/runs/{id}/deploy`), the deployments and restoring one
+(`POST /api/deployments/{id}/restore`); the jobs (`/api/jobs`, one job, its events, and a
+feed of every job's events after a cursor), cancel and retry, `POST /api/sync` to queue a
+sync, and `/api/worker`. Every `/api` request must carry the key in `API_KEY`, as
 `Authorization: Bearer <key>` or `X-Api-Key: <key>`; with no key configured the API answers
 503. The interactive documentation (`/docs`) is served only when `MARQUEE_ENVIRONMENT` is
 `development`.
 
-`marquee doctor` prints one line per check (Python, settings, data directory, models, model
-manifest, taste profile, ONNX Runtime, GPU, OCR, database and its schema, the worker and the
+`marquee doctor` prints one line per check (Python, settings, data directory, backups,
+models, model manifest, taste profile, ONNX Runtime, GPU, OCR, database and its schema, the worker and the
 queue, media roots, TMDB, Radarr, path mapping) with `PASS`, `WARN`, or `FAIL`, and exits
 non-zero if anything fails. `--json`
 prints the same report as JSON. It never writes to a media folder and never prints a secret.
