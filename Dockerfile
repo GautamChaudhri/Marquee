@@ -47,6 +47,12 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     DATA_DIR=/data \
     MARQUEE_ENV_FILE=""
 
+# The CUDA driver compiles, on first use, the GPU kernels a wheel ships without machine code
+# for the card, and caches the result. On the data volume that cache outlives the container;
+# without it every new container compiles again, which made a run three times slower. The
+# driver's default size limit, 1 GiB, holds what Marquee compiles (about 0.6 GB).
+ENV CUDA_CACHE_PATH=/data/cache/cuda-jit
+
 # ── Dependencies: from the lockfile only, before any source, so a code change reuses them
 FROM base AS deps
 WORKDIR /src

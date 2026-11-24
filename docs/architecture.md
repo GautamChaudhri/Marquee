@@ -102,7 +102,8 @@ data/
   ml/         taste profiles, residual artifacts, zero-shot axes, and seed/: the staged
               copies of the library posters the first profile was built from (movies/) and
               the record of what was seeded (movies.json)
-  cache/      embeddings, poster downloads, thumbnails
+  cache/      embeddings, poster downloads, thumbnails, and in a container cuda-jit/, the
+              CUDA driver's kernel cache (the image points the driver there, not Marquee)
   runs/       one folder per pipeline run, named <UTC timestamp>-<title>: candidates, ranked/
               output, pipeline.log, and the run archive pipeline_run.json
   backups/    posters replaced by a deploy
@@ -135,7 +136,10 @@ before any source, so a code change rebuilds only the layer that installs the pa
 mounted at `/data` is the data directory (`DATA_DIR=/data`): models, taste data, caches, and
 runs. It must be writable by the image's user; PaddleX also writes lock and temporary folders
 beside the OCR weights. `/data` in the image belongs to that user, so a new named volume does
-too.
+too. The image also keeps the CUDA driver's kernel cache there (`CUDA_CACHE_PATH`, set to
+`/data/cache/cuda-jit`). The driver compiles some kernels for the card on first use; on a
+bare-metal host it keeps them in the user's home folder, but a container's home folder is
+discarded with the container, and compiling again made every run three times slower.
 
 **Configuration comes from the environment.** The image sets `MARQUEE_ENV_FILE` to an empty
 string, so the application reads no dotenv file inside a container, and `marquee doctor` says
