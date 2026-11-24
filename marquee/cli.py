@@ -17,6 +17,9 @@ MODEL_ITEMS = ("clip", "dino", "zeroshot", "yolo", "ocr", "aesthetic", "face")
 JOBS_SHOWN = 50
 # The states in marquee.db.models.job, repeated so building the parser imports no database code.
 JOB_STATES = ("queued", "running", "succeeded", "failed", "cancelled")
+# Likewise from marquee.db.models.run and marquee.artwork.runs.
+RUN_STATES = ("running", "completed", "failed", "cancelled")
+RUN_SCOPES = ("never-run", "no-poster", "all")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -87,6 +90,52 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-wait", action="store_true", help="queue the job and exit; do not follow it"
     )
     run.add_argument("--json", action="store_true", help="print the summary as JSON")
+
+    runs_cmd = commands.add_parser("runs", help="list and inspect runs, and queue batches of them")
+    runs_commands = runs_cmd.add_subparsers(dest="runs_command", required=True, metavar="command")
+    runs_list = runs_commands.add_parser("list", help=f"the newest {JOBS_SHOWN} runs")
+    runs_list.add_argument("--movie-id", type=int, help="only this movie's runs")
+    runs_list.add_argument("--state", choices=RUN_STATES, help="only runs in this state")
+    runs_list.add_argument("--json", action="store_true", help="print the runs as JSON")
+    runs_show = runs_commands.add_parser("show", help="one run and its candidates")
+    runs_show.add_argument("id", type=int)
+    runs_show.add_argument("--json", action="store_true", help="print the run as JSON")
+    runs_batch = runs_commands.add_parser(
+        "batch",
+        help="queue runs of many movies as one batch",
+        description="never-run: eligible movies with no run yet; no-poster: eligible movies "
+        "with no poster; all: every eligible movie (present, with a file and TMDB details). "
+        "A movie whose run is already queued or running is left out.",
+    )
+    runs_batch.add_argument("--scope", required=True, choices=RUN_SCOPES)
+    runs_batch.add_argument("--limit", type=int, help="at most this many movies, by title")
+
+    deploy_cmd = commands.add_parser(
+        "deploy",
+        help="write a run's pick (or another candidate) into the movie's folder, as a job",
+        description="Queue the owner's deploy of a candidate of a completed run: the run's "
+        "pick unless --candidate names another. The worker fetches TMDB's original, backs up "
+        "the poster.jpg already there, writes and verifies the new one, and records it.",
+    )
+    deploy_cmd.add_argument("run_id", type=int)
+    deploy_cmd.add_argument("--candidate", type=int, help="a candidate id of that run")
+    deployments_cmd = commands.add_parser("deployments", help="the writes Marquee made")
+    deployments_commands = deployments_cmd.add_subparsers(
+        dest="deployments_command", required=True, metavar="command"
+    )
+    deployments_list = deployments_commands.add_parser(
+        "list", help=f"the newest {JOBS_SHOWN} deployments"
+    )
+    deployments_list.add_argument("--movie-id", type=int, help="only this movie's")
+    deployments_list.add_argument("--json", action="store_true", help="print them as JSON")
+    restore_cmd = commands.add_parser(
+        "restore",
+        help="undo a movie's newest deployment, as a job",
+        description="Queue a restore that puts back what the deployment replaced, from its "
+        "backup, or removes the poster when there was none. What is in the folder now is "
+        "backed up first. Only a movie's newest deployment can be undone.",
+    )
+    restore_cmd.add_argument("deployment_id", type=int)
 
     sync = commands.add_parser(
         "sync",
@@ -597,6 +646,195 @@ def _run(args: argparse.Namespace) -> int:
         return _fail("run", "stopped following; the job goes on (`marquee jobs show <id>`)")
 
 
+def _queued_line(job: Any, created: bool) -> str:
+    if created:
+        return f"job {job.id} {job.kind} queued"
+    return f"job {job.id} {job.kind} already {job.state} for this movie; not queued again"
+
+
+def _print_runs(page: Any) -> None:
+    print(f"{'id':>6}  {'movie':>6}  {'state':<10} {'ranked':>6}  {'started (UTC)':<19}  folder")
+    for run in page.items:
+        ranked = "-" if run.ranked_count is None else run.ranked_count
+        print(
+            f"{run.id:>6}  {run.movie_id:>6}  {run.state:<10} {ranked:>6}  "
+            f"{_when(run.started_at):<19}  {run.run_folder}"
+        )
+    print(f"{len(page.items)} of {page.total} run(s)")
+
+
+def _run_dict(run: Any) -> dict[str, Any]:
+    return {
+        "id": run.id,
+        "movie_id": run.movie_id,
+        "job_id": run.job_id,
+        "state": run.state,
+        "run_folder": run.run_folder,
+        "engine_status": run.engine_status,
+        "ranked_count": run.ranked_count,
+        "candidate_count": run.candidate_count,
+        "error": run.error,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
+def _candidate_dict(row: Any) -> dict[str, Any]:
+    stack = f"{row.stack_rank}{row.stack_label or ''}" if row.stack_rank is not None else None
+    return {
+        "id": row.id,
+        "source_file": row.source_file,
+        "sha256": row.sha256,
+        "stage_reached": row.stage_reached,
+        "rejection_reason": row.rejection_reason,
+        "rank": row.rank,
+        "final_score": row.final_score,
+        "stack": stack,
+        "is_pick": row.is_pick,
+    }
+
+
+def _print_run(run: Any, candidates: list[Any]) -> None:
+    from marquee.config import settings
+
+    print(f"run       {run.id} of movie {run.movie_id} (job {run.job_id})")
+    print(f"state     {run.state}{f' ({run.engine_status})' if run.engine_status else ''}")
+    print(f"started   {_when(run.started_at)}  finished {_when(run.finished_at)}")
+    if run.error:
+        print(f"error     {run.error}")
+    print(f"folder    {settings.runs_dir / run.run_folder}")
+    if run.counts:
+        print(f"counts    {', '.join(f'{k} {v}' for k, v in run.counts.items())}")
+    print("  cand  rank  stack  score   file                              fate")
+    for row in candidates:
+        c = _candidate_dict(row)
+        score = f"{c['final_score']:.4f}" if c["final_score"] is not None else "-     "
+        fate = "pick" if c["is_pick"] else (c["rejection_reason"] or c["stage_reached"] or "-")
+        print(
+            f"  {c['id']:>4}  {c['rank'] or '-':>4}  {c['stack'] or '-':<5}  {score}  "
+            f"{c['source_file']:<33} {fate}"
+        )
+
+
+def _deployment_dict(row: Any) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "movie_id": row.movie_id,
+        "action": row.action,
+        "initiated_by": row.initiated_by,
+        "run_id": row.run_id,
+        "candidate_id": row.candidate_id,
+        "source_file": row.source_file,
+        "job_id": row.job_id,
+        "new_sha256": row.new_sha256,
+        "previous_sha256": row.previous_sha256,
+        "previous_origin": row.previous_origin,
+        "backup_file": row.backup_file,
+        "restores_deployment_id": row.restores_deployment_id,
+        "created_at": row.created_at.isoformat(),
+    }
+
+
+def _print_deployments(page: Any) -> None:
+    print(f"{'id':>6}  {'movie':>6}  {'action':<8} {'by':<7} {'created (UTC)':<19}  new -> was")
+    for row in page.items:
+        new = (row.new_sha256 or "no poster")[:12]
+        was = (row.previous_sha256 or "no poster")[:12]
+        undoes = f" (undoes {row.restores_deployment_id})" if row.restores_deployment_id else ""
+        print(
+            f"{row.id:>6}  {row.movie_id:>6}  {row.action:<8} {row.initiated_by:<7} "
+            f"{_when(row.created_at):<19}  {new} -> {was}{undoes}"
+        )
+    print(f"{len(page.items)} of {page.total} deployment(s)")
+
+
+async def _artwork_async(args: argparse.Namespace) -> int:
+    from marquee.artwork import deploy, runs
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.jobs.handlers import poster_run, poster_write
+
+    engine = create_engine()
+    try:
+        async with create_session_factory(engine)() as session:
+            if args.command == "runs" and args.runs_command == "list":
+                page = await runs.list_runs(
+                    session, movie_id=args.movie_id, state=args.state, page_size=JOBS_SHOWN
+                )
+                if args.json:
+                    print(json.dumps([_run_dict(run) for run in page.items], indent=2))
+                else:
+                    _print_runs(page)
+            elif args.command == "runs" and args.runs_command == "show":
+                run = await runs.get_run(session, args.id)
+                if run is None:
+                    raise _CommandError(f"no run {args.id}")
+                candidates = await runs.candidates_of(session, args.id)
+                if args.json:
+                    out = {**_run_dict(run), "counts": run.counts, "stages": run.stages}
+                    out["candidates"] = [_candidate_dict(c) for c in candidates]
+                    print(json.dumps(out, indent=2))
+                else:
+                    _print_run(run, candidates)
+            elif args.command == "runs" and args.runs_command == "batch":
+                parent, children, found = await poster_run.enqueue_scope(
+                    session, args.scope, limit=args.limit
+                )
+                for child in children:
+                    print(f"job {child.id} poster_run queued (movie {child.payload['movie_id']})")
+                print(
+                    f"batch {parent.id}: {len(children)} run(s) queued for {found} movie(s) "
+                    f"in scope {args.scope}; {found - len(children)} already active"
+                )
+            elif args.command == "deploy":
+                candidate_id = args.candidate
+                if candidate_id is None:
+                    pick = await runs.pick_of(session, args.run_id)
+                    if pick is None:
+                        raise _CommandError(f"run {args.run_id} has no pick")
+                    candidate_id = pick.id
+                elif await runs.get_candidate(session, args.run_id, candidate_id) is None:
+                    raise _CommandError(
+                        f"candidate {candidate_id} is not one of run {args.run_id}'s"
+                    )
+                job, created = await poster_write.enqueue_deploy(session, candidate_id)
+                print(_queued_line(job, created))
+            elif args.command == "deployments":
+                page = await deploy.list_deployments(
+                    session, movie_id=args.movie_id, page_size=JOBS_SHOWN
+                )
+                if args.json:
+                    print(json.dumps([_deployment_dict(row) for row in page.items], indent=2))
+                else:
+                    _print_deployments(page)
+            elif args.command == "restore":
+                job, created = await poster_write.enqueue_restore(session, args.deployment_id)
+                print(_queued_line(job, created))
+    except poster_write.WriteRefusedError as exc:
+        raise _CommandError(str(exc)) from exc
+    finally:
+        await engine.dispose()
+    return 0
+
+
+def _artwork(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    name = args.command + (
+        f" {args.runs_command}"
+        if args.command == "runs"
+        else f" {args.deployments_command}"
+        if args.command == "deployments"
+        else ""
+    )
+    try:
+        return asyncio.run(_artwork_async(args))
+    except _CommandError as exc:
+        return _fail(name, str(exc))
+    except SQLAlchemyError as exc:
+        return _fail(name, f"{_database_target()}: {_error_line(exc)}")
+
+
 def _rescan_refusal() -> str | None:
     """Why ``taste seed --rescan`` must not run, or ``None``.
 
@@ -673,6 +911,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _worker(args)
     if args.command == "jobs":
         return _jobs(args)
+    if args.command in ("runs", "deploy", "deployments", "restore"):
+        return _artwork(args)
     raise AssertionError(f"unhandled command {args.command!r}")
 
 

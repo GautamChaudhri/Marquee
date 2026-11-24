@@ -98,6 +98,35 @@ def check_data_dir() -> CheckResult:
     return CheckResult("Data directory", "PASS", f"{data_dir} exists and is writable")
 
 
+def _size(n: int) -> str:
+    for unit in ("bytes", "KiB", "MiB", "GiB"):
+        if n < 1024 or unit == "GiB":
+            return f"{n} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
+        n /= 1024  # type: ignore[assignment]
+    raise AssertionError
+
+
+def check_backups() -> CheckResult:
+    """Where a deploy keeps the posters it replaced: writable, and what it holds."""
+    from marquee.artwork import backup
+
+    name = "Backups"
+    backups = settings.backups_dir
+    if not backups.exists():
+        parent = backups.parent
+        if parent.is_dir() and os.access(parent, os.W_OK | os.X_OK):
+            return CheckResult(
+                name, "PASS", f"{backups} does not exist yet; the first deploy creates it"
+            )
+        return CheckResult(name, "FAIL", f"{backups} does not exist and cannot be created")
+    if not backups.is_dir() or not os.access(backups, os.W_OK | os.X_OK):
+        return CheckResult(name, "FAIL", f"{backups} is not a writable folder")
+    count, size = backup.summary(backups)
+    return CheckResult(
+        name, "PASS", f"{backups} is writable; {count} poster backup(s), {_size(size)}"
+    )
+
+
 def _aesthetic_head_present() -> bool:
     path = Path(pipeline_settings.AESTHETIC_MODEL_PATH)
     return path.is_file() or path.with_suffix(".npz").is_file()
@@ -504,6 +533,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_python,
     check_settings,
     check_data_dir,
+    check_backups,
     check_core_models,
     check_style_models,
     check_model_manifest,

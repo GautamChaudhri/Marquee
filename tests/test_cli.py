@@ -512,3 +512,72 @@ def test_rescan_is_refused_when_the_database_cannot_be_asked(
 
     assert cli.main(["taste", "seed", "--rescan"]) == 1
     assert "--rescan needs the database" in capsys.readouterr().err
+
+
+# ── marquee runs, deploy, deployments, restore ────────────────────────────
+
+
+@pytest.mark.db
+def test_run_and_deployment_commands(
+    jobs_database: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    import psycopg
+
+    def run(*argv: str) -> tuple[int, str, str]:
+        code = cli.main(list(argv))
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    movie_id = _add_movie(1, "Heat", 1995)
+    other_id = _add_movie(2, "Ronin", 1998)
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        run_id = conn.execute(
+            "insert into poster_runs (movie_id, state, run_folder, started_at, ranked_count, "
+            "engine_status) values (%s, 'completed', '00000001-heat', now(), 1, 'completed') "
+            "returning id",
+            [movie_id],
+        ).fetchone()[0]
+        pick = conn.execute(
+            "insert into run_candidates (run_id, source_file, sha256, rank, final_score, "
+            "stack_rank, stack_label, is_pick) values (%s, 'pick.jpg', %s, 1, 0.9, 1, 'A', true) "
+            "returning id",
+            [run_id, "1" * 64],
+        ).fetchone()[0]
+        other = conn.execute(
+            "insert into run_candidates (run_id, source_file, rejection_reason) "
+            "values (%s, 'other.jpg', 'text_heavy') returning id",
+            [run_id],
+        ).fetchone()[0]
+
+    code, out, _ = run("runs", "list")
+    assert code == 0 and out.splitlines()[-1] == "1 of 1 run(s)"
+    assert json.loads(run("runs", "list", "--json")[1])[0]["run_folder"] == "00000001-heat"
+    code, out, _ = run("runs", "show", str(run_id))
+    assert code == 0 and "pick.jpg" in out and "pick" in out and "text_heavy" in out
+    assert (
+        json.loads(run("runs", "show", str(run_id), "--json")[1])["candidates"][0]["stack"] == "1A"
+    )
+    assert run("runs", "show", "999") == (1, "", "marquee runs show: no run 999\n")
+
+    code, out, _ = run("runs", "batch", "--scope", "never-run")
+    assert code == 0
+    assert f"job {out.split()[1]} poster_run queued (movie {other_id})" in out
+    assert out.splitlines()[-1].endswith(
+        "1 run(s) queued for 1 movie(s) in scope never-run; 0 already active"
+    )
+
+    code, out, err = run("deploy", str(run_id), "--candidate", str(other))
+    assert code == 1 and "never downloaded" in err
+    code, out, _ = run("deploy", str(run_id))
+    assert code == 0 and out.endswith(" poster_deploy queued\n")
+    code, out, _ = run("deploy", str(run_id))
+    assert code == 0 and "already queued for this movie; not queued again" in out
+    assert "is not one of run" in run("deploy", str(run_id), "--candidate", "999")[2]
+
+    assert run("deployments", "list")[1].splitlines()[-1] == "0 of 0 deployment(s)"
+    assert json.loads(run("deployments", "list", "--json")[1]) == []
+    code, _, err = run("restore", "999")
+    assert code == 1 and "no deployment 999" in err
+    assert pick

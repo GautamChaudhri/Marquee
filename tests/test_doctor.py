@@ -388,3 +388,22 @@ def test_worker_fails_when_the_database_does_not_answer(monkeypatch: pytest.Monk
     result = doctor.check_worker()
     assert result.status == "FAIL"
     assert result.detail.startswith("cannot read the queue")
+
+
+def test_backups_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from marquee.artwork import backup
+
+    monkeypatch.setattr(doctor.settings, "DATA_DIR", tmp_path)
+    fresh = doctor.check_backups()
+    assert fresh.status == "PASS" and "first deploy creates it" in fresh.detail
+    assert not (tmp_path / "backups").exists()  # the doctor creates nothing
+
+    backup.store(b"x" * 2048, 1, tmp_path / "backups")
+    kept = doctor.check_backups()
+    assert kept.status == "PASS" and "1 poster backup(s), 2.0 KiB" in kept.detail
+
+    (tmp_path / "backups").chmod(0o500)
+    try:
+        assert doctor.check_backups().status == "FAIL"
+    finally:
+        (tmp_path / "backups").chmod(0o700)

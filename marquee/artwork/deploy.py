@@ -502,3 +502,25 @@ async def _record(
     session.add(deployment)
     await session.commit()
     return deployment
+
+
+@dataclass(frozen=True)
+class DeploymentPage:
+    total: int
+    items: list[Deployment]
+
+
+async def list_deployments(
+    session: AsyncSession, *, movie_id: int | None = None, page: int = 1, page_size: int = 50
+) -> DeploymentPage:
+    """One page of deployments, newest first."""
+    conditions = [Deployment.movie_id == movie_id] if movie_id is not None else []
+    total = await session.scalar(select(func.count()).select_from(Deployment).where(*conditions))
+    rows = await session.scalars(
+        select(Deployment)
+        .where(*conditions)
+        .order_by(Deployment.id.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    return DeploymentPage(total=total or 0, items=list(rows))
