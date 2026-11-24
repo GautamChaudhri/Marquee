@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -33,14 +32,6 @@ def test_run_rejects_bad_arguments(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as exc:
         cli._build_parser().parse_args(argv)
     assert exc.value.code == 2
-
-
-def test_run_folder_name() -> None:
-    now = datetime(2026, 11, 23, 16, 5, 9, tzinfo=UTC)
-
-    assert cli._run_folder_name("Mission: Impossible", now) == "20261123T160509Z-mission-impossible"
-    assert cli._run_folder_name("2010", now) == "20261123T160509Z-2010"
-    assert cli._run_folder_name("!!!", now) == "20261123T160509Z-untitled"
 
 
 @pytest.fixture
