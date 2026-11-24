@@ -161,6 +161,48 @@ async def test_a_second_attempt_reuses_the_row_and_folder_name(
         assert await session.scalar(select(func.count()).select_from(RunCandidate)) == 2
 
 
+async def test_a_completed_run_is_never_run_again(
+    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker killed between completing the run and finishing the job: the next attempt
+    returns the recorded result and changes nothing (no candidate deleted, no folder
+    removed, the child not called, no second policy deploy)."""
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    movie_id = await _movie(sessions)
+    job_id = await _job(sessions, 32)
+    calls: list[dict] = []
+    first = await handler.poster_run(_context(job_id, {"movie_id": movie_id}, _fake_child(calls)))
+    assert first["deploy"]["queued"] is True
+    folder = settings.runs_dir / first["run_folder"]
+    (folder / "feedback-was-here").write_text("kept")
+    async with sessions() as session:
+        before = list(await session.scalars(select(RunCandidate.id).order_by(RunCandidate.id)))
+        # The policy's deploy ran meanwhile, so its dedupe key is free again.
+        await session.execute(
+            text("update jobs set state = 'succeeded' where kind = 'poster_deploy'")
+        )
+        await session.commit()
+
+    again = await handler.poster_run(_context(job_id, {"movie_id": movie_id}, _fake_child(calls)))
+
+    assert len(calls) == 1
+    assert again["already_completed"] is True
+    assert again["run_id"] == first["run_id"] and again["run_folder"] == first["run_folder"]
+    assert again["pick"] == first["pick"]
+    assert again["ranked"] == first["ranked"] and again["ranked_total"] == first["ranked_total"]
+    assert again["deploy"] is None
+    assert (folder / "feedback-was-here").read_text() == "kept"
+    async with sessions() as session:
+        after = list(await session.scalars(select(RunCandidate.id).order_by(RunCandidate.id)))
+        deploys = await session.scalar(
+            select(func.count()).select_from(Job).where(Job.kind == "poster_deploy")
+        )
+        run = await runs.get_run(session, first["run_id"])
+    assert after == before
+    assert deploys == 1
+    assert run is not None and run.state == "completed"
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [

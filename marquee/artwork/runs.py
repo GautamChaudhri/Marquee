@@ -250,6 +250,16 @@ def ranked_row(row: dict[str, Any] | None, ranks: dict[str, int]) -> dict[str, A
     }
 
 
+def candidate_row(row: RunCandidate) -> dict[str, Any]:
+    """A stored candidate in the shape of :func:`ranked_row`."""
+    stack = (
+        f"{row.stack_rank}{row.stack_label or ''}"
+        if row.stack_rank is not None
+        else row.stack_label or None
+    )
+    return {"rank": row.rank, "stack": stack, "score": row.final_score, "file": row.source_file}
+
+
 def file_sha256(path: Path) -> str:
     hasher = hashlib.sha256()
     with path.open("rb") as handle:
@@ -334,6 +344,12 @@ async def start(session: AsyncSession, *, job_id: int, movie: Movie) -> PosterRu
         select(PosterRun).where(PosterRun.job_id == job_id).with_for_update(),
         execution_options={"populate_existing": True},
     )
+    if run is not None and run.state == RUN_COMPLETED:
+        # Feedback and deployments point at a completed run's candidates; starting it over
+        # would delete them. The handler returns the recorded result instead.
+        run_id = run.id
+        await session.rollback()
+        raise RunRecordError(f"run {run_id} of job {job_id} already completed")
     stale: set[str] = set()
     if run is None:
         # The id comes first, so the row is inserted with its folder's name in one go.

@@ -22,7 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from marquee.artwork import runs
 from marquee.cancellation import JobCancelledError
 from marquee.db.engine import create_engine, create_session_factory
-from marquee.db.models import Job, Movie
+from marquee.db.models import Job, Movie, PosterRun
+from marquee.db.models.run import RUN_COMPLETED
 from marquee.jobs import batch, queue
 from marquee.jobs.gpu_child import describe_error
 from marquee.jobs.handlers.poster_write import WriteRefusedError, queue_policy_deploy
@@ -91,6 +92,29 @@ async def _policy(
             return {"queued": False, "note": str(exc)}
 
 
+async def _recorded(session: AsyncSession, run: PosterRun, movie: Movie) -> dict[str, Any]:
+    """The result of a run that already completed, from its record. Nothing is changed."""
+    candidates = await runs.candidates_of(session, run.id)
+    ranked = [runs.candidate_row(c) for c in candidates if c.rank is not None]
+    pick = next((c for c in candidates if c.is_pick), None)
+    await session.commit()
+    return {
+        "run_id": run.id,
+        "movie_id": movie.id,
+        "title": movie.title,
+        "run_folder": run.run_folder,
+        "status": run.engine_status,
+        "counts": run.counts or {},
+        "stages": run.stages or [],
+        "ranked_total": len(ranked),
+        "ranked": ranked[: runs.RANKED_SHOWN],
+        "pick": {"candidate_id": pick.id, **runs.candidate_row(pick)} if pick else None,
+        "deploy": None,
+        "seconds": 0.0,
+        "already_completed": True,
+    }
+
+
 async def poster_run(ctx: JobContext) -> dict[str, Any]:
     movie_id = movie_id_of(ctx.payload)
     started = time.perf_counter()
@@ -101,6 +125,13 @@ async def poster_run(ctx: JobContext) -> dict[str, Any]:
             movie = await session.get(Movie, movie_id)
             if movie is None:
                 raise PermanentJobError(f"no movie {movie_id}")
+            done = await runs.run_for_job(session, ctx.job_id)
+            if done is not None and done.state == RUN_COMPLETED:
+                # An earlier attempt completed the run and the job ended before it said so
+                # (a worker killed in between). Its candidates may already have feedback and
+                # a deploy queued: return what was recorded, and change nothing.
+                logger.info("RUN | %d: already completed; not run again", done.id)
+                return await _recorded(session, done, movie)
             reason = runs.ineligible_reason(movie)
             if reason is not None:
                 raise PermanentJobError(reason)

@@ -244,6 +244,22 @@ async def test_a_second_attempt_starts_over_in_the_same_row(db_session: AsyncSes
 
 
 @pytest.mark.db
+async def test_start_refuses_a_completed_run(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    job_id = await _job(db_session, 12)
+    run = await runs.start(db_session, job_id=job_id, movie=movie)
+    folder = settings.runs_dir / run.run_folder
+    _write_folder(folder, LEDGER, IMAGES)
+    await runs.complete(db_session, run.id, _result(), runs.read_run_folder(folder))
+
+    with pytest.raises(runs.RunRecordError, match="already completed"):
+        await runs.start(db_session, job_id=job_id, movie=movie)
+
+    assert folder.is_dir()
+    assert await db_session.scalar(select(func.count()).select_from(RunCandidate)) == len(LEDGER)
+
+
+@pytest.mark.db
 async def test_start_fails_a_run_its_job_abandoned(db_session: AsyncSession) -> None:
     movie = await _with_movie(db_session)
     old_job = await _job(db_session, 12, state="failed")
