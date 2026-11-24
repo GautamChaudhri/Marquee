@@ -59,9 +59,10 @@ in the M0+M1 session without logic changes; `git log --follow` reaches their his
 | Filesystem | `fs/boundary.py` | Confined read/write roots with symlink rejection. The base for media manipulation later |
 | Small leaves | `cancellation.py`, `fs/download_guard.py`, `pipeline/text_profiles.py`, `host_metrics.py`, `api/rate_limit.py`, `integrations/urls.py`, `logging.py` | No internal dependencies |
 
-Model files (338 MB, gitignored) came along and now live in `data/models/`: CLIP ViT-B/32, the
-aesthetic head (`.pth` plus its `.npz` sidecar), the SCRFD face detector, and
-`negative_prompts.npy`, which no kept code references.
+No model file is carried over any more. Since M2, `marquee models fetch` builds or downloads
+every model into `data/models/` (gitignored), the aesthetic head and the SCRFD face detector
+included, each pinned by its checksum. The salvage once copied the old installation's model
+files (338 MB); among them was `negative_prompts.npy`, which no kept code references.
 
 ### Import seams
 
@@ -143,8 +144,9 @@ Docker. The milestones, in order:
    target layout with its import seams closed, its tests lifted, and `marquee doctor`.
 2. **M2, the engine runs for real** (done): `marquee models fetch`, `marquee taste seed` from
    the library's posters, and `marquee run` for one movie, with no database.
-3. **M2b, container proof**: one image on an NVIDIA CUDA base that runs the doctor, fetches
-   the models, and completes a run inside a container with the GPU.
+3. **M2b, container proof** (done): one image on a slim Python base, with CUDA from the
+   Python wheels, that runs the doctor, fetches the models, and completes a run inside a
+   container with the GPU.
 4. **M3, database and movie library**: one baseline migration, library and artwork tables,
    path translation, Radarr sync, and an API skeleton with key auth.
 5. **M4, jobs**: the small Postgres queue, with classes for GPU, network, media-read, and
