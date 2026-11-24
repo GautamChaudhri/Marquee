@@ -13,7 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from marquee.db import migrate
 from marquee.db.base import Base
-from marquee.db.models import Artwork, Deployment, Movie, PosterRun, RunCandidate
+from marquee.db.models import (
+    Artwork,
+    Deployment,
+    Exemplar,
+    Movie,
+    PosterRun,
+    PreferenceEvent,
+    RunCandidate,
+    TasteProfile,
+)
 
 pytestmark = pytest.mark.db
 
@@ -21,6 +30,7 @@ SHA = "a" * 64
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 JOB_TABLES = {"jobs", "job_events", "job_schedules"}
 RUN_TABLES = {"poster_runs", "run_candidates", "deployments"}
+TASTE_TABLES = {"preference_events", "exemplars", "taste_profiles"}
 
 
 def _sync_engine(url: str):  # noqa: ANN202 - a sqlalchemy Engine
@@ -77,13 +87,14 @@ def test_the_migration_applies_to_an_empty_database(empty_database_url: str) -> 
 
     after = migrate.upgrade(url=empty_database_url)
     assert after.at_head
-    assert after.current == migrate.head_revision() == "0003"
+    assert after.current == migrate.head_revision() == "0004"
     assert _tables(empty_database_url) == {
         "alembic_version",
         "movies",
         "artwork",
         *JOB_TABLES,
         *RUN_TABLES,
+        *TASTE_TABLES,
     }
 
 
@@ -95,7 +106,24 @@ def test_downgrade_then_upgrade_works(empty_database_url: str) -> None:
 
     up = migrate.upgrade(url=empty_database_url)
     assert up.at_head
-    assert {"movies", "artwork", *JOB_TABLES, *RUN_TABLES} <= _tables(empty_database_url)
+    assert {"movies", "artwork", *JOB_TABLES, *RUN_TABLES, *TASTE_TABLES} <= _tables(
+        empty_database_url
+    )
+
+
+def test_the_taste_migration_downgrades_to_the_runs_schema(empty_database_url: str) -> None:
+    migrate.upgrade(url=empty_database_url)
+    down = migrate.downgrade("0003", url=empty_database_url)
+    assert down.current == "0003"
+    assert _tables(empty_database_url) == {
+        "alembic_version",
+        "movies",
+        "artwork",
+        *JOB_TABLES,
+        *RUN_TABLES,
+    }
+    assert migrate.upgrade(url=empty_database_url).at_head
+    assert _tables(empty_database_url) >= TASTE_TABLES
 
 
 def test_the_runs_migration_downgrades_to_the_jobs_schema(empty_database_url: str) -> None:
@@ -135,7 +163,9 @@ def test_the_runs_migration_refuses_to_forget_a_marquee_poster(empty_database_ur
         engine.dispose()
     with pytest.raises(IntegrityError):
         migrate.downgrade("0002", url=empty_database_url)
-    assert migrate.status(url=empty_database_url).current == "0003"
+    # The whole downgrade is one transaction: nothing was undone.
+    assert migrate.status(url=empty_database_url).current == "0004"
+    assert _tables(empty_database_url) >= TASTE_TABLES
 
 
 def test_the_jobs_migration_downgrades_to_the_baseline(empty_database_url: str) -> None:
@@ -229,6 +259,41 @@ def test_check_constraints_are_in_the_database(database_url: str) -> None:
     assert _check_definition(database_url, "ck_artwork_origin") == (
         "CHECK ((origin = ANY (ARRAY['library'::text, 'marquee'::text])))"
     )
+    assert _check_constraints(database_url, "preference_events") == {
+        "ck_preference_events_subject_kind",
+        "ck_preference_events_action",
+        "ck_preference_events_revokes",
+        "ck_preference_events_chosen_sha256",
+        "ck_preference_events_profile_sha256",
+        "ck_preference_events_chosen_source_file",
+        "ck_preference_events_pick_source_file",
+        "ck_preference_events_exposed",
+        "ck_preference_events_context",
+        "ck_preference_events_idempotency_key",
+    }
+    assert _check_constraints(database_url, "exemplars") == {
+        "ck_exemplars_subject_kind",
+        "ck_exemplars_polarity",
+        "ck_exemplars_weight",
+        "ck_exemplars_source",
+        "ck_exemplars_state",
+        "ck_exemplars_event",
+        "ck_exemplars_feedback_file",
+        "ck_exemplars_staged",
+        "ck_exemplars_ended",
+        "ck_exemplars_sha256",
+        "ck_exemplars_file_name",
+        "ck_exemplars_staged_name",
+        "ck_exemplars_source_file",
+    }
+    assert _check_constraints(database_url, "taste_profiles") == {
+        "ck_taste_profiles_sha256",
+        "ck_taste_profiles_revision",
+        "ck_taste_profiles_source",
+        "ck_taste_profiles_counts",
+        "ck_taste_profiles_positive_movie_ids",
+        "ck_taste_profiles_file_name",
+    }
 
 
 def test_the_job_indexes_are_in_the_database(database_url: str) -> None:
@@ -277,6 +342,27 @@ def test_the_run_and_deployment_indexes_are_in_the_database(database_url: str) -
     assert "UNIQUE" in deployments["uq_deployments_job_id"]
 
 
+def test_the_taste_indexes_are_in_the_database(database_url: str) -> None:
+    events = _indexes(database_url, "preference_events")
+    assert "(movie_id)" in events["ix_preference_events_movie_id"]
+    assert "(run_id)" in events["ix_preference_events_run_id"]
+    assert "UNIQUE" in events["uq_preference_events_idempotency_key"]
+    assert "UNIQUE" in events["uq_preference_events_revokes_event_id"]
+    exemplars = _indexes(database_url, "exemplars")
+    assert "(movie_id)" in exemplars["ix_exemplars_movie_id"]
+    assert "(event_id)" in exemplars["ix_exemplars_event_id"]
+    positive = exemplars["ix_exemplars_active_positive"]
+    assert "UNIQUE" in positive and "(movie_id)" in positive
+    assert "WHERE ((state = 'active'::text) AND (polarity = 'positive'::text))" in positive
+    content = exemplars["ix_exemplars_active_content"]
+    assert "UNIQUE" in content and "(movie_id, polarity, sha256)" in content
+    assert "WHERE (state = 'active'::text)" in content
+    profiles = _indexes(database_url, "taste_profiles")
+    assert "UNIQUE" in profiles["uq_taste_profiles_sha256"]
+    assert "UNIQUE" in profiles["ix_taste_profiles_active"]
+    assert "WHERE is_active" in profiles["ix_taste_profiles_active"]
+
+
 def test_the_taste_code_columns_exist(database_url: str) -> None:
     engine = _sync_engine(database_url)
     try:
@@ -304,7 +390,7 @@ def test_every_timestamp_column_is_timestamptz(database_url: str) -> None:
 
 
 def test_the_next_revision_is_numbered_after_the_newest() -> None:
-    assert migrate._next_revision_id() == "0004"
+    assert migrate._next_revision_id() == "0005"
 
 
 # ── Constraints ───────────────────────────────────────────────────────────
@@ -583,3 +669,150 @@ async def test_a_job_writes_at_most_one_deployment(db_session: AsyncSession) -> 
         )
     )
     await _flush_fails(db_session, _deployment(movie.id, job_id=7), _deployment(movie.id, job_id=7))
+
+
+# ── Taste ─────────────────────────────────────────────────────────────────
+
+
+def _event(movie_id: int, **values: object) -> PreferenceEvent:
+    defaults: dict[str, object] = {
+        "movie_id": movie_id,
+        "action": "approval",
+        "exposed": [],
+        "context": {},
+        "idempotency_key": "k1",
+    }
+    return PreferenceEvent(**{**defaults, **values})
+
+
+def _exemplar(movie_id: int, **values: object) -> Exemplar:
+    defaults: dict[str, object] = {
+        "movie_id": movie_id,
+        "polarity": "positive",
+        "weight": 1.0,
+        "source": "seed",
+        "state": "active",
+        "sha256": SHA,
+        "file_name": f"{SHA}.png",
+        "staged_name": "Movie (2000).png",
+    }
+    return Exemplar(**{**defaults, **values})
+
+
+def _profile(**values: object) -> TasteProfile:
+    defaults: dict[str, object] = {
+        "sha256": SHA,
+        "revision": "b" * 64,
+        "source": "seed",
+        "positives": 1,
+        "negatives": 0,
+        "positive_movie_ids": [1],
+        "file_name": f"{SHA}.npz",
+    }
+    return TasteProfile(**{**defaults, **values})
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"subject_kind": "series"},
+        {"action": "hate"},
+        {"action": "revoke"},
+        {"chosen_sha256": "x"},
+        {"profile_sha256": "x"},
+        {"chosen_source_file": "a/b.jpg"},
+        {"pick_source_file": ".."},
+        {"exposed": {}},
+        {"exposed": [{}] * 101},
+        {"context": []},
+        {"idempotency_key": ""},
+        {"idempotency_key": "k" * 161},
+    ],
+)
+async def test_event_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    movie = await _with_movie(db_session)
+    await _flush_fails(db_session, _event(movie.id, **values))
+
+
+async def test_events_are_keyed_once_and_revoked_once(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    first = _event(movie.id, exposed=[{}] * 100)
+    db_session.add(first)
+    await db_session.flush()
+    db_session.add(
+        _event(movie.id, idempotency_key="k2", action="revoke", revokes_event_id=first.id)
+    )
+    await db_session.flush()
+    await _flush_fails(
+        db_session,
+        _event(movie.id, idempotency_key="k3", action="revoke", revokes_event_id=first.id),
+    )
+    movie = await _with_movie(db_session)
+    db_session.add(_event(movie.id))
+    await db_session.flush()
+    await _flush_fails(db_session, _event(movie.id))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"polarity": "neutral"},
+        {"weight": 0.0},
+        {"weight": 1.5},
+        {"source": "library"},
+        {"state": "pending"},
+        {"source": "feedback"},  # a feedback exemplar names its event and TMDB file
+        {"source_file": "a.jpg"},  # a seed exemplar has no TMDB file
+        {"staged_name": None},  # a positive has a staged name
+        {"polarity": "negative"},  # a negative has none
+        {"state": "superseded"},  # an ended one says when
+        {"ended_at": datetime(2026, 1, 1, tzinfo=UTC)},  # an active one has not ended
+        {"sha256": "x"},
+        {"file_name": "a/b.png"},
+        {"staged_name": "x/Movie (2000).png"},
+    ],
+)
+async def test_exemplar_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    movie = await _with_movie(db_session)
+    await _flush_fails(db_session, _exemplar(movie.id, **values))
+
+
+async def test_one_active_positive_per_movie_and_one_active_row_per_image(
+    db_session: AsyncSession,
+) -> None:
+    movie = await _with_movie(db_session)
+    db_session.add(_exemplar(movie.id))
+    await db_session.flush()
+    await _flush_fails(db_session, _exemplar(movie.id, sha256="c" * 64))
+
+    movie = await _with_movie(db_session)
+    old = _exemplar(movie.id, state="superseded", ended_at=_now())
+    db_session.add_all([_exemplar(movie.id), old])
+    await db_session.flush()
+    db_session.add(_exemplar(movie.id, polarity="negative", staged_name=None))  # other polarity
+    await db_session.flush()
+    await _flush_fails(db_session, _exemplar(movie.id, polarity="negative", staged_name=None))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"sha256": "x"},
+        {"revision": "x"},
+        {"source": "library"},
+        {"positives": -1},
+        {"positive_movie_ids": {}},
+        {"file_name": "profiles/x.npz"},
+    ],
+)
+async def test_profile_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    await _flush_fails(db_session, _profile(**values))
+
+
+async def test_one_active_profile_and_one_row_per_file(db_session: AsyncSession) -> None:
+    db_session.add_all([_profile(is_active=True), _profile(sha256="c" * 64)])
+    await db_session.flush()
+    await _flush_fails(db_session, _profile(sha256="d" * 64, is_active=True))
+    db_session.add(_profile())
+    await db_session.flush()
+    await _flush_fails(db_session, _profile())

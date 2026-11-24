@@ -5,13 +5,24 @@ from __future__ import annotations
 from sqlalchemy import CheckConstraint, DateTime, ForeignKeyConstraint, UniqueConstraint
 
 from marquee.db.base import Base
-from marquee.db.models import Artwork, Deployment, Job, JobEvent, Movie, PosterRun, RunCandidate
+from marquee.db.models import (
+    Artwork,
+    Deployment,
+    Exemplar,
+    Job,
+    JobEvent,
+    Movie,
+    PosterRun,
+    PreferenceEvent,
+    RunCandidate,
+    TasteProfile,
+)
 
 # taste/map.py and taste/profile_enrich.py query these by name.
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 
 
-def test_only_the_library_job_and_run_tables_exist() -> None:
+def test_only_the_library_job_run_and_taste_tables_exist() -> None:
     assert set(Base.metadata.tables) == {
         "movies",
         "artwork",
@@ -21,6 +32,9 @@ def test_only_the_library_job_and_run_tables_exist() -> None:
         "poster_runs",
         "run_candidates",
         "deployments",
+        "preference_events",
+        "exemplars",
+        "taste_profiles",
     }
 
 
@@ -135,3 +149,32 @@ def test_run_and_deployment_constraints_and_cascades() -> None:
     assert {c.name for c in deployments.constraints if isinstance(c, UniqueConstraint)} == {
         "uq_deployments_job_id"
     }
+
+
+def test_taste_constraints_and_keys() -> None:
+    events = PreferenceEvent.__table__
+    assert "updated_at" not in events.c  # append-only
+    assert {c.name for c in events.constraints if isinstance(c, UniqueConstraint)} == {
+        "uq_preference_events_revokes_event_id",
+        "uq_preference_events_idempotency_key",
+    }
+    (run,) = events.c.run_id.foreign_keys
+    assert run.ondelete == "SET NULL"
+    (movie,) = events.c.movie_id.foreign_keys
+    assert movie.ondelete is None
+
+    exemplars = Exemplar.__table__
+    assert {i.name for i in exemplars.indexes} == {
+        "ix_exemplars_movie_id",
+        "ix_exemplars_event_id",
+        "ix_exemplars_active_positive",
+        "ix_exemplars_active_content",
+    }
+    for column in ("movie_id", "event_id", "replaced_exemplar_id"):
+        (key,) = exemplars.c[column].foreign_keys
+        assert key.ondelete is None, column
+
+    profiles = TasteProfile.__table__
+    assert {i.name for i in profiles.indexes} == {"ix_taste_profiles_active"}
+    (job,) = profiles.c.job_id.foreign_keys
+    assert job.ondelete == "SET NULL"
