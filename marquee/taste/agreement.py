@@ -227,6 +227,32 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
     return out
 
 
+@dataclass(frozen=True)
+class EventPage:
+    total: int
+    items: list[tuple[PreferenceEvent, str, int | None]]
+    """Each event with its movie's title and year."""
+
+
+async def list_events(
+    session: AsyncSession, *, movie_id: int | None = None, page: int = 1, page_size: int = 50
+) -> EventPage:
+    """Preference events, newest first, revokes included, with each movie's title and year."""
+    conditions = [] if movie_id is None else [PreferenceEvent.movie_id == movie_id]
+    total = await session.scalar(
+        select(func.count()).select_from(PreferenceEvent).where(*conditions)
+    )
+    rows = await session.execute(
+        select(PreferenceEvent, Movie.title, Movie.year)
+        .join(Movie, Movie.id == PreferenceEvent.movie_id)
+        .where(*conditions)
+        .order_by(PreferenceEvent.id.desc())
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    return EventPage(total=total or 0, items=[(e, title, year) for e, title, year in rows])
+
+
 async def run_reviewed(session: AsyncSession, run_id: int) -> bool:
     """Whether the run has feedback that is not revoked."""
     revokes = select(PreferenceEvent.revokes_event_id).where(

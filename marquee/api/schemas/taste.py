@@ -175,6 +175,55 @@ class EventList(BaseModel):
     items: list[EventItem]
 
 
+class FeedbackListItem(BaseModel):
+    """One act of feedback, as a list shows it: what was done, to which movie, and when.
+    The candidates it showed are counted, not copied (``GET /api/runs/{id}/feedback`` has
+    them)."""
+
+    id: int
+    movie_id: int
+    title: str
+    year: int | None
+    run_id: int | None
+    action: EventAction
+    chosen_source_file: str | None
+    pick_source_file: str | None
+    blind: bool | None
+    shown: int = Field(description="How many candidates the owner was shown")
+    context: dict[str, Any] = Field(description="order, hated, selected_candidate")
+    revokes_event_id: int | None
+    revoked_by: int | None = Field(description="The revoke that undid this one")
+    created_at: datetime
+
+    @classmethod
+    def build(
+        cls, event: PreferenceEvent, title: str, year: int | None, revoked_by: int | None
+    ) -> Self:
+        return cls(
+            id=event.id,
+            movie_id=event.movie_id,
+            title=title,
+            year=year,
+            run_id=event.run_id,
+            action=event.action,  # type: ignore[arg-type]
+            chosen_source_file=event.chosen_source_file,
+            pick_source_file=event.pick_source_file,
+            blind=event.blind,
+            shown=len(event.exposed or []),
+            context=dict(event.context or {}),
+            revokes_event_id=event.revokes_event_id,
+            revoked_by=revoked_by,
+            created_at=event.created_at,
+        )
+
+
+class FeedbackList(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[FeedbackListItem]
+
+
 class PendingItem(BaseModel):
     movie_id: int
     title: str

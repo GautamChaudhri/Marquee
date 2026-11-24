@@ -21,6 +21,7 @@ ROUTES = [
     ("POST", "/api/runs/1/feedback"),
     ("GET", "/api/runs/1/feedback"),
     ("POST", "/api/feedback/1/revoke"),
+    ("GET", "/api/feedback"),
     ("GET", "/api/taste"),
     ("POST", "/api/taste/rebuild"),
     ("GET", "/api/taste/exemplars"),
@@ -344,3 +345,53 @@ async def test_the_review_queue_carries_its_pictures(
     assert by_title["Beta"]["pick_image_url"] is None
     picture = await client.get(by_title["Alpha"]["pick_image_url"], headers=headers)
     assert picture.status_code == 200 and picture.content == b"Alpha 1"
+
+
+async def test_feedback_is_listed_newest_first_with_its_movie(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, data_dir: Path
+) -> None:
+    alpha = await _run(db_session, data_dir, title="Alpha", n=1)
+    beta = await _run(db_session, data_dir, title="Beta", n=2)
+
+    async def post(ids: dict, body: dict) -> int:
+        answer = await client.post(
+            f"/api/runs/{ids['run']}/feedback", headers=headers, json={"deploy": False, **body}
+        )
+        assert answer.status_code == 201
+        return answer.json()["event"]["id"]
+
+    approved = await post(alpha, {"action": "approval", "idempotency_key": "a"})
+    ranked = await post(
+        beta,
+        {
+            "action": "rank",
+            "order": [beta["r2"], beta["r1"]],
+            "hated": [beta["r3"]],
+            "idempotency_key": "b",
+        },
+    )
+    revoke = (await client.post(f"/api/feedback/{approved}/revoke", headers=headers)).json()
+    revoke_id = revoke["event"]["id"]
+
+    body = (await client.get("/api/feedback", headers=headers)).json()
+    assert body["total"] == 3
+    assert [(e["id"], e["action"], e["title"], e["revoked_by"]) for e in body["items"]] == [
+        (revoke_id, "revoke", "Alpha", None),
+        (ranked, "rank", "Beta", None),
+        (approved, "approval", "Alpha", revoke_id),
+    ]
+    rank = body["items"][1]
+    assert (rank["year"], rank["run_id"], rank["shown"]) == (2001, beta["run"], 3)
+    assert rank["context"]["order"] == ["r2.jpg", "r1.jpg"]
+    assert rank["context"]["hated"] == ["r3.jpg"]
+    assert "exposed" not in rank
+    assert body["items"][0]["revokes_event_id"] == approved
+
+    only_beta = (
+        await client.get("/api/feedback", headers=headers, params={"movie_id": beta["movie"]})
+    ).json()
+    assert [e["id"] for e in only_beta["items"]] == [ranked]
+    second_page = (
+        await client.get("/api/feedback", headers=headers, params={"page": 2, "page_size": 2})
+    ).json()
+    assert (second_page["total"], [e["id"] for e in second_page["items"]]) == (3, [approved])

@@ -22,6 +22,8 @@ from marquee.api.schemas.taste import (
     ExemplarList,
     ExemplarState,
     FeedbackJobs,
+    FeedbackList,
+    FeedbackListItem,
     FeedbackRequest,
     FeedbackResult,
     PendingItem,
@@ -158,6 +160,28 @@ async def get_feedback(session: Session, run_id: int) -> EventList:
     revoked = await feedback.revoked_ids(session)
     events = await feedback.events_of_run(session, run_id)
     return EventList(items=[EventItem.build(e, revoked.get(e.id)) for e in events])
+
+
+@router.get("/feedback")
+async def list_feedback(
+    session: Session,
+    movie_id: int | None = None,
+    page: Annotated[int, Query(ge=1, description="Page number, from 1")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> FeedbackList:
+    """Every act of feedback, revokes included, newest first, each with its movie's title and
+    year and the revoke that undid it."""
+    found = await agreement.list_events(session, movie_id=movie_id, page=page, page_size=page_size)
+    revoked = await feedback.revoked_ids(session)
+    return FeedbackList(
+        total=found.total,
+        page=page,
+        page_size=page_size,
+        items=[
+            FeedbackListItem.build(event, title, year, revoked.get(event.id))
+            for event, title, year in found.items
+        ],
+    )
 
 
 @router.post(

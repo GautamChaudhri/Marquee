@@ -1582,6 +1582,89 @@
         }
       }
     },
+    "/api/feedback": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "List Feedback",
+        "description": "Every act of feedback, revokes included, newest first, each with its movie's title and\nyear and the revoke that undid it.",
+        "operationId": "list_feedback_api_feedback_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Movie Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Page number, from 1",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "Page number, from 1"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/feedback/{event_id}/revoke": {
       "post": {
         "tags": [
@@ -2853,6 +2936,177 @@
           "rebuild"
         ],
         "title": "FeedbackJobs"
+      },
+      "FeedbackList": {
+        "properties": {
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FeedbackListItem"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total",
+          "page",
+          "page_size",
+          "items"
+        ],
+        "title": "FeedbackList"
+      },
+      "FeedbackListItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "movie_id": {
+            "type": "integer",
+            "title": "Movie Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "approval",
+              "override",
+              "rank",
+              "reject",
+              "revoke"
+            ],
+            "title": "Action"
+          },
+          "chosen_source_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chosen Source File"
+          },
+          "pick_source_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pick Source File"
+          },
+          "blind": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blind"
+          },
+          "shown": {
+            "type": "integer",
+            "title": "Shown",
+            "description": "How many candidates the owner was shown"
+          },
+          "context": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Context",
+            "description": "order, hated, selected_candidate"
+          },
+          "revokes_event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revokes Event Id"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked By",
+            "description": "The revoke that undid this one"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "movie_id",
+          "title",
+          "year",
+          "run_id",
+          "action",
+          "chosen_source_file",
+          "pick_source_file",
+          "blind",
+          "shown",
+          "context",
+          "revokes_event_id",
+          "revoked_by",
+          "created_at"
+        ],
+        "title": "FeedbackListItem",
+        "description": "One act of feedback, as a list shows it: what was done, to which movie, and when.\nThe candidates it showed are counted, not copied (``GET /api/runs/{id}/feedback`` has\nthem)."
       },
       "FeedbackRequest": {
         "properties": {
