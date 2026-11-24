@@ -4,13 +4,21 @@ Both are class ``media_write``, so two writes never run at once. Both go through
 :func:`marquee.artwork.deploy.write_poster`. Payloads carry the movie's id; the handlers
 check it against the database.
 
-**The newest write request for a movie wins.** A deploy or a restore is always queued,
-except a request identical to the movie's newest write job while that job is still queued,
-which is returned instead (:func:`add_write`). When a write job starts, first attempt or
-retry, and a newer write job of the same movie is queued, running, or succeeded, the older
-one succeeds as ``skipped: superseded by job N`` and writes nothing. A job that already
-renamed its file into place (it kept an intent) records that write first, so the folder
-never holds a poster no row describes; the newer job then writes over it.
+**The newest write request for a movie wins, and the owner's beats the policy's.** A deploy
+or a restore is always queued, except a request identical to the movie's newest write job
+while that job is still queued, which is returned instead (:func:`add_write`). When a write
+job starts, first attempt or retry, it succeeds as ``skipped: superseded by job N`` and
+writes nothing when another write job of the same movie wins over it (:func:`newer_write`):
+
+- over an owner's job (every restore, and a deploy the owner asked for): a newer owner's
+  job that is queued, running, or succeeded;
+- over a policy deploy: any newer write job that is queued, running, or succeeded, and any
+  owner's job, whatever its id, that is queued or running, or that succeeded after the
+  policy deploy was queued. A policy deploy queued after the owner's write had finished
+  (a later run's) still deploys under the policy.
+
+A job that already renamed its file into place (it kept an intent) records that write
+first, so the folder never holds a poster no row describes; the winner then writes over it.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from marquee.artwork import backup, deploy
@@ -45,7 +53,8 @@ from marquee.jobs import queue
 from marquee.jobs.registry import JobContext, JobKind, PermanentJobError
 from marquee.jobs.store import FRESH
 
-WRITE_KINDS = ("poster_deploy", "poster_restore")
+POSTER_RESTORE_KIND = "poster_restore"
+WRITE_KINDS = ("poster_deploy", POSTER_RESTORE_KIND)
 SUPERSEDING_STATES = ("queued", "running", "succeeded")
 WRITE_LOCK_CLASS = int.from_bytes(b"mqwr", "big")
 """With the movie's id, the transaction lock that queues one write request of a movie at a
@@ -146,19 +155,39 @@ def _of_movie(movie_id: int) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
     return Job.kind.in_(WRITE_KINDS), Job.payload["movie_id"].as_integer() == movie_id
 
 
-async def newer_write(session: AsyncSession, job_id: int, movie_id: int) -> int | None:
-    """The newest write job of the movie queued after this one that is queued, running, or
-    succeeded: the one that wins over this job. ``None`` when there is none."""
+def _by_owner() -> ColumnElement[bool]:
+    """A write job the owner asked for: every restore, and a deploy not queued by the policy."""
+    return or_(
+        Job.kind == POSTER_RESTORE_KIND,
+        Job.payload["initiated_by"].as_string() == INITIATED_BY_OWNER,
+    )
+
+
+async def newer_write(
+    session: AsyncSession, job_id: int, movie_id: int, initiated_by: str = INITIATED_BY_OWNER
+) -> int | None:
+    """The newest write job of the movie that wins over this one (see the module's
+    docstring), or ``None`` when there is none and this job goes ahead."""
+    newer = and_(Job.id > job_id, Job.state.in_(SUPERSEDING_STATES))
+    if initiated_by == INITIATED_BY_POLICY:
+        queued_at = select(Job.created_at).where(Job.id == job_id).scalar_subquery()
+        overlapping = or_(
+            Job.state.in_(("queued", "running")),
+            and_(Job.state == "succeeded", Job.finished_at >= queued_at),
+        )
+        wins = or_(newer, and_(_by_owner(), Job.id != job_id, overlapping))
+    else:
+        wins = and_(newer, _by_owner())
     return await session.scalar(
-        select(Job.id)
-        .where(*_of_movie(movie_id), Job.id > job_id, Job.state.in_(SUPERSEDING_STATES))
-        .order_by(Job.id.desc())
-        .limit(1)
+        select(Job.id).where(*_of_movie(movie_id), wins).order_by(Job.id.desc()).limit(1)
     )
 
 
 async def _superseded(
-    sessions: async_sessionmaker[AsyncSession], job_id: int, movie_id: int
+    sessions: async_sessionmaker[AsyncSession],
+    job_id: int,
+    movie_id: int,
+    initiated_by: str = INITIATED_BY_OWNER,
 ) -> dict[str, Any] | None:
     """The result of a write job that steps aside for a newer one, or ``None`` to go ahead.
 
@@ -168,7 +197,7 @@ async def _superseded(
     if await asyncio.to_thread(deploy.intent_path(job_id).exists):
         return None
     async with sessions() as session:
-        newer = await newer_write(session, job_id, movie_id)
+        newer = await newer_write(session, job_id, movie_id, initiated_by)
         await session.commit()
     if newer is None:
         return None
@@ -199,7 +228,7 @@ async def poster_deploy(ctx: JobContext) -> dict[str, Any]:
         if movie.id != movie_id:
             raise PermanentJobError(f"candidate {candidate_id} is not movie {movie_id}'s")
         if await _own_write(sessions, ctx.job_id) is None and (
-            skipped := await _superseded(sessions, ctx.job_id, movie.id)
+            skipped := await _superseded(sessions, ctx.job_id, movie.id, initiated_by)
         ):
             return skipped
         guard = None

@@ -271,6 +271,43 @@ async def _drain_writes(database_url: str) -> None:
     await asyncio.wait_for(worker.run(), 30)
 
 
+async def test_an_owners_pick_beats_a_policy_deploy_queued_after_it(
+    sessions: async_sessionmaker[AsyncSession],
+    movie_folder: Path,
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner picks; a run's policy deploy of the pick is queued next. The worker runs
+    the owner's first (the older job) and must write it; the policy's must then step aside
+    rather than write the engine's pick over the owner's choice."""
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    ids = await _run(sessions)
+    async with sessions() as session:
+        owners = await review.submit(
+            session,
+            run_id=ids["run"],
+            action="override",
+            candidate_id=ids["r2"],
+            idempotency_key="a",
+        )
+    async with sessions() as session:
+        policy, created = await poster_write.enqueue_deploy(
+            session, ids["r1"], initiated_by="policy"
+        )
+    assert owners.deploy_job is not None and created and policy.id > owners.deploy_job.id
+
+    await _drain_writes(database_url)
+
+    assert (movie_folder / "poster.jpg").read_bytes() == ORIGINALS["r2.jpg"]
+    async with sessions() as session:
+        done = await session.get(Job, policy.id)
+        written = list(await session.scalars(select(Deployment)))
+    assert (
+        done is not None and done.result["skipped"] == f"superseded by job {owners.deploy_job.id}"
+    )
+    assert [(row.candidate_id, row.initiated_by) for row in written] == [(ids["r2"], "owner")]
+
+
 async def test_two_picks_while_nothing_runs_deploy_the_second(
     sessions: async_sessionmaker[AsyncSession], movie_folder: Path, database_url: str
 ) -> None:

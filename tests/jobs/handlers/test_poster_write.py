@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import io
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -648,6 +648,147 @@ async def test_a_write_that_stopped_after_its_rename_is_recorded_before_it_steps
     assert (await _run_write(newer))["outcome"] == "written"
     assert (library / "poster.jpg").read_bytes() == PICK
     assert await _deployment_count(sessions) == 2
+
+
+# ── The owner beats the policy ────────────────────────────────────────────
+
+
+async def _queued_policy(sessions: async_sessionmaker[AsyncSession], ids: dict[str, int]) -> Job:
+    async with sessions() as session:
+        job, created = await handler.enqueue_deploy(session, ids["pick"], initiated_by="policy")
+    assert created
+    return job
+
+
+async def _finish(
+    sessions: async_sessionmaker[AsyncSession], job_id: int, *, ago_s: float = 0
+) -> None:
+    """Mark a job succeeded, as the queue would, finished ``ago_s`` seconds ago."""
+    async with sessions() as session:
+        await session.execute(
+            Job.__table__.update()
+            .where(Job.id == job_id)
+            .values(state="succeeded", finished_at=func.now() - timedelta(seconds=ago_s))
+        )
+        await session.commit()
+
+
+async def _created_ago(
+    sessions: async_sessionmaker[AsyncSession], job_id: int, ago_s: float
+) -> None:
+    async with sessions() as session:
+        await session.execute(
+            Job.__table__.update()
+            .where(Job.id == job_id)
+            .values(created_at=func.now() - timedelta(seconds=ago_s))
+        )
+        await session.commit()
+
+
+async def test_an_owners_pick_queued_before_a_policy_deploy_is_written_and_kept(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    ids = await _setup(sessions, library, owners_poster=True)
+    owners = await _queued_write(sessions, ids, "other")
+    policy = await _queued_policy(sessions, ids)
+
+    # The worker claims the older job first: the owner's, which must not step aside.
+    assert (await _run_write(owners))["outcome"] == "written"
+    await _finish(sessions, owners.id)
+    # Then the policy's, which must not write over the owner's choice.
+    result = await _run_write(policy)
+
+    assert result["skipped"] == f"superseded by job {owners.id}"
+    assert (library / "poster.jpg").read_bytes() == OTHER
+    assert fetched == ["other.jpg"]
+    assert await _deployment_count(sessions) == 1
+
+
+async def test_an_owners_pick_queued_after_a_policy_deploy_wins(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    ids = await _setup(sessions, library, owners_poster=True)
+    policy = await _queued_policy(sessions, ids)
+    owners = await _queued_write(sessions, ids, "other")
+
+    assert (await _run_write(policy))["skipped"] == f"superseded by job {owners.id}"
+    assert (await _run_write(owners))["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == OTHER
+    assert fetched == ["other.jpg"]
+
+
+async def test_of_two_owners_requests_the_newer_wins(
+    library: Path, sessions: async_sessionmaker[AsyncSession], fetched: list[str]
+) -> None:
+    ids = await _setup(sessions, library, owners_poster=True)
+    older = await _queued_write(sessions, ids, "other")
+    newer = await _queued_write(sessions, ids, "pick")
+
+    assert (await _run_write(older))["skipped"] == f"superseded by job {newer.id}"
+    assert (await _run_write(newer))["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == PICK
+
+
+async def test_a_retried_policy_deploy_steps_aside_for_an_owners_waiting_write(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An owner's write that is older but still queued (waiting for its own retry) or
+    running beats a policy deploy, whatever their ids. So does a restore, always the
+    owner's."""
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    ids = await _setup(sessions, library, owners_poster=True)
+    owners = await _queued_write(sessions, ids, "other")  # queued, waiting for a retry
+    policy = await _queued_policy(sessions, ids)
+
+    assert (await _run_write(policy))["skipped"] == f"superseded by job {owners.id}"
+    await _set_state(sessions, owners.id, "running")
+    assert (await _run_write(policy))["skipped"] == f"superseded by job {owners.id}"
+    await _set_state(sessions, owners.id, "failed")
+    # With the owner's write failed for good, the policy's retry goes ahead.
+    assert (await _run_write(policy))["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == PICK
+
+    async with sessions() as session:
+        deployment = await session.scalar(select(Deployment.id))
+        restore, _ = await handler.enqueue_restore(session, deployment)
+    again = await _queued_policy(sessions, ids)
+    assert (await _run_write(again))["skipped"] == f"superseded by job {restore.id}"
+
+
+async def test_a_policy_deploy_queued_after_the_owners_write_finished_still_deploys(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner's write beats a policy deploy it overlapped, not every later one: a policy
+    deploy queued after it had finished (a later run's) still deploys under the policy."""
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    ids = await _setup(sessions, library, owners_poster=True)
+    owners = await _queued_write(sessions, ids, "other")
+    assert (await _run_write(owners))["outcome"] == "written"
+    await _finish(sessions, owners.id, ago_s=60)
+    policy = await _queued_policy(sessions, ids)
+
+    assert (await _run_write(policy))["outcome"] == "written"
+    assert (library / "poster.jpg").read_bytes() == PICK
+    await _finish(sessions, policy.id)
+
+    # A policy deploy queued before the owner's write finished, retried later, steps aside.
+    late = await _queued_policy(sessions, ids)
+    await _created_ago(sessions, late.id, 120)
+    assert (await _run_write(late))["skipped"] == f"superseded by job {owners.id}"
 
 
 @pytest.mark.parametrize(
