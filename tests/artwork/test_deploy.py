@@ -326,6 +326,44 @@ async def test_a_file_an_earlier_attempt_renamed_is_recorded_without_writing(
 
 
 @pytest.mark.db
+async def test_a_candidate_identical_to_the_owners_poster_leaves_it_the_owners(
+    library: Path, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    # The owner's poster.jpg is byte for byte the TMDB file the deploy fetched (the owner
+    # downloaded it from TMDB). Nothing is written, the poster stays the owner's, and undoing
+    # the deployment must leave it in place, not remove it.
+    poster = library / "poster.jpg"
+    poster.write_bytes(NEW)
+    movie = await _movie(sessions)
+    await _library_row(sessions, movie, poster)
+
+    result = await deploy.write_poster(sessions, _deploy(movie))
+
+    assert result.outcome == "already_in_place"
+    assert (result.previous_sha256, result.previous_origin) == (backup.sha256_of(NEW), "library")
+    assert result.backup_file == backup.backup_key(movie.id, backup.sha256_of(NEW))
+    (row,), (deployment,) = await _state(sessions)
+    assert row.origin == "library"
+    assert deployment.previous_sha256 == backup.sha256_of(NEW)
+
+    undone = await deploy.write_poster(
+        sessions,
+        _deploy(
+            movie,
+            backup.verify(deployment.backup_file, deployment.previous_sha256),  # type: ignore[arg-type]
+            action="restore",
+            new_origin=deployment.previous_origin,
+            restores_deployment_id=deployment.id,
+            source_file=None,
+        ),
+    )
+    assert poster.read_bytes() == NEW
+    assert undone.outcome == "already_in_place"
+    (row,), _ = await _state(sessions)
+    assert row.origin == "library"
+
+
+@pytest.mark.db
 async def test_a_file_in_place_without_its_backup_is_refused(
     library: Path, sessions: async_sessionmaker[AsyncSession]
 ) -> None:

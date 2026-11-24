@@ -373,11 +373,18 @@ async def write_poster(
     backup_file: str | None = None
     previous_sha: str | None = None
     previous_origin: str | None = None
+    new_origin = write.new_origin
     note: str | None = None
 
     if current_sha == new_sha:  # step 3: the target already holds the new bytes
         row_sha = row.sha256 if row is not None else None
-        if newest is not None and newest.new_sha256 == new_sha and row_sha == new_sha:
+        if (
+            newest is not None
+            and newest.new_sha256 == new_sha
+            and row_sha == new_sha
+            and newest.action == write.action
+            and newest.restores_deployment_id == write.restores_deployment_id
+        ):
             return recorded(newest, "already_deployed", "the poster was already deployed")
         if row is not None and row.sha256 != new_sha:
             previous_sha, previous_origin = row.sha256, row.origin
@@ -388,6 +395,18 @@ async def write_poster(
                     "the database describes is missing; nothing recorded"
                 )
             note = "the file was already in place; an earlier attempt wrote it"
+        elif row is not None and current is not None:
+            # The poster there is already these bytes and no deployment put it there (an
+            # earlier attempt would have left the row describing the old poster): the owner's
+            # own file is the candidate. Nothing is written, it stays whose it was, and it is
+            # its own previous poster, backed up, so undoing this leaves it byte for byte.
+            previous_sha, previous_origin = row.sha256, row.origin
+            backup_file = await asyncio.to_thread(backup.store, current.data, movie.id)
+            new_origin = row.origin
+            note = (
+                f"the folder already held exactly this poster ({row.origin}'s); nothing was "
+                "written and it stays as it was"
+            )
         else:
             note = "the file was already in place and no previous poster is recorded"
         outcome = "already_in_place"
@@ -418,7 +437,7 @@ async def write_poster(
 
     async with sessions() as session:  # step 7
         deployment = await _record(
-            session, write, target, new_sha, previous_sha, previous_origin, backup_file
+            session, write, target, new_sha, new_origin, previous_sha, previous_origin, backup_file
         )
     logger.info(
         "DEPLOY | movie %d: %s %s (%s); deployment %d",
@@ -444,6 +463,7 @@ async def _record(
     write: Write,
     target: Target,
     new_sha: str | None,
+    new_origin: str,
     previous_sha: str | None,
     previous_origin: str | None,
     backup_file: str | None,
@@ -479,7 +499,7 @@ async def _record(
         row.sha256 = new_sha
         row.size_bytes = on_disk.size_bytes
         row.file_modified_at = on_disk.modified_at
-        row.origin = write.new_origin
+        row.origin = new_origin
         row.last_seen_at = now
     deployment = Deployment(
         subject_kind=SUBJECT_MOVIE,
