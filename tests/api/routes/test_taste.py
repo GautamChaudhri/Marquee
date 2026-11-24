@@ -248,7 +248,7 @@ async def test_taste_status_and_rebuild(
         "trained": False,
         "scorer": "auto",
         "in_use": False,
-        "why": "not trained yet",
+        "why": "it has not been trained yet; a rebuild trains it",
         "active": None,
         "last_training": None,
         "missing": {"subjects": 25, "pairs": 200},

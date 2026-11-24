@@ -24,7 +24,7 @@ test('Taste shows the profile, agreement, the residual, and the exemplars', asyn
 	await expect(agreement).toContainText('No blind review yet.');
 	await expect(agreement).toContainText('Not enough reviews yet for a percentage (0 of 10).');
 	await expect(page.getByTestId('residual-state')).toHaveText(
-		'Runs rank with the weighted scorer: not trained yet.'
+		'Runs rank with the weighted scorer: it has not been trained yet; a rebuild trains it.'
 	);
 	await expect(page.getByTestId('residual')).toContainText(
 		'It needs feedback on 25 more movies and 200 more pairs (0 of 25 movies, 0 of 200 pairs).'

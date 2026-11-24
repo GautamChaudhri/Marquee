@@ -491,11 +491,31 @@ function residualState(how) {
 		trained: false,
 		scorer: 'auto',
 		in_use: false,
-		why: 'not trained yet',
+		why: 'it has not been trained yet; a rebuild trains it',
 		active: null,
 		last_training: null,
 		missing: { subjects: 25, pairs: 200 }
 	};
+	if (how === 'refused')
+		return {
+			...base,
+			subjects: 30,
+			pairs: 840,
+			missing: { subjects: 0, pairs: 0 },
+			trained: true,
+			why:
+				'the last training changed nothing (it did not beat the baseline on movies held ' +
+				'back for checking)',
+			last_training: {
+				id: 2,
+				at: iso(NOW - 600_000),
+				outcome: 'no_change',
+				reason: 'no_held_out_improvement',
+				subjects: 30,
+				pairs: 840,
+				profile_id: 2
+			}
+		};
 	if (how !== 'active') return base;
 	return {
 		...base,
@@ -503,7 +523,7 @@ function residualState(how) {
 		pairs: 840,
 		trained: true,
 		in_use: true,
-		why: 'a compatible artifact is active',
+		why: 'it was trained for the active taste profile',
 		active: {
 			id: 4,
 			trained_at: iso(NOW - 600_000),
@@ -796,7 +816,7 @@ function tasteStatus() {
 		agreement: { blind, by_profile: {}, by_month: {}, not_blind: notBlind, unknown: tally() },
 		residual: (() => {
 			const residual = residualState(state.residual);
-			if (state.residual === 'active') return residual;
+			if (state.residual !== 'none') return residual;
 			const pairs = seen.size * 3;
 			return {
 				...residual,

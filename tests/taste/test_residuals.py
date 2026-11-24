@@ -113,7 +113,9 @@ async def test_too_few_movies_changes_nothing_and_is_recorded(db_session: AsyncS
     assert not trained.activated
     assert not settings.residuals_dir.exists() or not any(settings.residuals_dir.iterdir())
     state = await residuals.state(db_session)
-    assert state["in_use"] is False and "insufficient_evidence" in state["why"]
+    assert state["in_use"] is False
+    assert state["why"] == "the last training changed nothing (too little feedback yet)"
+    assert state["last_training"]["reason"] == "insufficient_evidence"  # the engine's word
     assert state["missing"] == {"subjects": 20, "pairs": 60}
 
 
@@ -330,3 +332,49 @@ async def test_only_the_five_newest_artifacts_and_the_active_one_are_kept(
     assert kept == sorted(r.file_name for r in rows[-5:])  # type: ignore[type-var]
     assert [r.is_active for r in rows] == [False] * 6 + [True]
     assert all(r.file_name for r in rows)  # rows keep their names when files go
+
+
+def test_the_residuals_state_is_said_once_in_plain_words() -> None:
+    from types import SimpleNamespace
+
+    def training(id_: int, outcome: str, reason: str | None = None) -> Any:
+        return SimpleNamespace(id=id_, outcome=outcome, reason=reason)
+
+    active = training(4, "activate")
+    cases = [
+        (("auto", None, None, False), (False, "it has not been trained yet; a rebuild trains it")),
+        (
+            ("auto", None, training(1, "failed", "error"), False),
+            (False, "the last training failed"),
+        ),
+        (
+            ("auto", None, training(1, "activate"), False),
+            (False, "the last one trained was for an earlier taste profile"),
+        ),
+        (("auto", active, active, True), (True, "it was trained for the active taste profile")),
+        (
+            ("auto", active, training(5, "no_change", "active_residual_regression"), True),
+            (True, "the last training changed nothing (it was not better than the one in use)"),
+        ),
+        (("auto", active, active, False), (False, "it was trained for another taste profile")),
+        (("weighted", active, active, True), (False, "SCORER is weighted, which turns it off")),
+        (
+            ("weighted", None, training(2, "no_change", "no_held_out_improvement"), False),
+            (
+                False,
+                "SCORER is weighted, which turns it off; the last training changed nothing (it "
+                "did not beat the baseline on movies held back for checking)",
+            ),
+        ),
+    ]
+    for (scorer, current, last, bound), expected in cases:
+        assert residuals._why(scorer, current, last, bound=bound) == expected
+    for reason in (
+        "insufficient_evidence",
+        "no_held_out_improvement",
+        "active_residual_regression",
+        "insufficient_held_out_subjects",
+        "no_common_features",
+    ):
+        _in_use, why = residuals._why("auto", None, training(1, "no_change", reason), bound=False)
+        assert "_" not in why and residuals.REASON_WORDS[reason] in why

@@ -167,7 +167,7 @@ function residual(values: Partial<Residual> = {}): Residual {
 		trained: false,
 		scorer: 'auto',
 		in_use: false,
-		why: 'the last training did not activate (insufficient_evidence)',
+		why: 'the last training changed nothing (too little feedback yet)',
 		active: null,
 		last_training: {
 			id: 1,
@@ -187,23 +187,65 @@ describe('the residual in words', () => {
 	it('says what is missing when there is too little feedback', () => {
 		const lines = residualLines(residual());
 		expect(lines.state).toBe(
-			'Runs rank with the weighted scorer: the last training did not activate (insufficient_evidence).'
+			'Runs rank with the weighted scorer: the last training changed nothing (too little feedback yet).'
 		);
 		expect(lines.details).toEqual([
-			'Last training 1: changed nothing (insufficient evidence), from 1 movie and 1 pair.',
+			'Last training 1, from 1 movie and 1 pair.',
 			'It needs feedback on 24 more movies and 199 more pairs (1 of 25 movies, 1 of 200 pairs).'
 		]);
 		expect(lines.features).toEqual([]);
-		expect(residualLines(residual({ last_training: null })).details[0]).toBe(
-			'Not trained yet; a rebuild trains it.'
+		const never = residualLines(
+			residual({ last_training: null, why: 'it has not been trained yet; a rebuild trains it' })
 		);
+		expect(never.state).toBe(
+			'Runs rank with the weighted scorer: it has not been trained yet; a rebuild trains it.'
+		);
+		expect(never.details).toEqual([
+			'It needs feedback on 24 more movies and 199 more pairs (1 of 25 movies, 1 of 200 pairs).'
+		]);
+	});
+
+	it('says each fact once and never shows the engine’s reason', () => {
+		const why =
+			'the last training changed nothing (it did not beat the baseline on movies held back ' +
+			'for checking)';
+		const lines = residualLines(
+			residual({
+				why,
+				missing: { subjects: 0, pairs: 0 },
+				last_training: {
+					id: 2,
+					at: '2026-11-24T12:00:00Z',
+					outcome: 'no_change',
+					reason: 'no_held_out_improvement',
+					subjects: 30,
+					pairs: 840,
+					profile_id: 2
+				}
+			})
+		);
+		const text = [lines.state, ...lines.details].join(' ');
+		expect(text).not.toContain('_');
+		expect(text.split('did not beat the baseline').length - 1).toBe(1);
+		expect(text.split('changed nothing').length - 1).toBe(1);
+		expect(lines.details).toEqual(['Last training 2, from 30 movies and 840 pairs.']);
+	});
+
+	it('says why runs do not use it when SCORER is weighted, once', () => {
+		const lines = residualLines(
+			residual({ scorer: 'weighted', why: 'SCORER is weighted, which turns it off' })
+		);
+		expect(lines.state).toBe(
+			'Runs rank with the weighted scorer: SCORER is weighted, which turns it off.'
+		);
+		expect([lines.state, ...lines.details].join(' ').split('weighted, which').length - 1).toBe(1);
 	});
 
 	it('says what an active residual leans on and how much better it does', () => {
 		const lines = residualLines(
 			residual({
 				in_use: true,
-				why: 'a compatible artifact is active',
+				why: 'it was trained for the active taste profile',
 				trained: true,
 				missing: { subjects: 0, pairs: 0 },
 				active: {
@@ -229,10 +271,12 @@ describe('the residual in words', () => {
 				}
 			})
 		);
-		expect(lines.state).toBe('Runs rank with the residual.');
+		expect(lines.state).toBe(
+			'Runs rank with the residual: it was trained for the active taste profile.'
+		);
 		expect(lines.details).toEqual([
 			'On 6 held-out movies, it agrees with your order 84% of the time, against 71% without it.',
-			'Last training 4: activated, from 30 movies and 900 pairs.'
+			'Trained in training 4, from 30 movies and 900 pairs.'
 		]);
 		expect(lines.features.map((f) => f.name)).toEqual([
 			'title_colorfulness',

@@ -109,15 +109,15 @@ export function outcomeLine(row: EvaluationResult): string {
 }
 
 /** The residual, in lines: in use or not and why, held-out accuracy, what it leans on, the
- *  last training, and what is missing. */
+ *  last training, and what is missing. The API's `why` is one plain sentence that already
+ *  carries the last training's outcome when that is news, so each fact is said once. */
 export function residualLines(residual: Residual): {
 	state: string;
 	details: string[];
 	features: { name: string; weight: number }[];
 } {
-	const state = residual.in_use
-		? 'Runs rank with the residual.'
-		: `Runs rank with the weighted scorer: ${residual.why}.`;
+	const scorer = residual.in_use ? 'the residual' : 'the weighted scorer';
+	const state = `Runs rank with ${scorer}: ${residual.why}.`;
 	const details: string[] = [];
 	const active = residual.active;
 	if (active && active.baseline_accuracy != null && active.candidate_accuracy != null) {
@@ -129,18 +129,11 @@ export function residualLines(residual: Residual): {
 	}
 	const last = residual.last_training;
 	if (last) {
-		const what =
-			last.outcome === 'activate'
-				? 'activated'
-				: last.outcome === 'failed'
-					? 'failed'
-					: `changed nothing (${(last.reason ?? '').replaceAll('_', ' ')})`;
+		const which = last.id === active?.id ? 'Trained in training' : 'Last training';
 		details.push(
-			`Last training ${last.id}: ${what}, from ${plural(last.subjects, 'movie')} and ` +
+			`${which} ${last.id}, from ${plural(last.subjects, 'movie')} and ` +
 				`${plural(last.pairs, 'pair')}.`
 		);
-	} else {
-		details.push('Not trained yet; a rebuild trains it.');
 	}
 	const missing = residual.missing;
 	if (missing.subjects > 0 || missing.pairs > 0) {

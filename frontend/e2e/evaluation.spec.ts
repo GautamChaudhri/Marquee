@@ -113,15 +113,31 @@ test('an evaluation in progress shows its progress and its results so far', asyn
 test('an active residual says what it leans on and how much better it does', async ({ page }) => {
 	await resetBackend({ residual: 'active' });
 	await page.goto('/taste');
-	await expect(page.getByTestId('residual-state')).toHaveText('Runs rank with the residual.');
+	await expect(page.getByTestId('residual-state')).toHaveText(
+		'Runs rank with the residual: it was trained for the active taste profile.'
+	);
 	const residual = page.getByTestId('residual');
 	await expect(residual).toContainText(
 		'On 6 held-out movies, it agrees with your order 81% of the time, against 62% without it.'
 	);
-	await expect(residual).toContainText('Last training 4: activated, from 30 movies and 840 pairs.');
+	await expect(residual).toContainText('Trained in training 4, from 30 movies and 840 pairs.');
 	await expect(residual.locator('li').first()).toContainText('title_colorfulness');
 	await expect(residual.locator('li').first()).toContainText('more is better (2.40)');
 	await expect(residual).not.toContainText('It needs feedback');
+});
+
+test('a training that changed nothing says why once, in plain words', async ({ page }) => {
+	await resetBackend({ residual: 'refused' });
+	await page.goto('/taste');
+	await expect(page.getByTestId('residual-state')).toHaveText(
+		'Runs rank with the weighted scorer: the last training changed nothing (it did not beat ' +
+			'the baseline on movies held back for checking).'
+	);
+	const text = (await page.getByTestId('residual').innerText()).replaceAll('\n', ' ');
+	expect(text).toContain('Last training 2, from 30 movies and 840 pairs.');
+	expect(text).not.toContain('_');
+	expect(text.split('changed nothing').length - 1).toBe(1);
+	expect(text.split('did not beat the baseline').length - 1).toBe(1);
 });
 
 for (const width of [390, 1440]) {

@@ -4,14 +4,14 @@ import { E2E_API_KEY, FAKE_URL } from '../playwright.config';
 /** Start the fake backend afresh. `review: 'none'` leaves no run waiting for a review;
  *  `problems` makes the system summary report a schema behind and a missing model;
  *  `evaluations` gives two finished blind evaluations, or those and one running, or those and
- *  a newer cancelled and a newer failed one (`stopped`); `residual:
- *  'active'` gives an active residual. */
+ *  a newer cancelled and a newer failed one (`stopped`); `residual: 'active'` gives an active
+ *  residual, and `'refused'` a last training that changed nothing. */
 export async function resetBackend(
 	options: {
 		review?: 'none';
 		problems?: boolean;
 		evaluations?: 'finished' | 'running' | 'stopped';
-		residual?: 'active';
+		residual?: 'active' | 'refused';
 	} = {}
 ): Promise<void> {
 	const params = new URLSearchParams();

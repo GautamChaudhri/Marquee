@@ -750,7 +750,10 @@ def test_review_commands(
     assert "exemplars revoked: 1 positive, 1 negative" in out
     assert "profile   none registered" in out
     assert "agreement blind runs: 0 reviewed" in out
-    assert "residual  not in use: not trained yet (SCORER=auto)" in out
+    assert (
+        "residual  not in use: it has not been trained yet; a rebuild trains it (SCORER=auto)"
+        in out
+    )
     assert "the events give 0 pair(s) over 0 movie(s); it needs 200 over 25" in out
     assert "missing: 25 movie(s) and 200 pair(s) of feedback" in out
     status = json.loads(run("taste", "status", "--json")[1])

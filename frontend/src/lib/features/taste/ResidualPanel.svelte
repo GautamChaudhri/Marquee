@@ -3,8 +3,8 @@
 	import { residualLines } from './evaluation';
 
 	/** The residual: in use or not and why, held-out accuracy before and after, what it leans
-	 *  on, the last training, and what is still missing. No button turns it on or off:
-	 *  SCORER=weighted does. */
+	 *  on, the last training, and what is still missing, each said once. No button turns it on
+	 *  or off: SCORER=weighted does, and the state line says so. */
 	let { residual }: { residual: Residual } = $props();
 
 	const lines = $derived(residualLines(residual));
@@ -26,9 +26,6 @@
 				</li>
 			{/each}
 		</ul>
-	{/if}
-	{#if residual.scorer === 'weighted'}
-		<p class="line">SCORER is set to weighted, so runs never use it.</p>
 	{/if}
 </div>
 

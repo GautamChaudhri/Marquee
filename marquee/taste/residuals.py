@@ -381,6 +381,54 @@ def _weights(row: ResidualTraining) -> dict[str, float] | None:
     }
 
 
+REASON_WORDS = {
+    "insufficient_evidence": "too little feedback yet",
+    "no_held_out_improvement": ("it did not beat the baseline on movies held back for checking"),
+    "active_residual_regression": "it was not better than the one in use",
+    "insufficient_held_out_subjects": "too few movies to hold some back for checking",
+    "no_common_features": "the answers share no feature it could learn from",
+}
+"""The engine's reasons for changing nothing, in plain words. The API's ``reason`` keeps the
+engine's identifier; ``why`` uses these."""
+
+
+def _last_said(last: ResidualTraining) -> str:
+    if last.outcome == "activate":  # and it is no longer the active one
+        return "the last one trained was for an earlier taste profile"
+    if last.outcome == "failed":
+        return "the last training failed"
+    return (
+        "the last training changed nothing "
+        f"({REASON_WORDS.get(last.reason or '', 'no reason recorded')})"
+    )
+
+
+def _why(
+    scorer: str,
+    current: ResidualTraining | None,
+    last: ResidualTraining | None,
+    *,
+    bound: bool,
+) -> tuple[bool, str]:
+    """Whether runs use the residual, and why, in one plain sentence. The last training's
+    outcome is part of it only when that training is not the active artifact's own, so the
+    page says each fact once."""
+    news = (
+        _last_said(last)
+        if last is not None and (current is None or last.id != current.id)
+        else None
+    )
+    if scorer == "weighted":
+        why = "SCORER is weighted, which turns it off"
+        return False, f"{why}; {news}" if news else why
+    if current is None:
+        return False, news or "it has not been trained yet; a rebuild trains it"
+    if not bound:
+        why = "it was trained for another taste profile"
+        return False, f"{why}; {news}" if news else why
+    return True, news or "it was trained for the active taste profile"
+
+
 async def state(session: AsyncSession) -> dict[str, Any]:
     """The residual's state: the scorer setting, the active artifact, the last training,
     whether runs use it and why, and what is still missing."""
@@ -395,19 +443,7 @@ async def state(session: AsyncSession) -> dict[str, Any]:
     min_pairs = pipeline_settings.RESIDUAL_MIN_PAIRS
     scorer = pipeline_settings.SCORER
     bound = current is not None and profile is not None and current.profile_id == profile.id
-    if scorer == "weighted":
-        in_use, why = False, "SCORER is weighted, which forces the baseline"
-    elif current is None:
-        in_use = False
-        why = (
-            "not trained yet"
-            if last is None
-            else f"the last training did not activate ({last.reason or last.outcome})"
-        )
-    elif not bound:
-        in_use, why = False, "the active artifact was trained for another profile"
-    else:
-        in_use, why = True, "a compatible artifact is active"
+    in_use, why = _why(scorer, current, last, bound=bound)
     artifact = None
     if current is not None:
         evaluation = (current.report or {}).get("evaluation") or {}
