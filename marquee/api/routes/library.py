@@ -58,6 +58,13 @@ async def list_movies(
     has_poster: Annotated[
         bool | None, Query(description="Only movies with (true) or without (false) a poster")
     ] = None,
+    origin: Annotated[
+        queries.PosterOrigin | None,
+        Query(description="Only movies whose poster is the owner's (library) or Marquee's"),
+    ] = None,
+    has_run: Annotated[
+        bool | None, Query(description="Only movies with (true) or without (false) a run")
+    ] = None,
     include_unavailable: Annotated[
         bool, Query(description="Also list movies Radarr wants but has no file for")
     ] = False,
@@ -73,6 +80,8 @@ async def list_movies(
         page_size=page_size,
         q=q,
         has_poster=has_poster,
+        origin=origin,
+        has_run=has_run,
         include_unavailable=include_unavailable,
         sort=sort,
     )

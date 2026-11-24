@@ -17,6 +17,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from marquee.db.models import ARTWORK_POSTER, Artwork, Movie, PosterRun
 
 MovieSort = Literal["title", "year", "added"]
+PosterOrigin = Literal["library", "marquee"]
 
 
 @dataclass(frozen=True)
@@ -41,12 +42,17 @@ def _poster_join() -> ColumnElement[bool]:
     return and_(Artwork.movie_id == Movie.id, Artwork.artwork_kind == ARTWORK_POSTER)
 
 
-def _has_poster() -> ColumnElement[bool]:
+def _has_poster(origin: PosterOrigin | None = None) -> ColumnElement[bool]:
     # Its own alias, so the list query's join on artwork cannot correlate it away.
     poster = aliased(Artwork)
-    return exists(
-        select(poster.id).where(poster.movie_id == Movie.id, poster.artwork_kind == ARTWORK_POSTER)
-    )
+    conditions = [poster.movie_id == Movie.id, poster.artwork_kind == ARTWORK_POSTER]
+    if origin is not None:
+        conditions.append(poster.origin == origin)
+    return exists(select(poster.id).where(*conditions))
+
+
+def _has_run() -> ColumnElement[bool]:
+    return exists(select(PosterRun.id).where(PosterRun.movie_id == Movie.id))
 
 
 def _order(sort: MovieSort) -> tuple[ColumnElement, ...]:
@@ -73,10 +79,13 @@ async def list_movies(
     page_size: int = 50,
     q: str | None = None,
     has_poster: bool | None = None,
+    origin: PosterOrigin | None = None,
+    has_run: bool | None = None,
     include_unavailable: bool = False,
     sort: MovieSort = "title",
 ) -> MoviePage:
-    """One page of movies, with the total that match."""
+    """One page of movies, with the total that match. ``origin`` keeps movies whose poster
+    has that origin; ``has_run`` those with (or without) any run record."""
     conditions: list[ColumnElement[bool]] = [Movie.is_present.is_(True)]
     if not include_unavailable:
         conditions.append(Movie.has_file.is_(True))
@@ -84,6 +93,10 @@ async def list_movies(
         conditions.append(Movie.title.ilike(f"%{escape_like(q)}%", escape="\\"))
     if has_poster is not None:
         conditions.append(_has_poster() if has_poster else ~_has_poster())
+    if origin is not None:
+        conditions.append(_has_poster(origin))
+    if has_run is not None:
+        conditions.append(_has_run() if has_run else ~_has_run())
 
     total = await session.scalar(select(func.count()).select_from(Movie).where(*conditions))
     rows = await session.execute(

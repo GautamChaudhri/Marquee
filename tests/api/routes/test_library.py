@@ -15,7 +15,7 @@ from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.config import settings
-from marquee.db.models import Artwork, Movie
+from marquee.db.models import Artwork, Movie, PosterRun
 
 pytestmark = pytest.mark.db
 
@@ -43,7 +43,7 @@ def _movie(radarr_id: int, title: str, **values: object) -> Movie:
     return Movie(**{**defaults, **values})
 
 
-def _poster(movie: Movie, data: bytes, mtime: datetime = NOW) -> Artwork:
+def _poster(movie: Movie, data: bytes, mtime: datetime = NOW, origin: str = "library") -> Artwork:
     return Artwork(
         movie_id=movie.id,
         artwork_kind="poster",
@@ -51,7 +51,7 @@ def _poster(movie: Movie, data: bytes, mtime: datetime = NOW) -> Artwork:
         sha256=hashlib.sha256(data).hexdigest(),
         size_bytes=len(data),
         file_modified_at=mtime,
-        origin="library",
+        origin=origin,
         first_seen_at=NOW,
         last_seen_at=NOW,
     )
@@ -137,6 +137,33 @@ async def test_has_poster_filters(
     without = await client.get("/api/movies", params={"has_poster": "false"}, headers=headers)
     assert [m["title"] for m in with_poster.json()["items"]] == ["Alpha"]
     assert [m["title"] for m in without.json()["items"]] == ["The Charlie Movie", "Delta 100%_done"]
+
+
+async def test_origin_and_run_filters(
+    client: AsyncClient, db_session: AsyncSession, headers: dict
+) -> None:
+    movies = await _seed(db_session)
+    delta = movies["delta"]
+    db_session.add(_poster(delta, b"delta poster", origin="marquee"))
+    db_session.add(
+        PosterRun(
+            movie_id=movies["charlie"].id, state="failed", run_folder="00000001-c", started_at=NOW
+        )
+    )
+    await db_session.commit()
+
+    async def titles(**params: str) -> list[str]:
+        body = (await client.get("/api/movies", params=params, headers=headers)).json()
+        assert body["total"] == len(body["items"])
+        return [m["title"] for m in body["items"]]
+
+    assert await titles(origin="library") == ["Alpha"]
+    assert await titles(origin="marquee") == ["Delta 100%_done"]
+    assert await titles(has_run="true") == ["The Charlie Movie"]
+    assert await titles(has_run="false") == ["Alpha", "Delta 100%_done"]
+    assert await titles(has_run="false", origin="marquee") == ["Delta 100%_done"]
+    bad = await client.get("/api/movies", params={"origin": "tmdb"}, headers=headers)
+    assert bad.status_code == 422
 
 
 @pytest.mark.parametrize(
