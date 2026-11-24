@@ -2,13 +2,22 @@ import { expect, type Page } from '@playwright/test';
 import { E2E_API_KEY, FAKE_URL } from '../playwright.config';
 
 /** Start the fake backend afresh. `review: 'none'` leaves no run waiting for a review;
- *  `problems` makes the system summary report a schema behind and a missing model. */
+ *  `problems` makes the system summary report a schema behind and a missing model;
+ *  `evaluations` gives two finished blind evaluations, or those and one running; `residual:
+ *  'active'` gives an active residual. */
 export async function resetBackend(
-	options: { review?: 'none'; problems?: boolean } = {}
+	options: {
+		review?: 'none';
+		problems?: boolean;
+		evaluations?: 'finished' | 'running';
+		residual?: 'active';
+	} = {}
 ): Promise<void> {
 	const params = new URLSearchParams();
 	if (options.review) params.set('review', options.review);
 	if (options.problems) params.set('problems', '1');
+	if (options.evaluations) params.set('evaluations', options.evaluations);
+	if (options.residual) params.set('residual', options.residual);
 	const response = await fetch(`${FAKE_URL}/__fake/reset?${params}`, { method: 'POST' });
 	expect(response.ok).toBe(true);
 }

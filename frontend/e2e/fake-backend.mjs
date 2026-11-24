@@ -172,7 +172,10 @@ function initialState() {
 		keys: {},
 		received: {},
 		failNext: {},
-		systemProblems: false
+		systemProblems: false,
+		evaluations: [],
+		evaluationResults: {},
+		residual: 'none'
 	};
 	addJob(state, 'poster_run', { movie_id: 1 }, { state: 'succeeded', auto: false, finished: true });
 	addJob(state, 'library_sync', {}, { state: 'failed', auto: false, error: 'Radarr answered 503' });
@@ -218,6 +221,8 @@ function runRow(id, movieId, state, candidates, extra = {}) {
 		error: null,
 		started_at: iso(NOW - (100 - id) * 60_000),
 		finished_at: state === 'running' ? null : iso(NOW - (100 - id) * 60_000 + 20_000),
+		masked: false,
+		residual_id: null,
 		blind: true,
 		reviewed: false,
 		policy_deployed: false,
@@ -256,7 +261,260 @@ function reviewRuns() {
 			{ blind: false, policy_deployed: true }
 		),
 		16: runRow(16, 7, 'running', []),
-		17: runRow(17, 8, 'completed', [candidateRow(17, 1701, null, null)])
+		17: runRow(17, 8, 'completed', [candidateRow(17, 1701, null, null)]),
+		// A blind evaluation's masked run of Heat: read-only, never the latest run.
+		20: runRow(
+			20,
+			1,
+			'completed',
+			[
+				candidateRow(20, 2001, 1, '1A', { pick: true }),
+				candidateRow(20, 2002, 2, '2A'),
+				candidateRow(20, 2003, 3, '2B')
+			],
+			{ masked: true }
+		)
+	};
+}
+
+// ── Blind evaluations and the residual ────────────────────────────────────
+
+function evalTally(values = {}) {
+	return {
+		evaluated: 0,
+		ranked: 0,
+		gated: 0,
+		gated_by: {},
+		not_offered: 0,
+		failed: 0,
+		exact: 0,
+		same_design: 0,
+		top3: 0,
+		top5: 0,
+		median_card: null,
+		mean_reciprocal_card: null,
+		...values
+	};
+}
+
+function evaluationRow(id, jobId, values = {}) {
+	return {
+		id,
+		job_id: jobId,
+		state: 'succeeded',
+		profile_id: 2,
+		profile_sha256: '670b7c07'.padEnd(64, '0'),
+		residual_id: null,
+		scorer: 'weighted',
+		movies: 4,
+		queued: 4,
+		results: 4,
+		not_run: 0,
+		progress: { succeeded: 4 },
+		created_at: iso(NOW - (10 - id) * 3_600_000),
+		finished_at: iso(NOW - (10 - id) * 3_600_000 + 1_800_000),
+		summary: { seed: evalTally(), feedback: evalTally(), all: evalTally() },
+		...values
+	};
+}
+
+/** The four results the fake gives an evaluation: Heat (its masked run is run 20), Alien,
+ *  Arrival, and Moon, one of each outcome, and a feedback exemplar for Film 05. */
+function evaluationResults(evaluationId) {
+	const base = {
+		exemplar_source: 'seed',
+		matched_by: 'cosine',
+		match_cosine: null,
+		best_cosine: null,
+		best_file: null,
+		unembedded: 0,
+		rank: null,
+		ranked_count: null,
+		card: null,
+		cards: null,
+		pick_file: null,
+		pick_is_match: null,
+		same_design: null,
+		stage: null,
+		reason: null,
+		match_file: null,
+		match_image_url: null,
+		pick_image_url: null,
+		run_id: null
+	};
+	const row = (movieId, title, year, values) => ({
+		...base,
+		movie_id: movieId,
+		title,
+		year,
+		exemplar_id: movieId,
+		exemplar_image_url: `/api/taste/exemplars/${movieId}/image`,
+		...values
+	});
+	return [
+		row(3, 'Arrival', 2016, {
+			outcome: 'gated',
+			match_file: 'g.jpg',
+			match_cosine: 0.99,
+			stage: 'ocr',
+			reason: 'text_heavy'
+		}),
+		row(5, 'Film 05', 1955, {
+			exemplar_source: 'feedback',
+			matched_by: 'file',
+			outcome: 'ranked',
+			match_file: 'f.jpg',
+			rank: 1,
+			ranked_count: 9,
+			card: 1,
+			cards: 6,
+			pick_file: 'f.jpg',
+			pick_is_match: true,
+			same_design: true
+		}),
+		row(1, 'Heat', 1995, {
+			outcome: 'ranked',
+			run_id: evaluationId === 2 ? 20 : null,
+			match_file: 'r20-2003.jpg',
+			match_cosine: 0.97,
+			rank: 3,
+			ranked_count: 3,
+			card: 2,
+			cards: 2,
+			pick_file: 'r20-2001.jpg',
+			pick_is_match: false,
+			same_design: false,
+			match_image_url: evaluationId === 2 ? '/api/runs/20/candidates/2003/image' : null,
+			pick_image_url: evaluationId === 2 ? '/api/runs/20/candidates/2001/image' : null
+		}),
+		row(4, 'Moon', 2009, { outcome: 'not_offered', matched_by: null, best_cosine: 0.81 })
+	];
+}
+
+function summarize(rows) {
+	const tally = (subset) => {
+		const t = evalTally({ evaluated: subset.length });
+		const cards = [];
+		for (const r of subset) {
+			if (r.outcome === 'ranked') {
+				t.ranked += 1;
+				if (r.pick_is_match) t.exact += 1;
+				if (r.same_design) t.same_design += 1;
+				if (r.card <= 3) t.top3 += 1;
+				if (r.card <= 5) t.top5 += 1;
+				cards.push(r.card);
+			} else if (r.outcome === 'gated') {
+				t.gated += 1;
+				const key = `${r.stage}: ${r.reason}`;
+				t.gated_by[key] = (t.gated_by[key] ?? 0) + 1;
+			} else if (r.outcome === 'not_offered') t.not_offered += 1;
+			else t.failed += 1;
+		}
+		return t;
+	};
+	return {
+		seed: tally(rows.filter((r) => r.exemplar_source === 'seed')),
+		feedback: tally(rows.filter((r) => r.exemplar_source === 'feedback')),
+		all: tally(rows)
+	};
+}
+
+/** Give the fake's evaluations: none, two finished ones, or one finished and one running. */
+function seedEvaluations(state, how) {
+	if (how === 'finished' || how === 'running') {
+		const first = addJob(state, 'batch', { evaluation_id: 1 }, { state: 'succeeded', auto: false });
+		const second = addJob(
+			state,
+			'batch',
+			{ evaluation_id: 2 },
+			{ state: 'succeeded', auto: false }
+		);
+		const firstRows = evaluationResults(1).slice(0, 3);
+		state.evaluationResults[1] = firstRows;
+		state.evaluationResults[2] = evaluationResults(2);
+		state.evaluations.push(
+			evaluationRow(1, first.id, {
+				movies: 3,
+				queued: 3,
+				results: 3,
+				summary: summarize(firstRows)
+			}),
+			evaluationRow(2, second.id, { summary: summarize(state.evaluationResults[2]) })
+		);
+	}
+	if (how === 'running') {
+		const batch = addJob(state, 'batch', { evaluation_id: 3 }, { state: 'running', auto: false });
+		state.evaluationResults[3] = evaluationResults(3).slice(0, 1);
+		state.evaluations.push(
+			evaluationRow(3, batch.id, {
+				state: 'running',
+				results: 1,
+				finished_at: null,
+				progress: { succeeded: 1, running: 1, queued: 2 },
+				summary: summarize(state.evaluationResults[3])
+			})
+		);
+	}
+}
+
+function publicEvaluation(row) {
+	const job = state.jobs.find((j) => j.id === row.job_id);
+	const rows = state.evaluationResults[row.id] ?? [];
+	const jobState = job?.state ?? 'unknown';
+	return {
+		...row,
+		state: jobState,
+		finished_at: job?.finished_at ?? null,
+		results: rows.length,
+		not_run: jobState === 'running' ? 0 : Math.max(0, row.queued - rows.length),
+		summary: summarize(rows)
+	};
+}
+
+function residualState(how) {
+	const base = {
+		subjects: 0,
+		pairs: 0,
+		min_subjects: 25,
+		min_pairs: 200,
+		trained: false,
+		scorer: 'auto',
+		in_use: false,
+		why: 'not trained yet',
+		active: null,
+		last_training: null,
+		missing: { subjects: 25, pairs: 200 }
+	};
+	if (how !== 'active') return base;
+	return {
+		...base,
+		subjects: 30,
+		pairs: 840,
+		trained: true,
+		in_use: true,
+		why: 'a compatible artifact is active',
+		active: {
+			id: 4,
+			trained_at: iso(NOW - 600_000),
+			profile_id: 2,
+			subjects: 30,
+			pairs: 840,
+			baseline_accuracy: 0.62,
+			candidate_accuracy: 0.81,
+			held_out_subjects: 6,
+			held_out_pairs: 168,
+			weights: { title_colorfulness: 2.4, knn_sim: -0.3, aesthetic: 0.1 }
+		},
+		last_training: {
+			id: 4,
+			at: iso(NOW - 600_000),
+			outcome: 'activate',
+			reason: null,
+			subjects: 30,
+			pairs: 840,
+			profile_id: 2
+		},
+		missing: { subjects: 0, pairs: 0 }
 	};
 }
 
@@ -525,14 +783,26 @@ function tasteStatus() {
 		revision: state.feedback.length ? 'a'.repeat(64) : 'f'.repeat(64),
 		rebuild_due: state.feedback.length > 0,
 		agreement: { blind, by_profile: {}, by_month: {}, not_blind: notBlind, unknown: tally() },
-		residual: {
-			subjects: seen.size,
-			pairs: seen.size * 3,
-			min_subjects: 25,
-			min_pairs: 200,
-			trained: false
-		},
-		pending_reviews: pendingReviews().length
+		residual: (() => {
+			const residual = residualState(state.residual);
+			if (state.residual === 'active') return residual;
+			const pairs = seen.size * 3;
+			return {
+				...residual,
+				subjects: seen.size,
+				pairs,
+				missing: { subjects: 25 - seen.size, pairs: 200 - pairs }
+			};
+		})(),
+		pending_reviews: pendingReviews().length,
+		evaluation: (() => {
+			const done = state.evaluations
+				.map(publicEvaluation)
+				.filter((e) => e.state !== 'running')
+				.sort((a, b) => b.id - a.id);
+			const running = state.evaluations.map(publicEvaluation).find((e) => e.state === 'running');
+			return { latest: done[0] ?? null, previous: done[1] ?? null, running: running ?? null };
+		})()
 	};
 }
 
@@ -647,7 +917,9 @@ const CLASSES = {
 	poster_run: 'gpu',
 	poster_restore: 'media_write',
 	poster_deploy: 'media_write',
-	taste_rebuild: 'gpu'
+	taste_rebuild: 'gpu',
+	poster_run_masked: 'gpu',
+	batch: 'batch'
 };
 
 function addJob(
@@ -715,6 +987,11 @@ setInterval(() => {
 			if (job.kind === 'poster_run') {
 				const movie = state.movies.find((m) => m.id === job.payload.movie_id);
 				if (movie) movie.latest_run_id = 11;
+			}
+			if (job.kind === 'batch' && job.payload.evaluation_id) {
+				state.evaluationResults[job.payload.evaluation_id] = evaluationResults(
+					job.payload.evaluation_id
+				);
 			}
 		}
 	}
@@ -832,6 +1109,10 @@ function route(req, res, url) {
 		const items = Object.values(state.runs)
 			.filter((r) => movieId === null || r.movie_id === Number(movieId))
 			.filter((r) => wanted === null || r.state === wanted)
+			.filter((r) => {
+				const masked = query.get('masked') ?? 'false';
+				return masked === 'any' || r.masked === (masked === 'true');
+			})
 			.sort((a, b) => b.id - a.id)
 			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			.map(({ candidates, blind, reviewed, policy_deployed, ...run }) => run);
@@ -865,6 +1146,37 @@ function route(req, res, url) {
 		);
 		if (active) return send(res, 200, publicJob(active));
 		return send(res, 202, publicJob(addJob(state, 'taste_rebuild', { force: false })));
+	}
+	if (path === '/api/taste/evaluations' && method === 'POST') {
+		const running = state.evaluations.map(publicEvaluation).find((e) => e.state === 'running');
+		if (running) return send(res, 409, { detail: `evaluation ${running.id} is still running` });
+		const id = Math.max(0, ...state.evaluations.map((e) => e.id)) + 1;
+		const batch = addJob(state, 'batch', { evaluation_id: id, movies: 4 }, { state: 'running' });
+		state.evaluationResults[id] = [];
+		const row = evaluationRow(id, batch.id, {
+			state: 'running',
+			results: 0,
+			finished_at: null,
+			progress: { queued: 4 },
+			created_at: new Date().toISOString()
+		});
+		state.evaluations.push(row);
+		return send(res, 202, { evaluation: publicEvaluation(row), batch: publicJob(batch) });
+	}
+	if (path === '/api/taste/evaluations' && method === 'GET') {
+		const items = state.evaluations.map(publicEvaluation).sort((a, b) => b.id - a.id);
+		return send(res, 200, page(items, query, 20));
+	}
+	if ((m = path.match(/^\/api\/taste\/evaluations\/(\d+)(\/results)?$/)) && method === 'GET') {
+		const row = state.evaluations.find((e) => e.id === Number(m[1]));
+		if (!row) return send(res, 404, { detail: 'no such evaluation' });
+		if (!m[2]) return send(res, 200, publicEvaluation(row));
+		let items = [...(state.evaluationResults[row.id] ?? [])].sort((a, b) =>
+			a.title.localeCompare(b.title)
+		);
+		if (query.get('outcome')) items = items.filter((r) => r.outcome === query.get('outcome'));
+		if (query.get('source')) items = items.filter((r) => r.exemplar_source === query.get('source'));
+		return send(res, 200, page(items, query));
 	}
 	if (path === '/api/taste/exemplars' && method === 'GET') {
 		let items = state.exemplars;
@@ -977,6 +1289,8 @@ createServer((req, res) => {
 			state.runs[11].state = 'running';
 		}
 		state.systemProblems = url.searchParams.get('problems') === '1';
+		seedEvaluations(state, url.searchParams.get('evaluations') ?? 'none');
+		state.residual = url.searchParams.get('residual') ?? 'none';
 		return send(res, 200, { ok: true });
 	}
 	// Every JSON body the fake received for a path, oldest first.
