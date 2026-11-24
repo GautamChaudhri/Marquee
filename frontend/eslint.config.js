@@ -35,7 +35,7 @@ export default defineConfig(
 	},
 	{
 		rules: {
-			// We use plain string routes (`/films`, `/films/${id}`) intentionally;
+			// We use plain string routes (`/movies/${id}`) intentionally;
 			// the typed resolve() helper is overkill for this app.
 			'svelte/no-navigation-without-resolve': 'off',
 			// `crypto.randomUUID` is secure-context-only, so it is undefined when the UI
@@ -55,21 +55,5 @@ export default defineConfig(
 		// The helper is the one place allowed to call it, behind a feature check.
 		files: ['src/lib/uuid.ts'],
 		rules: { 'no-restricted-syntax': 'off' }
-	},
-	{
-		files: [
-			'src/lib/components/subtitles/**/*.svelte',
-			'src/routes/audio-subs/**/*.svelte',
-			'src/routes/hdr/movies/+page.svelte'
-		],
-		rules: {
-			// Existing subtitle/HDR screens still carry broad legacy patterns that predate
-			// the current lint rules; keep the baseline green while touching unrelated areas.
-			'@typescript-eslint/no-explicit-any': 'off',
-			'@typescript-eslint/no-unused-vars': 'off',
-			'svelte/require-each-key': 'off',
-			'svelte/prefer-svelte-reactivity': 'off',
-			'svelte/no-unused-svelte-ignore': 'off'
-		}
 	}
 );

@@ -18,6 +18,9 @@ Thumbs.db
 !.env.example
 !.env.test
 
+# Generated API types (npm run api:types)
+/src/lib/api/generated
+
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*

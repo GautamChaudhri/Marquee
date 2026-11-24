@@ -6,14 +6,12 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"prebuild": "npm run api:types",
 		"build": "vite build",
-		"bundle:check": "node scripts/check-bundle-budget.mjs",
-		"api:export": "cd .. && rtk .venv/bin/python scripts/export_openapi.py",
-		"api:check": "cd .. && rtk .venv/bin/python scripts/export_openapi.py --check",
-		"api:generate": "openapi-typescript ../design/api-schema.json -o src/lib/api/generated/openapi.ts && prettier --write src/lib/api/generated/openapi.ts",
-		"api:generate:check": "npm run api:generate && rtk git diff --exit-code -- src/lib/api/generated/openapi.ts",
 		"preview": "vite preview",
-		"prepare": "svelte-kit sync || echo ''",
+		"prepare": "npm run api:types && svelte-kit sync",
+		"api:types": "openapi-typescript openapi.json --output src/lib/api/generated/schema.d.ts",
+		"precheck": "npm run api:types",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"lint": "prettier --check . && eslint .",
@@ -21,7 +19,6 @@
 		"test:unit": "vitest run",
 		"test:unit:watch": "vitest",
 		"test:e2e": "playwright test",
-		"test:visual": "playwright test --config=playwright.visual.config.ts",
 		"test": "npm run test:unit && npm run test:e2e"
 	},
 	"devDependencies": {
@@ -48,11 +45,10 @@
 		"typescript": "5.9.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.0.16",
-		"vitest": "4.1.10"
+		"vitest": "4.1.12"
 	},
 	"dependencies": {
-		"plotly.js-dist-min": "^3.6.0",
-		"svelte-dnd-action": "^0.9.70"
+		"openapi-fetch": "0.17.0"
 	},
 	"overrides": {
 		"cookie": "0.7.2"
