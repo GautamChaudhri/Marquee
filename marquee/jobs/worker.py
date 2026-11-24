@@ -16,6 +16,9 @@ has a free slot and runs each as a task, passes cancel requests on to running jo
 stops the GPU child once it has waited ``GPU_IDLE_SECONDS`` for a job. Each job works in
 database sessions of its own; no session is shared between tasks.
 
+When a GPU job ends and the child holds more than ``GPU_CHILD_MAX_RSS_MB`` of resident
+memory, the worker stops it the same way, and the next GPU job starts a new one.
+
 On SIGTERM or SIGINT the worker stops claiming, signals cancel to what is running, waits a
 short while, puts what did not finish back in the queue without counting the attempt,
 stops the GPU child, and exits 0.
@@ -39,6 +42,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from marquee import host_metrics
 from marquee.cancellation import JobCancelledError
 from marquee.config import settings
 from marquee.db.engine import create_engine, create_session_factory
@@ -160,6 +164,7 @@ class Worker:
         poll_s: float = POLL_S,
         stop_grace_s: float = STOP_GRACE_S,
         gpu_idle_s: float | None = None,
+        gpu_max_rss_mb: int | None = None,
     ) -> None:
         self._registry = default_registry() if registry is None else registry
         self._url = database_url or settings.database_url
@@ -169,6 +174,9 @@ class Worker:
         self._poll_s = poll_s
         self._stop_grace_s = stop_grace_s
         self._gpu_idle_s = settings.GPU_IDLE_SECONDS if gpu_idle_s is None else gpu_idle_s
+        self._gpu_max_rss_mb = (
+            settings.GPU_CHILD_MAX_RSS_MB if gpu_max_rss_mb is None else gpu_max_rss_mb
+        )
         self._running: dict[int, _Running] = {}
         self._stopping = False
         self._wake: asyncio.Event | None = None
@@ -293,6 +301,31 @@ class Worker:
             logger.info("GPU | idle for %.0f s; stopping the child", idle)
             await asyncio.to_thread(self.gpu.stop)
 
+    async def _replace_grown_gpu(self) -> None:
+        """After a GPU job: stop the child if it has grown past ``GPU_CHILD_MAX_RSS_MB``.
+
+        It runs while the finished job still holds the gpu class's one slot, so no other
+        GPU job can be in the child; the next one starts a new child.
+        """
+        assert self._gpu_lock is not None
+        pid = self.gpu.pid
+        if self._gpu_max_rss_mb <= 0 or pid is None or self.gpu.idle_seconds() is None:
+            return
+        rss = await asyncio.to_thread(host_metrics.process_rss_bytes, pid)
+        if rss is None or rss <= self._gpu_max_rss_mb * 1024 * 1024:
+            return
+        async with self._gpu_lock:
+            if self.gpu.pid != pid or self.gpu.idle_seconds() is None:
+                return
+            logger.info(
+                "GPU | child process %d holds %.0f MiB, over GPU_CHILD_MAX_RSS_MB (%d); "
+                "replacing it",
+                pid,
+                rss / (1024 * 1024),
+                self._gpu_max_rss_mb,
+            )
+            await asyncio.to_thread(self.gpu.stop)
+
     async def _run_job(self, job: Job, entry: _Running) -> None:
         kind = self._registry.get(job.kind)
         progress = _Progress(lambda value: self._record_progress(job.id, value))
@@ -334,9 +367,13 @@ class Worker:
             # The row stays running; the next worker start recovers it as an orphan.
             logger.error("JOB | %d outcome not recorded: %s", job.id, scrub(describe_error(exc)))
         finally:
-            self._running.pop(job.id, None)
-            if self._wake is not None:
-                self._wake.set()
+            try:
+                if kind is not None and kind.job_class == "gpu":
+                    await self._replace_grown_gpu()
+            finally:
+                self._running.pop(job.id, None)
+                if self._wake is not None:
+                    self._wake.set()
 
     async def _handle(self, kind: JobKind, context: JobContext) -> Any:
         if kind.gpu_function is None:

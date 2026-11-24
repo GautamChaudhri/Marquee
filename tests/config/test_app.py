@@ -144,6 +144,10 @@ def test_job_settings_defaults_and_bounds() -> None:
     assert _settings().GPU_IDLE_SECONDS == 300
     with pytest.raises(ValidationError):
         _settings(GPU_IDLE_SECONDS=-1)
+    assert _settings().GPU_CHILD_MAX_RSS_MB == 4096
+    assert _settings(GPU_CHILD_MAX_RSS_MB=0).GPU_CHILD_MAX_RSS_MB == 0
+    with pytest.raises(ValidationError):
+        _settings(GPU_CHILD_MAX_RSS_MB=-1)
 
 
 def test_secret_values_lists_every_secret_that_is_set() -> None:

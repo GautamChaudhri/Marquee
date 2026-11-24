@@ -233,6 +233,29 @@ def gpu_metrics() -> dict[str, Any] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# One process
+# ---------------------------------------------------------------------------
+def process_rss_bytes(pid: int, proc_root: Path = Path("/proc")) -> int | None:
+    """A process's resident memory in bytes, from the ``VmRSS`` line of
+    ``/proc/<pid>/status``; ``None`` when the process is gone or the line is missing.
+
+    The kernel keeps this figure from per-thread counters, so it can lag the truth slightly
+    (proc(5)); it is meant for a limit, not an exact measure.
+    """
+    try:
+        with open(proc_root / str(pid) / "status", encoding="ascii", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    value, unit = line.split()[1:3]
+                    if unit != "kB":
+                        return None
+                    return int(value) * 1024
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def collect(disk_path: str | Path) -> dict[str, Any]:
     """The hardware bundle for ``GET /api/system/metrics`` (sans workers)."""
     return {

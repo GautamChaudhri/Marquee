@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # The worker stops the GPU child process after this long without a GPU job, which frees
     # the GPU memory its models hold.
     GPU_IDLE_SECONDS: int = Field(default=300, ge=0)
+    # The GPU child's resident memory grows with every run. When a GPU job ends and the child
+    # holds more than this many MiB, the worker stops it and the next GPU job starts a new
+    # one; 0 turns the check off.
+    GPU_CHILD_MAX_RSS_MB: int = Field(default=4096, ge=0)
     # When true, a library sync that succeeds queues a run of every movie never run before.
     RUN_NEW_MOVIES: bool = False
     # What a finished run deploys by itself: off (nothing; every deploy is asked for), missing

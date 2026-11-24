@@ -577,6 +577,41 @@ async def test_a_gpu_job_runs_in_the_child_which_stops_when_idle(
         worker.gpu.kill()
 
 
+@pytest.mark.parametrize(("limit_mb", "replaced"), [(1, True), (0, False), (1_000_000, False)])
+async def test_a_grown_gpu_child_is_replaced_after_its_job(
+    database_url: str,
+    sessions: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    limit_mb: int,
+    replaced: bool,
+) -> None:
+    """Over GPU_CHILD_MAX_RSS_MB (any child holds more than 1 MiB) the child is stopped when
+    its job ends and the next GPU job starts a new one; 0 turns the check off."""
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
+    caplog.set_level("INFO", logger="marquee.jobs.worker")
+    first = await _enqueue(sessions, GPU_ECHO, {"n": 1})
+    second = await _enqueue(sessions, GPU_ECHO, {"n": 2})
+    worker = _worker(database_url, gpu_max_rss_mb=limit_mb)
+    running = asyncio.create_task(worker.run())
+    try:
+        one = await _wait_for(sessions, first, "succeeded", "failed")
+        two = await _wait_for(sessions, second, "succeeded", "failed")
+        assert one.state == two.state == "succeeded", (one.error, two.error)
+    finally:
+        worker.request_stop()
+        await asyncio.wait_for(running, 20)
+        worker.gpu.kill()
+    assert (one.result["pid"] != two.result["pid"]) is replaced
+    assert (two.result["calls"] == 1) is replaced
+    lines = [r.getMessage() for r in caplog.records if "GPU_CHILD_MAX_RSS_MB" in r.getMessage()]
+    if replaced:
+        assert lines and f"child process {one.result['pid']} holds" in lines[0]
+        assert lines[0].endswith("over GPU_CHILD_MAX_RSS_MB (1); replacing it")
+    else:
+        assert not lines
+
+
 async def test_a_gpu_handler_calls_the_child_through_its_context(
     database_url: str,
     sessions: async_sessionmaker[AsyncSession],
