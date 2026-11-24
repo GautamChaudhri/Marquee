@@ -154,8 +154,18 @@ class Settings(BaseSettings):
         return self.ml_dir / "profiles"
 
     @property
+    def residuals_dir(self) -> Path:
+        """Every residual artifact trained, named by its SHA-256: ``<sha256>.npz``."""
+        return self.ml_dir / "residuals"
+
+    @property
     def cache_dir(self) -> Path:
         return self.DATA_DIR / "cache"
+
+    @property
+    def blind_profiles_dir(self) -> Path:
+        """A masked run's derived profile, ``<profile sha256>-<movie id>.npz``, while it runs."""
+        return self.cache_dir / "blind-profiles"
 
     @property
     def taste_build_dir(self) -> Path:
