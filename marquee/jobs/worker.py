@@ -47,6 +47,7 @@ from marquee.jobs import queue, schedules
 from marquee.jobs.gpu_child import GpuChild, describe_error
 from marquee.jobs.registry import (
     JobContext,
+    JobError,
     JobKind,
     PermanentJobError,
     Registry,
@@ -312,7 +313,8 @@ class Worker:
         except PermanentJobError as exc:
             outcome = ("fail", describe_error(exc), True)
         except Exception as exc:  # noqa: BLE001 - the boundary: any failure fails the attempt
-            logger.exception("JOB | %d %s raised", job.id, job.kind)
+            if not isinstance(exc, JobError):  # a JobError's message already says it all
+                logger.exception("JOB | %d %s raised", job.id, job.kind)
             outcome = ("fail", describe_error(exc), False)
         await progress.close()
         try:
