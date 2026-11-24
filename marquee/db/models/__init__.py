@@ -10,8 +10,10 @@ from marquee.db.models.artwork import (
     Artwork,
 )
 from marquee.db.models.deployment import Deployment
+from marquee.db.models.evaluation import Evaluation, EvaluationResult
 from marquee.db.models.job import Job, JobEvent, JobSchedule
 from marquee.db.models.movie import Movie
+from marquee.db.models.residual import ResidualTraining
 from marquee.db.models.run import PosterRun, RunCandidate
 from marquee.db.models.taste import Exemplar, PreferenceEvent, TasteProfile
 
@@ -22,6 +24,8 @@ __all__ = [
     "SUBJECT_MOVIE",
     "Artwork",
     "Deployment",
+    "Evaluation",
+    "EvaluationResult",
     "Exemplar",
     "Job",
     "JobEvent",
@@ -29,6 +33,7 @@ __all__ = [
     "Movie",
     "PosterRun",
     "PreferenceEvent",
+    "ResidualTraining",
     "RunCandidate",
     "TasteProfile",
 ]

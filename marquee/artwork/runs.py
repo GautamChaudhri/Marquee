@@ -44,6 +44,7 @@ from marquee.db.models.run import (
     RUN_COMPLETED,
     RUN_FAILED,
     RUN_STATES,
+    in_product_loop,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,8 @@ logger = logging.getLogger(__name__)
 RUN_ARCHIVE = "pipeline_run.json"
 """The archive's name, as ``marquee.pipeline.single_run`` writes it (not imported: the engine
 would load with it)."""
+RESIDUAL_MARK = "residual_delta"
+"""A contribution only the residual scorer writes (``pipeline/scorer.py::ResidualScorer``)."""
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 RANKED_SHOWN = 10
 SLUG_LENGTH = 60
@@ -146,11 +149,14 @@ async def scope_movie_ids(
 ) -> list[int]:
     """The eligible movies a batch of this scope covers, by title.
 
-    ``never-run``: no run record at all; ``no-poster``: no poster row; ``all``: every one.
+    ``never-run``: no run record of the product loop (a masked run does not count);
+    ``no-poster``: no poster row; ``all``: every one.
     """
     conditions: list[ColumnElement[bool]] = [eligible()]
     if scope == "never-run":
-        conditions.append(~exists(select(PosterRun.id).where(PosterRun.movie_id == Movie.id)))
+        conditions.append(
+            ~exists(select(PosterRun.id).where(PosterRun.movie_id == Movie.id, in_product_loop()))
+        )
     elif scope == "no-poster":
         conditions.append(
             ~exists(
@@ -182,6 +188,8 @@ class ChildResult:
     ai_model: str
     profile_sha256: str
     pick_file: str | None
+    residual_id: int | None = None
+    """The residual training whose artifact the engine says ranked the run."""
 
     @classmethod
     def from_dict(cls, value: Any) -> ChildResult:
@@ -197,6 +205,7 @@ class ChildResult:
                 ai_model=str(value["ai_model"]),
                 profile_sha256=str(value["profile_sha256"]),
                 pick_file=value.get("pick_file"),
+                residual_id=_optional_int(value.get("residual_id")),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise RunRecordError(f"the GPU child's result is incomplete: {exc}") from exc
@@ -223,6 +232,10 @@ class RunFolder:
     ranked_total: int
     ranked: list[dict[str, Any]] = field(default_factory=list)
     """The top :data:`RANKED_SHOWN` ranked candidates, as :func:`ranked_row` gives them."""
+    residual_ranked: bool = False
+    """Every ranked candidate carries the residual's contributions: the residual ranked it.
+    The engine can fall back to the weighted scorer part way through a run; then this is
+    false whatever it reported."""
 
 
 def stack_ranks(payload: dict[str, Any]) -> dict[str, int]:
@@ -313,14 +326,20 @@ def read_run_folder(folder: Path) -> RunFolder:
         candidates=candidates,
         ranked_total=len(ranked),
         ranked=[ranked_row(row, ranks) for row in ranked[:RANKED_SHOWN]],  # type: ignore[misc]
+        residual_ranked=bool(ranked)
+        and all(RESIDUAL_MARK in (row.get("contributions") or {}) for row in ranked),
     )
 
 
 # ── Changing the record ───────────────────────────────────────────────────
 
 
-async def start(session: AsyncSession, *, job_id: int, movie: Movie) -> PosterRun:
+async def start(
+    session: AsyncSession, *, job_id: int, movie: Movie, masked: bool = False
+) -> PosterRun:
     """Find or create the run of this job, set it running with no candidates, and commit.
+
+    ``masked`` marks a blind evaluation's run (see :func:`in_product_loop`).
 
     A run of the same movie still marked running whose job is no longer active was left by
     a job that ended without finishing it (a worker killed on its last attempt); it is
@@ -364,15 +383,21 @@ async def start(session: AsyncSession, *, job_id: int, movie: Movie) -> PosterRu
             state=RUN_ACTIVE,
             run_folder=run_folder_name(run_id, movie.title),
             started_at=now,
+            masked=masked,
         )
         session.add(run)
     else:
+        if run.masked != masked:
+            run_id = run.id
+            await session.rollback()
+            raise RunRecordError(f"run {run_id} of job {job_id} is of the other kind")
         stale.add(run.run_folder)
         await session.execute(delete(RunCandidate).where(RunCandidate.run_id == run.id))
         run.state = RUN_ACTIVE
         run.run_folder = run_folder_name(run.id, movie.title)
         run.engine_run_id = run.engine_status = run.scorer_name = None
         run.ai_model = run.profile_sha256 = run.error = None
+        run.residual_id = None
         run.counts = run.stages = None
         run.candidate_count = run.ranked_count = None
         run.started_at = now
@@ -430,7 +455,11 @@ async def complete(
     run.state = RUN_COMPLETED
     run.engine_run_id = result.engine_run_id
     run.engine_status = result.status
-    run.scorer_name = result.scorer
+    residual = result.scorer == "residual" and folder.residual_ranked
+    if result.scorer == "residual" and not residual:
+        logger.warning("RUN | %d: the residual did not rank every candidate; weighted", run_id)
+    run.scorer_name = "weighted" if result.scorer == "residual" and not residual else result.scorer
+    run.residual_id = result.residual_id if residual else None
     run.ai_model = result.ai_model
     run.profile_sha256 = result.profile_sha256
     run.counts = result.counts
@@ -468,6 +497,41 @@ async def cancel(session: AsyncSession, run_id: int) -> bool:
         return False
     await asyncio.to_thread(remove_run_folder, name)
     return True
+
+
+async def remove_older_masked(session: AsyncSession, movie_id: int, keep_run_id: int) -> list[int]:
+    """Delete the movie's masked runs older than ``keep_run_id``, rows and folders, and commit.
+
+    A movie keeps only its newest masked run. A run still running is left alone; a normal
+    run is never touched. Candidates go with their run; an evaluation result keeps its
+    numbers and loses its link. Returns the ids removed.
+    """
+    rows = (
+        await session.execute(
+            delete(PosterRun)
+            .where(
+                PosterRun.movie_id == movie_id,
+                PosterRun.masked.is_(True),
+                PosterRun.id < keep_run_id,
+                PosterRun.state != RUN_ACTIVE,
+            )
+            .returning(PosterRun.id, PosterRun.run_folder)
+        )
+    ).all()
+    await session.commit()
+    for run_id, folder in rows:
+        try:
+            await asyncio.to_thread(remove_run_folder, folder)
+        except (RunRecordError, OSError) as exc:
+            logger.warning("RUN | %d: the folder of an older masked run stays: %s", run_id, exc)
+    if rows:
+        logger.info(
+            "RUN | movie %d: %d older masked run(s) removed (%s)",
+            movie_id,
+            len(rows),
+            ", ".join(str(run_id) for run_id, _ in rows),
+        )
+    return [run_id for run_id, _ in rows]
 
 
 # ── Reading ───────────────────────────────────────────────────────────────
@@ -516,13 +580,17 @@ async def list_runs(
     *,
     movie_id: int | None = None,
     state: str | None = None,
+    masked: bool | None = False,
     page: int = 1,
     page_size: int = 50,
 ) -> RunPage:
-    """One page of runs, newest first."""
+    """One page of runs, newest first. Masked runs only when asked: ``masked`` is ``False``
+    (the product loop's runs, the default), ``True`` (masked runs only), or ``None`` (any)."""
     if state is not None and state not in RUN_STATES:
         raise ValueError(f"unknown run state {state!r}; one of {', '.join(RUN_STATES)}")
     conditions: list[ColumnElement[bool]] = []
+    if masked is not None:
+        conditions.append(PosterRun.masked.is_(masked))
     if movie_id is not None:
         conditions.append(PosterRun.movie_id == movie_id)
     if state is not None:

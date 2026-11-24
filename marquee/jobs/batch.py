@@ -36,11 +36,13 @@ async def enqueue_batch(
     *,
     payload: dict[str, Any] | None = None,
     priority: int = 0,
+    commit: bool = True,
 ) -> tuple[Job, list[Job]]:
     """Queue a parent and its children in one transaction.
 
     Returns the parent and the children actually queued: one whose dedupe key is taken is
-    left out.
+    left out. With ``commit`` false the caller commits, so rows of its own can join the
+    same transaction.
     """
     payload = payload or {}
     for value in (payload, *(child for _, child in children)):
@@ -106,7 +108,8 @@ async def enqueue_batch(
         )
     await finish_parent_if_done(session, parent.id)  # an empty batch is done at once
     await notify(session, f"new {parent.id}")
-    await session.commit()
+    if commit:
+        await session.commit()
     return parent, jobs
 
 

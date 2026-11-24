@@ -26,6 +26,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql.elements import ColumnElement
 
 from marquee.db.base import Base, TimestampMixin
 from marquee.db.models.artwork import SUBJECT_MOVIE
@@ -86,9 +87,29 @@ class PosterRun(TimestampMixin, Base):
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    masked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    """A run against the active profile with the movie's own exemplars left out (a blind
+    evaluation's). Never part of the product loop: see :func:`in_product_loop`."""
+    residual_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("residual_trainings.id", ondelete="SET NULL")
+    )
+    """The residual training whose artifact ranked the run, when ``scorer_name`` is
+    ``residual``."""
 
     def __repr__(self) -> str:
         return f"<PosterRun id={self.id} movie_id={self.movie_id} state={self.state!r}>"
+
+
+def in_product_loop() -> ColumnElement[bool]:
+    """The runs of the product loop: review, feedback, deploys, the deploy policy, and a
+    movie's latest run on the Library pages. Every run but a masked one.
+
+    Every query that means "the movie's latest run" uses this condition, so a masked run
+    (which is newer than the run the owner reviews) never takes its place.
+    """
+    return PosterRun.masked.is_(False)
 
 
 class RunCandidate(TimestampMixin, Base):

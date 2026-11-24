@@ -22,7 +22,7 @@ from marquee.db.models import (
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 
 
-def test_only_the_library_job_run_and_taste_tables_exist() -> None:
+def test_only_the_library_job_run_taste_and_learning_tables_exist() -> None:
     assert set(Base.metadata.tables) == {
         "movies",
         "artwork",
@@ -35,6 +35,9 @@ def test_only_the_library_job_run_and_taste_tables_exist() -> None:
         "preference_events",
         "exemplars",
         "taste_profiles",
+        "residual_trainings",
+        "evaluations",
+        "evaluation_results",
     }
 
 

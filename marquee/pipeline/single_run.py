@@ -2,8 +2,9 @@
 
 This is the function both ``marquee run`` and, from M5, the run job call. It builds the
 feature extractor in personalized mode, attaches the run log, awaits the orchestrator with
-TMDB as the candidate source, and writes ``pipeline_run.json``. It passes no residual, so the
-weighted scorer ranks.
+TMDB as the candidate source, and writes ``pipeline_run.json``. A residual artifact and its
+runtime context pass through to the orchestrator unchanged; without them the weighted scorer
+ranks.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from marquee.pipeline.orchestrator import (
     run_poster_pipeline,
 )
 from marquee.pipeline.runner import ProgressCallback, ShouldCancel
+from marquee.pipeline.scorer import ResidualRuntimeContext
 from marquee.pipeline.text_profiles import OcrGateContext
 
 RUN_LOG = "pipeline.log"
@@ -35,6 +37,8 @@ async def run_single_subject(
     should_cancel: ShouldCancel | None = None,
     run_id: str | None = None,
     feature_extractor: FeatureExtractor | None = None,
+    residual_path: Path | None = None,
+    residual_context: ResidualRuntimeContext | None = None,
 ) -> PosterPipelineOutput:
     """Run ``subject`` inside ``run_dir`` (created here; it must not exist yet)."""
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -53,6 +57,8 @@ async def run_single_subject(
             progress=progress,
             should_cancel=should_cancel,
             run_id=run_id,
+            residual_path=residual_path,
+            residual_context=residual_context,
             personalization_mode="personalized",
         )
         runner.write_run_json(run_dir / RUN_ARCHIVE, output.payload)

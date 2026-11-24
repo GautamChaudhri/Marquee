@@ -7,7 +7,7 @@ the GPU child does), or has a handler that calls the child through ``ctx.gpu``.
 from __future__ import annotations
 
 from marquee.jobs.handlers.library_sync import library_sync
-from marquee.jobs.handlers.poster_run import POSTER_RUN
+from marquee.jobs.handlers.poster_run import POSTER_RUN, POSTER_RUN_MASKED
 from marquee.jobs.handlers.poster_write import POSTER_DEPLOY, POSTER_RESTORE
 from marquee.jobs.handlers.taste_rebuild import TASTE_REBUILD
 from marquee.jobs.registry import JobKind
@@ -28,6 +28,7 @@ KINDS: tuple[JobKind, ...] = (
         timeout_s=5 * 60,
     ),
     POSTER_RUN,
+    POSTER_RUN_MASKED,
     POSTER_DEPLOY,
     POSTER_RESTORE,
     TASTE_REBUILD,

@@ -16,10 +16,13 @@ from marquee.db.base import Base
 from marquee.db.models import (
     Artwork,
     Deployment,
+    Evaluation,
+    EvaluationResult,
     Exemplar,
     Movie,
     PosterRun,
     PreferenceEvent,
+    ResidualTraining,
     RunCandidate,
     TasteProfile,
 )
@@ -31,6 +34,7 @@ TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 JOB_TABLES = {"jobs", "job_events", "job_schedules"}
 RUN_TABLES = {"poster_runs", "run_candidates", "deployments"}
 TASTE_TABLES = {"preference_events", "exemplars", "taste_profiles"}
+LEARNING_TABLES = {"residual_trainings", "evaluations", "evaluation_results"}
 
 
 def _sync_engine(url: str):  # noqa: ANN202 - a sqlalchemy Engine
@@ -87,7 +91,7 @@ def test_the_migration_applies_to_an_empty_database(empty_database_url: str) -> 
 
     after = migrate.upgrade(url=empty_database_url)
     assert after.at_head
-    assert after.current == migrate.head_revision() == "0005"
+    assert after.current == migrate.head_revision() == "0006"
     assert _tables(empty_database_url) == {
         "alembic_version",
         "movies",
@@ -95,6 +99,7 @@ def test_the_migration_applies_to_an_empty_database(empty_database_url: str) -> 
         *JOB_TABLES,
         *RUN_TABLES,
         *TASTE_TABLES,
+        *LEARNING_TABLES,
     }
 
 
@@ -156,7 +161,7 @@ def test_the_exemplar_endings_migration_keeps_ended_rows_and_downgrades(
                 ),
                 {"sha": SHA, "name": f"{SHA}.png"},
             )
-        assert migrate.upgrade(url=empty_database_url).current == "0005"
+        assert migrate.upgrade(url=empty_database_url).current == "0006"
         with engine.connect() as conn:
             row = conn.execute(text("select ended_by_event_id, updated_at from exemplars")).one()
         assert row.ended_by_event_id is None and row.updated_at is not None
@@ -207,7 +212,7 @@ def test_the_runs_migration_refuses_to_forget_a_marquee_poster(empty_database_ur
     with pytest.raises(IntegrityError):
         migrate.downgrade("0002", url=empty_database_url)
     # The whole downgrade is one transaction: nothing was undone.
-    assert migrate.status(url=empty_database_url).current == "0005"
+    assert migrate.status(url=empty_database_url).current == "0006"
     assert _tables(empty_database_url) >= TASTE_TABLES
 
 
@@ -434,7 +439,7 @@ def test_every_timestamp_column_is_timestamptz(database_url: str) -> None:
 
 
 def test_the_next_revision_is_numbered_after_the_newest() -> None:
-    assert migrate._next_revision_id() == "0006"
+    assert migrate._next_revision_id() == "0007"
 
 
 # ── Constraints ───────────────────────────────────────────────────────────
@@ -569,6 +574,8 @@ async def test_run_defaults_fill_in(db_session: AsyncSession) -> None:
     await db_session.refresh(run)
     assert run.subject_kind == "movie"
     assert run.job_id is None
+    assert run.masked is False
+    assert run.residual_id is None
     candidate = _candidate(run.id)
     db_session.add(candidate)
     await db_session.flush()
@@ -860,3 +867,149 @@ async def test_one_active_profile_and_one_row_per_file(db_session: AsyncSession)
     db_session.add(_profile())
     await db_session.flush()
     await _flush_fails(db_session, _profile())
+
+
+# ── Residual trainings and blind evaluations (0006) ───────────────────────
+
+
+def _training(**values: object) -> ResidualTraining:
+    defaults: dict[str, object] = {
+        "profile_sha256": SHA,
+        "outcome": "no_change",
+        "reason": "insufficient_evidence",
+        "subjects": 1,
+        "pairs": 1,
+        "events": 1,
+        "evidence_digest": "b" * 64,
+        "report": {"outcome": "no_change"},
+    }
+    return ResidualTraining(**{**defaults, **values})
+
+
+def _activated(sha: str = "c" * 64, **values: object) -> ResidualTraining:
+    return _training(outcome="activate", artifact_sha256=sha, file_name=f"{sha}.npz", **values)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"outcome": "maybe"},
+        {"subjects": -1},
+        {"profile_sha256": "x"},
+        {"evidence_digest": "x"},
+        {"outcome": "activate"},  # an activation keeps an artifact
+        {"artifact_sha256": "c" * 64, "file_name": f"{'c' * 64}.npz"},  # only an activation
+        {"is_active": True},  # only a row with an artifact
+    ],
+)
+async def test_training_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    await _flush_fails(db_session, _training(**values))
+
+
+async def test_an_artifact_is_named_by_its_hash_and_one_is_active(
+    db_session: AsyncSession,
+) -> None:
+    await _flush_fails(
+        db_session, _training(outcome="activate", artifact_sha256="c" * 64, file_name="x.npz")
+    )
+    db_session.add_all([_activated(is_active=True), _activated("d" * 64)])
+    await db_session.flush()
+    await _flush_fails(db_session, _activated("e" * 64, is_active=True))
+    db_session.add(_activated())
+    await db_session.flush()
+    await _flush_fails(db_session, _activated())  # one row per artifact
+
+
+def _evaluation(**values: object) -> Evaluation:
+    defaults: dict[str, object] = {
+        "profile_sha256": SHA,
+        "scorer": "weighted",
+        "movies": 2,
+        "queued": 2,
+    }
+    return Evaluation(**{**defaults, **values})
+
+
+def _result(evaluation_id: int, movie_id: int, **values: object) -> EvaluationResult:
+    defaults: dict[str, object] = {
+        "evaluation_id": evaluation_id,
+        "movie_id": movie_id,
+        "exemplar_source": "seed",
+        "outcome": "ranked",
+        "match_file": "a.jpg",
+        "rank": 2,
+        "ranked_count": 5,
+        "card": 1,
+        "cards": 3,
+        "pick_is_match": False,
+        "same_design": True,
+    }
+    return EvaluationResult(**{**defaults, **values})
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"scorer": "neural"},
+        {"queued": 3},
+        {"movies": -1},
+        {"profile_sha256": "x"},
+    ],
+)
+async def test_evaluation_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    await _flush_fails(db_session, _evaluation(**values))
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"subject_kind": "series"},
+        {"outcome": "lost"},
+        {"exemplar_source": "library"},
+        {"rank": 6},  # past the ranked count
+        {"card": None},
+        {"pick_is_match": None},
+        {"match_file": None},  # a ranked match names its file
+        {"outcome": "not_offered"},  # which names none
+        {"match_sha256": "x"},
+        {"match_cosine": 1.5},
+    ],
+)
+async def test_result_checks_hold(db_session: AsyncSession, values: dict[str, object]) -> None:
+    movie = await _with_movie(db_session)
+    evaluation = _evaluation()
+    db_session.add(evaluation)
+    await db_session.flush()
+    await _flush_fails(db_session, _result(evaluation.id, movie.id, **values))
+
+
+async def test_a_result_outlives_its_run_and_goes_with_its_evaluation(
+    db_session: AsyncSession,
+) -> None:
+    movie = await _with_movie(db_session)
+    run = _run(movie.id, masked=True)
+    evaluation = _evaluation()
+    db_session.add_all([run, evaluation])
+    await db_session.flush()
+    result = _result(evaluation.id, movie.id, run_id=run.id)
+    db_session.add(result)
+    await db_session.flush()
+    await _flush_fails(db_session, _result(evaluation.id, movie.id))  # one per movie
+    movie = await _with_movie(db_session)
+    run = _run(movie.id, masked=True)
+    evaluation = _evaluation()
+    db_session.add_all([run, evaluation])
+    await db_session.flush()
+    result = _result(evaluation.id, movie.id, run_id=run.id)
+    db_session.add(result)
+    await db_session.flush()
+    result_id = result.id
+    await db_session.delete(run)
+    await db_session.flush()
+    db_session.expire_all()
+    kept = await db_session.get(EvaluationResult, result_id)
+    assert kept is not None and kept.run_id is None and kept.rank == 2
+    await db_session.delete(evaluation)
+    await db_session.flush()
+    db_session.expire_all()
+    assert await db_session.get(EvaluationResult, result_id) is None

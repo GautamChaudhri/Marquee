@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # What a finished run deploys by itself: off (nothing; every deploy is asked for), missing
     # (only where there is no poster, or Marquee's own), all (also replaces the owner's).
     DEPLOY_POLICY: Literal["off", "missing", "all"] = "off"
+    # A blind evaluation matches the owner's poster to a candidate of the masked run by TMDB
+    # file name when it can, otherwise by CLIP cosine: the closest candidate at or above this.
+    EVAL_MATCH_MIN_COSINE: float = Field(default=0.95, ge=0.0, le=1.0)
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

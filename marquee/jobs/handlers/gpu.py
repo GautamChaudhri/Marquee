@@ -103,16 +103,58 @@ def _file_sha256(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def _identity(payload: dict[str, Any], name: str) -> dict[str, Any] | None:
+    """The ``{"id", "sha256", "file_name"}`` of the active profile or residual artifact the
+    worker read, or ``None``."""
+    value = payload.get(name)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or not isinstance(value.get("id"), int)
+        or not isinstance(value.get("sha256"), str)
+        or len(value["sha256"]) != 64
+        or not isinstance(value.get("file_name"), str)
+        or value["file_name"] != f"{value['sha256']}.npz"
+    ):
+        raise PermanentJobError(f"the payload's {name} is malformed")
+    return value
+
+
+def _mask(payload: dict[str, Any]) -> tuple[list[str], list[str]] | None:
+    value = payload.get("mask")
+    if value is None:
+        return None
+    positives, negatives = (
+        value.get(key) if isinstance(value, dict) else None for key in ("positives", "negatives")
+    )
+    if not isinstance(positives, list) or not isinstance(negatives, list):
+        raise PermanentJobError("the payload's mask needs its positives and negatives")
+    if not positives or not all(isinstance(n, str) for n in (*positives, *negatives)):
+        raise PermanentJobError("a masked run leaves out at least one positive, by name")
+    return positives, negatives
+
+
 def poster_run(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> dict[str, Any]:
     """Run one movie through the real pipeline in the run folder the worker named.
 
     The payload carries everything the engine needs (the folder's name, the movie's id,
-    title, and TMDB id, and the three text-gate fields from the movies table). The result
-    is small; the archive the pipeline writes into the folder is the full record.
+    title, and TMDB id, and the three text-gate fields from the movies table), the active
+    profile's and residual artifact's identity as the worker read them, and for a masked run
+    the exemplars to leave out. The result is small; the archive the pipeline writes into
+    the folder is the full record.
+
+    A masked run scores against a derived copy of the active profile without the movie's own
+    exemplars (:mod:`marquee.taste.blind`), deleted when the run ends whatever happens; its
+    profile is the active one. A residual artifact is passed to the engine with the runtime
+    context it must match (the scorer weights, the profile's checksum and id); the engine
+    decides whether it ranks, and falls back to the weighted scorer when it does not.
     """
     from marquee.config import pipeline_settings, settings
     from marquee.integrations.tmdb.exceptions import TMDBError
+    from marquee.ml.residual import baseline_signature
     from marquee.pipeline.orchestrator import PosterSubjectInput
+    from marquee.pipeline.scorer import ResidualRuntimeContext
     from marquee.pipeline.single_run import run_single_subject
     from marquee.pipeline.text_profiles import OcrGateContext
 
@@ -122,6 +164,9 @@ def poster_run(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> di
     title = payload.get("title")
     if not isinstance(title, str) or not title.strip():
         raise PermanentJobError("the payload needs a title")
+    active = _identity(payload, "profile")
+    residual = _identity(payload, "residual")
+    mask = _mask(payload)
     token = settings.TMDB_READ_ACCESS_TOKEN
     if token is None or not token.get_secret_value():
         raise PermanentJobError("TMDB_READ_ACCESS_TOKEN is not set")
@@ -146,7 +191,47 @@ def poster_run(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> di
         progress(event.done, event.total, f"{event.stage} {event.state}")
 
     started = time.perf_counter()
+    blind_path: Path | None = None
     try:
+        extractor = None
+        if mask is not None:
+            from marquee.ml.taste_store import NumpyTasteStore
+            from marquee.pipeline.features import FeatureExtractor
+            from marquee.taste import blind, rebuild
+
+            if active is None:
+                raise PermanentJobError("a masked run needs the active profile")
+            source = rebuild.profile_copy(active["file_name"])
+            if not source.is_file() or _file_sha256(source) != active["sha256"]:
+                raise PermanentJobError(
+                    f"the kept copy of the active profile {active['sha256'][:12]} is missing "
+                    "or does not hold its own bytes"
+                )
+            blind_path = blind.blind_profile_path(active["sha256"], movie_id)
+            try:
+                blind.mask_profile(source, blind_path, positives=mask[0], negatives=mask[1])
+            except blind.MaskError as exc:
+                raise PermanentJobError(f"the active profile cannot be masked: {exc}") from exc
+            extractor = FeatureExtractor(
+                personalization_mode="personalized",
+                taste_store=NumpyTasteStore(
+                    blind_path, expected_model_name=pipeline_settings.AI_MODEL
+                ),
+            )
+            # The run is of the active profile, less one movie: that is the profile it names.
+            profile_sha256 = active["sha256"]
+        residual_path = None
+        residual_context = None
+        if residual is not None and active is not None:
+            residual_path = settings.residuals_dir / residual["file_name"]
+            residual_context = ResidualRuntimeContext(
+                library="movies",
+                baseline_signature=baseline_signature(pipeline_settings.scorer_weights),
+                profile_checksum=profile_sha256,
+                profile_generation=active["id"],
+                artifact_id=residual["id"],
+                artifact_checksum=residual["sha256"],
+            )
         output = run_async(
             run_single_subject(
                 subject=PosterSubjectInput(title=title, tmdb_id=tmdb_id, movie_id=movie_id),
@@ -154,20 +239,31 @@ def poster_run(payload: dict[str, Any], cancel: Any, progress: ProgressFn) -> di
                 ocr_gate=gate,
                 progress=on_event,
                 should_cancel=cancel.is_set,
+                feature_extractor=extractor,
+                residual_path=residual_path,
+                residual_context=residual_context,
             )
         )
     except TMDBError as exc:
         raise RuntimeError(f"TMDB: {exc}") from exc
+    finally:
+        if blind_path is not None:
+            blind_path.unlink(missing_ok=True)
     pick = output.recommendation
+    # The engine names the scorer that ranked; a run that ranked nothing keeps the archive's
+    # label, as before.
+    scorer = output.scorer_name or output.payload.get("scorer")
     return {
         "status": output.status,
         "counts": output.counts,
         "stages": stages,
-        "scorer": output.payload.get("scorer"),
+        "scorer": scorer,
+        "residual_id": residual["id"] if scorer == "residual" and residual else None,
         "engine_run_id": output.run_id,
         "ai_model": pipeline_settings.AI_MODEL,
         "profile_sha256": profile_sha256,
         "pick_file": str(pick["orig_filename"]) if pick else None,
+        "masked": mask is not None,
         "seconds": round(time.perf_counter() - started, 2),
         "pid": os.getpid(),
     }

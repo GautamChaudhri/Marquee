@@ -125,6 +125,9 @@ async def test_a_run_leaves_its_record_candidates_and_pick(
         "director": "John McTiernan",
         "production_companies": ["Gordon Company"],
         "tagline": "Twelve terrorists.",
+        # No profile is registered in this test, so there is nothing to name, and no residual.
+        "profile": None,
+        "residual": None,
     }
     async with sessions() as session:
         run = await runs.run_for_job(session, job_id)
@@ -316,3 +319,179 @@ async def test_a_batch_leaves_out_movies_with_an_active_run(
     assert found == 2
     assert [c.payload for c in children] == [{"movie_id": second}]
     assert parent.payload == {"scope": "all", "movies": 2}
+
+
+# ── Masked runs ───────────────────────────────────────────────────────────
+
+PROFILE_SHA = "9" * 64
+
+
+async def _taste(sessions: async_sessionmaker[AsyncSession], movie_id: int) -> dict[str, int]:
+    """An active profile and the movie's exemplars: a positive, a negative, and an ended one."""
+    from marquee.db.models import Exemplar, TasteProfile
+
+    async with sessions() as session:
+        profile = TasteProfile(
+            sha256=PROFILE_SHA,
+            revision="b" * 64,
+            source="seed",
+            positives=1,
+            negatives=1,
+            positive_movie_ids=[movie_id],
+            file_name=f"{PROFILE_SHA}.npz",
+            is_active=True,
+        )
+        positive = Exemplar(
+            movie_id=movie_id,
+            polarity="positive",
+            weight=1.0,
+            source="seed",
+            state="active",
+            sha256="1" * 64,
+            file_name=f"{'1' * 64}.png",
+            staged_name="Die Hard (1988).png",
+        )
+        negative = Exemplar(
+            movie_id=movie_id,
+            polarity="negative",
+            weight=1.0,
+            source="seed",
+            state="active",
+            sha256="2" * 64,
+            file_name=f"{'2' * 64}.jpg",
+        )
+        ended = Exemplar(
+            movie_id=movie_id,
+            polarity="positive",
+            weight=1.0,
+            source="seed",
+            state="superseded",
+            ended_at=datetime.now(UTC),
+            sha256="3" * 64,
+            file_name=f"{'3' * 64}.png",
+            staged_name="Die Hard (1988).jpg",
+        )
+        session.add_all([profile, positive, negative, ended])
+        await session.commit()
+        return {"profile": profile.id, "positive": positive.id}
+
+
+async def _masked_job(sessions: async_sessionmaker[AsyncSession], job_id: int) -> int:
+    async with sessions() as session:
+        session.add(Job(id=job_id, kind="poster_run_masked", job_class="gpu", state="running"))
+        await session.commit()
+    return job_id
+
+
+async def test_a_masked_run_leaves_out_the_movies_exemplars_and_is_recorded_as_one(
+    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    movie_id = await _movie(sessions)
+    taste = await _taste(sessions, movie_id)
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+    calls: list[dict] = []
+    job_id = await _masked_job(sessions, 40)
+
+    result = await handler.masked_run(_context(job_id, {"movie_id": movie_id}, _fake_child(calls)))
+
+    (payload,) = calls
+    assert payload["mask"] == {
+        "positives": ["Die Hard (1988).png"],
+        "negatives": [f"{'2' * 64}.jpg"],
+    }
+    assert payload["profile"] == {
+        "id": taste["profile"],
+        "sha256": PROFILE_SHA,
+        "file_name": f"{PROFILE_SHA}.npz",
+    }
+    assert payload["residual"] is None
+    assert result["masked"] is True and result["deploy"] is None
+    async with sessions() as session:
+        run = await runs.run_for_job(session, job_id)
+        assert run is not None and run.masked and run.state == "completed"
+        writes = await session.scalar(
+            select(func.count()).select_from(Job).where(Job.kind == "poster_deploy")
+        )
+    assert writes == 0  # the deploy policy never acts on a masked run
+
+
+async def test_a_normal_run_hands_the_child_no_mask(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    movie_id = await _movie(sessions)
+    await _taste(sessions, movie_id)
+    calls: list[dict] = []
+    job_id = await _job(sessions, 41)
+    await handler.poster_run(_context(job_id, {"movie_id": movie_id}, _fake_child(calls)))
+    (payload,) = calls
+    assert "mask" not in payload
+    assert payload["profile"]["sha256"] == PROFILE_SHA
+    async with sessions() as session:
+        run = await runs.run_for_job(session, job_id)
+        assert run is not None and not run.masked
+
+
+async def test_a_movie_without_an_active_positive_cannot_be_masked(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    movie_id = await _movie(sessions)
+    job_id = await _masked_job(sessions, 42)
+    with pytest.raises(PermanentJobError, match="no active positive exemplar"):
+        await handler.masked_run(_context(job_id, {"movie_id": movie_id}, _fake_child([])))
+    async with sessions() as session:
+        assert await runs.run_for_job(session, job_id) is None
+
+
+async def test_a_movie_keeps_only_its_newest_masked_run(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    movie_id = await _movie(sessions)
+    await _taste(sessions, movie_id)
+    normal_job = await _job(sessions, 43)
+    await handler.poster_run(_context(normal_job, {"movie_id": movie_id}, _fake_child([])))
+    first = await handler.masked_run(
+        _context(await _masked_job(sessions, 44), {"movie_id": movie_id}, _fake_child([]))
+    )
+    assert first["removed_masked_runs"] == []
+    second = await handler.masked_run(
+        _context(await _masked_job(sessions, 45), {"movie_id": movie_id}, _fake_child([]))
+    )
+    assert second["removed_masked_runs"] == [first["run_id"]]
+    assert not (settings.runs_dir / first["run_folder"]).exists()
+    assert (settings.runs_dir / second["run_folder"]).is_dir()
+    async with sessions() as session:
+        kept = list(
+            await session.scalars(
+                select(PosterRun.id).where(PosterRun.movie_id == movie_id).order_by(PosterRun.id)
+            )
+        )
+        normal = await runs.run_for_job(session, normal_job)
+        assert normal is not None
+        assert kept == [normal.id, second["run_id"]]
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(RunCandidate)
+                .where(RunCandidate.run_id == first["run_id"])
+            )
+            == 0
+        )
+    assert (settings.runs_dir / normal.run_folder).is_dir()
+
+
+async def test_a_masked_run_and_a_normal_run_of_one_movie_queue_side_by_side(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    from marquee.jobs import queue
+
+    movie_id = await _movie(sessions)
+    async with sessions() as session:
+        normal, created_normal = await handler.enqueue_run(session, movie_id)
+        masked, created_masked = await queue.enqueue(
+            session, handler.POSTER_RUN_MASKED, {"movie_id": movie_id}
+        )
+        again, created_again = await queue.enqueue(
+            session, handler.POSTER_RUN_MASKED, {"movie_id": movie_id}
+        )
+    assert created_normal and created_masked and not created_again
+    assert normal.id != masked.id and again.id == masked.id

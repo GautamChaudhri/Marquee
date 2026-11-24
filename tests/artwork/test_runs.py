@@ -383,3 +383,138 @@ async def test_list_runs_and_find_by_title(db_session: AsyncSession) -> None:
     assert [m.id for m in await runs.find_movies_by_title(db_session, "die hard", year=2001)] == [
         other.id
     ]
+
+
+# ── Masked runs and the scorer that ranked ────────────────────────────────
+
+
+def _with_contributions(residual: list[bool]) -> list[dict]:
+    """LEDGER with the residual's mark on the ranked candidates named by ``residual``."""
+    rows = [dict(row) for row in LEDGER]
+    ranked = [row for row in rows if row["rank"] is not None]
+    for row, marked in zip(ranked, residual, strict=True):
+        row["contributions"] = (
+            {"baseline_score": 0.5, runs.RESIDUAL_MARK: 0.1} if marked else {"knn_sim": 0.3}
+        )
+    return rows
+
+
+def test_the_folder_says_whether_the_residual_ranked_every_candidate(tmp_path: Path) -> None:
+    _write_folder(tmp_path / "all", _with_contributions([True, True]), IMAGES)
+    _write_folder(tmp_path / "some", _with_contributions([True, False]), IMAGES)
+    _write_folder(tmp_path / "none", LEDGER, IMAGES)
+    assert runs.read_run_folder(tmp_path / "all").residual_ranked is True
+    assert runs.read_run_folder(tmp_path / "some").residual_ranked is False
+    assert runs.read_run_folder(tmp_path / "none").residual_ranked is False
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("reported", "marked", "scorer", "residual_id"),
+    [
+        ("residual", [True, True], "residual", 7),
+        ("residual", [True, False], "weighted", None),  # the engine fell back part way
+        ("weighted", [False, False], "weighted", None),
+    ],
+)
+async def test_complete_records_the_scorer_that_ranked(
+    db_session: AsyncSession,
+    reported: str,
+    marked: list[bool],
+    scorer: str,
+    residual_id: int | None,
+) -> None:
+    from dataclasses import replace
+
+    from marquee.db.models import ResidualTraining
+
+    training = ResidualTraining(
+        profile_sha256=SHA,
+        outcome="activate",
+        subjects=30,
+        pairs=300,
+        events=30,
+        evidence_digest="b" * 64,
+        report={},
+        artifact_sha256="c" * 64,
+        file_name=f"{'c' * 64}.npz",
+    )
+    db_session.add(training)
+    await db_session.flush()
+    movie = await _with_movie(db_session)
+    run = await runs.start(db_session, job_id=await _job(db_session, 60), movie=movie)
+    folder = settings.runs_dir / run.run_folder
+    _write_folder(folder, _with_contributions(marked), IMAGES)
+    result = replace(_result(), scorer=reported, residual_id=training.id)
+
+    done = await runs.complete(db_session, run.id, result, runs.read_run_folder(folder))
+
+    assert done.scorer_name == scorer
+    assert done.residual_id == (training.id if residual_id else None)
+
+
+@pytest.mark.db
+async def test_masked_runs_are_listed_only_when_asked_and_never_count_as_run(
+    db_session: AsyncSession,
+) -> None:
+    movie = await _with_movie(db_session)
+    other = _movie(2, "Heat")
+    db_session.add(other)
+    await db_session.flush()
+    normal = await runs.start(db_session, job_id=await _job(db_session, 61), movie=movie)
+    masked = await runs.start(
+        db_session, job_id=await _job(db_session, 62), movie=other, masked=True
+    )
+    assert masked.masked and not normal.masked
+
+    assert [r.id for r in (await runs.list_runs(db_session)).items] == [normal.id]
+    assert [r.id for r in (await runs.list_runs(db_session, masked=True)).items] == [masked.id]
+    assert [r.id for r in (await runs.list_runs(db_session, masked=None)).items] == [
+        masked.id,
+        normal.id,
+    ]
+    assert await runs.scope_movie_ids(db_session, "never-run") == [other.id]
+
+
+@pytest.mark.db
+async def test_a_job_keeps_its_kind_of_run(db_session: AsyncSession) -> None:
+    movie = await _with_movie(db_session)
+    job_id = await _job(db_session, 63)
+    await runs.start(db_session, job_id=job_id, movie=movie, masked=True)
+    with pytest.raises(runs.RunRecordError, match="other kind"):
+        await runs.start(db_session, job_id=job_id, movie=movie)
+
+
+@pytest.mark.db
+async def test_remove_older_masked_leaves_normal_and_running_runs(
+    db_session: AsyncSession,
+) -> None:
+    movie = await _with_movie(db_session)
+    normal = await runs.start(db_session, job_id=await _job(db_session, 64), movie=movie)
+    await runs.complete(db_session, normal.id, _result(pick=None), _folder_of(normal, LEDGER[2:]))
+    old = await runs.start(db_session, job_id=await _job(db_session, 65), movie=movie, masked=True)
+    await runs.complete(db_session, old.id, _result(), _folder_of(old, LEDGER))
+    running = await runs.start(
+        db_session, job_id=await _job(db_session, 66), movie=movie, masked=True
+    )
+    newest = await runs.start(
+        db_session, job_id=await _job(db_session, 67), movie=movie, masked=True
+    )
+    old_folder = settings.runs_dir / old.run_folder
+
+    removed = await runs.remove_older_masked(db_session, movie.id, newest.id)
+
+    assert removed == [old.id]
+    assert not old_folder.exists()
+    left = list(await db_session.scalars(select(PosterRun.id).order_by(PosterRun.id)))
+    assert left == [normal.id, running.id, newest.id]
+
+
+def _folder_of(run: PosterRun, rows: list[dict]) -> runs.RunFolder:
+    folder = settings.runs_dir / run.run_folder
+    _write_folder(
+        folder,
+        rows,
+        {k: v for k, v in IMAGES.items() if any(r["orig_filename"] == k for r in rows)},
+    )
+    return runs.read_run_folder(folder)
