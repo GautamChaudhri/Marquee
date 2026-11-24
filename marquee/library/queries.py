@@ -1,0 +1,103 @@
+"""Read queries over the movie library, for the API and later the jobs.
+
+Retired movies (ones Radarr no longer lists) are never returned. The movie list shows only
+movies with a file unless asked to include the ones Radarr still wants.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from sqlalchemy import Select, and_, exists, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
+from sqlalchemy.sql.elements import ColumnElement
+
+from marquee.db.models import ARTWORK_POSTER, Artwork, Movie
+
+MovieSort = Literal["title", "year", "added"]
+
+
+@dataclass(frozen=True)
+class MovieWithPoster:
+    movie: Movie
+    poster: Artwork | None
+
+
+@dataclass(frozen=True)
+class MoviePage:
+    total: int
+    items: list[MovieWithPoster]
+
+
+def escape_like(text: str) -> str:
+    """``text`` as a literal inside a LIKE pattern (escape character ``\\``)."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _poster_join() -> ColumnElement[bool]:
+    return and_(Artwork.movie_id == Movie.id, Artwork.artwork_kind == ARTWORK_POSTER)
+
+
+def _has_poster() -> ColumnElement[bool]:
+    # Its own alias, so the list query's join on artwork cannot correlate it away.
+    poster = aliased(Artwork)
+    return exists(
+        select(poster.id).where(poster.movie_id == Movie.id, poster.artwork_kind == ARTWORK_POSTER)
+    )
+
+
+def _order(sort: MovieSort) -> tuple[ColumnElement, ...]:
+    if sort == "year":
+        return (Movie.year.desc().nulls_last(), Movie.sort_title, Movie.id)
+    if sort == "added":
+        return (Movie.radarr_added_at.desc().nulls_last(), Movie.sort_title, Movie.id)
+    return (Movie.sort_title, Movie.id)
+
+
+def _with_poster() -> Select[tuple[Movie, Artwork]]:
+    return select(Movie, Artwork).outerjoin(Artwork, _poster_join())
+
+
+async def list_movies(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 50,
+    q: str | None = None,
+    has_poster: bool | None = None,
+    include_unavailable: bool = False,
+    sort: MovieSort = "title",
+) -> MoviePage:
+    """One page of movies, with the total that match."""
+    conditions: list[ColumnElement[bool]] = [Movie.is_present.is_(True)]
+    if not include_unavailable:
+        conditions.append(Movie.has_file.is_(True))
+    if q:
+        conditions.append(Movie.title.ilike(f"%{escape_like(q)}%", escape="\\"))
+    if has_poster is not None:
+        conditions.append(_has_poster() if has_poster else ~_has_poster())
+
+    total = await session.scalar(select(func.count()).select_from(Movie).where(*conditions))
+    rows = await session.execute(
+        _with_poster()
+        .where(*conditions)
+        .order_by(*_order(sort))
+        .limit(page_size)
+        .offset((page - 1) * page_size)
+    )
+    return MoviePage(
+        total=total or 0,
+        items=[MovieWithPoster(movie, poster) for movie, poster in rows],
+    )
+
+
+async def get_movie(session: AsyncSession, movie_id: int) -> MovieWithPoster | None:
+    """One movie Radarr still lists, with or without a file."""
+    row = (
+        await session.execute(
+            _with_poster().where(Movie.id == movie_id, Movie.is_present.is_(True))
+        )
+    ).first()
+    return MovieWithPoster(row[0], row[1]) if row else None
