@@ -598,6 +598,128 @@ def test_taste_rebuild_queues_the_current_revision(
     assert "already queued; following it" in capsys.readouterr().out
 
 
+# ── marquee review, taste status ──────────────────────────────────────────
+
+
+def _review_run(movie_id: int, runs_dir: Path) -> dict[str, int]:
+    """A completed run of three downloaded candidates, with its folder and archive."""
+    import hashlib
+    import json
+
+    import psycopg
+
+    folder = runs_dir / "00000001-heat"
+    folder.mkdir(parents=True)
+    ledger = []
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        run_id = conn.execute(
+            "insert into poster_runs (movie_id, state, run_folder, started_at, finished_at, "
+            "ranked_count) values (%s, 'completed', '00000001-heat', now(), now(), 3) "
+            "returning id",
+            [movie_id],
+        ).fetchone()[0]
+        ids = {"run": run_id}
+        for n in (1, 2, 3):
+            data = f"poster {n}".encode()
+            (folder / f"r{n}.jpg").write_bytes(data)
+            ids[f"r{n}"] = conn.execute(
+                "insert into run_candidates (run_id, source_file, sha256, rank, final_score, "
+                "stack_rank, stack_label, is_pick) values (%s, %s, %s, %s, %s, %s, 'A', %s) "
+                "returning id",
+                [run_id, f"r{n}.jpg", hashlib.sha256(data).hexdigest(), n, 1 - n / 10, n, n == 1],
+            ).fetchone()[0]
+            ledger.append({"orig_filename": f"r{n}.jpg", "normalized_features": {"knn_sim": n}})
+    (folder / "pipeline_run.json").write_text(
+        json.dumps({"diagnostic_ledger": {"candidates": ledger}})
+    )
+    return ids
+
+
+@pytest.mark.db
+def test_review_commands(
+    jobs_database: object,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    import psycopg
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+
+    def run(*argv: str) -> tuple[int, str, str]:
+        code = cli.main(list(argv))
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    movie_id = _add_movie(1, "Heat", 1995)
+    ids = _review_run(movie_id, tmp_path / "data" / "runs")
+
+    code, out, _ = run("review", "list")
+    assert code == 0 and out.splitlines()[-1] == "1 run(s) wait for a review"
+    assert json.loads(run("review", "list", "--json")[1])[0]["run_id"] == ids["run"]
+
+    code, out, err = run(
+        "review",
+        "rank",
+        str(ids["run"]),
+        "--order",
+        f"{ids['r3']},{ids['r1']}",
+        "--hate",
+        str(ids["r2"]),
+    )
+    assert code == 0, err
+    assert f"rank on run {ids['run']} of Heat (blind unknown)" in out
+    assert "chosen    r3.jpg\n" in out
+    assert "made        exemplar" in out and "positive 1, movie" in out and "negative 1" in out
+    assert "deploy    job " in out and "rebuild   job " in out
+    assert "no worker is running; the jobs wait in the queue" in out
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as conn:
+        (event_id,) = conn.execute("select id from preference_events").fetchone()
+        key = conn.execute("select idempotency_key from preference_events").fetchone()[0]
+    assert key.startswith("cli:")
+
+    code, out, _ = run("review", "show", str(ids["run"]))
+    assert code == 0 and f"  {event_id:>5}  rank     r3.jpg" in out
+    shown = json.loads(run("review", "show", str(ids["run"]), "--json")[1])
+    assert shown["latest"] is True and shown["events"][0]["context"]["order"] == [
+        "r3.jpg",
+        "r1.jpg",
+    ]
+    assert run("review", "list")[1].splitlines()[-1] == "0 run(s) wait for a review"
+
+    code, out, err = run("review", "pick", str(ids["run"]), "--candidate", "999")
+    assert code == 1 and "candidate 999 is not one of run" in err
+    code, out, err = run("review", "approve", "999")
+    assert code == 1 and "no run 999" in err
+
+    code, out, _ = run("review", "revoke", str(event_id))
+    assert code == 0 and f"revokes event {event_id} of Heat" in out
+    assert out.count("  revoked     exemplar") == 2
+    code, out, _ = run("review", "revoke", str(event_id))
+    assert code == 0 and "was recorded before with this key; nothing changed" in out
+    assert run("review", "list")[1].splitlines()[-1] == "1 run(s) wait for a review"
+
+    code, out, _ = run("taste", "status")
+    assert code == 0
+    assert "exemplars revoked: 1 positive, 1 negative" in out
+    assert "profile   none registered" in out
+    assert "agreement blind runs: 0 reviewed" in out
+    assert "residual  not trained; the events give 0 pair(s) over 0 subject(s)" in out
+    status = json.loads(run("taste", "status", "--json")[1])
+    assert status["residual"]["min_pairs"] == 200 and status["pending_reviews"] == 1
+
+
+def test_id_lists() -> None:
+    import argparse
+
+    assert cli._id_list("12,9, 14") == [12, 9, 14]
+    for bad in ("", "a,b", ","):
+        with pytest.raises(argparse.ArgumentTypeError):
+            cli._id_list(bad)
+
+
 # ── marquee runs, deploy, deployments, restore ────────────────────────────
 
 

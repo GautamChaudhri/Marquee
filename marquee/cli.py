@@ -87,6 +87,11 @@ def _build_parser() -> argparse.ArgumentParser:
     taste_rebuild.add_argument(
         "--no-wait", action="store_true", help="queue it even with no worker running, and return"
     )
+    taste_status = taste_commands.add_parser(
+        "status",
+        help="exemplars, the active profile, agreement, and what the residual would get",
+    )
+    taste_status.add_argument("--json", action="store_true", help="print it as JSON")
     taste_commands.add_parser(
         "import-seed",
         help="make the staged seed the first exemplar records and register its profile",
@@ -158,6 +163,53 @@ def _build_parser() -> argparse.ArgumentParser:
         "is backed up first.",
     )
     restore_cmd.add_argument("deployment_id", type=int)
+
+    review = commands.add_parser(
+        "review",
+        help="review what the AI picked: approve, pick, rank, reject, or take one back",
+        description="Each act of feedback is recorded once, keeps a copy of what was shown, "
+        "and changes the exemplars at once. approve, pick, and rank also deploy the chosen "
+        "poster unless given --no-deploy, and any change to the exemplars queues a taste "
+        "rebuild. With a worker running, the command follows the jobs it queued.",
+    )
+    review_commands = review.add_subparsers(dest="review_command", required=True, metavar="cmd")
+    review_list = review_commands.add_parser(
+        "list", help="movies whose latest run waits for a review, policy deploys first"
+    )
+    review_list.add_argument("--json", action="store_true", help="print them as JSON")
+    review_show = review_commands.add_parser(
+        "show", help="a run, its ranked candidates with their ids, and its feedback"
+    )
+    review_show.add_argument("run_id", type=int)
+    review_show.add_argument("--json", action="store_true", help="print it as JSON")
+    approve = review_commands.add_parser("approve", help="keep the run's pick")
+    approve.add_argument("run_id", type=int)
+    pick = review_commands.add_parser("pick", help="choose another candidate of the run")
+    pick.add_argument("run_id", type=int)
+    pick.add_argument("--candidate", type=int, required=True, help="the candidate's id")
+    rank = review_commands.add_parser(
+        "rank", help="put candidates in order, best first, and send some to the hate pile"
+    )
+    rank.add_argument("run_id", type=int)
+    rank.add_argument("--order", type=_id_list, required=True, help="candidate ids, e.g. 12,9,14")
+    rank.add_argument("--hate", type=_id_list, default=[], help="candidate ids you dislike")
+    for command in (approve, pick, rank):
+        command.add_argument(
+            "--no-deploy", action="store_true", help="record it without deploying the poster"
+        )
+    reject = review_commands.add_parser("reject", help="none of these: dislike the candidates")
+    reject.add_argument("run_id", type=int)
+    reject.add_argument(
+        "--hate", type=_id_list, default=[], help="candidate ids (default: every one shown)"
+    )
+    revoke = review_commands.add_parser(
+        "revoke",
+        help="take an act of feedback back (its exemplars; not the library)",
+        description="Revoke one event: the exemplars it made are revoked and the one its "
+        "positive replaced comes back. The library is left alone: `marquee restore` puts a "
+        "poster back.",
+    )
+    revoke.add_argument("event_id", type=int)
 
     sync = commands.add_parser(
         "sync",
@@ -242,6 +294,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     revision.add_argument("-m", "--message", required=True, help="what the migration does")
     return parser
+
+
+def _id_list(value: str) -> list[int]:
+    """Comma-separated ids, as `--order 12,9,14` gives them."""
+    try:
+        ids = [int(part) for part in value.replace(" ", ",").split(",") if part]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a list of ids like 12,9,14") from None
+    if not ids:
+        raise argparse.ArgumentTypeError("give at least one id")
+    return ids
 
 
 def _quiet_logging(level: str = "ERROR") -> None:
@@ -1045,6 +1108,267 @@ def _taste_rebuild(args: argparse.Namespace) -> int:
         return _fail("taste rebuild", "stopped following; the job goes on")
 
 
+REVIEW_ACTIONS = {"approve": "approval", "pick": "override", "rank": "rank", "reject": "reject"}
+
+
+def _exemplar_line(verb: str, row: Any) -> str:
+    what = f"{row.polarity} {row.weight:g}"
+    name = row.source_file or row.staged_name
+    return f"  {verb:<11} exemplar {row.id}: {what}, movie {row.movie_id}, {name}"
+
+
+def _print_review_result(result: Any, title: str) -> None:
+    event = result.outcome.event
+    if not result.created:
+        print(f"event     {event.id} was recorded before with this key; nothing changed")
+    blind = {True: "blind", False: "not blind", None: "blind unknown"}[event.blind]
+    target = (
+        f"revokes event {event.revokes_event_id}"
+        if event.revokes_event_id
+        else f"on run {event.run_id}"
+    )
+    print(f"event     {event.id} {event.action} {target} of {title} ({blind})")
+    if event.chosen_source_file:
+        same = " (the pick)" if event.chosen_source_file == event.pick_source_file else ""
+        print(f"chosen    {event.chosen_source_file}{same}")
+    changes = result.outcome.changes
+    if not (changes.created or changes.ended or changes.reactivated):
+        print("exemplars no change")
+    else:
+        print("exemplars")
+    for row in sorted(changes.created, key=lambda r: r.id):
+        print(_exemplar_line("made", row))
+    for row in sorted(changes.ended, key=lambda r: r.id):
+        print(_exemplar_line(row.state, row))
+    for row in sorted(changes.reactivated, key=lambda r: r.id):
+        print(_exemplar_line("active again", row))
+    if result.deploy_job is not None:
+        print(f"deploy    job {result.deploy_job.id} {result.deploy_job.kind}")
+    elif result.deploy_note:
+        print(f"deploy    {result.deploy_note}")
+    if result.rebuild_job is not None:
+        print(f"rebuild   job {result.rebuild_job.id} taste_rebuild")
+
+
+async def _follow_review(sessions: Any, result: Any) -> None:
+    """With a worker running, wait for the deploy and the rebuild and say how they ended."""
+    from marquee.jobs import queries
+
+    async with sessions() as session:
+        worker = await queries.worker_status(session)
+    jobs = [job for job in (result.deploy_job, result.rebuild_job) if job is not None]
+    if not jobs:
+        return
+    if not worker.running:
+        print("no worker is running; the jobs wait in the queue (`marquee worker`)")
+        return
+    for job in jobs:
+        done = await _follow(sessions, job.id, quiet=True)
+        if done.state != "succeeded":
+            print(f"job {done.id} {done.kind} {done.state}: {done.error or 'no error recorded'}")
+        elif done.kind == "taste_rebuild":
+            _print_rebuild(done)
+        else:
+            outcome = (done.result or {}).get("outcome") or (done.result or {}).get("note")
+            deployment = (done.result or {}).get("deployment_id")
+            print(f"deployed  job {done.id}: {outcome}; deployment {deployment}")
+
+
+def _pending_dict(row: Any) -> dict[str, Any]:
+    return {
+        "movie_id": row.movie_id,
+        "title": row.title,
+        "year": row.year,
+        "run_id": row.run_id,
+        "ranked": row.ranked,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        "policy_deployed": row.policy_deployed,
+        "blind": row.blind,
+    }
+
+
+def _event_dict(event: Any, revoked_by: int | None) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "action": event.action,
+        "run_id": event.run_id,
+        "chosen": event.chosen_source_file,
+        "pick": event.pick_source_file,
+        "blind": event.blind,
+        "context": event.context,
+        "shown": len(event.exposed or []),
+        "revokes_event_id": event.revokes_event_id,
+        "revoked_by": revoked_by,
+        "created_at": event.created_at.isoformat(),
+    }
+
+
+async def _review_async(args: argparse.Namespace) -> int:
+    import uuid
+
+    from marquee.artwork import runs
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.db.models import Movie
+    from marquee.jobs import review
+    from marquee.taste import agreement, feedback
+
+    engine = create_engine()
+    sessions = create_session_factory(engine)
+    try:
+        async with sessions() as session:
+            if args.review_command == "list":
+                pending = await agreement.pending_reviews(session)
+                if args.json:
+                    print(json.dumps([_pending_dict(row) for row in pending], indent=2))
+                    return 0
+                print(f"{'run':>6}  {'movie':>6}  {'ranked':>6}  {'blind':<7} title")
+                for row in pending:
+                    year = f" ({row.year})" if row.year else ""
+                    blind = {True: "yes", False: "no", None: "unknown"}[row.blind]
+                    policy = "  [deployed by the policy]" if row.policy_deployed else ""
+                    print(
+                        f"{row.run_id:>6}  {row.movie_id:>6}  {row.ranked or 0:>6}  {blind:<7} "
+                        f"{row.title}{year}{policy}"
+                    )
+                print(f"{len(pending)} run(s) wait for a review")
+                return 0
+            if args.review_command == "show":
+                run = await runs.get_run(session, args.run_id)
+                if run is None:
+                    raise _CommandError(f"no run {args.run_id}")
+                candidates = await runs.candidates_of(session, run.id)
+                events = await feedback.events_of_run(session, run.id)
+                revoked = await feedback.revoked_ids(session)
+                blind = await feedback.blind_for(session, run)
+                latest = await feedback.latest_completed_run_id(session, run.movie_id)
+                if args.json:
+                    out = {
+                        **_run_dict(run),
+                        "blind": blind,
+                        "latest": latest == run.id,
+                        "candidates": [_candidate_dict(c) for c in candidates],
+                        "events": [_event_dict(e, revoked.get(e.id)) for e in events],
+                    }
+                    print(json.dumps(out, indent=2))
+                    return 0
+                _print_run(run, [c for c in candidates if c.rank is not None or c.is_pick])
+                state = {True: "yes", False: "no", None: "unknown (profile not registered)"}
+                print(f"blind     {state[blind]}")
+                if latest != run.id:
+                    print(f"feedback  goes to the movie's latest completed run, {latest}")
+                print(f"events    {len(events)}")
+                for event in events:
+                    by = revoked.get(event.id)
+                    note = f" (revoked by {by})" if by else ""
+                    what = event.chosen_source_file or ", ".join(event.context.get("hated", []))
+                    print(f"  {event.id:>5}  {event.action:<8} {what or '-'}{note}")
+                return 0
+            title = ""
+            if args.review_command == "revoke":
+                result = await review.revoke(session, event_id=args.event_id)
+            else:
+                run = await runs.get_run(session, args.run_id)
+                if run is None:
+                    raise _CommandError(f"no run {args.run_id}")
+                result = await review.submit(
+                    session,
+                    run_id=args.run_id,
+                    action=REVIEW_ACTIONS[args.review_command],
+                    idempotency_key=f"cli:{uuid.uuid4().hex}",
+                    candidate_id=getattr(args, "candidate", None),
+                    order=getattr(args, "order", None),
+                    hated=getattr(args, "hate", None) or None,
+                    deploy=not getattr(args, "no_deploy", True),
+                )
+            movie = await session.get(Movie, result.outcome.event.movie_id)
+            title = movie.title if movie is not None else str(result.outcome.event.movie_id)
+            await session.commit()
+        _print_review_result(result, title)
+        await _follow_review(sessions, result)
+    except feedback.FeedbackError as exc:
+        raise _CommandError(str(exc)) from exc
+    finally:
+        await engine.dispose()
+    return 0
+
+
+def _review(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    try:
+        return asyncio.run(_review_async(args))
+    except _CommandError as exc:
+        return _fail(f"review {args.review_command}", str(exc))
+    except SQLAlchemyError as exc:
+        return _fail(f"review {args.review_command}", f"{_database_target()}: {_error_line(exc)}")
+    except KeyboardInterrupt:
+        return _fail(f"review {args.review_command}", "stopped following; the jobs go on")
+
+
+def _print_status(status: Any) -> None:
+    def counts(by: dict[str, int]) -> str:
+        return ", ".join(f"{n} {polarity}" for polarity, n in sorted(by.items(), reverse=True))
+
+    states = "; ".join(f"{state}: {counts(by)}" for state, by in sorted(status.exemplars.items()))
+    print(f"exemplars {states or 'none'}")
+    profile = status.profile
+    if profile is None:
+        print("profile   none registered (`marquee taste import-seed`)")
+    else:
+        print(
+            f"profile   {profile.id} ({profile.sha256[:12]}), {profile.source}, "
+            f"{profile.positives} positives, {profile.negatives} negatives"
+        )
+    due = (
+        "due: the exemplars changed since the profile was built"
+        if status.rebuild_due
+        else ("not due")
+    )
+    print(f"rebuild   {due}")
+    a = status.agreement
+    print(f"agreement blind runs: {a.blind.text()}")
+    print(f"          not blind: {a.not_blind.reviewed} reviewed; unknown: {a.unknown.reviewed}")
+    for key, tally in a.by_profile.items():
+        print(f"          profile {key}: {tally.text()}")
+    for key, tally in sorted(a.by_month.items()):
+        print(f"          {key}: {tally.text()}")
+    print(f"reviews   {status.pending_reviews} run(s) wait (`marquee review list`)")
+    print(
+        f"residual  not trained; the events give {status.residual_pairs} pair(s) over "
+        f"{status.residual_subjects} subject(s); it needs {status.residual_min_pairs} over "
+        f"{status.residual_min_subjects}"
+    )
+
+
+async def _taste_status_async(args: argparse.Namespace) -> int:
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.taste import agreement
+
+    engine = create_engine()
+    try:
+        async with create_session_factory(engine)() as session:
+            status = await agreement.status(session)
+            await session.commit()
+    finally:
+        await engine.dispose()
+    if args.json:
+        print(json.dumps(status.to_dict(), indent=2))
+    else:
+        _print_status(status)
+    return 0
+
+
+def _taste_status(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    _quiet_logging()
+    try:
+        return asyncio.run(_taste_status_async(args))
+    except SQLAlchemyError as exc:
+        return _fail("taste status", f"{_database_target()}: {_error_line(exc)}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.command == "doctor":
@@ -1079,6 +1403,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _import_seed()
     if args.command == "taste" and args.taste_command == "rebuild":
         return _taste_rebuild(args)
+    if args.command == "taste" and args.taste_command == "status":
+        return _taste_status(args)
+    if args.command == "review":
+        return _review(args)
     if args.command == "run":
         return _run(args)
     if args.command == "db":
