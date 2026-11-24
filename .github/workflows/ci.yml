@@ -79,3 +79,49 @@ jobs:
       - name: Tests
         # No GPU and no model files on the runner; the database tests use the service above.
         run: uv run --no-sync pytest -rsxX -m "not gpu and not models"
+
+  frontend:
+    name: Frontend (Node 26)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: frontend/.node-version
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        # Runs `prepare`, which generates the API types from frontend/openapi.json.
+        run: npm ci
+
+      - name: API types
+        run: npm run api:types
+
+      - name: Type check
+        run: npm run check
+
+      - name: Lint and format
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Build
+        run: npm run build
+
+      - name: Install the test browser
+        run: npx playwright install --with-deps --only-shell chromium
+
+      - name: End-to-end tests
+        # The built app against the fake backend in e2e/; no real API, key, or library.
+        run: npm run test:e2e
