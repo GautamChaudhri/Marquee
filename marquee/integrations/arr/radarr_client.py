@@ -15,6 +15,10 @@ class RadarrClient(ArrClient):
         """Fetch all movies in the Radarr library."""
         return await self._get("/api/v3/movie")
 
+    async def get_root_folders(self) -> list[dict]:
+        """Fetch the root folders Radarr keeps movies in, as Radarr sees them."""
+        return await self._get("/api/v3/rootfolder")
+
     async def get_movie_files(self, movie_ids: list[int], *, chunk_size: int = 100) -> list[dict]:
         """Fetch current movie-file payloads for one or more movie IDs.
 

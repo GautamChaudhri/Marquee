@@ -50,19 +50,6 @@ def _signature_for_media_file(media_file: MediaFile) -> tuple[str | None, str | 
         return None, str(exc)
 
 
-def _needs_tmdb_enrichment(movie: Movie) -> bool:
-    """Whether this movie still needs the one-time TMDB OCR metadata backfill.
-
-    ``tagline`` is intentionally not part of the retry gate. Many movies have
-    no tagline at all; retrying on every ``NULL`` tagline would re-hit TMDB on
-    every sync for those rows. We still populate ``tagline`` whenever we do
-    fetch details for a movie.
-    """
-    return bool(movie.tmdb_id) and (
-        movie.director is None or movie.production_companies_json is None
-    )
-
-
 def _needs_tv_enrichment(series: Series) -> bool:
     """Whether this TV series still needs the one-time TMDB OCR metadata backfill."""
     return bool(series.tmdb_id) and (
@@ -150,13 +137,6 @@ class SyncService:
         t0 = time.monotonic()
         raise_if_cancelled(cancel_event, "library sync cancelled")
 
-        if self.radarr:
-            if progress is not None:
-                await progress("sync_movies", "Syncing movies from Radarr…")
-            raise_if_cancelled(cancel_event, "library sync cancelled")
-            report.movies = await self._sync_movies()
-            raise_if_cancelled(cancel_event, "library sync cancelled")
-
         if self.sonarr:
             if progress is not None:
                 await progress("sync_series", "Syncing series from Sonarr…")
@@ -179,148 +159,6 @@ class SyncService:
         return report
 
     # ── Movies ───────────────────────────────────────────────────────
-
-    async def _sync_movies(self) -> SyncResult:
-        """Sync all movies from Radarr into the ``movies`` table."""
-        result = SyncResult()
-        now = datetime.now(UTC)
-
-        raw_movies = await self.radarr.get_movies()
-        if not isinstance(raw_movies, list):
-            raise TypeError("Radarr movie response must be a complete list")
-        movie_files = []
-        try:
-            movie_files = await self.radarr.get_movie_files(
-                [movie["id"] for movie in raw_movies if movie.get("id") is not None]
-            )
-        except Exception:
-            logger.warning("Failed to sync Radarr movie files", exc_info=True)
-        if not isinstance(movie_files, list):
-            movie_files = []
-        movie_file_by_movie_id = {
-            movie_file["movieId"]: movie_file
-            for movie_file in movie_files
-            if movie_file.get("movieId") is not None
-        }
-
-        # Index existing rows by radarr_id → O(1) lookups
-        existing = {m.radarr_id: m for m in (await self.db.execute(select(Movie))).scalars()}
-        enrich_candidates: list[Movie] = []
-
-        for data in raw_movies:
-            radarr_id = data["id"]
-            try:
-                # Skip entries with missing required fields
-                if not data.get("title"):
-                    logger.warning("Skipping movie radarr_id=%s — missing title", radarr_id)
-                    result.errors += 1
-                    continue
-
-                movie = existing.get(radarr_id)
-                if movie is None:
-                    movie = Movie(radarr_id=radarr_id)
-                    self.db.add(movie)
-                    result.created += 1
-                else:
-                    result.updated += 1
-                previous_tmdb_id = movie.tmdb_id
-                movie.is_present = True
-                movie.retired_at = None
-                movie.last_seen_at = now
-
-                # ── Identity ──────────────────────────────────────────
-                movie.title = data["title"]
-                movie.year = data.get("year", 0)
-                movie.tmdb_id = data.get("tmdbId")
-                if previous_tmdb_id != movie.tmdb_id:
-                    movie.director = None
-                    movie.production_companies_json = None
-                    movie.tagline = None
-                movie.imdb_id = data.get("imdbId")
-                movie.folder_path = data.get("path") or ""
-
-                # Radarr returns genres as a list of strings; store the whole
-                # list (powers label diversity + the taste map).
-                genres = data.get("genres")
-                movie.genres = genres if isinstance(genres, list) else None
-
-                # ── Filesystem ────────────────────────────────────────
-                movie_file = movie_file_by_movie_id.get(radarr_id) or data.get("movieFile") or {}
-                movie.movie_file_path = movie_file.get("relativePath")
-
-                # ── Encoded video (resolution label) ──────────────────
-                width, height, container = _extract_media_info(movie_file)
-                if width and height:
-                    movie.video_width = width
-                    movie.video_height = height
-                if container:
-                    movie.container = container
-
-                # ── Quality ───────────────────────────────────────────
-
-                # ── Poster existence ──────────────────────────────────
-                await self._check_existing_poster(movie)
-
-                # ── Physical media-file row (design 03 §19.3) ─────────
-                await self.db.flush()  # assign movie.id for new rows
-                await _upsert_movie_media_file(self.db, movie, movie_file)
-                if _needs_tmdb_enrichment(movie):
-                    enrich_candidates.append(movie)
-
-            except Exception:
-                logger.error("Error syncing movie radarr_id=%s", radarr_id, exc_info=True)
-                result.errors += 1
-
-        if self.tmdb and enrich_candidates:
-            await self._enrich_movies_from_tmdb(enrich_candidates)
-
-        if result.errors == 0:
-            observed_ids = {int(data["id"]) for data in raw_movies}
-            for radarr_id, movie in existing.items():
-                if radarr_id not in observed_ids and movie.is_present:
-                    movie.is_present = False
-                    movie.retired_at = now
-                    media_files = (
-                        await self.db.execute(
-                            select(MediaFile).where(
-                                MediaFile.movie_id == movie.id,
-                                MediaFile.is_present.is_(True),
-                            )
-                        )
-                    ).scalars()
-                    for media_file in media_files:
-                        media_file.is_present = False
-                        media_file.is_active = False
-                        media_file.retired_at = now
-
-        await self.db.commit()
-        return result
-
-    async def _enrich_movies_from_tmdb(self, movies: list[Movie]) -> None:
-        """Backfill OCR metadata from TMDB without blocking the sync on failures."""
-        semaphore = asyncio.Semaphore(5)
-
-        async def enrich(movie: Movie) -> None:
-            tmdb_id = movie.tmdb_id
-            if tmdb_id is None or not _needs_tmdb_enrichment(movie):
-                return
-            try:
-                async with semaphore:
-                    details = await self.tmdb.get_movie_details(tmdb_id)
-            except Exception:
-                logger.warning(
-                    "TMDB enrichment failed for movie radarr_id=%s tmdb_id=%s",
-                    movie.radarr_id,
-                    tmdb_id,
-                    exc_info=True,
-                )
-                return
-
-            movie.director = details.director
-            movie.production_companies_json = details.production_companies
-            movie.tagline = details.tagline
-
-        await asyncio.gather(*(enrich(movie) for movie in movies))
 
     # ── Series ───────────────────────────────────────────────────────
 
