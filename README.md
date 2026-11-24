@@ -10,8 +10,9 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 
 > **Status: mid-rebuild.** The selection engine runs from the command line: it builds its
 > models, seeds a taste profile from the posters already in your library, and ranks one
-> movie's TMDB posters at a time. The database, job queue, API, deploy-and-review loop, and
-> web interface are being rebuilt on top of it. Nothing writes to a media library yet.
+> movie's TMDB posters at a time. The database holds your Radarr movie list and the posters
+> already on disk, and a small HTTP API serves them. The job queue, deploy-and-review loop,
+> and web interface are being rebuilt on top of it. Nothing writes to a media library yet.
 
 ## Why
 
@@ -50,8 +51,8 @@ title. The cheapest signals run first:
 Docker is the supported way to run Marquee: a Docker Compose stack on a Linux host with an
 NVIDIA GPU and the NVIDIA Container Toolkit. The container image already exists and the
 engine's commands run in it (see [docs/architecture.md](docs/architecture.md#container-image)).
-The full stack, with the API, the job worker, and the web interface, arrives with the rest of
-the rebuild, and its install steps with it. Until then, the setup below runs the engine
+The full stack, with the API server, the job worker, and the web interface, arrives with the
+rest of the rebuild, and its install steps with it. Until then, the setup below runs the engine
 directly on a Linux machine, which is also how Marquee is developed.
 
 ## Requirements
@@ -71,10 +72,12 @@ uv sync --extra nvidia
 
 # 2. Configure. Every setting is listed, with a comment, in .env.example.
 cp .env.example .env
-#    then edit .env: database password, movie roots, TMDB token, Radarr URL and key
+#    then edit .env: database password, movie roots (and, if Radarr sees them at other
+#    paths, RADARR_MOVIE_ROOTS), TMDB token, Radarr URL and key, and an API key
 
-# 3. Start PostgreSQL (published on 127.0.0.1 only).
+# 3. Start PostgreSQL (published on 127.0.0.1 only) and create the schema.
 docker compose up -d
+uv run marquee db upgrade
 
 # 4. Build the models into data/models/. The exports need the export tools (PyTorch,
 #    Transformers, ONNX), which only this step uses.
@@ -86,11 +89,18 @@ uv sync --extra nvidia              # optional: remove the export tools again
 uv run marquee taste seed --dry-run # see what would be seeded; writes nothing
 uv run marquee taste seed
 
-# 6. Check the machine.
+# 6. Copy the movie list from Radarr and record the posters already on disk.
+uv run marquee sync --dry-run       # see what would change; writes nothing
+uv run marquee sync
+
+# 7. Check the machine.
 uv run marquee doctor
 
-# 7. Rank one movie's posters.
+# 8. Rank one movie's posters.
 uv run marquee run "Die Hard"
+
+# 9. Serve the HTTP API (on API_HOST:API_PORT, 127.0.0.1:8000 by default).
+uv run marquee api
 ```
 
 `marquee models fetch` builds every model that is missing and leaves alone what is present:
@@ -117,9 +127,34 @@ posters, `pipeline.log`, and the run archive `pipeline_run.json`. `--year` picks
 movies that share a title, `--tmdb-id` skips the library lookup, and `--json` prints the
 summary as JSON.
 
+`marquee db upgrade` brings the database's schema up to the newest migration, and
+`marquee db status` shows where it is (it exits non-zero when the schema is behind).
+
+`marquee sync` copies every movie Radarr lists into the database, including the ones Radarr
+still wants and has no file for, and records each movie folder's `poster.jpg`. It first
+checks that every root folder Radarr reports maps to a folder Marquee can see, so a missing
+share stops the sync instead of looking like an empty library. A poster is read and hashed
+only when it is new or its size or modification time changed, so a repeat sync over a
+network share only lists and stats. Movies Radarr no longer lists are kept and marked as
+retired. Movies with a file get their director, studios, and tagline from TMDB once. The
+report lists folders on disk that no Radarr movie points at, and movies whose folder was not
+found. `--dry-run` does everything except write to the database, and `--json` prints the
+report as JSON. The sync reads the library; it never writes to it.
+
+The database stores paths as Radarr reports them. If Radarr sees your library at a
+different path than Marquee does (Radarr in a container, for example), set
+`RADARR_MOVIE_ROOTS` to the folders in `MOVIE_ROOTS` as Radarr sees them, in the same order.
+
+`marquee api` serves a small HTTP API: `/health/live` and `/health/ready` for probes, and,
+under `/api`, the movie list (`/api/movies`, with search, filters, sorting, and paging), one
+movie, and its poster. Every `/api` request must carry the key in `API_KEY`, as
+`Authorization: Bearer <key>` or `X-Api-Key: <key>`; with no key configured the API answers
+503. The interactive documentation (`/docs`) is served only when `MARQUEE_ENVIRONMENT` is
+`development`.
+
 `marquee doctor` prints one line per check (Python, settings, data directory, models, model
-manifest, taste profile, ONNX Runtime, GPU, OCR, database, media roots, TMDB, Radarr)
-with `PASS`, `WARN`, or `FAIL`, and exits non-zero if anything fails. `--json`
+manifest, taste profile, ONNX Runtime, GPU, OCR, database and its schema, media roots, TMDB,
+Radarr, path mapping) with `PASS`, `WARN`, or `FAIL`, and exits non-zero if anything fails. `--json`
 prints the same report as JSON. It never writes to a media folder and never prints a secret.
 
 Use `uv sync --extra nvidia` (or `--extra cpu`) whenever you sync: a plain `uv sync` removes
@@ -132,12 +167,16 @@ uv run ruff check .
 uv run ruff format --check .
 uv run lint-imports                 # layering contracts
 uv run pytest                       # everything
-uv run pytest -m "not gpu and not models and not db"   # what CI runs
+uv run pytest -m "not gpu and not models"   # what CI runs
 ```
 
 Tests that need model files are marked `models`, tests that need a GPU `gpu`, and tests that
-need the Compose database `db`. The test suite never reads your `.env` and never touches the
-real `data/` directory.
+need PostgreSQL `db`. Database tests run in a throwaway `marquee_test_<random>` database
+that the suite creates and drops; it finds the server through `MARQUEE_TEST_DATABASE_URL`,
+or else the `POSTGRES_*` values in your `.env` (the only values the suite reads from it), and
+skips the database tests when there is neither. Apart from that, the test suite never reads
+your `.env` and never touches the real `data/` directory. `uv run marquee db revision -m
+"<what it does>"` writes a new migration from the models; read it before committing it.
 
 ## Layout
 
