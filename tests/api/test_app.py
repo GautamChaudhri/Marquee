@@ -25,9 +25,9 @@ async def test_every_api_route_requires_the_key(
     monkeypatch.setattr(settings, "MARQUEE_ENVIRONMENT", "development")
     schema = create_app(database_url="postgresql+psycopg://u:p@127.0.0.1:1/x").openapi()
     api_paths = [path for path in schema["paths"] if path.startswith("/api")]
-    assert len(api_paths) == 27
+    assert len(api_paths) == 28
     operations = [(method, path) for path in api_paths for method in schema["paths"][path]]
-    assert len(operations) == 28
+    assert len(operations) == 29
     for method, path in operations:
         operation = schema["paths"][path][method]
         assert {name for req in operation["security"] for name in req} == {

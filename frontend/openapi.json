@@ -2025,6 +2025,36 @@
           }
         }
       }
+    },
+    "/api/system": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get System",
+        "description": "Version, schema, the settings that shape behaviour, library counts, model files, the\nlast sync, and how much the data directory holds. No secret and no environment.",
+        "operationId": "get_system_api_system_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemInfo"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -3641,6 +3671,122 @@
         "title": "JobSubject",
         "description": "The movie a job is about."
       },
+      "LastSync": {
+        "properties": {
+          "job_id": {
+            "type": "integer",
+            "title": "Job Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "state",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "LastSync"
+      },
+      "LibraryInfo": {
+        "properties": {
+          "movies": {
+            "type": "integer",
+            "title": "Movies",
+            "description": "Movies Radarr lists"
+          },
+          "movies_with_file": {
+            "type": "integer",
+            "title": "Movies With File"
+          },
+          "posters": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Posters",
+            "description": "Poster rows by origin"
+          },
+          "runs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Runs",
+            "description": "Runs by state"
+          },
+          "deployments": {
+            "type": "integer",
+            "title": "Deployments"
+          },
+          "exemplars": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Exemplars",
+            "description": "state -> polarity -> count"
+          },
+          "preference_events": {
+            "type": "integer",
+            "title": "Preference Events"
+          }
+        },
+        "type": "object",
+        "required": [
+          "movies",
+          "movies_with_file",
+          "posters",
+          "runs",
+          "deployments",
+          "exemplars",
+          "preference_events"
+        ],
+        "title": "LibraryInfo"
+      },
       "Live": {
         "properties": {
           "status": {
@@ -3652,6 +3798,85 @@
         },
         "type": "object",
         "title": "Live"
+      },
+      "ModelFile": {
+        "properties": {
+          "item": {
+            "type": "string",
+            "title": "Item",
+            "description": "The `marquee models fetch` item it belongs to"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Relative to the data directory"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "file",
+              "folder"
+            ],
+            "title": "Kind"
+          },
+          "present": {
+            "type": "boolean",
+            "title": "Present"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes",
+            "description": "On disk now; null when it is missing"
+          },
+          "expected_size_bytes": {
+            "type": "integer",
+            "title": "Expected Size Bytes",
+            "description": "What the manifest recorded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item",
+          "path",
+          "kind",
+          "present",
+          "size_bytes",
+          "expected_size_bytes"
+        ],
+        "title": "ModelFile"
+      },
+      "ModelsInfo": {
+        "properties": {
+          "manifest": {
+            "type": "string",
+            "enum": [
+              "found",
+              "missing",
+              "unreadable"
+            ],
+            "title": "Manifest"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/ModelFile"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "manifest",
+          "files"
+        ],
+        "title": "ModelsInfo"
       },
       "MovieItem": {
         "properties": {
@@ -4619,6 +4844,166 @@
           "items"
         ],
         "title": "RunList"
+      },
+      "SchemaInfo": {
+        "properties": {
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current",
+            "description": "The database's revision; null when unmigrated"
+          },
+          "head": {
+            "type": "string",
+            "title": "Head",
+            "description": "The newest revision in this code"
+          },
+          "at_head": {
+            "type": "boolean",
+            "title": "At Head"
+          }
+        },
+        "type": "object",
+        "required": [
+          "current",
+          "head",
+          "at_head"
+        ],
+        "title": "SchemaInfo"
+      },
+      "SettingsInfo": {
+        "properties": {
+          "deploy_policy": {
+            "type": "string",
+            "enum": [
+              "off",
+              "missing",
+              "all"
+            ],
+            "title": "Deploy Policy"
+          },
+          "run_new_movies": {
+            "type": "boolean",
+            "title": "Run New Movies"
+          },
+          "sync_interval_minutes": {
+            "type": "integer",
+            "title": "Sync Interval Minutes",
+            "description": "0: the scheduled sync is off"
+          },
+          "movie_roots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Movie Roots",
+            "description": "The movie folders, as this process sees them"
+          },
+          "data_dir": {
+            "type": "string",
+            "title": "Data Dir"
+          }
+        },
+        "type": "object",
+        "required": [
+          "deploy_policy",
+          "run_new_movies",
+          "sync_interval_minutes",
+          "movie_roots",
+          "data_dir"
+        ],
+        "title": "SettingsInfo"
+      },
+      "StorageInfo": {
+        "properties": {
+          "runs": {
+            "type": "integer",
+            "title": "Runs"
+          },
+          "backups": {
+            "type": "integer",
+            "title": "Backups"
+          },
+          "cache": {
+            "type": "integer",
+            "title": "Cache"
+          },
+          "ml": {
+            "type": "integer",
+            "title": "Ml"
+          },
+          "measured_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Measured At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "runs",
+          "backups",
+          "cache",
+          "ml",
+          "measured_at"
+        ],
+        "title": "StorageInfo",
+        "description": "Bytes under the data directory, measured at most once a minute."
+      },
+      "SystemInfo": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Environment"
+          },
+          "schema": {
+            "$ref": "#/components/schemas/SchemaInfo"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/SettingsInfo"
+          },
+          "library": {
+            "$ref": "#/components/schemas/LibraryInfo"
+          },
+          "models": {
+            "$ref": "#/components/schemas/ModelsInfo"
+          },
+          "last_sync": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastSync"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest library sync job"
+          },
+          "storage": {
+            "$ref": "#/components/schemas/StorageInfo"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "environment",
+          "schema",
+          "settings",
+          "library",
+          "models",
+          "last_sync",
+          "storage"
+        ],
+        "title": "SystemInfo"
       },
       "TallyItem": {
         "properties": {
