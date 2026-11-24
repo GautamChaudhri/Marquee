@@ -31,6 +31,7 @@ from marquee.db.models import Movie
 from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
 from marquee.jobs.handlers.poster_run import enqueue_run, enqueue_runs, enqueue_scope
 from marquee.jobs.handlers.poster_write import WriteRefusedError, enqueue_deploy
+from marquee.taste import agreement, feedback
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,12 @@ async def get_run(session: Session, run_id: int) -> RunDetail:
     run = await runs.get_run(session, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
-    return RunDetail.build(run, await runs.candidates_of(session, run_id))
+    return RunDetail.build(
+        run,
+        await runs.candidates_of(session, run_id),
+        blind=await feedback.blind_for(session, run),
+        reviewed=await agreement.run_reviewed(session, run_id),
+    )
 
 
 def _image_response(

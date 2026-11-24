@@ -25,9 +25,9 @@ async def test_every_api_route_requires_the_key(
     monkeypatch.setattr(settings, "MARQUEE_ENVIRONMENT", "development")
     schema = create_app(database_url="postgresql+psycopg://u:p@127.0.0.1:1/x").openapi()
     api_paths = [path for path in schema["paths"] if path.startswith("/api")]
-    assert len(api_paths) == 19
+    assert len(api_paths) == 26
     operations = [(method, path) for path in api_paths for method in schema["paths"][path]]
-    assert len(operations) == 19
+    assert len(operations) == 27
     for method, path in operations:
         operation = schema["paths"][path][method]
         assert {name for req in operation["security"] for name in req} == {
@@ -35,7 +35,15 @@ async def test_every_api_route_requires_the_key(
             "APIKeyHeader",
         }, path
         url = path
-        for name in ("movie_id", "job_id", "run_id", "candidate_id", "deployment_id"):
+        for name in (
+            "movie_id",
+            "job_id",
+            "run_id",
+            "candidate_id",
+            "deployment_id",
+            "event_id",
+            "exemplar_id",
+        ):
             url = url.replace("{" + name + "}", "1")
         response = await offline_client.request(method.upper(), url)
         assert response.status_code == 401, (method, path)

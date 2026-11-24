@@ -76,12 +76,28 @@ class CandidateItem(BaseModel):
 
 
 class RunDetail(RunItem):
+    blind: bool | None = Field(
+        description="The run's profile had no positive exemplar of the movie; null: unknown"
+    )
+    reviewed: bool = Field(description="The run has feedback that is not revoked")
     candidates: list[CandidateItem]
 
     @classmethod
-    def build(cls, run: PosterRun, candidates: list[RunCandidate]) -> Self:
+    def build(
+        cls,
+        run: PosterRun,
+        candidates: list[RunCandidate],
+        *,
+        blind: bool | None = None,
+        reviewed: bool = False,
+    ) -> Self:
         base = RunItem.model_validate(run).model_dump()
-        return cls(**base, candidates=[CandidateItem.build(run.id, c) for c in candidates])
+        return cls(
+            **base,
+            blind=blind,
+            reviewed=reviewed,
+            candidates=[CandidateItem.build(run.id, c) for c in candidates],
+        )
 
 
 class RunList(BaseModel):
