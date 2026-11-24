@@ -6,6 +6,10 @@ if every child did, cancelled if a cancel was asked for, otherwise failed, with 
 in its ``result``. The parent's row is locked before its children are counted, so two
 children finishing at once cannot each see the other still running.
 
+A child keeps its kind's dedupe key: a child whose key already has an active job (or that
+repeats another child's key) is left out, and the parent's ``queued`` event counts it as
+skipped.
+
 Retrying a child after its batch has finished does not reopen the batch.
 """
 
@@ -14,13 +18,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import func, insert, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee.db.models import Job, JobEvent
 from marquee.db.models.job import ACTIVE_STATES
 from marquee.jobs.registry import BATCH, JobKind
 from marquee.jobs.store import FRESH, add_event, check_json, notify
+
+_ACTIVE = text(f"state IN ({', '.join(repr(state) for state in ACTIVE_STATES)})")
 
 
 async def enqueue_batch(
@@ -30,10 +37,33 @@ async def enqueue_batch(
     payload: dict[str, Any] | None = None,
     priority: int = 0,
 ) -> tuple[Job, list[Job]]:
-    """Queue a parent and its children in one transaction."""
+    """Queue a parent and its children in one transaction.
+
+    Returns the parent and the children actually queued: one whose dedupe key is taken is
+    left out.
+    """
     payload = payload or {}
     for value in (payload, *(child for _, child in children)):
         check_json(value, "payload")
+    rows: list[dict[str, Any]] = []
+    keys: set[str] = set()
+    for kind, child_payload in children:
+        key = kind.dedupe_key_for(child_payload)
+        if key is not None:
+            if key in keys:
+                continue
+            keys.add(key)
+        rows.append(
+            {
+                "kind": kind.name,
+                "job_class": kind.job_class,
+                "state": "queued",
+                "payload": child_payload,
+                "priority": priority,
+                "max_attempts": kind.max_attempts,
+                "dedupe_key": key,
+            }
+        )
     parent = await session.scalar(
         insert(Job)
         .values(
@@ -48,24 +78,25 @@ async def enqueue_batch(
         execution_options=FRESH,
     )
     assert parent is not None
-    await add_event(session, parent.id, "queued", data={"children": len(children)})
     jobs: list[Job] = []
-    if children:
-        rows = [
-            {
-                "kind": kind.name,
-                "job_class": kind.job_class,
-                "state": "queued",
-                "payload": child_payload,
-                "priority": priority,
-                "max_attempts": kind.max_attempts,
-                "parent_id": parent.id,
-            }
-            for kind, child_payload in children
-        ]
-        jobs = list(
-            await session.scalars(insert(Job).returning(Job, sort_by_parameter_order=True), rows)
+    if rows:
+        statement = (
+            pg_insert(Job)
+            # A literal predicate: an expanding IN cannot be used with executemany.
+            .on_conflict_do_nothing(index_elements=[Job.dedupe_key], index_where=_ACTIVE)
+            .returning(Job)
         )
+        inserted = await session.scalars(
+            statement, [{**row, "parent_id": parent.id} for row in rows]
+        )
+        jobs = sorted(inserted, key=lambda job: job.id)
+    await add_event(
+        session,
+        parent.id,
+        "queued",
+        data={"children": len(jobs), "skipped": len(children) - len(jobs)},
+    )
+    if jobs:
         await session.execute(
             insert(JobEvent),
             [

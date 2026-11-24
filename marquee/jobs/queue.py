@@ -80,7 +80,7 @@ async def add_job(
     """:func:`enqueue` without the commit, for a caller composing a larger transaction."""
     payload = payload or {}
     check_json(payload, "payload")
-    key = dedupe_key if dedupe_key is not None else kind.dedupe_key
+    key = dedupe_key if dedupe_key is not None else kind.dedupe_key_for(payload)
     values: dict[str, Any] = {
         "kind": kind.name,
         "job_class": kind.job_class,

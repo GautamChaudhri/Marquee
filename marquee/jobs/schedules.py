@@ -84,7 +84,7 @@ async def run_due(
             session,
             kind,
             schedule.payload,
-            dedupe_key=kind.dedupe_key or f"schedule:{schedule.name}",
+            dedupe_key=kind.dedupe_key_for(schedule.payload) or f"schedule:{schedule.name}",
         )
         # Keep the cadence, but never queue a burst to catch up after a long stop.
         next_due = due_at + interval if due_at + interval > now else now + interval

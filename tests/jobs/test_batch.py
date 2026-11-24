@@ -198,3 +198,39 @@ async def test_children_finishing_at_once_still_finish_their_batch(
             done = await _job(check, parent.id)
             assert done.state == "succeeded", done.id
             assert await _events(check, parent.id) == ["queued", "succeeded"]
+
+
+PER_MOVIE = JobKind("fake_per_movie", "network", handler=_noop, dedupe_key="movie:{movie_id}")
+
+
+async def test_a_child_keeps_its_dedupe_key_and_a_taken_key_is_left_out(
+    session: AsyncSession,
+) -> None:
+    active, _ = await queue.enqueue(session, PER_MOVIE, {"movie_id": 2})
+
+    parent, children = await batch.enqueue_batch(
+        session,
+        [(PER_MOVIE, {"movie_id": m}) for m in (1, 2, 3, 3)],
+        payload={"scope": "test"},
+    )
+
+    assert [c.payload["movie_id"] for c in children] == [1, 3]
+    assert [c.dedupe_key for c in children] == ["movie:1", "movie:3"]
+    assert all(c.parent_id == parent.id for c in children)
+    queued = await session.scalar(
+        select(JobEvent.data).where(JobEvent.job_id == parent.id, JobEvent.type == "queued")
+    )
+    assert queued == {"children": 2, "skipped": 2}
+    # The job that held the key is untouched and still alone under it.
+    assert (await _job(session, active.id)).parent_id is None
+
+
+async def test_a_batch_whose_children_are_all_taken_is_done_at_once(
+    session: AsyncSession,
+) -> None:
+    await queue.enqueue(session, PER_MOVIE, {"movie_id": 5})
+
+    parent, children = await batch.enqueue_batch(session, [(PER_MOVIE, {"movie_id": 5})])
+
+    assert children == []
+    assert (await _job(session, parent.id)).state == "succeeded"

@@ -108,6 +108,25 @@ CHATTY = JobKind("chatty", "network", handler=chatty)
 CHATTY_THREAD = JobKind("chatty_thread", "network", handler=chatty_thread)
 COUNTED = JobKind("counted", "network", handler=counted)
 GPU_ECHO = JobKind("gpu_echo", "gpu", gpu_function="gpu_fakes:echo")
+
+
+async def gpu_handler(ctx: JobContext) -> dict:
+    first = await ctx.gpu("gpu_fakes:echo", {"step": 1, **ctx.payload})
+    second = await ctx.gpu("gpu_fakes:echo", {"step": 2})
+    return {"first": first, "second": second}
+
+
+async def gpu_handler_cancelled(ctx: JobContext) -> None:
+    await ctx.gpu("gpu_fakes:wait_for_cancel", {})
+
+
+async def network_calls_gpu(ctx: JobContext) -> None:
+    await ctx.gpu("gpu_fakes:echo", {})
+
+
+GPU_HANDLER = JobKind("gpu_handler", "gpu", handler=gpu_handler)
+GPU_HANDLER_CANCELLED = JobKind("gpu_handler_cancelled", "gpu", handler=gpu_handler_cancelled)
+NETWORK_CALLS_GPU = JobKind("network_calls_gpu", "network", handler=network_calls_gpu)
 KINDS = {
     k.name: k
     for k in (
@@ -123,6 +142,9 @@ KINDS = {
         CHATTY_THREAD,
         COUNTED,
         GPU_ECHO,
+        GPU_HANDLER,
+        GPU_HANDLER_CANCELLED,
+        NETWORK_CALLS_GPU,
     )
 }
 
@@ -533,3 +555,68 @@ async def test_a_gpu_job_runs_in_the_child_which_stops_when_idle(
         worker.request_stop()
         await asyncio.wait_for(running, 20)
         worker.gpu.kill()
+
+
+async def test_a_gpu_handler_calls_the_child_through_its_context(
+    database_url: str,
+    sessions: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
+    job_id = await _enqueue(sessions, GPU_HANDLER, {"n": 7})
+    worker = _worker(database_url)
+    running = asyncio.create_task(worker.run())
+    try:
+        job = await _wait_for(sessions, job_id, "succeeded", "failed")
+        assert job.state == "succeeded", job.error
+        first, second = job.result["first"], job.result["second"]
+        assert first["echo"] == {"step": 1, "n": 7}
+        assert second["echo"] == {"step": 2}
+        # One child serves both calls, and it is not the worker.
+        assert first["pid"] == second["pid"] != os.getpid()
+        assert second["calls"] == first["calls"] + 1
+        assert job.progress == {"current": 1, "total": 2, "message": "half way"}
+    finally:
+        worker.request_stop()
+        await asyncio.wait_for(running, 20)
+        worker.gpu.kill()
+
+
+async def test_a_gpu_handler_passes_its_cancel_to_the_child(
+    database_url: str,
+    sessions: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
+    job_id = await _enqueue(sessions, GPU_HANDLER_CANCELLED)
+    worker = _worker(database_url)
+    running = asyncio.create_task(worker.run())
+    try:
+        await _wait_for(sessions, job_id, "running")
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            job = await _job(sessions, job_id)
+            if job.progress is not None:
+                break
+            await asyncio.sleep(0.05)
+        async with sessions() as session:
+            await queue.request_cancel(session, job_id)
+        job = await _wait_for(sessions, job_id, "cancelled", "failed", "succeeded")
+        assert job.state == "cancelled", job.error
+        assert worker.gpu.alive
+    finally:
+        worker.request_stop()
+        await asyncio.wait_for(running, 20)
+        worker.gpu.kill()
+
+
+async def test_a_handler_of_another_class_may_not_call_the_child(
+    database_url: str, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    job_id = await _enqueue(sessions, NETWORK_CALLS_GPU)
+
+    await _drain(database_url)
+
+    job = await _job(sessions, job_id)
+    assert job.state == "failed"
+    assert "not of class gpu" in (job.error or "")

@@ -31,7 +31,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import psycopg
@@ -293,6 +293,8 @@ class Worker:
             if kind is None:
                 raise PermanentJobError(f"unknown job kind {job.kind!r}")
             context = JobContext(job.id, dict(job.payload), entry.cancel, progress)
+            if kind.job_class == "gpu" and kind.handler is not None:
+                context = replace(context, gpu_runner=self._gpu_runner(context))
             async with timeout:
                 result = await self._handle(kind, context)
             outcome: tuple = ("succeed", result)
@@ -331,11 +333,20 @@ class Worker:
         if kind.gpu_function is None:
             assert kind.handler is not None
             return await kind.handler(context)
+        return await self._in_child(kind.gpu_function, context.payload, context)
+
+    async def _in_child(self, function: str, payload: dict[str, Any], context: JobContext) -> Any:
         assert self._gpu_lock is not None
         async with self._gpu_lock:
-            return await self.gpu.run(
-                kind.gpu_function, context.payload, context.cancel, context.progress
-            )
+            return await self.gpu.run(function, payload, context.cancel, context.progress)
+
+    def _gpu_runner(self, context: JobContext) -> Callable[[str, dict[str, Any]], Awaitable[Any]]:
+        """What ``ctx.gpu`` calls for a gpu kind's handler: this job's own cancel and progress."""
+
+        async def run(function: str, payload: dict[str, Any]) -> Any:
+            return await self._in_child(function, payload, context)
+
+        return run
 
     async def _record(self, job: Job, outcome: tuple, seconds: float) -> None:
         assert self._sessions is not None
