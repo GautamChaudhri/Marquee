@@ -1,5 +1,5 @@
 /** What the movie page says about a run and a deployment. */
-import type { Candidate, Deployment, RunDetail } from '$lib/api/types';
+import type { Candidate, Deployment, RunDetail } from '#lib/api/types.ts';
 
 /** The ranked candidates, best first. */
 export function rankedCandidates(candidates: Candidate[]): Candidate[] {

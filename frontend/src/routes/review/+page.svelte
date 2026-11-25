@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { PendingReview } from '$lib/api/types';
-	import { thumbnailUrl } from '$lib/features/library/poster';
-	import { formatWhen } from '$lib/format';
-	import { pendingReviews } from '$lib/stores/review';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { PendingReview } from '#lib/api/types.ts';
+	import { thumbnailUrl } from '#lib/features/library/poster.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import { pendingReviews } from '#lib/stores/review.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	let items = $state<PendingReview[] | null>(null);
 	let error = $state<string | null>(null);

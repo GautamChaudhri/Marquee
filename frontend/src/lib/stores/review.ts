@@ -1,7 +1,7 @@
 /** How many runs wait for a review, for the navigation's Review entry. It is read when the
  *  shell loads and again after each answer or undo. */
 import { writable } from 'svelte/store';
-import { api, call } from '$lib/api/client';
+import { api, call } from '#lib/api/client.ts';
 
 export const pendingReviews = writable<number | null>(null);
 

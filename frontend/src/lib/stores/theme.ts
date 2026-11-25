@@ -1,7 +1,7 @@
 /** Theme + persisted-UI stores. The `[data-theme]` attribute lives on <html>;
  *  an inline script in app.html sets it pre-render to avoid a flash. */
-import { browser } from '$app/environment';
-import { persisted } from '$lib/stores/persisted';
+import { browser } from '$app/env';
+import { persisted } from '#lib/stores/persisted.ts';
 
 export type Theme = 'dark' | 'light';
 export type LibraryPosterSize = 'small' | 'medium' | 'large';

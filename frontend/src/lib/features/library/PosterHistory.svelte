@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { Deployment } from '$lib/api/types';
-	import { deploymentSummary, restoreTarget } from '$lib/features/runs/runs';
-	import { formatWhen } from '$lib/format';
-	import Button from '$lib/ui/Button.svelte';
+	import type { Deployment } from '#lib/api/types.ts';
+	import { deploymentSummary, restoreTarget } from '#lib/features/runs/runs.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import Button from '#lib/ui/Button.svelte';
 
 	/** A movie's deployments, newest first, each with the button that puts back what was
 	 *  there before it. */

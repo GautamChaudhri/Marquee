@@ -1,9 +1,9 @@
 import { isRedirect } from '@sveltejs/kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { SESSION_COOKIE, createSession, safeNext } from '$lib/server/session';
+import { SESSION_COOKIE, createSession, safeNext } from '#lib/server/session.ts';
 
 const settings = vi.hoisted(() => ({ key: 'the-api-key' as string | null }));
-vi.mock('$lib/server/env', () => ({
+vi.mock('#lib/server/env.ts', () => ({
 	apiKey: () => settings.key,
 	apiUrl: () => 'http://backend.test:8000'
 }));

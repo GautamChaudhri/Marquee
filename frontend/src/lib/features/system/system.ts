@@ -1,5 +1,5 @@
 /** What the System page says: the settings in words, and what is wrong, in words. */
-import type { SystemInfo, WorkerInfo } from '$lib/api/types';
+import type { SystemInfo, WorkerInfo } from '#lib/api/types.ts';
 
 /** Everything the page marks as a problem: a schema behind the code, a model file missing
  *  or a manifest that cannot be read, and a worker that is not running. */

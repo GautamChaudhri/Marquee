@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { onDestroy, onMount } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { Job, TasteStatus } from '$lib/api/types';
-	import { describeJob, followJob, isFinal } from '$lib/features/jobs/jobs';
-	import EvaluationPanel from '$lib/features/taste/EvaluationPanel.svelte';
-	import ExemplarGrid from '$lib/features/taste/ExemplarGrid.svelte';
-	import RecentFeedback from '$lib/features/taste/RecentFeedback.svelte';
-	import ResidualPanel from '$lib/features/taste/ResidualPanel.svelte';
-	import { agreementLines, exemplarCounts } from '$lib/features/taste/taste';
-	import { formatWhen } from '$lib/format';
-	import { refreshPendingReviews } from '$lib/stores/review';
-	import { toast } from '$lib/stores/toast';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Job, TasteStatus } from '#lib/api/types.ts';
+	import { describeJob, followJob, isFinal } from '#lib/features/jobs/jobs.ts';
+	import EvaluationPanel from '#lib/features/taste/EvaluationPanel.svelte';
+	import ExemplarGrid from '#lib/features/taste/ExemplarGrid.svelte';
+	import RecentFeedback from '#lib/features/taste/RecentFeedback.svelte';
+	import ResidualPanel from '#lib/features/taste/ResidualPanel.svelte';
+	import { agreementLines, exemplarCounts } from '#lib/features/taste/taste.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import { refreshPendingReviews } from '#lib/stores/review.ts';
+	import { toast } from '#lib/stores/toast.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	let status = $state<TasteStatus | null>(null);
 	let error = $state<string | null>(null);

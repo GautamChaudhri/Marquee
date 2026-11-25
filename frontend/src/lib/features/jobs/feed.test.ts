@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { JobEvent } from '$lib/api/types';
+import type { JobEvent } from '#lib/api/types.ts';
 import { activityFromParams, digestFeed, paramsFromActivity } from './feed';
 
 function event(id: number, jobId: number, type: JobEvent['type']): JobEvent {

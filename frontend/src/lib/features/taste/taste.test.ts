@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { TasteStatus } from '$lib/api/types';
+import type { TasteStatus } from '#lib/api/types.ts';
 import { agreementLines, exemplarCounts, exemplarEnding, exemplarSource } from './taste';
 
 const tally = (reviewed: number, agreed: number, top3: number, percent: number | null = null) => ({

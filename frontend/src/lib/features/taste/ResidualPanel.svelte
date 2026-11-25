@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Residual } from '$lib/api/types';
+	import type { Residual } from '#lib/api/types.ts';
 	import { residualLines } from './evaluation';
 
 	/** The residual: in use or not and why, held-out accuracy before and after, what it leans

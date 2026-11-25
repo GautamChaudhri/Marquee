@@ -1,7 +1,7 @@
 /** What the pages say about a job, and following one until it ends. */
-import { api, call } from '$lib/api/client';
-import type { Job, JobState } from '$lib/api/types';
-import { poll } from '$lib/poll';
+import { api, call } from '#lib/api/client.ts';
+import type { Job, JobState } from '#lib/api/types.ts';
+import { poll } from '#lib/poll.ts';
 
 export const FINAL_STATES: readonly JobState[] = ['succeeded', 'failed', 'cancelled'];
 export const ACTIVE_STATES: readonly JobState[] = ['queued', 'running'];

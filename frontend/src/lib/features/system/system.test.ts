@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SystemInfo, WorkerInfo } from '$lib/api/types';
+import type { SystemInfo, WorkerInfo } from '#lib/api/types.ts';
 import { countsLine, deployPolicyLine, problems, syncLine } from './system';
 
 function system(overrides: Partial<SystemInfo> = {}): SystemInfo {

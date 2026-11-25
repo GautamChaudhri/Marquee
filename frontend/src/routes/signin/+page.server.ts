@@ -1,6 +1,6 @@
 import { fail, redirect } from '@sveltejs/kit';
-import { apiKey } from '$lib/server/env';
-import { signInFailures } from '$lib/server/rate-limit';
+import { apiKey } from '#lib/server/env.ts';
+import { signInFailures } from '#lib/server/rate-limit.ts';
 import {
 	SESSION_COOKIE,
 	SESSION_SECONDS,
@@ -8,7 +8,7 @@ import {
 	keyMatches,
 	safeNext,
 	verifySession
-} from '$lib/server/session';
+} from '#lib/server/session.ts';
 import type { Actions, PageServerLoad } from './$types';
 
 export const load: PageServerLoad = ({ cookies, url }) => {

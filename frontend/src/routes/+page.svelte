@@ -2,9 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onDestroy } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { Job, Movie } from '$lib/api/types';
-	import { describeJob, followJob, isFinal } from '$lib/features/jobs/jobs';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Job, Movie } from '#lib/api/types.ts';
+	import { describeJob, followJob, isFinal } from '#lib/features/jobs/jobs.ts';
 	import {
 		DEFAULT_FILTERS,
 		filtersFromParams,
@@ -12,11 +12,11 @@
 		movieQuery,
 		paramsFromFilters,
 		type LibraryFilters
-	} from '$lib/features/library/filters';
-	import MovieTile from '$lib/features/library/MovieTile.svelte';
-	import { toast } from '$lib/stores/toast';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	} from '#lib/features/library/filters.ts';
+	import MovieTile from '#lib/features/library/MovieTile.svelte';
+	import { toast } from '#lib/stores/toast.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	const filters = $derived(filtersFromParams(page.url.searchParams));
 

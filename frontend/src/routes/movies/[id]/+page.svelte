@@ -1,18 +1,18 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onDestroy } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { Deployment, Job, Movie, RunDetail } from '$lib/api/types';
-	import { describeJob, followJob, isFinal } from '$lib/features/jobs/jobs';
-	import PosterHistory from '$lib/features/library/PosterHistory.svelte';
-	import { originLabel, thumbnailUrl } from '$lib/features/library/poster';
-	import CandidateGrid from '$lib/features/runs/CandidateGrid.svelte';
-	import { blindLabel, restoreTarget, runSummary } from '$lib/features/runs/runs';
-	import { formatBytes, formatDuration, formatWhen } from '$lib/format';
-	import { toast } from '$lib/stores/toast';
-	import Button from '$lib/ui/Button.svelte';
-	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Deployment, Job, Movie, RunDetail } from '#lib/api/types.ts';
+	import { describeJob, followJob, isFinal } from '#lib/features/jobs/jobs.ts';
+	import PosterHistory from '#lib/features/library/PosterHistory.svelte';
+	import { originLabel, thumbnailUrl } from '#lib/features/library/poster.ts';
+	import CandidateGrid from '#lib/features/runs/CandidateGrid.svelte';
+	import { blindLabel, restoreTarget, runSummary } from '#lib/features/runs/runs.ts';
+	import { formatBytes, formatDuration, formatWhen } from '#lib/format.ts';
+	import { toast } from '#lib/stores/toast.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import ConfirmDialog from '#lib/ui/ConfirmDialog.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	const movieId = $derived(Number(page.params.id));
 

@@ -1,5 +1,5 @@
 /** What the Review pages say: answers, events, confirmations, and what comes next. */
-import type { FeedbackEvent, FeedbackListItem, PendingReview } from '$lib/api/types';
+import type { FeedbackEvent, FeedbackListItem, PendingReview } from '#lib/api/types.ts';
 
 type EventLike = Pick<
 	FeedbackEvent,

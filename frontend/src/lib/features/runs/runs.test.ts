@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Candidate } from '$lib/api/types';
+import type { Candidate } from '#lib/api/types.ts';
 import { blindLabel, deploymentSummary, rankedCandidates, restoreTarget, runSummary } from './runs';
 
 function candidate(id: number, rank: number | null): Candidate {

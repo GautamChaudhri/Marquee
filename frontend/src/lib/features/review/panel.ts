@@ -5,7 +5,7 @@
  *  One card is one design: a run's ranked candidates grouped by design stack (`3B` is stack 3,
  *  variant B). A card shows its stack's best-ranked variant until the owner picks another,
  *  and an answer names one candidate per card: the variant the card shows. */
-import type { Candidate } from '$lib/api/types';
+import type { Candidate } from '#lib/api/types.ts';
 
 /** The API keeps at most this many shown candidates per event. */
 export const MAX_SHOWN = 100;

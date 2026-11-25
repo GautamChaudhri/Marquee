@@ -1,10 +1,10 @@
 <script lang="ts">
-	import { api, call } from '$lib/api/client';
-	import type { FeedbackListItem } from '$lib/api/types';
-	import { canUndo, eventLine, movieLabel } from '$lib/features/review/review';
-	import { formatWhen } from '$lib/format';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { FeedbackListItem } from '#lib/api/types.ts';
+	import { canUndo, eventLine, movieLabel } from '#lib/features/review/review.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	/** The newest acts of feedback: what was done, to which movie, and when, with Undo where
 	 *  it applies and a link to the run's review. */

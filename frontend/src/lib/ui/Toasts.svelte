@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { dismiss, toasts } from '$lib/stores/toast';
+	import { dismiss, toasts } from '#lib/stores/toast.ts';
 </script>
 
 <div class="toasts" aria-live="polite" role="status">

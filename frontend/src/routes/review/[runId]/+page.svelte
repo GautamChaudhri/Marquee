@@ -1,17 +1,17 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api, call } from '$lib/api/client';
+	import { api, call } from '#lib/api/client.ts';
 	import type {
 		FeedbackEvent,
 		FeedbackRequest,
 		FeedbackResult,
 		Movie,
 		RunDetail
-	} from '$lib/api/types';
-	import { originLabel, thumbnailUrl } from '$lib/features/library/poster';
-	import AnswerResult from '$lib/features/review/AnswerResult.svelte';
-	import EventHistory from '$lib/features/review/EventHistory.svelte';
+	} from '#lib/api/types.ts';
+	import { originLabel, thumbnailUrl } from '#lib/features/library/poster.ts';
+	import AnswerResult from '#lib/features/review/AnswerResult.svelte';
+	import EventHistory from '#lib/features/review/EventHistory.svelte';
 	import {
 		AnswerKeys,
 		approvalAnswer,
@@ -28,23 +28,23 @@
 		type Answer,
 		type Ranking,
 		type Shown
-	} from '$lib/features/review/panel';
-	import RankPanel from '$lib/features/review/RankPanel.svelte';
+	} from '#lib/features/review/panel.ts';
+	import RankPanel from '#lib/features/review/RankPanel.svelte';
 	import {
 		nextRun,
 		rankConfirmation,
 		rejectConfirmation,
 		replaceConfirmation
-	} from '$lib/features/review/review';
-	import CandidateGrid from '$lib/features/runs/CandidateGrid.svelte';
-	import { blindLabel, runSummary } from '$lib/features/runs/runs';
-	import { formatDuration, formatWhen } from '$lib/format';
-	import { refreshPendingReviews } from '$lib/stores/review';
-	import { toast } from '$lib/stores/toast';
-	import Button from '$lib/ui/Button.svelte';
-	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
-	import { randomUuid } from '$lib/uuid';
+	} from '#lib/features/review/review.ts';
+	import CandidateGrid from '#lib/features/runs/CandidateGrid.svelte';
+	import { blindLabel, runSummary } from '#lib/features/runs/runs.ts';
+	import { formatDuration, formatWhen } from '#lib/format.ts';
+	import { refreshPendingReviews } from '#lib/stores/review.ts';
+	import { toast } from '#lib/stores/toast.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import ConfirmDialog from '#lib/ui/ConfirmDialog.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
+	import { randomUuid } from '#lib/uuid.ts';
 
 	const runId = $derived(Number(page.params.runId));
 

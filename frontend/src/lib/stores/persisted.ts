@@ -1,5 +1,5 @@
 /** A writable store backed by localStorage, safe to import during SSR. */
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 import { writable, type Writable } from 'svelte/store';
 
 export function persisted<T>(key: string, initial: T, apply?: (v: T) => void): Writable<T> {

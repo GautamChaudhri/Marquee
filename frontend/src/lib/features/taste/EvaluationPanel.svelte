@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { Evaluation, Job, TasteStatus } from '$lib/api/types';
-	import { describeJob, followJob, isFinal } from '$lib/features/jobs/jobs';
-	import { formatWhen } from '$lib/format';
-	import { toast } from '$lib/stores/toast';
-	import Button from '$lib/ui/Button.svelte';
-	import ConfirmDialog from '$lib/ui/ConfirmDialog.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Evaluation, Job, TasteStatus } from '#lib/api/types.ts';
+	import { describeJob, followJob, isFinal } from '#lib/features/jobs/jobs.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import { toast } from '#lib/stores/toast.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import ConfirmDialog from '#lib/ui/ConfirmDialog.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 	import { compareLine, duration, headline, progressLine, stateLine } from './evaluation';
 
 	/** The blind evaluation: the latest finished one's headline, the one before it, and the

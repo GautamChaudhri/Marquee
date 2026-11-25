@@ -1,5 +1,5 @@
 /** What the Taste page says: the profile, agreement, the residual, and exemplars. */
-import type { Exemplar, TasteStatus, Tally } from '$lib/api/types';
+import type { Exemplar, TasteStatus, Tally } from '#lib/api/types.ts';
 
 /** The number of blind reviews from which the API gives a percentage. */
 export const REVIEWS_FOR_PERCENT = 10;

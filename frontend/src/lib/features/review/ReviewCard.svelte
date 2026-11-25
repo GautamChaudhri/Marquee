@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { dragHandle } from 'svelte-dnd-action';
-	import { formatScore } from '$lib/format';
+	import { formatScore } from '#lib/format.ts';
 	import { answerable, shownVariant, type Card, type Shown } from './panel';
 
 	/** One design: the variant it shows, its rank, score, and stack, and the buttons that move,

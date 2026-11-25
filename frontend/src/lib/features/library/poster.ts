@@ -1,6 +1,6 @@
 /** Addresses of poster images. A thumbnail carries the poster's version, so the browser may
  *  keep it for a year: a new poster has a new version and so a new address. */
-import type { Poster } from '$lib/api/types';
+import type { Poster } from '#lib/api/types.ts';
 
 export type ThumbnailWidth = 160 | 320 | 640;
 

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { FeedbackResult, Job } from '$lib/api/types';
-	import { describeJob, followJob } from '$lib/features/jobs/jobs';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import type { FeedbackResult, Job } from '#lib/api/types.ts';
+	import { describeJob, followJob } from '#lib/features/jobs/jobs.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 	import ExemplarChanges from './ExemplarChanges.svelte';
 	import { canUndo, folderLine, recordedLine } from './review';
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { messageFor } from '$lib/api/errors';
+	import { messageFor } from '#lib/api/errors.ts';
 
 	const message = $derived(
 		page.status === 404 ? 'There is no page here.' : messageFor(page.status, page.error)

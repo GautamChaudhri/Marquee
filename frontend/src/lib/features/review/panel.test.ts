@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Candidate } from '$lib/api/types';
+import type { Candidate } from '#lib/api/types.ts';
 import {
 	AnswerKeys,
 	MAX_SHOWN,

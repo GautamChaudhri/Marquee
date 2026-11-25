@@ -1,3 +1,6 @@
+import { redirect } from '@sveltejs/kit';
+import type { Handle } from '@sveltejs/kit/hooks';
+
 /** Every request passes here first.
  *
  *  - A request that changes something (anything but GET, HEAD, OPTIONS) must come from this
@@ -7,10 +10,9 @@
  *  - With no API key configured, the sign-in page says so and nothing else is served.
  *
  *  Static assets (the built client files and `static/`) are served before this runs. */
-import { redirect, type Handle } from '@sveltejs/kit';
-import { apiKey } from '$lib/server/env';
-import { isSafeMethod, isSameOrigin } from '$lib/server/origin';
-import { SESSION_COOKIE, verifySession } from '$lib/server/session';
+import { apiKey } from '#lib/server/env.ts';
+import { isSafeMethod, isSameOrigin } from '#lib/server/origin.ts';
+import { SESSION_COOKIE, verifySession } from '#lib/server/session.ts';
 
 const OPEN_PATHS = new Set(['/signin', '/signin/']);
 const SECURITY_HEADERS: Record<string, string> = {

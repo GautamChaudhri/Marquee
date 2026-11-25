@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PendingReview } from '$lib/api/types';
+import type { PendingReview } from '#lib/api/types.ts';
 import {
 	canUndo,
 	eventLine,

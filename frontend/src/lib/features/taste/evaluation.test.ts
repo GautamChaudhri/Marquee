@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Evaluation, EvaluationResult, EvaluationTally, Residual } from '$lib/api/types';
+import type { Evaluation, EvaluationResult, EvaluationTally, Residual } from '#lib/api/types.ts';
 import {
 	compareLine,
 	duration,

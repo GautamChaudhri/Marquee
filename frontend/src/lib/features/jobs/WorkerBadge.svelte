@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { WorkerInfo } from '$lib/api/types';
-	import { poll } from '$lib/poll';
+	import { api, call } from '#lib/api/client.ts';
+	import type { WorkerInfo } from '#lib/api/types.ts';
+	import { poll } from '#lib/poll.ts';
 
 	const EVERY_MS = 15_000;
 

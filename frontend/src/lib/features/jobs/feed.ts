@@ -3,7 +3,7 @@
  *  The feed is a hint, never the record: event ids are handed out when an event is written,
  *  not when it commits, so a poll can skip one. The page therefore re-reads each job the feed
  *  mentions, and re-reads the whole list on a timer whatever the feed says. */
-import type { JobEvent, JobState } from '$lib/api/types';
+import type { JobEvent, JobState } from '#lib/api/types.ts';
 import { KIND_NAMES } from './jobs';
 
 export const JOB_PAGE_SIZE = 25;

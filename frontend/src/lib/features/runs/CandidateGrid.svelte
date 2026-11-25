@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Candidate } from '$lib/api/types';
-	import { formatScore } from '$lib/format';
+	import type { Candidate } from '#lib/api/types.ts';
+	import { formatScore } from '#lib/format.ts';
 	import { rankedCandidates } from './runs';
 
 	/** A run's ranked candidates, best first, read-only: choosing one is the Review page's. */

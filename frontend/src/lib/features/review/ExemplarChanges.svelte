@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Exemplar, ExemplarChanges } from '$lib/api/types';
+	import type { Exemplar, ExemplarChanges } from '#lib/api/types.ts';
 
 	/** What an answer or an undo did to the exemplars: made, ended, and brought back. */
 	let { changes }: { changes: ExemplarChanges } = $props();

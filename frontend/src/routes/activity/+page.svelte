@@ -2,8 +2,8 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { Job, JobEvent, WorkerInfo } from '$lib/api/types';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Job, JobEvent, WorkerInfo } from '#lib/api/types.ts';
 	import {
 		FEED_EVERY_MS,
 		FEED_LIMIT,
@@ -13,15 +13,15 @@
 		digestFeed,
 		paramsFromActivity,
 		type ActivityQuery
-	} from '$lib/features/jobs/feed';
-	import JobDetail from '$lib/features/jobs/JobDetail.svelte';
-	import { KIND_NAMES, describeJob, kindLabel, subjectLabel } from '$lib/features/jobs/jobs';
-	import StateBadge from '$lib/features/jobs/StateBadge.svelte';
-	import { formatWhen } from '$lib/format';
-	import { poll } from '$lib/poll';
-	import { toast } from '$lib/stores/toast';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	} from '#lib/features/jobs/feed.ts';
+	import JobDetail from '#lib/features/jobs/JobDetail.svelte';
+	import { KIND_NAMES, describeJob, kindLabel, subjectLabel } from '#lib/features/jobs/jobs.ts';
+	import StateBadge from '#lib/features/jobs/StateBadge.svelte';
+	import { formatWhen } from '#lib/format.ts';
+	import { poll } from '#lib/poll.ts';
+	import { toast } from '#lib/stores/toast.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	const query = $derived(activityFromParams(page.url.searchParams));
 

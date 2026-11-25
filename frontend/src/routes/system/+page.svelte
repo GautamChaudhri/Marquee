@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api, call } from '$lib/api/client';
-	import type { SystemInfo, WorkerInfo } from '$lib/api/types';
-	import StateBadge from '$lib/features/jobs/StateBadge.svelte';
-	import { countsLine, deployPolicyLine, problems, syncLine } from '$lib/features/system/system';
-	import { exemplarCounts } from '$lib/features/taste/taste';
-	import { formatBytes, formatWhen } from '$lib/format';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { SystemInfo, WorkerInfo } from '#lib/api/types.ts';
+	import StateBadge from '#lib/features/jobs/StateBadge.svelte';
+	import { countsLine, deployPolicyLine, problems, syncLine } from '#lib/features/system/system.ts';
+	import { exemplarCounts } from '#lib/features/taste/taste.ts';
+	import { formatBytes, formatWhen } from '#lib/format.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	/** What this installation is and how it is set. Read-only: nothing here changes a setting. */
 	let system = $state<SystemInfo | null>(null);

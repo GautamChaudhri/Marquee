@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { api, call } from '$lib/api/client';
-	import type { Exemplar } from '$lib/api/types';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Exemplar } from '#lib/api/types.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 	import { exemplarEnding, exemplarSource } from './taste';
 
 	/** The exemplars, newest first, a page at a time, filtered by polarity and state. */

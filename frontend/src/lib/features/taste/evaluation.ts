@@ -1,5 +1,5 @@
 /** What the Taste page and the results page say about a blind evaluation and the residual. */
-import type { Evaluation, EvaluationResult, EvaluationTally, Residual } from '$lib/api/types';
+import type { Evaluation, EvaluationResult, EvaluationTally, Residual } from '#lib/api/types.ts';
 
 /** Roughly how long one masked run takes on the GPU, for the confirmation. */
 export const SECONDS_PER_MOVIE = 20;

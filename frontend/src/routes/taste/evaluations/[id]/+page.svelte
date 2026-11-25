@@ -1,11 +1,16 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api, call } from '$lib/api/client';
-	import type { Evaluation, EvaluationResult } from '$lib/api/types';
-	import { headline, outcomeLine, progressLine, stateLine } from '$lib/features/taste/evaluation';
-	import { formatWhen } from '$lib/format';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import { api, call } from '#lib/api/client.ts';
+	import type { Evaluation, EvaluationResult } from '#lib/api/types.ts';
+	import {
+		headline,
+		outcomeLine,
+		progressLine,
+		stateLine
+	} from '#lib/features/taste/evaluation.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 
 	/** One blind evaluation, a movie per row: your poster, the blind pick, and what happened. */
 	const PAGE_SIZE = 50;

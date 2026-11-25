@@ -1,5 +1,5 @@
 import { redirect } from '@sveltejs/kit';
-import { SESSION_COOKIE } from '$lib/server/session';
+import { SESSION_COOKIE } from '#lib/server/session.ts';
 import type { RequestHandler } from './$types';
 
 /** Forget the session cookie and go to sign-in. The same-origin check is in the hooks. */

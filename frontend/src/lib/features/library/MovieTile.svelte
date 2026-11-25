@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Movie } from '$lib/api/types';
+	import type { Movie } from '#lib/api/types.ts';
 	import { thumbnailUrl } from './poster';
 
 	let { movie }: { movie: Movie } = $props();

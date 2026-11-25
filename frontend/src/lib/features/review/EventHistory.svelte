@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { FeedbackEvent } from '$lib/api/types';
-	import { formatWhen } from '$lib/format';
-	import Button from '$lib/ui/Button.svelte';
+	import type { FeedbackEvent } from '#lib/api/types.ts';
+	import { formatWhen } from '#lib/format.ts';
+	import Button from '#lib/ui/Button.svelte';
 	import { canUndo, eventLine } from './review';
 
 	/** A run's earlier answers, newest first, each with Undo unless it was undone or is

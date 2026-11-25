@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { Job, JobEvent } from '$lib/api/types';
-	import { formatDuration, formatWhen } from '$lib/format';
-	import Button from '$lib/ui/Button.svelte';
-	import Notice from '$lib/ui/Notice.svelte';
+	import type { Job, JobEvent } from '#lib/api/types.ts';
+	import { formatDuration, formatWhen } from '#lib/format.ts';
+	import Button from '#lib/ui/Button.svelte';
+	import Notice from '#lib/ui/Notice.svelte';
 	import { canCancel, canRetry, detailHeadline, kindLabel, subjectLabel } from './jobs';
 	import StateBadge from './StateBadge.svelte';
 

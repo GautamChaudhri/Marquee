@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { JobState } from '$lib/api/types';
+	import type { JobState } from '#lib/api/types.ts';
 
 	let { state }: { state: JobState } = $props();
 </script>
