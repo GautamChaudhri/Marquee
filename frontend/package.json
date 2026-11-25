@@ -57,7 +57,7 @@
 		}
 	},
 	"imports": {
-		"#lib": "./src/lib/index.js",
+		"#lib": "./src/lib/index.ts",
 		"#lib/*": "./src/lib/*"
 	}
 }

@@ -46,7 +46,7 @@ export default defineConfig(
 				{
 					selector:
 						"MemberExpression[object.name='crypto'][property.name='randomUUID'], MemberExpression[object.property.name='crypto'][property.name='randomUUID']",
-					message: 'Use randomUuid() from $lib/uuid — crypto.randomUUID is secure-context-only.'
+					message: 'Use randomUuid() from #lib/uuid.ts — crypto.randomUUID is secure-context-only.'
 				}
 			]
 		}
