@@ -1,0 +1,442 @@
+{
+ "about": "Recorded reader output of one labelled poster for No Time to Die (session E5 labelled set #538, tuning half, label other_text: NO TIME TO DIE with the 007 mark). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      115.0,
+      354.0
+     ],
+     [
+      231.0,
+      354.0
+     ],
+     [
+      231.0,
+      431.0
+     ],
+     [
+      115.0,
+      431.0
+     ]
+    ],
+    [
+     [
+      88.0,
+      382.0
+     ],
+     [
+      95.0,
+      382.0
+     ],
+     [
+      95.0,
+      392.0
+     ],
+     [
+      88.0,
+      392.0
+     ]
+    ],
+    [
+     [
+      93.0,
+      374.0
+     ],
+     [
+      127.0,
+      374.0
+     ],
+     [
+      127.0,
+      398.0
+     ],
+     [
+      93.0,
+      398.0
+     ]
+    ],
+    [
+     [
+      198.0,
+      439.0
+     ],
+     [
+      265.0,
+      439.0
+     ],
+     [
+      265.0,
+      476.0
+     ],
+     [
+      198.0,
+      476.0
+     ]
+    ],
+    [
+     [
+      153.0,
+      468.0
+     ],
+     [
+      173.0,
+      468.0
+     ],
+     [
+      173.0,
+      478.0
+     ],
+     [
+      153.0,
+      478.0
+     ]
+    ],
+    [
+     [
+      145.0,
+      503.0
+     ],
+     [
+      202.0,
+      503.0
+     ],
+     [
+      202.0,
+      547.0
+     ],
+     [
+      145.0,
+      547.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.43239060044288635,
+    0.22288964688777924,
+    0.23080375790596008,
+    0.9822394251823425,
+    0.12999823689460754,
+    0.26705336570739746
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "IE",
+    "\u4eab",
+    "\u516b",
+    "007",
+    "3",
+    "1"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      88.0,
+      209.0
+     ],
+     [
+      144.0,
+      209.0
+     ],
+     [
+      144.0,
+      252.0
+     ],
+     [
+      88.0,
+      252.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.5481538772583008
+   ],
+   "shape": [
+    450,
+    300
+   ],
+   "texts": [
+    "1E"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      82.0,
+      67.0
+     ],
+     [
+      152.0,
+      72.0
+     ],
+     [
+      149.0,
+      110.0
+     ],
+     [
+      79.0,
+      106.0
+     ]
+    ],
+    [
+     [
+      117.0,
+      96.0
+     ],
+     [
+      178.0,
+      100.0
+     ],
+     [
+      175.0,
+      140.0
+     ],
+     [
+      115.0,
+      137.0
+     ]
+    ],
+    [
+     [
+      105.0,
+      111.0
+     ],
+     [
+      119.0,
+      111.0
+     ],
+     [
+      119.0,
+      122.0
+     ],
+     [
+      105.0,
+      122.0
+     ]
+    ],
+    [
+     [
+      98.0,
+      123.0
+     ],
+     [
+      186.0,
+      130.0
+     ],
+     [
+      182.0,
+      172.0
+     ],
+     [
+      95.0,
+      165.0
+     ]
+    ],
+    [
+     [
+      172.0,
+      138.0
+     ],
+     [
+      195.0,
+      138.0
+     ],
+     [
+      195.0,
+      158.0
+     ],
+     [
+      172.0,
+      158.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.0,
+    0.7872175574302673,
+    0.8689507246017456,
+    0.2950676679611206,
+    0.3899511396884918
+   ],
+   "shape": [
+    300,
+    200
+   ],
+   "texts": [
+    "",
+    "O.L",
+    "00",
+    "a",
+    "R"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "cary",
+  "fukunaga",
+  "joji"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "eon",
+   "goldwyn",
+   "mayer",
+   "metro",
+   "productions"
+  ],
+  "tagline": "the mission that changes everything begins"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "movie_title": "No Time to Die",
+ "title_text": "no time to die",
+ "title_tokens": [
+  "die",
+  "no",
+  "time",
+  "to"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 3,
+  "detected_text": "007",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.006610666666666667,
+    "denied_significant_count": 1,
+    "has_text": true,
+    "has_title": false,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.006610666666666667,
+    "significant_residual_count": 1
+   },
+   "detected_boxes": [
+    {
+     "area": 2479.0,
+     "bbox": [
+      [
+       198.0,
+       439.0
+      ],
+      [
+       265.0,
+       439.0
+      ],
+      [
+       265.0,
+       476.0
+      ],
+      [
+       198.0,
+       476.0
+      ]
+     ],
+     "category": "tagline",
+     "confidence": 0.9822394251823425,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "007",
+     "title_group_text": null,
+     "title_match_source": null
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": null,
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "007"
+  ],
+  "title_bbox": null
+ }
+}

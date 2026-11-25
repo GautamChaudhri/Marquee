@@ -1,0 +1,533 @@
+{
+ "about": "Recorded reader output of one labelled poster for No Time to Die (session E5 labelled set #14, tuning half, label other_text: NO TIME TO DIE with the 007 mark). No image.",
+ "calls": [
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      279.0,
+      55.0
+     ],
+     [
+      345.0,
+      52.0
+     ],
+     [
+      346.0,
+      79.0
+     ],
+     [
+      280.0,
+      82.0
+     ]
+    ],
+    [
+     [
+      332.0,
+      52.0
+     ],
+     [
+      421.0,
+      48.0
+     ],
+     [
+      422.0,
+      75.0
+     ],
+     [
+      333.0,
+      78.0
+     ]
+    ],
+    [
+     [
+      290.0,
+      244.0
+     ],
+     [
+      314.0,
+      244.0
+     ],
+     [
+      314.0,
+      257.0
+     ],
+     [
+      290.0,
+      257.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.1606753021478653,
+    0.19573402404785156,
+    0.13414926826953888
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "M",
+    "R",
+    "8"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      167.0,
+      368.0
+     ],
+     [
+      173.0,
+      368.0
+     ],
+     [
+      173.0,
+      374.0
+     ],
+     [
+      167.0,
+      374.0
+     ]
+    ],
+    [
+     [
+      253.0,
+      479.0
+     ],
+     [
+      361.0,
+      483.0
+     ],
+     [
+      359.0,
+      552.0
+     ],
+     [
+      251.0,
+      549.0
+     ]
+    ],
+    [
+     [
+      257.0,
+      524.0
+     ],
+     [
+      472.0,
+      532.0
+     ],
+     [
+      469.0,
+      612.0
+     ],
+     [
+      254.0,
+      604.0
+     ]
+    ],
+    [
+     [
+      311.0,
+      588.0
+     ],
+     [
+      413.0,
+      597.0
+     ],
+     [
+      408.0,
+      659.0
+     ],
+     [
+      306.0,
+      650.0
+     ]
+    ],
+    [
+     [
+      417.0,
+      606.0
+     ],
+     [
+      475.0,
+      614.0
+     ],
+     [
+      471.0,
+      647.0
+     ],
+     [
+      413.0,
+      640.0
+     ]
+    ],
+    [
+     [
+      395.0,
+      691.0
+     ],
+     [
+      403.0,
+      691.0
+     ],
+     [
+      403.0,
+      699.0
+     ],
+     [
+      395.0,
+      699.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.11729023605585098,
+    0.4835004210472107,
+    0.8416628837585449,
+    0.8390184640884399,
+    0.9830911755561829,
+    0.1660441905260086
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "1",
+    "MO",
+    "TIAE",
+    "TO",
+    "007",
+    "E"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "cary",
+  "fukunaga",
+  "joji"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "eon",
+   "goldwyn",
+   "mayer",
+   "metro",
+   "productions"
+  ],
+  "tagline": "the mission that changes everything begins"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "movie_title": "No Time to Die",
+ "title_text": "no time to die",
+ "title_tokens": [
+  "die",
+  "no",
+  "time",
+  "to"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 4,
+  "detected_text": "007 tiae to",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.005261333333333333,
+    "denied_significant_count": 1,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.005261333333333333,
+    "significant_residual_count": 1
+   },
+   "detected_boxes": [
+    {
+     "area": 1973.0,
+     "bbox": [
+      [
+       417.0,
+       606.0
+      ],
+      [
+       475.0,
+       614.0
+      ],
+      [
+       471.0,
+       647.0
+      ],
+      [
+       413.0,
+       640.0
+      ]
+     ],
+     "category": "other",
+     "confidence": 0.9830911755561829,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "retry",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "007",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 17224.0,
+     "bbox": [
+      [
+       257.0,
+       524.0
+      ],
+      [
+       472.0,
+       532.0
+      ],
+      [
+       469.0,
+       612.0
+      ],
+      [
+       254.0,
+       604.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.8416628837585449,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "retry",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "TIAE",
+     "title_group_text": "TIAE",
+     "title_match_source": "box"
+    },
+    {
+     "area": 6369.0,
+     "bbox": [
+      [
+       311.0,
+       588.0
+      ],
+      [
+       413.0,
+       597.0
+      ],
+      [
+       408.0,
+       659.0
+      ],
+      [
+       306.0,
+       650.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.8390184640884399,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "retry",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "TO",
+     "title_group_text": "TO",
+     "title_match_source": "box"
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": true
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom",
+    "enhance_retry"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      254.0,
+      524.0
+     ],
+     [
+      472.0,
+      524.0
+     ],
+     [
+      472.0,
+      659.0
+     ],
+     [
+      254.0,
+      659.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        257.0,
+        524.0
+       ],
+       [
+        472.0,
+        532.0
+       ],
+       [
+        469.0,
+        612.0
+       ],
+       [
+        254.0,
+        604.0
+       ]
+      ],
+      "group_text": "TIAE",
+      "is_fragment": false,
+      "source": "box",
+      "text": "TIAE"
+     },
+     {
+      "bbox": [
+       [
+        311.0,
+        588.0
+       ],
+       [
+        413.0,
+        597.0
+       ],
+       [
+        408.0,
+        659.0
+       ],
+       [
+        306.0,
+        650.0
+       ]
+      ],
+      "group_text": "TO",
+      "is_fragment": false,
+      "source": "box",
+      "text": "TO"
+     }
+    ],
+    "match_score": 0.875,
+    "text": "tiae to"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "007"
+  ],
+  "title_bbox": [
+   [
+    254.0,
+    524.0
+   ],
+   [
+    472.0,
+    524.0
+   ],
+   [
+    472.0,
+    659.0
+   ],
+   [
+    254.0,
+    659.0
+   ]
+  ]
+ }
+}

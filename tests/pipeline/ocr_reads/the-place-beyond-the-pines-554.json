@@ -1,0 +1,652 @@
+{
+ "about": "Recorded reader output of one labelled poster for The Place Beyond the Pines (session E5 labelled set #554, tuning half, label title_only: THE PLACE BEYOND THE PINES (checked at full size; the bottom read is the title's own letters)). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      190.0,
+      431.0
+     ],
+     [
+      483.0,
+      429.0
+     ],
+     [
+      484.0,
+      542.0
+     ],
+     [
+      191.0,
+      544.0
+     ]
+    ],
+    [
+     [
+      25.0,
+      442.0
+     ],
+     [
+      184.0,
+      437.0
+     ],
+     [
+      187.0,
+      542.0
+     ],
+     [
+      28.0,
+      547.0
+     ]
+    ],
+    [
+     [
+      163.0,
+      541.0
+     ],
+     [
+      337.0,
+      539.0
+     ],
+     [
+      338.0,
+      597.0
+     ],
+     [
+      164.0,
+      599.0
+     ]
+    ],
+    [
+     [
+      36.0,
+      605.0
+     ],
+     [
+      189.0,
+      605.0
+     ],
+     [
+      189.0,
+      707.0
+     ],
+     [
+      36.0,
+      707.0
+     ]
+    ],
+    [
+     [
+      200.0,
+      603.0
+     ],
+     [
+      469.0,
+      607.0
+     ],
+     [
+      468.0,
+      707.0
+     ],
+     [
+      199.0,
+      703.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9903136491775513,
+    0.9967451691627502,
+    0.994457483291626,
+    0.9976046681404114,
+    0.9894990921020508
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "PLACE",
+    "THE",
+    "BEYOND",
+    "THE",
+    "PINES"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      130.0,
+      184.0
+     ],
+     [
+      774.0,
+      176.0
+     ],
+     [
+      776.0,
+      270.0
+     ],
+     [
+      131.0,
+      270.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.8017448782920837
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "TLPINLU"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "cianfrance",
+  "derek"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "affinity",
+   "city",
+   "electric",
+   "entertainment",
+   "films",
+   "hunting",
+   "kimmel",
+   "lane",
+   "sidney",
+   "sierra",
+   "silverwood",
+   "verisimilitude"
+  ],
+  "tagline": "one moment can change your life"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "title_only",
+ "movie_title": "The Place Beyond the Pines",
+ "title_text": "the place beyond the pines",
+ "title_tokens": [
+  "beyond",
+  "pines",
+  "place",
+  "the"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 3,
+  "detected_text": "the the beyond place pines tlpinlu",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.038674,
+    "denied_significant_count": 1,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.038674,
+    "significant_residual_count": 1
+   },
+   "detected_boxes": [
+    {
+     "area": 15606.0,
+     "bbox": [
+      [
+       36.0,
+       605.0
+      ],
+      [
+       189.0,
+       605.0
+      ],
+      [
+       189.0,
+       707.0
+      ],
+      [
+       36.0,
+       707.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9976046681404114,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "THE",
+     "title_group_text": "THE",
+     "title_match_source": "box"
+    },
+    {
+     "area": 16710.0,
+     "bbox": [
+      [
+       25.0,
+       442.0
+      ],
+      [
+       184.0,
+       437.0
+      ],
+      [
+       187.0,
+       542.0
+      ],
+      [
+       28.0,
+       547.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9967451691627502,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "THE",
+     "title_group_text": "THE BEYOND",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 10094.0,
+     "bbox": [
+      [
+       163.0,
+       541.0
+      ],
+      [
+       337.0,
+       539.0
+      ],
+      [
+       338.0,
+       597.0
+      ],
+      [
+       164.0,
+       599.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.994457483291626,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "BEYOND",
+     "title_group_text": "THE BEYOND",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 33111.0,
+     "bbox": [
+      [
+       190.0,
+       431.0
+      ],
+      [
+       483.0,
+       429.0
+      ],
+      [
+       484.0,
+       542.0
+      ],
+      [
+       191.0,
+       544.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9903136491775513,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "PLACE",
+     "title_group_text": "PLACE",
+     "title_match_source": "box"
+    },
+    {
+     "area": 26904.0,
+     "bbox": [
+      [
+       200.0,
+       603.0
+      ],
+      [
+       469.0,
+       607.0
+      ],
+      [
+       468.0,
+       707.0
+      ],
+      [
+       199.0,
+       703.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9894990921020508,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "PINES",
+     "title_group_text": "PINES",
+     "title_match_source": "box"
+    },
+    {
+     "area": 14502.75,
+     "bbox": [
+      [
+       65.0,
+       707.0
+      ],
+      [
+       387.0,
+       703.0
+      ],
+      [
+       388.0,
+       750.0
+      ],
+      [
+       65.5,
+       750.0
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.8017448782920837,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "TLPINLU",
+     "title_group_text": null,
+     "title_match_source": null
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      25.0,
+      429.0
+     ],
+     [
+      484.0,
+      429.0
+     ],
+     [
+      484.0,
+      707.0
+     ],
+     [
+      25.0,
+      707.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        36.0,
+        605.0
+       ],
+       [
+        189.0,
+        605.0
+       ],
+       [
+        189.0,
+        707.0
+       ],
+       [
+        36.0,
+        707.0
+       ]
+      ],
+      "group_text": "THE",
+      "is_fragment": false,
+      "source": "box",
+      "text": "THE"
+     },
+     {
+      "bbox": [
+       [
+        25.0,
+        442.0
+       ],
+       [
+        184.0,
+        437.0
+       ],
+       [
+        187.0,
+        542.0
+       ],
+       [
+        28.0,
+        547.0
+       ]
+      ],
+      "group_text": "THE BEYOND",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "THE"
+     },
+     {
+      "bbox": [
+       [
+        163.0,
+        541.0
+       ],
+       [
+        337.0,
+        539.0
+       ],
+       [
+        338.0,
+        597.0
+       ],
+       [
+        164.0,
+        599.0
+       ]
+      ],
+      "group_text": "THE BEYOND",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "BEYOND"
+     },
+     {
+      "bbox": [
+       [
+        190.0,
+        431.0
+       ],
+       [
+        483.0,
+        429.0
+       ],
+       [
+        484.0,
+        542.0
+       ],
+       [
+        191.0,
+        544.0
+       ]
+      ],
+      "group_text": "PLACE",
+      "is_fragment": false,
+      "source": "box",
+      "text": "PLACE"
+     },
+     {
+      "bbox": [
+       [
+        200.0,
+        603.0
+       ],
+       [
+        469.0,
+        607.0
+       ],
+       [
+        468.0,
+        707.0
+       ],
+       [
+        199.0,
+        703.0
+       ]
+      ],
+      "group_text": "PINES",
+      "is_fragment": false,
+      "source": "box",
+      "text": "PINES"
+     }
+    ],
+    "match_score": 1.0,
+    "text": "place the beyond pines the"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "TLPINLU"
+  ],
+  "title_bbox": [
+   [
+    25.0,
+    429.0
+   ],
+   [
+    484.0,
+    429.0
+   ],
+   [
+    484.0,
+    707.0
+   ],
+   [
+    25.0,
+    707.0
+   ]
+  ]
+ }
+}

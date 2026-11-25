@@ -334,6 +334,11 @@ _TOP_BILLING_MIN_WIDTH_FRACTION = 0.28
 _TOP_BILLING_MAX_HEIGHT_FRACTION = 0.055
 _TOP_BILLING_MAX_HEIGHT_RATIO = 1.8
 
+# Smaller-copy retry (OCR_SMALL_COPY_RETRY): the whole poster read again at these
+# fractions of its 500 px size when no title was found. Copies are made from the
+# 500 px image and every box is mapped back to the poster's own coordinates.
+_SMALL_COPY_PASSES = (("small_60", 0.6), ("small_40", 0.4))
+
 
 def _band_letters(boxes: list[_DetectedBox]) -> set[str]:
     return {ch for box in boxes for ch in _compact_text(box.text) if ch.isalpha()}
@@ -1930,6 +1935,9 @@ def _process_image(
     title_recovery_triggered = False
     title_recovery_recovered = False
     title_recovery_error: str | None = None
+    small_copy_triggered = False
+    small_copy_recovered = False
+    small_copy_error: str | None = None
     season_number_ids: set[tuple[str, BoundingBox]] = set()
     season_title_ids: set[tuple[str, BoundingBox]] = set()
     season_edition_ids: set[tuple[str, BoundingBox]] = set()
@@ -2165,6 +2173,39 @@ def _process_image(
             for box in boxes
             if (evidence := title_evidence.get(id(box))) is not None
         ]
+        detected_boxes = _build_detected_boxes_trace(
+            boxes,
+            title_box=title_box,
+            title_evidence=title_evidence,
+            all_tokens=title_tokens | director_tokens,
+            title_tokens=title_tokens,
+            director_tokens=director_tokens,
+            studio_tokens=studio_tokens,
+            tagline_text=tagline_text,
+            billing_band_ids=billing_band_ids,
+            season_number=season_number,
+            season_number_ids=season_number_ids,
+            season_title_ids=season_title_ids,
+            season_edition_ids=season_edition_ids,
+            season_semantic_evidence=season_semantic_evidence,
+            rejection_box_keys=rejection_box_keys,
+            image_width=image_width,
+            image_height=image_height,
+            min_big_area=min_big_area,
+            min_big_width=min_big_width,
+            prox=prox,
+            pass_by_id=pass_by_id,
+        )
+        # The smaller-copy retry reports only when switched on, so with it off the trace
+        # is exactly what it was before it.
+        extra: dict[str, object] = {}
+        if pipeline_settings.OCR_SMALL_COPY_RETRY:
+            extra["small_copy_retry"] = {
+                "triggered": small_copy_triggered,
+                "recovered_title": small_copy_recovered,
+                "confidence_threshold": (pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD),
+                "error": small_copy_error,
+            }
         return {
             "profile": {
                 "id": profile_id if isinstance(profile_id, str) else None,
@@ -2189,29 +2230,8 @@ def _process_image(
                 "confidence_threshold": (pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD),
                 "error": title_recovery_error,
             },
-            "detected_boxes": _build_detected_boxes_trace(
-                boxes,
-                title_box=title_box,
-                title_evidence=title_evidence,
-                all_tokens=title_tokens | director_tokens,
-                title_tokens=title_tokens,
-                director_tokens=director_tokens,
-                studio_tokens=studio_tokens,
-                tagline_text=tagline_text,
-                billing_band_ids=billing_band_ids,
-                season_number=season_number,
-                season_number_ids=season_number_ids,
-                season_title_ids=season_title_ids,
-                season_edition_ids=season_edition_ids,
-                season_semantic_evidence=season_semantic_evidence,
-                rejection_box_keys=rejection_box_keys,
-                image_width=image_width,
-                image_height=image_height,
-                min_big_area=min_big_area,
-                min_big_width=min_big_width,
-                prox=prox,
-                pass_by_id=pass_by_id,
-            ),
+            **extra,
+            "detected_boxes": detected_boxes,
             "title": (
                 {
                     "text": title_box.text,
@@ -2295,6 +2315,73 @@ def _process_image(
         except Exception as exc:
             title_recovery_error = f"{type(exc).__name__}: {exc}"
             logger.warning("OCR title recovery failed for %s: %s", path.name, exc)
+
+    # Rule A, the smaller-copy retry. Only a rejected poster with no title found gets
+    # these passes, so a poster where a title was found, or one already accepted, can
+    # never change by this rule. A format word stays whatever else is read, so such a
+    # poster is left alone. What the copies read is kept only when it holds the title:
+    # a poster with no title is rejected either way, and its reason stays as it was.
+    if (
+        pipeline_settings.OCR_SMALL_COPY_RETRY
+        and not decision["accepted"]
+        and title_box is None
+        and decision["reason"] != "format_blocklist"
+    ):
+        small_copy_triggered = True
+        try:
+            small_boxes: list[_DetectedBox] = []
+            small_pass_by_id: dict[int, str] = {}
+            for pass_name, fraction in _SMALL_COPY_PASSES:
+                passes_run.append(pass_name)
+                small_image = np.asarray(
+                    Image.fromarray(image).resize(
+                        (
+                            max(1, round(image_width * fraction)),
+                            max(1, round(image_height * fraction)),
+                        ),
+                        Image.Resampling.LANCZOS,
+                    )
+                )
+                # Read at the title recovery's threshold: on the tuning half it found
+                # more titles than the full pass's 0.75, and admitted no more other text.
+                read = _detect_boxes(
+                    _worker_ocr,
+                    small_image,
+                    pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD,
+                    scale=fraction,
+                )
+                for box in read:
+                    small_pass_by_id[id(box)] = pass_name
+                small_boxes.extend(read)
+            merged = _dedupe_boxes(boxes + small_boxes)
+            if _find_title_evidence(
+                merged,
+                title_text=title_text or "",
+                title_tokens=title_tokens,
+                image_width=image_width,
+                image_height=image_height,
+            ):
+                small_copy_recovered = True
+                pass_by_id.update(small_pass_by_id)
+                boxes = merged
+                detected_text = _normalise(" ".join(box.text for box in boxes))
+                (
+                    title_evidence,
+                    title_box,
+                    residual,
+                    significant_residual,
+                    significant_area_fraction,
+                    billing_band_ids,
+                ) = _build_state()
+                decision = _decide(
+                    title_box=title_box,
+                    significant_residual=significant_residual,
+                    significant_area_fraction=significant_area_fraction,
+                    detected_text_current=detected_text,
+                )
+        except Exception as exc:
+            small_copy_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("OCR smaller-copy retry failed for %s: %s", path.name, exc)
 
     return OCRCandidateResult(
         image_path=path,

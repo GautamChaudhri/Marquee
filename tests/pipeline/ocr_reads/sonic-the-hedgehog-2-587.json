@@ -1,0 +1,850 @@
+{
+ "about": "Recorded reader output of one labelled poster for Sonic the Hedgehog 2 (session E5 labelled set #587, tuning half, label other_text: IN THEATRES, ON DIGITAL). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      0.0,
+      619.0
+     ],
+     [
+      402.0,
+      597.0
+     ],
+     [
+      407.0,
+      705.0
+     ],
+     [
+      0.0,
+      727.0
+     ]
+    ],
+    [
+     [
+      118.0,
+      701.0
+     ],
+     [
+      346.0,
+      690.0
+     ],
+     [
+      347.0,
+      721.0
+     ],
+     [
+      119.0,
+      731.0
+     ]
+    ],
+    [
+     [
+      351.0,
+      698.0
+     ],
+     [
+      371.0,
+      698.0
+     ],
+     [
+      371.0,
+      716.0
+     ],
+     [
+      351.0,
+      716.0
+     ]
+    ],
+    [
+     [
+      72.0,
+      722.0
+     ],
+     [
+      79.0,
+      722.0
+     ],
+     [
+      79.0,
+      731.0
+     ],
+     [
+      72.0,
+      731.0
+     ]
+    ],
+    [
+     [
+      123.0,
+      726.0
+     ],
+     [
+      340.0,
+      715.0
+     ],
+     [
+      341.0,
+      739.0
+     ],
+     [
+      124.0,
+      750.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9174056053161621,
+    0.9750710129737854,
+    0.8913568258285522,
+    0.21404193341732025,
+    0.9561614394187927
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "SONIG",
+    "HEDGEHO",
+    "G",
+    "2",
+    "IN THEATRES, ON DIGITAL"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      383.0,
+      7.0
+     ],
+     [
+      579.0,
+      7.0
+     ],
+     [
+      579.0,
+      99.0
+     ],
+     [
+      383.0,
+      99.0
+     ]
+    ],
+    [
+     [
+      420.0,
+      41.0
+     ],
+     [
+      427.0,
+      48.0
+     ],
+     [
+      422.0,
+      53.0
+     ],
+     [
+      416.0,
+      46.0
+     ]
+    ],
+    [
+     [
+      433.0,
+      43.0
+     ],
+     [
+      442.0,
+      43.0
+     ],
+     [
+      442.0,
+      51.0
+     ],
+     [
+      433.0,
+      51.0
+     ]
+    ],
+    [
+     [
+      442.0,
+      41.0
+     ],
+     [
+      447.0,
+      46.0
+     ],
+     [
+      442.0,
+      52.0
+     ],
+     [
+      436.0,
+      46.0
+     ]
+    ],
+    [
+     [
+      442.0,
+      45.0
+     ],
+     [
+      447.0,
+      51.0
+     ],
+     [
+      442.0,
+      56.0
+     ],
+     [
+      436.0,
+      51.0
+     ]
+    ],
+    [
+     [
+      446.0,
+      45.0
+     ],
+     [
+      451.0,
+      51.0
+     ],
+     [
+      446.0,
+      56.0
+     ],
+     [
+      441.0,
+      51.0
+     ]
+    ],
+    [
+     [
+      495.0,
+      61.0
+     ],
+     [
+      504.0,
+      68.0
+     ],
+     [
+      498.0,
+      76.0
+     ],
+     [
+      489.0,
+      69.0
+     ]
+    ],
+    [
+     [
+      93.0,
+      113.0
+     ],
+     [
+      219.0,
+      113.0
+     ],
+     [
+      219.0,
+      167.0
+     ],
+     [
+      93.0,
+      167.0
+     ]
+    ],
+    [
+     [
+      299.0,
+      111.0
+     ],
+     [
+      740.0,
+      114.0
+     ],
+     [
+      740.0,
+      169.0
+     ],
+     [
+      298.0,
+      165.0
+     ]
+    ],
+    [
+     [
+      772.0,
+      134.0
+     ],
+     [
+      781.0,
+      125.0
+     ],
+     [
+      788.0,
+      133.0
+     ],
+     [
+      779.0,
+      142.0
+     ]
+    ],
+    [
+     [
+      301.0,
+      168.0
+     ],
+     [
+      735.0,
+      168.0
+     ],
+     [
+      735.0,
+      206.0
+     ],
+     [
+      301.0,
+      206.0
+     ]
+    ],
+    [
+     [
+      370.0,
+      205.0
+     ],
+     [
+      678.0,
+      205.0
+     ],
+     [
+      678.0,
+      247.0
+     ],
+     [
+      370.0,
+      247.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.13169440627098083,
+    0.1857367306947708,
+    0.0,
+    0.08278141915798187,
+    0.4108036756515503,
+    0.0,
+    0.961798369884491,
+    0.6940031051635742,
+    0.30626407265663147,
+    0.23400172591209412,
+    0.14414958655834198,
+    0.4276070296764374
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "N",
+    "-",
+    "",
+    "\u5e7f",
+    "-",
+    "",
+    "-",
+    "3H",
+    "OHEOEH",
+    "-",
+    "RRRATETESIEE",
+    "+nmoumNo aN"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "fowler",
+  "jeff"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "america",
+   "animation",
+   "blur",
+   "film",
+   "marza",
+   "of",
+   "original",
+   "paramount",
+   "pictures",
+   "planet",
+   "sega",
+   "studio"
+  ],
+  "tagline": "welcome to the next level"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "movie_title": "Sonic the Hedgehog 2",
+ "title_text": "sonic the hedgehog 2",
+ "title_tokens": [
+  "2",
+  "hedgehog",
+  "sonic",
+  "the",
+  "two"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 3,
+  "detected_text": "hedgeho in theatres on digital sonig g 3h",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.013917333333333334,
+    "denied_significant_count": 1,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.013917333333333334,
+    "significant_residual_count": 1
+   },
+   "detected_boxes": [
+    {
+     "area": 6964.5,
+     "bbox": [
+      [
+       118.0,
+       701.0
+      ],
+      [
+       346.0,
+       690.0
+      ],
+      [
+       347.0,
+       721.0
+      ],
+      [
+       119.0,
+       731.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9750710129737854,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "HEDGEHO",
+     "title_group_text": "HEDGEHO - G",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 28.5,
+     "bbox": [
+      [
+       247.5,
+       645.5
+      ],
+      [
+       252.0,
+       649.0
+      ],
+      [
+       249.0,
+       653.0
+      ],
+      [
+       244.5,
+       649.5
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.961798369884491,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "-",
+     "title_group_text": "HEDGEHO - G",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 5219.0,
+     "bbox": [
+      [
+       123.0,
+       726.0
+      ],
+      [
+       340.0,
+       715.0
+      ],
+      [
+       341.0,
+       739.0
+      ],
+      [
+       124.0,
+       750.0
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.9561614394187927,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "IN THEATRES, ON DIGITAL",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 43741.0,
+     "bbox": [
+      [
+       0.0,
+       619.0
+      ],
+      [
+       402.0,
+       597.0
+      ],
+      [
+       407.0,
+       705.0
+      ],
+      [
+       0.0,
+       727.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9174056053161621,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "SONIG",
+     "title_group_text": "SONIG",
+     "title_match_source": "box"
+    },
+    {
+     "area": 360.0,
+     "bbox": [
+      [
+       351.0,
+       698.0
+      ],
+      [
+       371.0,
+       698.0
+      ],
+      [
+       371.0,
+       716.0
+      ],
+      [
+       351.0,
+       716.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.8913568258285522,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "G",
+     "title_group_text": "HEDGEHO - G",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 1701.0,
+     "bbox": [
+      [
+       46.5,
+       671.5
+      ],
+      [
+       109.5,
+       671.5
+      ],
+      [
+       109.5,
+       698.5
+      ],
+      [
+       46.5,
+       698.5
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.6940031051635742,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": false,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "3H",
+     "title_group_text": null,
+     "title_match_source": null
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      0.0,
+      597.0
+     ],
+     [
+      407.0,
+      597.0
+     ],
+     [
+      407.0,
+      731.0
+     ],
+     [
+      0.0,
+      731.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        118.0,
+        701.0
+       ],
+       [
+        346.0,
+        690.0
+       ],
+       [
+        347.0,
+        721.0
+       ],
+       [
+        119.0,
+        731.0
+       ]
+      ],
+      "group_text": "HEDGEHO - G",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "HEDGEHO"
+     },
+     {
+      "bbox": [
+       [
+        247.5,
+        645.5
+       ],
+       [
+        252.0,
+        649.0
+       ],
+       [
+        249.0,
+        653.0
+       ],
+       [
+        244.5,
+        649.5
+       ]
+      ],
+      "group_text": "HEDGEHO - G",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "-"
+     },
+     {
+      "bbox": [
+       [
+        0.0,
+        619.0
+       ],
+       [
+        402.0,
+        597.0
+       ],
+       [
+        407.0,
+        705.0
+       ],
+       [
+        0.0,
+        727.0
+       ]
+      ],
+      "group_text": "SONIG",
+      "is_fragment": false,
+      "source": "box",
+      "text": "SONIG"
+     },
+     {
+      "bbox": [
+       [
+        351.0,
+        698.0
+       ],
+       [
+        371.0,
+        698.0
+       ],
+       [
+        371.0,
+        716.0
+       ],
+       [
+        351.0,
+        716.0
+       ]
+      ],
+      "group_text": "HEDGEHO - G",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "G"
+     }
+    ],
+    "match_score": 0.6518518518518519,
+    "text": "sonig g hedgeho"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "IN THEATRES, ON DIGITAL",
+   "3H"
+  ],
+  "title_bbox": [
+   [
+    0.0,
+    597.0
+   ],
+   [
+    407.0,
+    597.0
+   ],
+   [
+    407.0,
+    731.0
+   ],
+   [
+    0.0,
+    731.0
+   ]
+  ]
+ }
+}

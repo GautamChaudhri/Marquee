@@ -1,0 +1,624 @@
+{
+ "about": "Recorded reader output of one labelled poster for Hokum (session E5 labelled set #467, tuning half, label other_text: ADAM SCOTT, A FILM BY DAMIAN MCCARTHY, ONLY IN THEATERS, NEON). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      128.0,
+      307.0
+     ],
+     [
+      369.0,
+      315.0
+     ],
+     [
+      368.0,
+      349.0
+     ],
+     [
+      127.0,
+      341.0
+     ]
+    ],
+    [
+     [
+      99.0,
+      335.0
+     ],
+     [
+      385.0,
+      342.0
+     ],
+     [
+      383.0,
+      426.0
+     ],
+     [
+      97.0,
+      418.0
+     ]
+    ],
+    [
+     [
+      199.0,
+      419.0
+     ],
+     [
+      281.0,
+      419.0
+     ],
+     [
+      281.0,
+      437.0
+     ],
+     [
+      199.0,
+      437.0
+     ]
+    ],
+    [
+     [
+      160.0,
+      430.0
+     ],
+     [
+      317.0,
+      435.0
+     ],
+     [
+      316.0,
+      458.0
+     ],
+     [
+      159.0,
+      452.0
+     ]
+    ],
+    [
+     [
+      144.0,
+      717.0
+     ],
+     [
+      314.0,
+      721.0
+     ],
+     [
+      313.0,
+      743.0
+     ],
+     [
+      143.0,
+      740.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9216437339782715,
+    0.8858197927474976,
+    0.9385841488838196,
+    0.9479125142097473,
+    0.8924075365066528
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "ADAM SCOTT",
+    "HOKUM",
+    "AFILM BY",
+    "DAMIAN MCCARTHY",
+    "ONLY IN THEATERS 5.I"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      734.0,
+      96.0
+     ],
+     [
+      861.0,
+      84.0
+     ],
+     [
+      868.0,
+      167.0
+     ],
+     [
+      741.0,
+      179.0
+     ]
+    ],
+    [
+     [
+      834.0,
+      110.0
+     ],
+     [
+      883.0,
+      88.0
+     ],
+     [
+      901.0,
+      132.0
+     ],
+     [
+      852.0,
+      154.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.11841118335723877,
+    0.21493004262447357
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "O",
+    "\u798f"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      499.0,
+      38.0
+     ],
+     [
+      583.0,
+      38.0
+     ],
+     [
+      583.0,
+      76.0
+     ],
+     [
+      499.0,
+      76.0
+     ]
+    ],
+    [
+     [
+      397.0,
+      82.0
+     ],
+     [
+      700.0,
+      77.0
+     ],
+     [
+      701.0,
+      112.0
+     ],
+     [
+      398.0,
+      117.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9636592268943787,
+    0.17996123433113098
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "NO3N",
+    "TS SSEAATRANEAENE"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "damian",
+  "mccarthy"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "cweature",
+   "f",
+   "features",
+   "films",
+   "image",
+   "ireann",
+   "ireland",
+   "nation",
+   "pictures",
+   "s",
+   "screen",
+   "spooky",
+   "studios",
+   "tailored",
+   "team",
+   "thrives"
+  ],
+  "tagline": "we ve been expecting you"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "movie_title": "Hokum",
+ "title_text": "hokum",
+ "title_tokens": [
+  "hokum"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 3,
+  "detected_text": "no3n damian mccarthy afilm by adam scott only in theaters 5 i hokum",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.04758,
+    "denied_significant_count": 5,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.04758,
+    "significant_residual_count": 5
+   },
+   "detected_boxes": [
+    {
+     "area": 798.0,
+     "bbox": [
+      [
+       249.5,
+       634.0
+      ],
+      [
+       291.5,
+       634.0
+      ],
+      [
+       291.5,
+       653.0
+      ],
+      [
+       249.5,
+       653.0
+      ]
+     ],
+     "category": "studio",
+     "confidence": 0.9636592268943787,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "word_level",
+     "text": "NO3N",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 3538.0,
+     "bbox": [
+      [
+       160.0,
+       430.0
+      ],
+      [
+       317.0,
+       435.0
+      ],
+      [
+       316.0,
+       458.0
+      ],
+      [
+       159.0,
+       452.0
+      ]
+     ],
+     "category": "director",
+     "confidence": 0.9479125142097473,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "DAMIAN MCCARTHY",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 1476.0,
+     "bbox": [
+      [
+       199.0,
+       419.0
+      ],
+      [
+       281.0,
+       419.0
+      ],
+      [
+       281.0,
+       437.0
+      ],
+      [
+       199.0,
+       437.0
+      ]
+     ],
+     "category": "tagline",
+     "confidence": 0.9385841488838196,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "word_level",
+     "text": "AFILM BY",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 8202.0,
+     "bbox": [
+      [
+       128.0,
+       307.0
+      ],
+      [
+       369.0,
+       315.0
+      ],
+      [
+       368.0,
+       349.0
+      ],
+      [
+       127.0,
+       341.0
+      ]
+     ],
+     "category": "director",
+     "confidence": 0.9216437339782715,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "ADAM SCOTT",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 3828.5,
+     "bbox": [
+      [
+       144.0,
+       717.0
+      ],
+      [
+       314.0,
+       721.0
+      ],
+      [
+       313.0,
+       743.0
+      ],
+      [
+       143.0,
+       740.0
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.8924075365066528,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "ONLY IN THEATERS 5.I",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 23896.0,
+     "bbox": [
+      [
+       99.0,
+       335.0
+      ],
+      [
+       385.0,
+       342.0
+      ],
+      [
+       383.0,
+       426.0
+      ],
+      [
+       97.0,
+       418.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.8858197927474976,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "HOKUM",
+     "title_group_text": "HOKUM",
+     "title_match_source": "box"
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      97.0,
+      335.0
+     ],
+     [
+      385.0,
+      335.0
+     ],
+     [
+      385.0,
+      426.0
+     ],
+     [
+      97.0,
+      426.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        99.0,
+        335.0
+       ],
+       [
+        385.0,
+        342.0
+       ],
+       [
+        383.0,
+        426.0
+       ],
+       [
+        97.0,
+        418.0
+       ]
+      ],
+      "group_text": "HOKUM",
+      "is_fragment": false,
+      "source": "box",
+      "text": "HOKUM"
+     }
+    ],
+    "match_score": 1.0,
+    "text": "hokum"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "NO3N",
+   "DAMIAN MCCARTHY",
+   "AFILM BY",
+   "ADAM SCOTT",
+   "ONLY IN THEATERS 5.I"
+  ],
+  "title_bbox": [
+   [
+    97.0,
+    335.0
+   ],
+   [
+    385.0,
+    335.0
+   ],
+   [
+    385.0,
+    426.0
+   ],
+   [
+    97.0,
+    426.0
+   ]
+  ]
+ }
+}

@@ -1,0 +1,638 @@
+{
+ "about": "Recorded reader output of one labelled poster for Black Panther (session E5 labelled set #282, tuning half, label title_only: BLACK PANTHER). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      117.0,
+      0.0
+     ],
+     [
+      334.0,
+      0.0
+     ],
+     [
+      337.0,
+      88.0
+     ],
+     [
+      120.0,
+      93.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9656549692153931
+   ],
+   "shape": [
+    707,
+    500
+   ],
+   "texts": [
+    "PANTHER"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    254,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      80.0,
+      43.0
+     ],
+     [
+      659.0,
+      48.0
+     ],
+     [
+      657.0,
+      254.0
+     ],
+     [
+      78.0,
+      254.0
+     ]
+    ],
+    [
+     [
+      347.0,
+      123.0
+     ],
+     [
+      377.0,
+      123.0
+     ],
+     [
+      377.0,
+      132.0
+     ],
+     [
+      347.0,
+      132.0
+     ]
+    ],
+    [
+     [
+      412.0,
+      128.0
+     ],
+     [
+      425.0,
+      128.0
+     ],
+     [
+      425.0,
+      135.0
+     ],
+     [
+      412.0,
+      135.0
+     ]
+    ],
+    [
+     [
+      425.0,
+      128.0
+     ],
+     [
+      433.0,
+      128.0
+     ],
+     [
+      433.0,
+      135.0
+     ],
+     [
+      425.0,
+      135.0
+     ]
+    ],
+    [
+     [
+      461.0,
+      132.0
+     ],
+     [
+      518.0,
+      132.0
+     ],
+     [
+      518.0,
+      165.0
+     ],
+     [
+      461.0,
+      165.0
+     ]
+    ],
+    [
+     [
+      530.0,
+      129.0
+     ],
+     [
+      586.0,
+      129.0
+     ],
+     [
+      586.0,
+      179.0
+     ],
+     [
+      530.0,
+      179.0
+     ]
+    ],
+    [
+     [
+      501.0,
+      144.0
+     ],
+     [
+      540.0,
+      128.0
+     ],
+     [
+      554.0,
+      163.0
+     ],
+     [
+      515.0,
+      179.0
+     ]
+    ],
+    [
+     [
+      502.0,
+      145.0
+     ],
+     [
+      510.0,
+      137.0
+     ],
+     [
+      517.0,
+      144.0
+     ],
+     [
+      509.0,
+      152.0
+     ]
+    ],
+    [
+     [
+      509.0,
+      146.0
+     ],
+     [
+      516.0,
+      152.0
+     ],
+     [
+      511.0,
+      157.0
+     ],
+     [
+      505.0,
+      150.0
+     ]
+    ],
+    [
+     [
+      510.0,
+      143.0
+     ],
+     [
+      516.0,
+      148.0
+     ],
+     [
+      511.0,
+      153.0
+     ],
+     [
+      506.0,
+      147.0
+     ]
+    ],
+    [
+     [
+      514.0,
+      143.0
+     ],
+     [
+      520.0,
+      148.0
+     ],
+     [
+      515.0,
+      153.0
+     ],
+     [
+      510.0,
+      147.0
+     ]
+    ],
+    [
+     [
+      517.0,
+      146.0
+     ],
+     [
+      524.0,
+      152.0
+     ],
+     [
+      519.0,
+      157.0
+     ],
+     [
+      513.0,
+      150.0
+     ]
+    ],
+    [
+     [
+      520.0,
+      139.0
+     ],
+     [
+      535.0,
+      139.0
+     ],
+     [
+      535.0,
+      149.0
+     ],
+     [
+      520.0,
+      149.0
+     ]
+    ],
+    [
+     [
+      529.0,
+      158.0
+     ],
+     [
+      536.0,
+      158.0
+     ],
+     [
+      536.0,
+      166.0
+     ],
+     [
+      529.0,
+      166.0
+     ]
+    ],
+    [
+     [
+      574.0,
+      168.0
+     ],
+     [
+      582.0,
+      168.0
+     ],
+     [
+      582.0,
+      175.0
+     ],
+     [
+      574.0,
+      175.0
+     ]
+    ],
+    [
+     [
+      574.0,
+      172.0
+     ],
+     [
+      582.0,
+      172.0
+     ],
+     [
+      582.0,
+      179.0
+     ],
+     [
+      574.0,
+      179.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.6873127818107605,
+    0.0,
+    0.0,
+    0.08841220289468765,
+    0.1271154284477234,
+    0.3244311809539795,
+    0.2671756148338318,
+    0.10554945468902588,
+    0.0955471321940422,
+    0.07574279606342316,
+    0.14053310453891754,
+    0.1038656011223793,
+    0.06828419119119644,
+    0.0,
+    0.3280719816684723,
+    0.13752815127372742
+   ],
+   "shape": [
+    254,
+    1000
+   ],
+   "texts": [
+    "RANTHER",
+    "",
+    "",
+    "1",
+    "U",
+    "4",
+    "1",
+    "7",
+    "\u4e00",
+    "\u4eab",
+    "-",
+    ".",
+    "1",
+    "",
+    "3",
+    "\u4eab"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "coogler",
+  "ryan"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "marvel",
+   "studios"
+  ],
+  "tagline": "long live the king"
+ },
+ "image_size": [
+  500,
+  707
+ ],
+ "label": "title_only",
+ "movie_title": "Black Panther",
+ "title_text": "black panther",
+ "title_tokens": [
+  "black",
+  "panther"
+ ],
+ "today": {
+  "accepted": true,
+  "calls_used": 3,
+  "detected_text": "panther ranther",
+  "diagnostics": {
+   "decision": {
+    "accepted": true,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.0,
+    "denied_significant_count": 0,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": null,
+    "require_title": true,
+    "significant_area_fraction": 0.0,
+    "significant_residual_count": 0
+   },
+   "detected_boxes": [
+    {
+     "area": 19646.0,
+     "bbox": [
+      [
+       117.0,
+       0.0
+      ],
+      [
+       334.0,
+       0.0
+      ],
+      [
+       337.0,
+       88.0
+      ],
+      [
+       120.0,
+       93.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9656549692153931,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "PANTHER",
+     "title_group_text": "PANTHER",
+     "title_match_source": "box"
+    },
+    {
+     "area": 30181.625,
+     "bbox": [
+      [
+       40.0,
+       601.5
+      ],
+      [
+       329.5,
+       604.0
+      ],
+      [
+       328.5,
+       707.0
+      ],
+      [
+       39.0,
+       707.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.6873127818107605,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "RANTHER",
+     "title_group_text": "RANTHER",
+     "title_match_source": "box"
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 707,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      39.0,
+      0.0
+     ],
+     [
+      337.0,
+      0.0
+     ],
+     [
+      337.0,
+      707.0
+     ],
+     [
+      39.0,
+      707.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        117.0,
+        0.0
+       ],
+       [
+        334.0,
+        0.0
+       ],
+       [
+        337.0,
+        88.0
+       ],
+       [
+        120.0,
+        93.0
+       ]
+      ],
+      "group_text": "PANTHER",
+      "is_fragment": false,
+      "source": "box",
+      "text": "PANTHER"
+     },
+     {
+      "bbox": [
+       [
+        40.0,
+        601.5
+       ],
+       [
+        329.5,
+        604.0
+       ],
+       [
+        328.5,
+        707.0
+       ],
+       [
+        39.0,
+        707.0
+       ]
+      ],
+      "group_text": "RANTHER",
+      "is_fragment": false,
+      "source": "box",
+      "text": "RANTHER"
+     }
+    ],
+    "match_score": 0.9285714285714286,
+    "text": "panther ranther"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": null,
+  "residual_texts": [],
+  "title_bbox": [
+   [
+    39.0,
+    0.0
+   ],
+   [
+    337.0,
+    0.0
+   ],
+   [
+    337.0,
+    707.0
+   ],
+   [
+    39.0,
+    707.0
+   ]
+  ]
+ }
+}

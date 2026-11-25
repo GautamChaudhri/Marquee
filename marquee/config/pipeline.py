@@ -330,6 +330,10 @@ class PipelineSettings(BaseSettings):
     # contrast/upscaled OCR pass and keep only boxes that explain the title.
     OCR_TITLE_RECOVERY_ENABLED: bool = True
     OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD: float = 0.50
+    # Smaller-copy retry: when every pass above ends with no title found, read the
+    # whole poster again at 60% and 40% of its size. Large or letter-spaced titles
+    # the reader misses at 500 px are often read on a smaller copy.
+    OCR_SMALL_COPY_RETRY: bool = True
 
     # ── Text-gate mode presets ───────────────────────────────────────
     # "title_only" = current strict behaviour (require title, reject residual).
@@ -518,6 +522,7 @@ class PipelineSettings(BaseSettings):
                 "title_recovery_confidence_threshold": (
                     self.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD
                 ),
+                "small_copy_retry": self.OCR_SMALL_COPY_RETRY,
             },
             "extended_features": {
                 "dino_enabled": self.DINO_ENABLED,

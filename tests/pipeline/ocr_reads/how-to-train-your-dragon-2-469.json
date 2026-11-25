@@ -1,0 +1,607 @@
+{
+ "about": "Recorded reader output of one labelled poster for How to Train Your Dragon 2 (session E5 labelled set #469, tuning half, label other_text: HOW TO TRAIN YOUR DRAGON 2 with the DREAMWORKS mark). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      145.0,
+      6.0
+     ],
+     [
+      389.0,
+      9.0
+     ],
+     [
+      388.0,
+      49.0
+     ],
+     [
+      144.0,
+      46.0
+     ]
+    ],
+    [
+     [
+      127.0,
+      32.0
+     ],
+     [
+      138.0,
+      22.0
+     ],
+     [
+      147.0,
+      33.0
+     ],
+     [
+      135.0,
+      43.0
+     ]
+    ],
+    [
+     [
+      85.0,
+      48.0
+     ],
+     [
+      413.0,
+      43.0
+     ],
+     [
+      413.0,
+      76.0
+     ],
+     [
+      85.0,
+      82.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      74.0
+     ],
+     [
+      490.0,
+      58.0
+     ],
+     [
+      493.0,
+      153.0
+     ],
+     [
+      0.0,
+      169.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9571770429611206,
+    0.08115535229444504,
+    0.901604175567627,
+    0.9748020172119141
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "DREAMWORKS",
+    "4",
+    "HOW TO TRAIN YOUR",
+    "DRAGON2"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      356.0,
+      94.0
+     ],
+     [
+      841.0,
+      92.0
+     ],
+     [
+      842.0,
+      179.0
+     ],
+     [
+      356.0,
+      182.0
+     ]
+    ],
+    [
+     [
+      201.0,
+      182.0
+     ],
+     [
+      870.0,
+      172.0
+     ],
+     [
+      871.0,
+      232.0
+     ],
+     [
+      202.0,
+      242.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9731476902961731,
+    0.8979899287223816
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "DREAMWORKS",
+    "HOW TO TRAIN YOUR"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      215.0,
+      853.0
+     ],
+     [
+      232.0,
+      857.0
+     ],
+     [
+      228.0,
+      873.0
+     ],
+     [
+      211.0,
+      869.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.06669557094573975
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "0"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "dean",
+  "deblois"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "animation",
+   "dreamworks"
+  ],
+  "tagline": "training is over the adventure begins"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "movie_title": "How to Train Your Dragon 2",
+ "title_text": "how to train your dragon 2",
+ "title_tokens": [
+  "2",
+  "dragon",
+  "how",
+  "to",
+  "train",
+  "two",
+  "your"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 3,
+  "detected_text": "dragon2 dreamworks dreamworks how to train your how to train your",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.026034666666666668,
+    "denied_significant_count": 1,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.026034666666666668,
+    "significant_residual_count": 1
+   },
+   "detected_boxes": [
+    {
+     "area": 46716.5,
+     "bbox": [
+      [
+       0.0,
+       74.0
+      ],
+      [
+       490.0,
+       58.0
+      ],
+      [
+       493.0,
+       153.0
+      ],
+      [
+       0.0,
+       169.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9748020172119141,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "DRAGON2",
+     "title_group_text": "DRAGON2",
+     "title_match_source": "box"
+    },
+    {
+     "area": 10620.625,
+     "bbox": [
+      [
+       178.0,
+       47.0
+      ],
+      [
+       420.5,
+       46.0
+      ],
+      [
+       421.0,
+       89.5
+      ],
+      [
+       178.0,
+       91.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9731476902961731,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "top",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "DREAMWORKS",
+     "title_group_text": "HOW TO TRAIN YOUR DREAMWORKS",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 9763.0,
+     "bbox": [
+      [
+       145.0,
+       6.0
+      ],
+      [
+       389.0,
+       9.0
+      ],
+      [
+       388.0,
+       49.0
+      ],
+      [
+       144.0,
+       46.0
+      ]
+     ],
+     "category": "studio",
+     "confidence": 0.9571770429611206,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "DREAMWORKS",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 10988.0,
+     "bbox": [
+      [
+       85.0,
+       48.0
+      ],
+      [
+       413.0,
+       43.0
+      ],
+      [
+       413.0,
+       76.0
+      ],
+      [
+       85.0,
+       82.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.901604175567627,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": true,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "HOW TO TRAIN YOUR",
+     "title_group_text": "HOW TO TRAIN YOUR DREAMWORKS",
+     "title_match_source": "line_window"
+    },
+    {
+     "area": 10037.5,
+     "bbox": [
+      [
+       100.5,
+       91.0
+      ],
+      [
+       435.0,
+       86.0
+      ],
+      [
+       435.5,
+       116.0
+      ],
+      [
+       101.0,
+       121.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.8979899287223816,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "top",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "HOW TO TRAIN YOUR",
+     "title_group_text": "HOW TO TRAIN YOUR",
+     "title_match_source": "box"
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      0.0,
+      43.0
+     ],
+     [
+      493.0,
+      43.0
+     ],
+     [
+      493.0,
+      169.0
+     ],
+     [
+      0.0,
+      169.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        0.0,
+        74.0
+       ],
+       [
+        490.0,
+        58.0
+       ],
+       [
+        493.0,
+        153.0
+       ],
+       [
+        0.0,
+        169.0
+       ]
+      ],
+      "group_text": "DRAGON2",
+      "is_fragment": false,
+      "source": "box",
+      "text": "DRAGON2"
+     },
+     {
+      "bbox": [
+       [
+        178.0,
+        47.0
+       ],
+       [
+        420.5,
+        46.0
+       ],
+       [
+        421.0,
+        89.5
+       ],
+       [
+        178.0,
+        91.0
+       ]
+      ],
+      "group_text": "HOW TO TRAIN YOUR DREAMWORKS",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "DREAMWORKS"
+     },
+     {
+      "bbox": [
+       [
+        85.0,
+        48.0
+       ],
+       [
+        413.0,
+        43.0
+       ],
+       [
+        413.0,
+        76.0
+       ],
+       [
+        85.0,
+        82.0
+       ]
+      ],
+      "group_text": "HOW TO TRAIN YOUR DREAMWORKS",
+      "is_fragment": true,
+      "source": "line_window",
+      "text": "HOW TO TRAIN YOUR"
+     },
+     {
+      "bbox": [
+       [
+        100.5,
+        91.0
+       ],
+       [
+        435.0,
+        86.0
+       ],
+       [
+        435.5,
+        116.0
+       ],
+       [
+        101.0,
+        121.0
+       ]
+      ],
+      "group_text": "HOW TO TRAIN YOUR",
+      "is_fragment": false,
+      "source": "box",
+      "text": "HOW TO TRAIN YOUR"
+     }
+    ],
+    "match_score": 0.9038461538461539,
+    "text": "how to train your dreamworks how to train your dragon2"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "DREAMWORKS"
+  ],
+  "title_bbox": [
+   [
+    0.0,
+    43.0
+   ],
+   [
+    493.0,
+    43.0
+   ],
+   [
+    493.0,
+    169.0
+   ],
+   [
+    0.0,
+    169.0
+   ]
+  ]
+ }
+}

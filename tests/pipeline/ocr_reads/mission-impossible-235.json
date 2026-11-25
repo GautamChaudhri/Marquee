@@ -1,0 +1,696 @@
+{
+ "about": "Recorded reader output of one labelled poster for Mission: Impossible (session E5 labelled set #235, tuning half, label other_text: TOM CRUISE above M:I MISSION:IMPOSSIBLE). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      81.0,
+      70.0
+     ],
+     [
+      177.0,
+      70.0
+     ],
+     [
+      177.0,
+      99.0
+     ],
+     [
+      81.0,
+      99.0
+     ]
+    ],
+    [
+     [
+      219.0,
+      76.0
+     ],
+     [
+      226.0,
+      83.0
+     ],
+     [
+      221.0,
+      87.0
+     ],
+     [
+      215.0,
+      81.0
+     ]
+    ],
+    [
+     [
+      223.0,
+      74.0
+     ],
+     [
+      256.0,
+      74.0
+     ],
+     [
+      256.0,
+      88.0
+     ],
+     [
+      223.0,
+      88.0
+     ]
+    ],
+    [
+     [
+      251.0,
+      75.0
+     ],
+     [
+      264.0,
+      75.0
+     ],
+     [
+      264.0,
+      86.0
+     ],
+     [
+      251.0,
+      86.0
+     ]
+    ],
+    [
+     [
+      258.0,
+      73.0
+     ],
+     [
+      299.0,
+      73.0
+     ],
+     [
+      299.0,
+      90.0
+     ],
+     [
+      258.0,
+      90.0
+     ]
+    ],
+    [
+     [
+      332.0,
+      77.0
+     ],
+     [
+      359.0,
+      77.0
+     ],
+     [
+      359.0,
+      91.0
+     ],
+     [
+      332.0,
+      91.0
+     ]
+    ],
+    [
+     [
+      90.0,
+      98.0
+     ],
+     [
+      200.0,
+      98.0
+     ],
+     [
+      200.0,
+      123.0
+     ],
+     [
+      90.0,
+      123.0
+     ]
+    ],
+    [
+     [
+      320.0,
+      100.0
+     ],
+     [
+      392.0,
+      100.0
+     ],
+     [
+      392.0,
+      116.0
+     ],
+     [
+      320.0,
+      116.0
+     ]
+    ],
+    [
+     [
+      201.0,
+      116.0
+     ],
+     [
+      409.0,
+      116.0
+     ],
+     [
+      409.0,
+      239.0
+     ],
+     [
+      201.0,
+      239.0
+     ]
+    ],
+    [
+     [
+      89.0,
+      129.0
+     ],
+     [
+      242.0,
+      110.0
+     ],
+     [
+      256.0,
+      231.0
+     ],
+     [
+      103.0,
+      251.0
+     ]
+    ],
+    [
+     [
+      127.0,
+      176.0
+     ],
+     [
+      135.0,
+      176.0
+     ],
+     [
+      135.0,
+      185.0
+     ],
+     [
+      127.0,
+      185.0
+     ]
+    ],
+    [
+     [
+      70.0,
+      239.0
+     ],
+     [
+      433.0,
+      220.0
+     ],
+     [
+      438.0,
+      314.0
+     ],
+     [
+      75.0,
+      334.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.5555905103683472,
+    0.11171267181634903,
+    0.30373671650886536,
+    0.0,
+    0.0,
+    0.0,
+    0.6496220231056213,
+    0.5403939485549927,
+    0.248708575963974,
+    0.8696181774139404,
+    0.0,
+    0.12591810524463654
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "idlco",
+    "7",
+    "7",
+    "",
+    "",
+    "",
+    "iuiuuu",
+    "UUT",
+    "\u4e09",
+    "H",
+    "",
+    "SSE"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      120.0,
+      182.0
+     ],
+     [
+      173.0,
+      182.0
+     ],
+     [
+      173.0,
+      214.0
+     ],
+     [
+      120.0,
+      214.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.15935957431793213
+   ],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "1"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      107.0,
+      127.0
+     ],
+     [
+      832.0,
+      115.0
+     ],
+     [
+      834.0,
+      222.0
+     ],
+     [
+      109.0,
+      234.0
+     ]
+    ],
+    [
+     [
+      137.0,
+      192.0
+     ],
+     [
+      827.0,
+      192.0
+     ],
+     [
+      827.0,
+      256.0
+     ],
+     [
+      137.0,
+      256.0
+     ]
+    ],
+    [
+     [
+      293.0,
+      226.0
+     ],
+     [
+      311.0,
+      226.0
+     ],
+     [
+      311.0,
+      233.0
+     ],
+     [
+      293.0,
+      233.0
+     ]
+    ],
+    [
+     [
+      481.0,
+      226.0
+     ],
+     [
+      497.0,
+      226.0
+     ],
+     [
+      497.0,
+      233.0
+     ],
+     [
+      481.0,
+      233.0
+     ]
+    ],
+    [
+     [
+      496.0,
+      223.0
+     ],
+     [
+      535.0,
+      223.0
+     ],
+     [
+      535.0,
+      235.0
+     ],
+     [
+      496.0,
+      235.0
+     ]
+    ],
+    [
+     [
+      115.0,
+      489.0
+     ],
+     [
+      901.0,
+      442.0
+     ],
+     [
+      914.0,
+      649.0
+     ],
+     [
+      128.0,
+      696.0
+     ]
+    ],
+    [
+     [
+      826.0,
+      758.0
+     ],
+     [
+      837.0,
+      766.0
+     ],
+     [
+      833.0,
+      772.0
+     ],
+     [
+      822.0,
+      764.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.19772006571292877,
+    0.40656328201293945,
+    0.23467105627059937,
+    0.0,
+    0.3350139260292053,
+    0.22937102615833282,
+    0.18877601623535156
+   ],
+   "shape": [
+    1500,
+    1000
+   ],
+   "texts": [
+    "JIasnANOISSIN",
+    "HIUiOOUUNI\u00b7NUIOOIN",
+    "I",
+    "",
+    "-",
+    "JSIGNO",
+    "0"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      44.0,
+      144.0
+     ],
+     [
+      262.0,
+      132.0
+     ],
+     [
+      266.0,
+      188.0
+     ],
+     [
+      47.0,
+      200.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.8829679489135742
+   ],
+   "shape": [
+    450,
+    300
+   ],
+   "texts": [
+    "TOM CRUISE"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      33.0,
+      24.0
+     ],
+     [
+      170.0,
+      21.0
+     ],
+     [
+      171.0,
+      56.0
+     ],
+     [
+      34.0,
+      60.0
+     ]
+    ],
+    [
+     [
+      114.0,
+      36.0
+     ],
+     [
+      123.0,
+      36.0
+     ],
+     [
+      123.0,
+      44.0
+     ],
+     [
+      114.0,
+      44.0
+     ]
+    ],
+    [
+     [
+      30.0,
+      95.0
+     ],
+     [
+      175.0,
+      89.0
+     ],
+     [
+      177.0,
+      128.0
+     ],
+     [
+      31.0,
+      134.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.8461716175079346,
+    0.2351975291967392,
+    0.919537365436554
+   ],
+   "shape": [
+    300,
+    200
+   ],
+   "texts": [
+    "MISSTON:IMPSSIBLE",
+    "H",
+    "TOM GRUISE"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "brian",
+  "de",
+  "palma"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "cruise",
+   "paramount",
+   "pictures",
+   "productions",
+   "wagner"
+  ],
+  "tagline": "expect the impossible"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "movie_title": "Mission: Impossible",
+ "title_text": "mission impossible",
+ "title_tokens": [
+  "impossible",
+  "mission"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 4,
+  "detected_text": "h",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.0,
+    "denied_significant_count": 0,
+    "has_text": true,
+    "has_title": false,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "no_title",
+    "require_title": true,
+    "significant_area_fraction": 0.0,
+    "significant_residual_count": 0
+   },
+   "detected_boxes": [
+    {
+     "area": 18862.5,
+     "bbox": [
+      [
+       89.0,
+       129.0
+      ],
+      [
+       242.0,
+       110.0
+      ],
+      [
+       256.0,
+       231.0
+      ],
+      [
+       103.0,
+       251.0
+      ]
+     ],
+     "category": "tagline",
+     "confidence": 0.8696181774139404,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": false,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "H",
+     "title_group_text": null,
+     "title_match_source": null
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom",
+    "title_recovery"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": null,
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": true
+   }
+  },
+  "reason": "no_title",
+  "residual_texts": [
+   "H"
+  ],
+  "title_bbox": null
+ }
+}

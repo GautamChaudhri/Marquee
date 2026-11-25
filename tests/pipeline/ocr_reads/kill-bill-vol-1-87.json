@@ -1,0 +1,390 @@
+{
+ "about": "Recorded reader output of one labelled poster for Kill Bill: Vol. 1 (session E5 labelled set #87, tuning half, label title_only: KILL BILL). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      321.0,
+      282.0
+     ],
+     [
+      391.0,
+      327.0
+     ],
+     [
+      377.0,
+      347.0
+     ],
+     [
+      307.0,
+      302.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.16938722133636475
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "9"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      208.0,
+      218.0
+     ],
+     [
+      275.0,
+      260.0
+     ],
+     [
+      263.0,
+      278.0
+     ],
+     [
+      196.0,
+      237.0
+     ]
+    ],
+    [
+     [
+      264.0,
+      247.0
+     ],
+     [
+      391.0,
+      324.0
+     ],
+     [
+      369.0,
+      358.0
+     ],
+     [
+      242.0,
+      281.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.0,
+    0.0
+   ],
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "",
+    ""
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      474.0,
+      472.0
+     ],
+     [
+      546.0,
+      518.0
+     ],
+     [
+      529.0,
+      546.0
+     ],
+     [
+      456.0,
+      499.0
+     ]
+    ],
+    [
+     [
+      632.0,
+      568.0
+     ],
+     [
+      778.0,
+      662.0
+     ],
+     [
+      752.0,
+      703.0
+     ],
+     [
+      606.0,
+      609.0
+     ]
+    ],
+    [
+     [
+      238.0,
+      647.0
+     ],
+     [
+      273.0,
+      647.0
+     ],
+     [
+      273.0,
+      664.0
+     ],
+     [
+      238.0,
+      664.0
+     ]
+    ],
+    [
+     [
+      806.0,
+      726.0
+     ],
+     [
+      821.0,
+      726.0
+     ],
+     [
+      821.0,
+      745.0
+     ],
+     [
+      806.0,
+      745.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.0,
+    0.27299410104751587,
+    0.45627570152282715,
+    0.17669032514095306
+   ],
+   "shape": [
+    1500,
+    1000
+   ],
+   "texts": [
+    "",
+    "\u6708",
+    "as",
+    "E"
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      158.0,
+      137.0
+     ],
+     [
+      231.0,
+      181.0
+     ],
+     [
+      215.0,
+      211.0
+     ],
+     [
+      141.0,
+      168.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.0
+   ],
+   "shape": [
+    450,
+    300
+   ],
+   "texts": [
+    ""
+   ]
+  },
+  {
+   "polys": [
+    [
+     [
+      0.0,
+      0.0
+     ],
+     [
+      119.0,
+      0.0
+     ],
+     [
+      119.0,
+      82.0
+     ],
+     [
+      0.0,
+      82.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      54.0
+     ],
+     [
+      117.0,
+      54.0
+     ],
+     [
+      117.0,
+      146.0
+     ],
+     [
+      0.0,
+      146.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.9832360148429871,
+    0.9446268677711487
+   ],
+   "shape": [
+    300,
+    200
+   ],
+   "texts": [
+    "KILL",
+    "BILL"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "quentin",
+  "tarantino"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "a",
+   "apart",
+   "band",
+   "cool",
+   "manchu",
+   "miramax",
+   "super"
+  ],
+  "tagline": "here comes the bride"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "title_only",
+ "movie_title": "Kill Bill: Vol. 1",
+ "title_text": "kill bill vol 1",
+ "title_tokens": [
+  "1",
+  "bill",
+  "kill",
+  "one",
+  "vol"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 5,
+  "detected_text": "",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.0,
+    "denied_significant_count": 0,
+    "has_text": false,
+    "has_title": false,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "no_text",
+    "require_title": true,
+    "significant_area_fraction": 0.0,
+    "significant_residual_count": 0
+   },
+   "detected_boxes": [],
+   "enhance_retry": {
+    "recovered_text": false,
+    "triggered": true
+   },
+   "image_size": {
+    "height": 750,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom",
+    "enhance_retry",
+    "title_recovery"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": null,
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": true
+   }
+  },
+  "reason": "no_text",
+  "residual_texts": [],
+  "title_bbox": null
+ }
+}

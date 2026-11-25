@@ -1,0 +1,971 @@
+{
+ "about": "Recorded reader output of one labelled poster for Black Panther (session E5 labelled set #414, tuning half, label other_text: BLACK PANTHER with the MARVEL STUDIOS mark). No image.",
+ "calls": [
+  {
+   "polys": [
+    [
+     [
+      210.0,
+      626.0
+     ],
+     [
+      258.0,
+      626.0
+     ],
+     [
+      258.0,
+      642.0
+     ],
+     [
+      210.0,
+      642.0
+     ]
+    ],
+    [
+     [
+      139.0,
+      653.0
+     ],
+     [
+      297.0,
+      657.0
+     ],
+     [
+      294.0,
+      729.0
+     ],
+     [
+      137.0,
+      729.0
+     ]
+    ],
+    [
+     [
+      175.0,
+      645.0
+     ],
+     [
+      277.0,
+      645.0
+     ],
+     [
+      277.0,
+      673.0
+     ],
+     [
+      175.0,
+      673.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.897614061832428,
+    0.9792771339416504,
+    0.9483639001846313
+   ],
+   "shape": [
+    729,
+    500
+   ],
+   "texts": [
+    "MARVEL STUD",
+    "PANTHE",
+    "BLACE"
+   ]
+  },
+  {
+   "polys": [],
+   "scores": [],
+   "shape": [
+    262,
+    1000
+   ],
+   "texts": []
+  },
+  {
+   "polys": [
+    [
+     [
+      325.0,
+      62.0
+     ],
+     [
+      669.0,
+      62.0
+     ],
+     [
+      669.0,
+      168.0
+     ],
+     [
+      325.0,
+      168.0
+     ]
+    ],
+    [
+     [
+      508.0,
+      93.0
+     ],
+     [
+      548.0,
+      93.0
+     ],
+     [
+      548.0,
+      105.0
+     ],
+     [
+      508.0,
+      105.0
+     ]
+    ],
+    [
+     [
+      385.0,
+      103.0
+     ],
+     [
+      393.0,
+      103.0
+     ],
+     [
+      393.0,
+      111.0
+     ],
+     [
+      385.0,
+      111.0
+     ]
+    ],
+    [
+     [
+      521.0,
+      97.0
+     ],
+     [
+      527.0,
+      103.0
+     ],
+     [
+      523.0,
+      108.0
+     ],
+     [
+      516.0,
+      101.0
+     ]
+    ],
+    [
+     [
+      376.0,
+      107.0
+     ],
+     [
+      385.0,
+      107.0
+     ],
+     [
+      385.0,
+      116.0
+     ],
+     [
+      376.0,
+      116.0
+     ]
+    ],
+    [
+     [
+      529.0,
+      105.0
+     ],
+     [
+      536.0,
+      112.0
+     ],
+     [
+      531.0,
+      117.0
+     ],
+     [
+      525.0,
+      110.0
+     ]
+    ],
+    [
+     [
+      533.0,
+      108.0
+     ],
+     [
+      547.0,
+      108.0
+     ],
+     [
+      547.0,
+      130.0
+     ],
+     [
+      533.0,
+      130.0
+     ]
+    ],
+    [
+     [
+      549.0,
+      103.0
+     ],
+     [
+      558.0,
+      103.0
+     ],
+     [
+      558.0,
+      111.0
+     ],
+     [
+      549.0,
+      111.0
+     ]
+    ],
+    [
+     [
+      557.0,
+      107.0
+     ],
+     [
+      567.0,
+      107.0
+     ],
+     [
+      567.0,
+      115.0
+     ],
+     [
+      557.0,
+      115.0
+     ]
+    ],
+    [
+     [
+      561.0,
+      106.0
+     ],
+     [
+      580.0,
+      106.0
+     ],
+     [
+      580.0,
+      117.0
+     ],
+     [
+      561.0,
+      117.0
+     ]
+    ],
+    [
+     [
+      571.0,
+      111.0
+     ],
+     [
+      584.0,
+      111.0
+     ],
+     [
+      584.0,
+      121.0
+     ],
+     [
+      571.0,
+      121.0
+     ]
+    ],
+    [
+     [
+      579.0,
+      103.0
+     ],
+     [
+      595.0,
+      103.0
+     ],
+     [
+      595.0,
+      111.0
+     ],
+     [
+      579.0,
+      111.0
+     ]
+    ],
+    [
+     [
+      579.0,
+      111.0
+     ],
+     [
+      596.0,
+      111.0
+     ],
+     [
+      596.0,
+      121.0
+     ],
+     [
+      579.0,
+      121.0
+     ]
+    ],
+    [
+     [
+      586.0,
+      116.0
+     ],
+     [
+      596.0,
+      116.0
+     ],
+     [
+      596.0,
+      126.0
+     ],
+     [
+      586.0,
+      126.0
+     ]
+    ],
+    [
+     [
+      595.0,
+      107.0
+     ],
+     [
+      603.0,
+      107.0
+     ],
+     [
+      603.0,
+      115.0
+     ],
+     [
+      595.0,
+      115.0
+     ]
+    ],
+    [
+     [
+      380.0,
+      122.0
+     ],
+     [
+      385.0,
+      127.0
+     ],
+     [
+      380.0,
+      132.0
+     ],
+     [
+      375.0,
+      127.0
+     ]
+    ],
+    [
+     [
+      595.0,
+      115.0
+     ],
+     [
+      600.0,
+      120.0
+     ],
+     [
+      596.0,
+      125.0
+     ],
+     [
+      590.0,
+      119.0
+     ]
+    ],
+    [
+     [
+      606.0,
+      114.0
+     ],
+     [
+      612.0,
+      120.0
+     ],
+     [
+      608.0,
+      125.0
+     ],
+     [
+      601.0,
+      118.0
+     ]
+    ],
+    [
+     [
+      460.0,
+      126.0
+     ],
+     [
+      636.0,
+      134.0
+     ],
+     [
+      633.0,
+      209.0
+     ],
+     [
+      457.0,
+      201.0
+     ]
+    ],
+    [
+     [
+      583.0,
+      125.0
+     ],
+     [
+      591.0,
+      117.0
+     ],
+     [
+      598.0,
+      124.0
+     ],
+     [
+      590.0,
+      132.0
+     ]
+    ],
+    [
+     [
+      606.0,
+      118.0
+     ],
+     [
+      612.0,
+      124.0
+     ],
+     [
+      608.0,
+      129.0
+     ],
+     [
+      601.0,
+      122.0
+     ]
+    ],
+    [
+     [
+      323.0,
+      135.0
+     ],
+     [
+      479.0,
+      135.0
+     ],
+     [
+      479.0,
+      216.0
+     ],
+     [
+      323.0,
+      216.0
+     ]
+    ],
+    [
+     [
+      486.0,
+      144.0
+     ],
+     [
+      493.0,
+      144.0
+     ],
+     [
+      493.0,
+      155.0
+     ],
+     [
+      486.0,
+      155.0
+     ]
+    ]
+   ],
+   "scores": [
+    0.546204149723053,
+    0.10955242812633514,
+    0.0,
+    0.0880352333188057,
+    0.2725244462490082,
+    0.0,
+    0.053865112364292145,
+    0.07717154175043106,
+    0.09658706933259964,
+    0.16103239357471466,
+    0.05905821546912193,
+    0.0,
+    0.16932839155197144,
+    0.0,
+    0.0,
+    0.0,
+    0.3171535134315491,
+    0.0,
+    0.7675032019615173,
+    0.2276742309331894,
+    0.10868559032678604,
+    0.6585384607315063,
+    0.27763617038726807
+   ],
+   "shape": [
+    262,
+    1000
+   ],
+   "texts": [
+    "ANLICK",
+    "N",
+    "",
+    "-",
+    "-",
+    "",
+    "\u798f",
+    "1",
+    "U",
+    "0",
+    "\u798f",
+    "",
+    "1",
+    "",
+    "",
+    "",
+    "-",
+    "",
+    "ANTI",
+    "-",
+    "2",
+    "DED",
+    "-"
+   ]
+  }
+ ],
+ "director_tokens": [
+  "coogler",
+  "ryan"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "marvel",
+   "studios"
+  ],
+  "tagline": "long live the king"
+ },
+ "image_size": [
+  500,
+  729
+ ],
+ "label": "other_text",
+ "movie_title": "Black Panther",
+ "title_text": "black panther",
+ "title_tokens": [
+  "black",
+  "panther"
+ ],
+ "today": {
+  "accepted": false,
+  "calls_used": 3,
+  "detected_text": "panthe blace marvel stud anti ded anlick",
+  "diagnostics": {
+   "decision": {
+    "accepted": false,
+    "allow_map": {
+     "billing": false,
+     "director": false,
+     "rating": false,
+     "season": false,
+     "season_edition": false,
+     "season_title": false,
+     "studio": false,
+     "tagline": false,
+     "title": true
+    },
+    "allowed_area_fraction": 0.0,
+    "allowed_significant_count": 0,
+    "denied_area_fraction": 0.03618655692729767,
+    "denied_significant_count": 3,
+    "has_text": true,
+    "has_title": true,
+    "max_residual_area_fraction": 0.04,
+    "max_residual_boxes": 0,
+    "mode": "title_only",
+    "reason": "text_heavy",
+    "require_title": true,
+    "significant_area_fraction": 0.03618655692729767,
+    "significant_residual_count": 3
+   },
+   "detected_boxes": [
+    {
+     "area": 11660.0,
+     "bbox": [
+      [
+       139.0,
+       653.0
+      ],
+      [
+       297.0,
+       657.0
+      ],
+      [
+       294.0,
+       729.0
+      ],
+      [
+       137.0,
+       729.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9792771339416504,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "PANTHE",
+     "title_group_text": "PANTHE",
+     "title_match_source": "box"
+    },
+    {
+     "area": 2856.0,
+     "bbox": [
+      [
+       175.0,
+       645.0
+      ],
+      [
+       277.0,
+       645.0
+      ],
+      [
+       277.0,
+       673.0
+      ],
+      [
+       175.0,
+       673.0
+      ]
+     ],
+     "category": "title",
+     "confidence": 0.9483639001846313,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": false,
+     "is_significant": false,
+     "is_title": true,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "BLACE",
+     "title_group_text": "BLACE",
+     "title_match_source": "box"
+    },
+    {
+     "area": 768.0,
+     "bbox": [
+      [
+       210.0,
+       626.0
+      ],
+      [
+       258.0,
+       626.0
+      ],
+      [
+       258.0,
+       642.0
+      ],
+      [
+       210.0,
+       642.0
+      ]
+     ],
+     "category": "studio",
+     "confidence": 0.897614061832428,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "full",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "word_level",
+     "text": "MARVEL STUD",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 3306.0,
+     "bbox": [
+      [
+       230.0,
+       661.0
+      ],
+      [
+       318.0,
+       665.0
+      ],
+      [
+       316.5,
+       702.5
+      ],
+      [
+       228.5,
+       698.5
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.7675032019615173,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "big_area",
+     "text": "ANTI",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 3159.0,
+     "bbox": [
+      [
+       161.5,
+       665.5
+      ],
+      [
+       239.5,
+       665.5
+      ],
+      [
+       239.5,
+       706.0
+      ],
+      [
+       161.5,
+       706.0
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.6585384607315063,
+     "counts_toward_rejection": false,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": false,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": true,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": null,
+     "text": "DED",
+     "title_group_text": null,
+     "title_match_source": null
+    },
+    {
+     "area": 9116.0,
+     "bbox": [
+      [
+       162.5,
+       629.0
+      ],
+      [
+       334.5,
+       629.0
+      ],
+      [
+       334.5,
+       682.0
+      ],
+      [
+       162.5,
+       682.0
+      ]
+     ],
+     "category": "billing",
+     "confidence": 0.546204149723053,
+     "counts_toward_rejection": true,
+     "geometry_valid": true,
+     "is_residual": true,
+     "is_significant": true,
+     "is_title": false,
+     "is_title_fragment": false,
+     "pass": "bottom",
+     "proximity_discounted": false,
+     "semantic_source": null,
+     "semantic_span_text": null,
+     "significant_reason": "word_level",
+     "text": "ANLICK",
+     "title_group_text": null,
+     "title_match_source": null
+    }
+   ],
+   "enhance_retry": {
+    "recovered_text": true,
+    "triggered": false
+   },
+   "image_size": {
+    "height": 729,
+    "width": 500
+   },
+   "passes_run": [
+    "full",
+    "top",
+    "bottom"
+   ],
+   "profile": {
+    "id": "title_only",
+    "name": "Title Only",
+    "scope": "movie",
+    "settings_fingerprint": "f8be27558f0f9376"
+   },
+   "season_context": {
+    "number": null,
+    "title": null
+   },
+   "title": {
+    "bbox": [
+     [
+      137.0,
+      645.0
+     ],
+     [
+      297.0,
+      645.0
+     ],
+     [
+      297.0,
+      729.0
+     ],
+     [
+      137.0,
+      729.0
+     ]
+    ],
+    "fragments": [
+     {
+      "bbox": [
+       [
+        139.0,
+        653.0
+       ],
+       [
+        297.0,
+        657.0
+       ],
+       [
+        294.0,
+        729.0
+       ],
+       [
+        137.0,
+        729.0
+       ]
+      ],
+      "group_text": "PANTHE",
+      "is_fragment": false,
+      "source": "box",
+      "text": "PANTHE"
+     },
+     {
+      "bbox": [
+       [
+        175.0,
+        645.0
+       ],
+       [
+        277.0,
+        645.0
+       ],
+       [
+        277.0,
+        673.0
+       ],
+       [
+        175.0,
+        673.0
+       ]
+      ],
+      "group_text": "BLACE",
+      "is_fragment": false,
+      "source": "box",
+      "text": "BLACE"
+     }
+    ],
+    "match_score": 0.8615384615384616,
+    "text": "blace panthe"
+   },
+   "title_recovery": {
+    "confidence_threshold": 0.5,
+    "enabled": true,
+    "error": null,
+    "recovered_title": false,
+    "triggered": false
+   }
+  },
+  "reason": "text_heavy",
+  "residual_texts": [
+   "MARVEL STUD",
+   "ANTI",
+   "DED",
+   "ANLICK"
+  ],
+  "title_bbox": [
+   [
+    137.0,
+    645.0
+   ],
+   [
+    297.0,
+    645.0
+   ],
+   [
+    297.0,
+    729.0
+   ],
+   [
+    137.0,
+    729.0
+   ]
+  ]
+ }
+}
