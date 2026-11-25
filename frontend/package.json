@@ -25,8 +25,8 @@
 		"@axe-core/playwright": "4.12.1",
 		"@eslint/js": "^10.0.1",
 		"@playwright/test": "1.61.1",
-		"@sveltejs/adapter-node": "^6.0.0",
-		"@sveltejs/kit": "^3.0.0",
+		"@sveltejs/adapter-node": "^6.0.6",
+		"@sveltejs/kit": "^3.4.1",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
 		"@testing-library/jest-dom": "6.9.1",
 		"@testing-library/svelte": "5.4.2",
@@ -42,7 +42,7 @@
 		"prettier-plugin-svelte": "^4.1.0",
 		"svelte": "^5.57.2",
 		"svelte-check": "^4.7.5",
-		"typescript": "^6.0.0",
+		"typescript": "6.0.3",
 		"typescript-eslint": "^8.60.1",
 		"vite": "^8.0.16",
 		"vitest": "4.1.12"
@@ -52,7 +52,9 @@
 		"svelte-dnd-action": "0.9.80"
 	},
 	"overrides": {
-		"cookie": "0.7.2"
+		"openapi-typescript": {
+			"typescript": "$typescript"
+		}
 	},
 	"imports": {
 		"#lib": "./src/lib/index.js",

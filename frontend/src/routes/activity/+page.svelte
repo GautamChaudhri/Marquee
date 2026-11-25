@@ -44,9 +44,8 @@
 	function go(changes: Partial<ActivityQuery>) {
 		const params = paramsFromActivity({ ...query, ...changes });
 		void goto(params.size ? `?${params}` : '/activity', {
-			keepFocus: true,
-			noScroll: true,
-			replaceState: 'page' in changes ? false : true
+			reset: false,
+			replace: 'page' in changes ? false : true
 		});
 	}
 

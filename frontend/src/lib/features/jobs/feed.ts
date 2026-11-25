@@ -25,7 +25,7 @@ function positive(value: string | null): number | null {
 	return n >= 1 ? n : null;
 }
 
-export function activityFromParams(params: URLSearchParams): ActivityQuery {
+export function activityFromParams(params: Pick<URLSearchParams, 'get'>): ActivityQuery {
 	const state = params.get('state');
 	const kind = params.get('kind');
 	return {

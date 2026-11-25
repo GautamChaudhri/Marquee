@@ -63,7 +63,7 @@
 	function apply(changes: Partial<LibraryFilters>) {
 		const params = paramsFromFilters({ ...filters, ...changes });
 		const query = params.size ? `?${params}` : '/';
-		void goto(query, { replaceState: true, keepFocus: true, noScroll: true });
+		void goto(query, { replace: true, reset: false });
 	}
 
 	let searchTimer: ReturnType<typeof setTimeout> | undefined;

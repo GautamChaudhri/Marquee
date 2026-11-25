@@ -27,7 +27,7 @@ function oneOf<T extends string>(value: string | null, allowed: readonly T[], fa
 	return value !== null && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-export function filtersFromParams(params: URLSearchParams): LibraryFilters {
+export function filtersFromParams(params: Pick<URLSearchParams, 'get'>): LibraryFilters {
 	return {
 		q: (params.get('q') ?? '').slice(0, 200),
 		poster: oneOf(params.get('poster'), ['any', 'yes', 'no'], 'any'),
