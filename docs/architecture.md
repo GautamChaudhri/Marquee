@@ -436,8 +436,9 @@ is on by default, the second off:
   again. The bounds are constants beside the rule, each saying what it was tuned on. The rule
   is off by default: on a blind sample, measured before the reader's document preprocessor
   was switched off, 72% of the posters it let through held only their title, against a bar of
-  90% (actor names, character names, and studio marks set at a title line's size). Set
-  `OCR_TITLE_PIECE_RULE=true` to run it.
+  90% (actor names, character names, and studio marks set at a title line's size). With the
+  reader fixed, 80% of a sample of what it would let through held only their title; the
+  misses were of the same kinds. Set `OCR_TITLE_PIECE_RULE=true` to run it.
 
 With both switches off every decision and the OCR trace are what they were before the two
 rules. With either on, the trace says what happened: `passes_run` lists `small_60` and
