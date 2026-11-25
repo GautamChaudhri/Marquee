@@ -2449,7 +2449,7 @@ def _process_image(
             prox=prox,
             pass_by_id=pass_by_id,
         )
-        # The two added rules report only when switched on, so with both off the trace
+        # The added rules report only when switched on, so with all three off the trace
         # is exactly what it was before them.
         extra: dict[str, object] = {}
         if pipeline_settings.OCR_SMALL_COPY_RETRY:

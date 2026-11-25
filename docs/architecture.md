@@ -395,7 +395,9 @@ read matches the title. A box whose text matches the title (whole, a word of it,
 letter-spaced read) is title evidence; every other box is leftover text. One significant
 leftover box (a word of four letters or more that is not the title's, or a box past a size
 limit) rejects the poster as `text_heavy`; a poster where no title was found is rejected as
-`no_title`, or `no_text` when nothing was read at all.
+`no_title`, or `no_text` when nothing was read at all. The title's words are matched in a fixed
+order (sorted, and each word once in reading order when scores are summed), so the same reader
+answers give the same decision and trace in every process, whatever Python's hash seed.
 
 The reader is built in `_load_ocr`, once per OCR worker: PaddleOCR 3.6.0 with the
 `PP-OCRv5_mobile_det` detector and `PP-OCRv5_server_rec` recogniser, and text-line
@@ -413,8 +415,8 @@ before the change. The reader opens three model folders under `data/models/paddl
 (detection, recognition, text-line orientation). An installation from before the change also
 holds the preprocessor's two folders (`PP-LCNet_x1_0_doc_ori` and `UVDoc`); nothing opens them.
 
-Two rules, each behind a switch, recover title-only posters the reader gets wrong. The first
-is on by default, the second off:
+Three rules, each behind a switch, recover title-only posters the reader gets wrong. The first
+and the third are on by default, the second off:
 
 - **Smaller copies** (`OCR_SMALL_COPY_RETRY`). When every pass ends with no title found and the
   poster is rejected, the reader reads the whole poster again on copies at 60% and 40% of its
@@ -439,13 +441,36 @@ is on by default, the second off:
   90% (actor names, character names, and studio marks set at a title line's size). With the
   reader fixed, 80% of a sample of what it would let through held only their title; the
   misses were of the same kinds. Set `OCR_TITLE_PIECE_RULE=true` to run it.
+- **Second reads** (`OCR_SECOND_READ_RULE`). The passes read a big title more than once, and
+  `_dedupe_boxes` drops a box only when another one has the same text. A second read that comes
+  back as other text ("NATT" lying on the RIVER of WIND RIVER, read by the bottom strip; "si"
+  and "ns" inside "signs") is not the title, so it was left over and rejected the poster. When
+  a poster with a title found is rejected for leftover text, a leftover box that counts toward
+  rejection is set aside as a second read when it was read by another pass than a box with
+  title evidence, at least 75% of its own polygon lies inside that box's polygon, its glyphs
+  are at least a fifth as tall as that box's, and the gate's classifier does not call it a
+  studio mark or a director's credit; a box whose polygon is in a turned frame takes no part.
+  Overlap is measured on the polygons, never on their bounding rectangles: the rectangle of a
+  slanted title covers the credit line above it. Marks, credits, and names often lie inside a
+  title box's slack, read by a strip while the title came from the whole poster; they are set
+  much smaller than the title, which the height bound uses. A box set aside stops counting
+  toward rejection and nothing else: it is not title evidence, so the title box, the title
+  geometry, and the taste profile's title rows do not change, and it stays among the leftover
+  boxes the ranking's `text_residual` feature counts. An accepted poster is never looked at
+  again. The bounds were tuned on half of a labelled set drawn from what a loose form of the
+  rule admits among the third blind evaluation's `text_heavy` rejections (133 posters in 57
+  movies, labelled by eye) and measured on the other half: 42 of the 46 posters it let through
+  there held only their title (91%, against a bar of 90%). On the session E5 labelled set it
+  accepts six more title-only posters and rejects none that was accepted. Set
+  `OCR_SECOND_READ_RULE=false` to switch it off.
 
-With both switches off every decision and the OCR trace are what they were before the two
-rules. With either on, the trace says what happened: `passes_run` lists `small_60` and
-`small_40` when they ran, a `small_copy_retry` and a `title_piece_rule` block say whether each
-rule ran and what it found, and every region carries `is_title_piece`. The run archive then
-keeps every candidate's regions, accepted ones too, each with the pass that read it and
-whether it counted as a piece of the title.
+With every switch off each decision and the OCR trace are what they were before the three
+rules. With one on, the trace says what happened: `passes_run` lists `small_60` and `small_40`
+when they ran, a `small_copy_retry`, a `title_piece_rule`, and a `second_read_rule` block say
+whether each rule ran and what it found, and every region carries `is_title_piece` with the
+title-piece rule on and `is_second_read` with the second-read rule on. The run archive then
+keeps every candidate's regions, accepted ones too, each with the pass that read it, whether
+it counted as a piece of the title, and whether it was set aside as a second read.
 
 ## Writing a poster
 
