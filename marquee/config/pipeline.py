@@ -17,6 +17,14 @@ _DATA_ML_DIR = settings.ml_dir
 
 _TMDB_SIZES = {"w92", "w154", "w185", "w342", "w500", "w780", "original"}
 
+# PaddleOCR's document preprocessor (orientation classification and unwarping) is for scanned
+# pages. On posters it turned about a third of them before reading, so text boxes came back in
+# the turned image's coordinates, and it bent every poster. The text reader is built without
+# it. A constant, not a setting: two coordinate frames must not live side by side. The run
+# archive reports it as config.ocr.document_preprocessor; an archive without that field was
+# made by the reader before this change.
+OCR_DOCUMENT_PREPROCESSOR = False
+
 
 class PipelineSettings(BaseSettings):
     """All tunable knobs for the GATE-then-RANK poster pipeline."""
@@ -528,6 +536,7 @@ class PipelineSettings(BaseSettings):
                 ),
                 "small_copy_retry": self.OCR_SMALL_COPY_RETRY,
                 "title_piece_rule": self.OCR_TITLE_PIECE_RULE,
+                "document_preprocessor": OCR_DOCUMENT_PREPROCESSOR,
             },
             "extended_features": {
                 "dino_enabled": self.DINO_ENABLED,

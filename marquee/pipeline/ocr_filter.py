@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, NoReturn
 import numpy as np
 from PIL import Image
 
-from marquee.config.pipeline import pipeline_settings
+from marquee.config.pipeline import OCR_DOCUMENT_PREPROCESSOR, pipeline_settings
 
 if TYPE_CHECKING:
     from marquee.pipeline.text_profiles import TextProfile
@@ -812,7 +812,12 @@ def _load_ocr() -> object:
     if pipeline_settings.OCR_DEVICE == "auto" and not cuda_available:
         logger.warning("Paddle CUDA auto probe failed; falling back to CPU: %s", cuda_diagnostic)
     logger.info("Loading PaddleOCR on device=%s", device)
+    # Without the document preprocessor nothing turns or unwarps the poster before it is
+    # read, so every box is in the poster's own frame (see OCR_DOCUMENT_PREPROCESSOR).
+    # Text-line orientation stays on: a single line set vertically is read through it.
     return PaddleOCR(
+        use_doc_orientation_classify=OCR_DOCUMENT_PREPROCESSOR,
+        use_doc_unwarping=OCR_DOCUMENT_PREPROCESSOR,
         use_textline_orientation=True,
         lang="en",
         device=device,

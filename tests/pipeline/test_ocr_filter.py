@@ -5,11 +5,17 @@ labelled set (text, confidence, polygon, and the shape of the image each call re
 the movie's gate context as the run job builds it, and what the gate decided from those
 answers before the two rules existed ("today"). There is no image: the gate reads a
 blank image of the poster's size and the recorded answers come back in call order.
+
+The fixtures in ``ocr_reads/`` were recorded with the reader as it was before session E6
+(PaddleOCR's document preprocessor on, so some boxes are in a turned frame); they are
+inputs to the rules' logic and still test it.
 """
 
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +27,34 @@ from marquee.pipeline import ocr_filter
 from marquee.pipeline.types import OCRCandidateResult
 
 FIXTURES = Path(__file__).parent / "ocr_reads"
+
+
+def test_load_ocr_reads_the_poster_as_it_is(monkeypatch: pytest.MonkeyPatch):
+    """No document preprocessor: nothing turns the poster or bends it before it is read, so
+    boxes come back in the poster's own frame. Every other argument is as it was."""
+    created: dict[str, object] = {}
+
+    class FakePaddleOCR:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "paddleocr", types.SimpleNamespace(PaddleOCR=FakePaddleOCR))
+    monkeypatch.setattr(ocr_filter, "_paddle_cuda_probe", lambda **_: (False, "not in tests"))
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_DEVICE", "cpu")
+
+    ocr_filter._load_ocr()
+
+    assert created == {
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": True,
+        "lang": "en",
+        "device": "cpu",
+        "engine": "paddle_dynamic",
+        "text_detection_model_name": "PP-OCRv5_mobile_det",
+        "text_det_box_thresh": 0.3,
+        "text_det_unclip_ratio": 2.0,
+    }
 
 
 def _fixture(name: str) -> dict:

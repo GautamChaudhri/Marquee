@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from marquee.config import pipeline as pipeline_config
 from marquee.config.pipeline import PipelineSettings
 
 
@@ -20,3 +21,17 @@ def test_each_text_gate_rule_can_be_switched_off(
     settings = PipelineSettings(_env_file=None)
     assert getattr(settings, name) is False
     assert settings.snapshot()["ocr"][name.removeprefix("OCR_").lower()] is False
+
+
+def test_the_run_archive_says_the_reader_has_no_document_preprocessor() -> None:
+    assert pipeline_config.OCR_DOCUMENT_PREPROCESSOR is False
+    ocr = PipelineSettings(_env_file=None).snapshot()["ocr"]
+    assert ocr["document_preprocessor"] is False
+
+
+def test_the_document_preprocessor_is_not_a_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """It is a defect switched off, not a preference: nothing reads it from the environment."""
+    monkeypatch.setenv("OCR_DOCUMENT_PREPROCESSOR", "true")
+    settings = PipelineSettings(_env_file=None)
+    assert not hasattr(settings, "OCR_DOCUMENT_PREPROCESSOR")
+    assert settings.snapshot()["ocr"]["document_preprocessor"] is False
