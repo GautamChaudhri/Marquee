@@ -344,8 +344,9 @@ class PipelineSettings(BaseSettings):
     OCR_SMALL_COPY_RETRY: bool = True
     # Title pieces: a leftover box that sits with a title box, is about as tall, and
     # is made mostly of the title's letters counts as part of the title, not as other
-    # text (a stylised title read in pieces, one of them misread).
-    OCR_TITLE_PIECE_RULE: bool = True
+    # text (a stylised title read in pieces, one of them misread). Off by default: on a blind
+    # sample it let through 72% title-only posters against a bar of 90% (session E5).
+    OCR_TITLE_PIECE_RULE: bool = False
 
     # ── Text-gate mode presets ───────────────────────────────────────
     # "title_only" = current strict behaviour (require title, reject residual).
