@@ -411,7 +411,11 @@ def _letter_band_evidence(
     ]
     if len(members) < _BAND_MIN_BOXES:
         return {}
-    targets = [t for t in (title_compact, *title_token_compacts) if len(t) >= 2]
+    # The title words come as a set, whose order follows the hash seed of the process. The
+    # band is measured against the target it covers most, and among equal coverage the first
+    # one wins (No Time to Die: "time" and "to" both fully covered, with different
+    # precision), so the words are taken in sorted order to give the same answer every time.
+    targets = [t for t in (title_compact, *sorted(title_token_compacts)) if len(t) >= 2]
     if not targets:
         return {}
 
@@ -1793,7 +1797,9 @@ def _enhance_contrast(image: np.ndarray) -> np.ndarray:
 
 
 def _title_match_score(text: str, title_tokens: set[str]) -> float:
-    words = set(_normalise(text).split())
+    # Each word once, in reading order: a sum of floats taken in a set's order could differ
+    # in its last digit from one process to the next.
+    words = list(dict.fromkeys(_normalise(text).split()))
     if not words:
         return 0.0
     scores = []

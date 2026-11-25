@@ -15,6 +15,8 @@ recorded with the reader as ``_load_ocr`` builds it now, for the tests of that r
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -399,3 +401,76 @@ def test_fixed_reader_misread_title_piece_rejects_unless_the_piece_rule_is_on(
     on, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
     assert on.accepted
     assert {box["text"] for box in _boxes(on) if box["is_title_piece"]} == {"DEKSEKK"}
+
+
+# Title matching under any hash seed. Python orders a set of strings by their hashes, which
+# change with PYTHONHASHSEED from one process to the next, so each run is a fresh process.
+
+_GATE_IN_A_FRESH_PROCESS = """
+import json, sys
+import numpy as np
+from PIL import Image
+from marquee.config.pipeline import PipelineSettings
+from marquee.pipeline import ocr_filter
+
+fixture = json.loads(open(sys.argv[1]).read())
+for name, field in PipelineSettings.model_fields.items():
+    if name.startswith("OCR_"):
+        setattr(ocr_filter.pipeline_settings, name, field.default)
+ocr_filter.pipeline_settings.OCR_SMALL_COPY_RETRY = True
+ocr_filter.pipeline_settings.OCR_TITLE_PIECE_RULE = False
+
+class Reader:
+    def __init__(self):
+        self.calls = iter(fixture["calls"])
+    def predict(self, image):
+        call = next(self.calls)
+        if not call["texts"]:
+            return []
+        polys = [np.asarray(p, dtype=np.float32) for p in call["polys"]]
+        return [{"rec_texts": call["texts"], "rec_scores": call["scores"], "rec_polys": polys}]
+
+ocr_filter._worker_ocr = Reader()
+Image.new("RGB", tuple(fixture["image_size"]), "black").save(sys.argv[2])
+extras = dict(fixture["extras"])
+extras["studio_tokens"] = set(extras.get("studio_tokens", ()))
+result = ocr_filter._process_image(
+    sys.argv[2], set(fixture["title_tokens"]), set(fixture["director_tokens"]),
+    title_text=fixture["title_text"], extras=extras)
+print(json.dumps({"accepted": result.accepted, "reason": result.reason,
+                  "trace": result.diagnostics}, sort_keys=True))
+"""
+
+
+def test_title_matching_gives_the_same_answer_under_any_hash_seed(tmp_path: Path):
+    """No Time to Die with the 007 mark (labelled poster #341). A smaller copy reads MO, TIAE,
+    and 007, and the letter band made of them covers two title words fully, "time" and "to".
+    Which of the two the band was measured against used to follow the order Python iterated a
+    set of title words: measured against "time" most of its letters are the title's and the
+    band is title; measured against "to" it is not, and MO counts as other text. The same
+    reader answers were accepted under some hash seeds and rejected under others. The words
+    are now taken in sorted order, so "time" comes first under every seed."""
+    fixture_path = FIXED_FIXTURES / "no-time-to-die-341.json"
+    answers = []
+    for seed in ("0", "1", "2", "4", "7"):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _GATE_IN_A_FRESH_PROCESS,
+                str(fixture_path),
+                str(tmp_path / f"poster-{seed}.png"),
+            ],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=True,
+        )
+        answers.append(completed.stdout.strip().splitlines()[-1])
+
+    assert len(set(answers)) == 1, "the decision or the trace changed with the hash seed"
+    answer = json.loads(answers[0])
+    assert answer["accepted"]
+    titles = {box["text"] for box in answer["trace"]["detected_boxes"] if box["is_title"]}
+    assert titles == {"MO", "TIAE", "007", "00"}
