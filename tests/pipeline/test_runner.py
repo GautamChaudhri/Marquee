@@ -97,7 +97,7 @@ def test_archive_regions_without_the_added_text_rules_are_unchanged():
     }
 
 
-@pytest.mark.parametrize("block", ["small_copy_retry", "title_piece_rule"])
+@pytest.mark.parametrize("block", ["small_copy_retry", "title_piece_rule", "second_read_rule"])
 def test_archive_keeps_every_region_with_its_pass_when_an_added_rule_is_on(block: str):
     """A later reader can tell why a poster passed: every candidate keeps its regions, each
     with the pass that read it and whether it counted as a piece of the title."""
@@ -116,3 +116,39 @@ def test_archive_keeps_every_region_with_its_pass_when_an_added_rule_is_on(block
     assert regions["TOMA"]["is_title_piece"] is False
     assert regions["RAHAWN"]["is_title_piece"] is True
     assert regions["BONE"]["pass"] == "small_60"
+
+
+def test_archive_marks_what_the_second_read_rule_set_aside():
+    """With the rule on, every region says whether it was set aside as a second read of the
+    title; a region the rule set aside no longer counts toward rejection."""
+    trace = {
+        "second_read_rule": {"triggered": True, "second_reads": 1},
+        "detected_boxes": [
+            _region("WIND RIVER", **{"pass": "full"}, is_second_read=False),
+            _region(
+                "NATT",
+                category="other",
+                is_title=False,
+                is_title_fragment=False,
+                is_significant=True,
+                is_second_read=True,
+            ),
+        ],
+    }
+    accepted = CandidateScore(image_path=Path("a.jpg"), orig_filename="a.jpg")
+    _attach_ocr_diagnostics(accepted, _ocr_result(accepted=True, diagnostics=trace))
+    regions = {region["text"]: region for region in accepted.ocr_display_regions or []}
+    assert regions["WIND RIVER"]["is_second_read"] is False
+    assert regions["NATT"]["is_second_read"] is True
+    assert regions["NATT"]["counts_toward_rejection"] is False
+    assert regions["NATT"]["pass"] == "bottom"
+
+
+def test_archive_regions_carry_no_second_read_mark_without_the_rule():
+    """With the second-read rule off its block is not in the trace, and no region gets the
+    mark: the archive is what it was with the other two rules alone."""
+    trace = {"small_copy_retry": {"triggered": False}, "detected_boxes": [_region("TOMA")]}
+    rejected = CandidateScore(image_path=Path("r.jpg"), orig_filename="r.jpg")
+    _attach_ocr_diagnostics(rejected, _ocr_result(accepted=False, diagnostics=trace))
+    assert rejected.ocr_display_regions is not None
+    assert "is_second_read" not in rejected.ocr_display_regions[0]
