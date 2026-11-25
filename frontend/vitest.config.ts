@@ -1,6 +1,6 @@
 import { svelteTesting } from '@testing-library/svelte/vite';
-import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vitest/config';
+import { defineConfig, mergeConfig } from 'vitest/config';
+import viteConfig from './vite.config.ts';
 
 /**
  * Two deterministic projects, one runner:
@@ -13,33 +13,38 @@ import { defineConfig } from 'vitest/config';
  * `vitest run` (the `test:unit` script) executes both once with no watch, so the
  * suite is reproducible in local and CI runs alike.  Tests use only synthetic
  * fixtures — never a real backend, media root, or operator database.
+ *
+ * It extends `vite.config.ts`, so the tests compile components with the app's own
+ * SvelteKit plugin and options.
  */
-export default defineConfig({
-	plugins: [sveltekit()],
-	test: {
-		projects: [
-			{
-				extends: true,
-				plugins: [svelteTesting()],
-				test: {
-					name: 'client',
-					globals: true,
-					environment: 'jsdom',
-					clearMocks: true,
-					include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
-					exclude: ['src/lib/server/**'],
-					setupFiles: ['./vitest-setup-client.ts']
+export default mergeConfig(
+	viteConfig,
+	defineConfig({
+		test: {
+			projects: [
+				{
+					extends: true,
+					plugins: [svelteTesting()],
+					test: {
+						name: 'client',
+						globals: true,
+						environment: 'jsdom',
+						clearMocks: true,
+						include: ['src/**/*.svelte.{test,spec}.{js,ts}'],
+						exclude: ['src/lib/server/**'],
+						setupFiles: ['./vitest-setup-client.ts']
+					}
+				},
+				{
+					extends: true,
+					test: {
+						name: 'server',
+						environment: 'node',
+						include: ['src/**/*.{test,spec}.{js,ts}'],
+						exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
+					}
 				}
-			},
-			{
-				extends: true,
-				test: {
-					name: 'server',
-					environment: 'node',
-					include: ['src/**/*.{test,spec}.{js,ts}'],
-					exclude: ['src/**/*.svelte.{test,spec}.{js,ts}']
-				}
-			}
-		]
-	}
-});
+			]
+		}
+	})
+);
