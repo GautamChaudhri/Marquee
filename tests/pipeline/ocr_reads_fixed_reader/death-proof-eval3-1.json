@@ -1,0 +1,169 @@
+{
+ "about": "Recorded output of the fixed reader for one candidate of Death Proof in the real blind evaluation 3, rejected there as text_heavy with a title found (session E7 labelled set, label other_text: QUENTIN TARANTINO'S over the title). No image.",
+ "reader": "PaddleOCR 3.6.0 as pipeline/ocr_filter.py::_load_ocr builds it since session E6: no document preprocessor (use_doc_orientation_classify=False, use_doc_unwarping=False)",
+ "movie_title": "Death Proof",
+ "title_text": "death proof",
+ "title_tokens": [
+  "death",
+  "proof"
+ ],
+ "director_tokens": [
+  "quentin",
+  "tarantino"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "dimension",
+   "films",
+   "international",
+   "pictures",
+   "rodriguez",
+   "studios",
+   "troublemaker"
+  ],
+  "tagline": "a crash course in revenge"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "calls": [
+  {
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "\u4e2d##7\u4e2d##",
+    "",
+    "QUENTIN TARA",
+    "DEATH",
+    "PROOF"
+   ],
+   "scores": [
+    0.29371771216392517,
+    0.0,
+    0.9720755219459534,
+    0.9694372415542603,
+    0.9196498990058899
+   ],
+   "polys": [
+    [
+     [
+      144.0,
+      96.0
+     ],
+     [
+      357.0,
+      96.0
+     ],
+     [
+      357.0,
+      169.0
+     ],
+     [
+      144.0,
+      169.0
+     ]
+    ],
+    [
+     [
+      207.0,
+      250.0
+     ],
+     [
+      245.0,
+      250.0
+     ],
+     [
+      245.0,
+      262.0
+     ],
+     [
+      207.0,
+      262.0
+     ]
+    ],
+    [
+     [
+      157.0,
+      448.0
+     ],
+     [
+      269.0,
+      435.0
+     ],
+     [
+      271.0,
+      461.0
+     ],
+     [
+      160.0,
+      474.0
+     ]
+    ],
+    [
+     [
+      126.0,
+      472.0
+     ],
+     [
+      328.0,
+      442.0
+     ],
+     [
+      338.0,
+      517.0
+     ],
+     [
+      136.0,
+      547.0
+     ]
+    ],
+    [
+     [
+      150.0,
+      514.0
+     ],
+     [
+      377.0,
+      481.0
+     ],
+     [
+      389.0,
+      568.0
+     ],
+     [
+      162.0,
+      601.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  }
+ ]
+}

@@ -1,0 +1,198 @@
+{
+ "about": "Recorded output of the fixed reader for one candidate of The Girl with the Dragon Tattoo in the real blind evaluation 3, rejected there as text_heavy with a title found (session E7 labelled set, label other_text: DANIEL CRAIG, ROONEY MARA under the title). No image.",
+ "reader": "PaddleOCR 3.6.0 as pipeline/ocr_filter.py::_load_ocr builds it since session E6: no document preprocessor (use_doc_orientation_classify=False, use_doc_unwarping=False)",
+ "movie_title": "The Girl with the Dragon Tattoo",
+ "title_text": "the girl with the dragon tattoo",
+ "title_tokens": [
+  "dragon",
+  "girl",
+  "tattoo",
+  "the",
+  "with"
+ ],
+ "director_tokens": [
+  "david",
+  "fincher"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "bird",
+   "columbia",
+   "goldwyn",
+   "mayer",
+   "metro",
+   "pictures",
+   "productions",
+   "rudin",
+   "scott",
+   "yellow"
+  ],
+  "tagline": "what is hidden in snow comes forth in the thaw"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "calls": [
+  {
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "THEGIRI",
+    "THE",
+    "WIT",
+    "DRAGON TATTOO",
+    "DANIEL CRAIG ROONEY MARA"
+   ],
+   "scores": [
+    0.8749874234199524,
+    0.9825423359870911,
+    0.9457572102546692,
+    0.9578717947006226,
+    0.9557695388793945
+   ],
+   "polys": [
+    [
+     [
+      109.0,
+      420.0
+     ],
+     [
+      321.0,
+      422.0
+     ],
+     [
+      320.0,
+      508.0
+     ],
+     [
+      108.0,
+      505.0
+     ]
+    ],
+    [
+     [
+      328.0,
+      454.0
+     ],
+     [
+      380.0,
+      454.0
+     ],
+     [
+      380.0,
+      486.0
+     ],
+     [
+      328.0,
+      486.0
+     ]
+    ],
+    [
+     [
+      331.0,
+      446.0
+     ],
+     [
+      361.0,
+      446.0
+     ],
+     [
+      361.0,
+      463.0
+     ],
+     [
+      331.0,
+      463.0
+     ]
+    ],
+    [
+     [
+      0.0,
+      484.0
+     ],
+     [
+      500.0,
+      482.0
+     ],
+     [
+      500.0,
+      579.0
+     ],
+     [
+      0.0,
+      581.0
+     ]
+    ],
+    [
+     [
+      46.0,
+      560.0
+     ],
+     [
+      456.0,
+      560.0
+     ],
+     [
+      456.0,
+      594.0
+     ],
+     [
+      46.0,
+      594.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "S"
+   ],
+   "scores": [
+    0.099563829600811
+   ],
+   "polys": [
+    [
+     [
+      604.0,
+      22.0
+     ],
+     [
+      679.0,
+      25.0
+     ],
+     [
+      676.0,
+      128.0
+     ],
+     [
+      600.0,
+      125.0
+     ]
+    ]
+   ]
+  }
+ ]
+}

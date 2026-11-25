@@ -13,7 +13,15 @@ def test_retry_on_and_title_piece_rule_off_by_default_both_named_in_the_archive(
     assert ocr["title_piece_rule"] is False
 
 
-@pytest.mark.parametrize("name", ["OCR_SMALL_COPY_RETRY", "OCR_TITLE_PIECE_RULE"])
+def test_the_second_read_rule_is_on_by_default_and_named_in_the_archive() -> None:
+    settings = PipelineSettings(_env_file=None)
+    assert settings.OCR_SECOND_READ_RULE is True
+    assert settings.snapshot()["ocr"]["second_read_rule"] is True
+
+
+@pytest.mark.parametrize(
+    "name", ["OCR_SMALL_COPY_RETRY", "OCR_TITLE_PIECE_RULE", "OCR_SECOND_READ_RULE"]
+)
 def test_each_text_gate_rule_can_be_switched_off(
     name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

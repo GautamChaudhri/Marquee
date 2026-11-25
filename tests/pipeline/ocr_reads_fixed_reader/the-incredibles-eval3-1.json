@@ -1,0 +1,126 @@
+{
+ "about": "Recorded output of the fixed reader for one candidate of The Incredibles in the real blind evaluation 3, rejected there as text_heavy with a title found (session E7 labelled set, label other_text: the Disney Pixar mark over the title). No image.",
+ "reader": "PaddleOCR 3.6.0 as pipeline/ocr_filter.py::_load_ocr builds it since session E6: no document preprocessor (use_doc_orientation_classify=False, use_doc_unwarping=False)",
+ "movie_title": "The Incredibles",
+ "title_text": "the incredibles",
+ "title_tokens": [
+  "incredibles",
+  "the"
+ ],
+ "director_tokens": [
+  "bird",
+  "brad"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "pixar"
+  ],
+  "tagline": "super strength can t carry a family"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "other_text",
+ "calls": [
+  {
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "THE INCREDIBLES",
+    "DiSNEp\u00b7PIXAR"
+   ],
+   "scores": [
+    0.9578981995582581,
+    0.8395559787750244
+   ],
+   "polys": [
+    [
+     [
+      6.0,
+      71.0
+     ],
+     [
+      490.0,
+      74.0
+     ],
+     [
+      490.0,
+      213.0
+     ],
+     [
+      6.0,
+      211.0
+     ]
+    ],
+    [
+     [
+      169.0,
+      67.0
+     ],
+     [
+      334.0,
+      74.0
+     ],
+     [
+      333.0,
+      112.0
+     ],
+     [
+      167.0,
+      104.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "DisNEp\u00b7PIXAR"
+   ],
+   "scores": [
+    0.8634745478630066
+   ],
+   "polys": [
+    [
+     [
+      340.0,
+      139.0
+     ],
+     [
+      664.0,
+      153.0
+     ],
+     [
+      662.0,
+      220.0
+     ],
+     [
+      338.0,
+      207.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  }
+ ]
+}

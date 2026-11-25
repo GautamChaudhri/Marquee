@@ -1,0 +1,253 @@
+{
+ "about": "Recorded output of the fixed reader for one candidate of Signs in the real blind evaluation 3, rejected there as text_heavy with a title found (session E7 labelled set, label title_only: ). No image.",
+ "reader": "PaddleOCR 3.6.0 as pipeline/ocr_filter.py::_load_ocr builds it since session E6: no document preprocessor (use_doc_orientation_classify=False, use_doc_unwarping=False)",
+ "movie_title": "Signs",
+ "title_text": "signs",
+ "title_tokens": [
+  "signs"
+ ],
+ "director_tokens": [
+  "m",
+  "night",
+  "shyamalan"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "blinding",
+   "company",
+   "edge",
+   "kennedy",
+   "marshall",
+   "pictures",
+   "the",
+   "touchstone"
+  ],
+  "tagline": "it s not like they didn t warn us"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "title_only",
+ "calls": [
+  {
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "",
+    "",
+    "signs"
+   ],
+   "scores": [
+    0.0,
+    0.0,
+    0.7548604011535645
+   ],
+   "polys": [
+    [
+     [
+      217.0,
+      133.0
+     ],
+     [
+      282.0,
+      136.0
+     ],
+     [
+      280.0,
+      174.0
+     ],
+     [
+      215.0,
+      171.0
+     ]
+    ],
+    [
+     [
+      234.0,
+      166.0
+     ],
+     [
+      269.0,
+      166.0
+     ],
+     [
+      269.0,
+      179.0
+     ],
+     [
+      234.0,
+      179.0
+     ]
+    ],
+    [
+     [
+      75.0,
+      583.0
+     ],
+     [
+      444.0,
+      592.0
+     ],
+     [
+      440.0,
+      750.0
+     ],
+     [
+      71.0,
+      750.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "si",
+    "ns",
+    "",
+    "",
+    "A",
+    "-"
+   ],
+   "scores": [
+    0.9932001829147339,
+    0.9939782023429871,
+    0.0,
+    0.0,
+    0.12167811393737793,
+    0.501170814037323
+   ],
+   "polys": [
+    [
+     [
+      205.0,
+      4.0
+     ],
+     [
+      418.0,
+      4.0
+     ],
+     [
+      418.0,
+      146.0
+     ],
+     [
+      205.0,
+      146.0
+     ]
+    ],
+    [
+     [
+      572.0,
+      0.0
+     ],
+     [
+      854.0,
+      0.0
+     ],
+     [
+      854.0,
+      201.0
+     ],
+     [
+      572.0,
+      201.0
+     ]
+    ],
+    [
+     [
+      326.0,
+      47.0
+     ],
+     [
+      341.0,
+      47.0
+     ],
+     [
+      341.0,
+      55.0
+     ],
+     [
+      326.0,
+      55.0
+     ]
+    ],
+    [
+     [
+      674.0,
+      115.0
+     ],
+     [
+      680.0,
+      109.0
+     ],
+     [
+      684.0,
+      114.0
+     ],
+     [
+      679.0,
+      120.0
+     ]
+    ],
+    [
+     [
+      478.0,
+      134.0
+     ],
+     [
+      539.0,
+      139.0
+     ],
+     [
+      536.0,
+      178.0
+     ],
+     [
+      475.0,
+      173.0
+     ]
+    ],
+    [
+     [
+      482.0,
+      154.0
+     ],
+     [
+      542.0,
+      154.0
+     ],
+     [
+      542.0,
+      198.0
+     ],
+     [
+      482.0,
+      198.0
+     ]
+    ]
+   ]
+  }
+ ]
+}

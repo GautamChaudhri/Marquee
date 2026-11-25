@@ -347,6 +347,10 @@ class PipelineSettings(BaseSettings):
     # text (a stylised title read in pieces, one of them misread). Off by default: on a blind
     # sample it let through 72% title-only posters against a bar of 90% (session E5).
     OCR_TITLE_PIECE_RULE: bool = False
+    # Second reads: a leftover box that counts toward rejection is set aside when it is
+    # another pass's misread of a title box it lies inside (the bottom strip reading the
+    # title again as "NATT"). It adds no title evidence. Bounds in ocr_filter.py.
+    OCR_SECOND_READ_RULE: bool = True
 
     # ── Text-gate mode presets ───────────────────────────────────────
     # "title_only" = current strict behaviour (require title, reject residual).
@@ -537,6 +541,7 @@ class PipelineSettings(BaseSettings):
                 ),
                 "small_copy_retry": self.OCR_SMALL_COPY_RETRY,
                 "title_piece_rule": self.OCR_TITLE_PIECE_RULE,
+                "second_read_rule": self.OCR_SECOND_READ_RULE,
                 "document_preprocessor": OCR_DOCUMENT_PREPROCESSOR,
             },
             "extended_features": {

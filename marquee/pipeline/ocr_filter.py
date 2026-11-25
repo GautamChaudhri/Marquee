@@ -372,6 +372,35 @@ _PIECE_MIN_SHARE_OF_TALLEST = 0.4
 # 500 px image and every box is mapped back to the poster's own coordinates.
 _SMALL_COPY_PASSES = (("small_60", 0.6), ("small_40", 0.4))
 
+# Second reads (OCR_SECOND_READ_RULE). The gate reads a poster in several passes (the whole
+# poster, the top and bottom strips at twice their size, the contrast and recovery passes,
+# the smaller copies), and _dedupe_boxes drops a box only when another one has the same
+# text. A big title read again by another pass and misread there ("NATT" on the RIVER of
+# WIND RIVER, read by the bottom strip) is not the title, so it was left over and rejected
+# the poster as other text. A leftover box that counts toward rejection is set aside as a
+# second read when it was read by another pass than a box with title evidence, most of its
+# own polygon lies inside that box's polygon, its glyphs are not much smaller than that
+# box's, and the gate's own classifier does not call it a studio mark or a director's
+# credit. Polygons, not bounding rectangles: the rectangle of a slanted title covers the
+# credit line above it. Marks and credits sit inside a title box's slack all the time (the
+# Disney Pixar mark over THE INCREDIBLES), read by a strip while the title came from the
+# full pass; they are set much smaller than the title, which the height bound uses.
+# Tuned on the tuning half of session E7's labelled set (133 posters, 57 movies, drawn from
+# what a loose form of the rule admits among the third blind evaluation's text_heavy
+# rejections, labelled by eye) and reported on the held-out half: on the tuning half these
+# bounds admit 60 posters, 58 of them title-only.
+# Least share of the box's polygon inside the title box's polygon. 0.6 admitted three more
+# posters with other text and two more title-only; 0.85 lost five title-only.
+_SECOND_READ_MIN_SHARE = 0.75
+# Least glyph height (the polygon's shorter side) as a share of the title box's: marks,
+# credits, and names inside a title box measured 0.04 to 0.19 of it, second reads mostly
+# 0.25 and more. 0.19 to 0.25 decided the same on the tuning half.
+_SECOND_READ_MIN_HEIGHT_RATIO = 0.2
+# What the gate's classifier calls a box it never sets aside. On the tuning half it changes
+# nothing at the height bound, but a studio mark taller than it (MARVEL STUDIOS over THOR,
+# 0.26 of the title) is still a studio mark.
+_SECOND_READ_KEPT_CATEGORIES = frozenset({"studio", "director"})
+
 
 def _band_letters(boxes: list[_DetectedBox]) -> set[str]:
     return {ch for box in boxes for ch in _compact_text(box.text) if ch.isalpha()}
@@ -589,6 +618,119 @@ def _title_piece_evidence(
                 source="title_piece", group_text=anchor.text, is_fragment=True
             )
     return pieces
+
+
+def _signed_area(points: list[tuple[float, float]]) -> float:
+    return (
+        sum(
+            points[i][0] * points[(i + 1) % len(points)][1]
+            - points[(i + 1) % len(points)][0] * points[i][1]
+            for i in range(len(points))
+        )
+        / 2
+    )
+
+
+def _convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Counter-clockwise hull (monotone chain); a reader's polygon is a quadrilateral
+    that is convex in practice, and the hull keeps the clipping below exact when not."""
+    ordered = sorted(set(points))
+    if len(ordered) <= 2:
+        return ordered
+
+    def turn(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for point in ordered:
+        while len(lower) >= 2 and turn(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+    upper: list[tuple[float, float]] = []
+    for point in reversed(ordered):
+        while len(upper) >= 2 and turn(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+    return lower[:-1] + upper[:-1]
+
+
+def _polygon_share_inside(inner: BoundingBox, outer: BoundingBox) -> float:
+    """Share of *inner*'s polygon area that lies inside *outer*'s polygon (Sutherland-Hodgman
+    clipping against the convex hull of *outer*)."""
+    subject = [(float(x), float(y)) for x, y in inner]
+    own_area = abs(_signed_area(subject))
+    clipper = _convex_hull([(float(x), float(y)) for x, y in outer])
+    if own_area <= 0 or len(clipper) < 3:
+        return 0.0
+    clipped = subject
+    for i in range(len(clipper)):
+        a, b = clipper[i], clipper[(i + 1) % len(clipper)]
+
+        def inside(p: tuple[float, float], a=a, b=b) -> bool:
+            return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0
+
+        def crossing(p: tuple[float, float], q: tuple[float, float], a=a, b=b):
+            dx1, dy1 = q[0] - p[0], q[1] - p[1]
+            dx2, dy2 = b[0] - a[0], b[1] - a[1]
+            denominator = dx1 * dy2 - dy1 * dx2
+            if abs(denominator) < 1e-12:
+                return q
+            t = ((a[0] - p[0]) * dy2 - (a[1] - p[1]) * dx2) / denominator
+            return (p[0] + t * dx1, p[1] + t * dy1)
+
+        previous_points, clipped = clipped, []
+        if not previous_points:
+            break
+        start = previous_points[-1]
+        for end in previous_points:
+            if inside(end):
+                if not inside(start):
+                    clipped.append(crossing(start, end))
+                clipped.append(end)
+            elif inside(start):
+                clipped.append(crossing(start, end))
+            start = end
+    if len(clipped) < 3:
+        return 0.0
+    return abs(_signed_area(clipped)) / own_area
+
+
+def _glyph_height(bbox: BoundingBox) -> float:
+    """The shorter of a box's two side lengths (each the mean of two opposite sides): the
+    height of its glyphs, also when the box is slanted."""
+    p = bbox
+
+    def length(a: tuple[float, float], b: tuple[float, float]) -> float:
+        return ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+
+    return min(
+        (length(p[0], p[1]) + length(p[2], p[3])) / 2,
+        (length(p[1], p[2]) + length(p[3], p[0])) / 2,
+    )
+
+
+def _is_second_read(
+    box: _DetectedBox,
+    anchors: list[_DetectedBox],
+    *,
+    pass_by_id: dict[int, str],
+    category: str,
+) -> bool:
+    """Whether a counted leftover box is a second read of title glyphs (OCR_SECOND_READ_RULE):
+    read by another pass than a box with title evidence, mostly inside that box's polygon,
+    not much smaller than it, and not a studio mark or a director's credit."""
+    if not box.geometry_valid or category in _SECOND_READ_KEPT_CATEGORIES:
+        return False
+    box_pass = pass_by_id.get(id(box), "full")
+    height = _glyph_height(box.bbox)
+    for anchor in anchors:
+        if pass_by_id.get(id(anchor), "full") == box_pass:
+            continue
+        if height < _SECOND_READ_MIN_HEIGHT_RATIO * _glyph_height(anchor.bbox):
+            continue
+        if _polygon_share_inside(box.bbox, anchor.bbox) >= _SECOND_READ_MIN_SHARE:
+            return True
+    return False
 
 
 def _detect_top_billing_bands(
@@ -2047,6 +2189,10 @@ def _process_image(
     rejection_box_keys: set[tuple[str, BoundingBox]] = set()
     # Leftover boxes rule B made title pieces; _build_state adds them to the evidence.
     title_pieces: dict[int, _TitleEvidence] = {}
+    # Leftover boxes rule C set aside as second reads of the title; _build_state leaves them
+    # out of what counts toward rejection (they stay leftover text, not title evidence).
+    second_read_triggered = False
+    second_reads: set[int] = set()
 
     def _build_state() -> tuple[
         dict[int, _TitleEvidence],
@@ -2098,6 +2244,7 @@ def _process_image(
             fallback_text=title_text or " ".join(sorted(title_tokens)),
         )
         all_tokens = title_tokens | director_tokens
+        leftover = [box for box in boxes if id(box) not in title_evidence]
         residual = [
             OCRTextBox(
                 text=box.text,
@@ -2106,8 +2253,7 @@ def _process_image(
                 area=_polygon_area(box.bbox),
                 geometry_valid=box.geometry_valid,
             )
-            for box in boxes
-            if id(box) not in title_evidence
+            for box in leftover
         ]
 
         # RC-2 + RC-3 + RC-4 fix: evaluate significance at the *word* level, not
@@ -2131,8 +2277,9 @@ def _process_image(
         # rule lives in _residual_significance (shared with the trace builder).
         significant_residual = [
             box
-            for box in residual
-            if _residual_significance(
+            for detected, box in zip(leftover, residual, strict=True)
+            if id(detected) not in second_reads
+            and _residual_significance(
                 box,
                 title_box=title_box,
                 min_big_area=min_big_area,
@@ -2324,6 +2471,13 @@ def _process_image(
             }
             for region in detected_boxes:
                 region["is_title_piece"] = region["title_match_source"] == "title_piece"
+        if pipeline_settings.OCR_SECOND_READ_RULE:
+            extra["second_read_rule"] = {
+                "triggered": second_read_triggered,
+                "second_reads": sum(1 for box in boxes if id(box) in second_reads),
+            }
+            for box, region in zip(boxes, detected_boxes, strict=True):
+                region["is_second_read"] = id(box) in second_reads
         return {
             "profile": {
                 "id": profile_id if isinstance(profile_id, str) else None,
@@ -2517,6 +2671,68 @@ def _process_image(
             image_height=image_height,
         )
         if title_pieces:
+            (
+                title_evidence,
+                title_box,
+                residual,
+                significant_residual,
+                significant_area_fraction,
+                billing_band_ids,
+            ) = _build_state()
+            decision = _decide(
+                title_box=title_box,
+                significant_residual=significant_residual,
+                significant_area_fraction=significant_area_fraction,
+                detected_text_current=detected_text,
+            )
+
+    # Rule C, second reads. Only a poster rejected for other text with a title found is
+    # looked at again, so a poster accepted today can never change by this rule. A box it
+    # sets aside stops counting toward rejection and adds no title evidence: the title box,
+    # and the title geometry measured from it, stay as they were.
+    if (
+        pipeline_settings.OCR_SECOND_READ_RULE
+        and not decision["accepted"]
+        and title_box is not None
+        and decision["reason"] == "text_heavy"
+    ):
+        second_read_triggered = True
+        anchors = [box for box in boxes if id(box) in title_evidence and box.geometry_valid]
+        all_tokens = title_tokens | director_tokens
+        found: set[int] = set()
+        for box in boxes:
+            if id(box) in title_evidence:
+                continue
+            if (_normalise(box.text), box.bbox) not in rejection_box_keys:
+                continue
+            if not _residual_significance(
+                box,
+                title_box=title_box,
+                min_big_area=min_big_area,
+                min_big_width=min_big_width,
+                prox=prox,
+                all_tokens=all_tokens,
+            )[0]:
+                continue
+            category = classify_text_box(
+                box,
+                image_w=image_width,
+                image_h=image_height,
+                title_box=title_box,
+                title_tokens=title_tokens,
+                director_tokens=director_tokens,
+                studio_tokens=studio_tokens,
+                tagline_text=tagline_text,
+                billing_band_ids=billing_band_ids,
+                season_number=season_number,
+                season_number_ids=season_number_ids,
+                season_title_ids=season_title_ids,
+                season_edition_ids=season_edition_ids,
+            )
+            if _is_second_read(box, anchors, pass_by_id=pass_by_id, category=category):
+                found.add(id(box))
+        if found:
+            second_reads = found
             (
                 title_evidence,
                 title_box,

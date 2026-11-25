@@ -15,6 +15,7 @@ recorded with the reader as ``_load_ocr`` builds it now, for the tests of that r
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -104,10 +105,14 @@ def _run(
     *,
     small_copy: bool,
     title_piece: bool,
+    second_read: bool = False,
 ) -> tuple[OCRCandidateResult, _RecordedReader]:
+    """The second-read rule is off unless a test turns it on: the tests written before it
+    compare against what the gate decided and traced without it."""
     _defaults(monkeypatch)
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_SMALL_COPY_RETRY", small_copy)
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_TITLE_PIECE_RULE", title_piece)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_SECOND_READ_RULE", second_read)
     reader = _RecordedReader(fixture["calls"])
     monkeypatch.setattr(ocr_filter, "_worker_ocr", reader)
     path = tmp_path / "poster.png"
@@ -474,3 +479,256 @@ def test_title_matching_gives_the_same_answer_under_any_hash_seed(tmp_path: Path
     assert answer["accepted"]
     titles = {box["text"] for box in answer["trace"]["detected_boxes"] if box["is_title"]}
     assert titles == {"MO", "TIAE", "007", "00"}
+
+
+# Rule C, second reads: a leftover box that is a second read of title glyphs, read by another
+# pass, is set aside and stops counting as other text.
+
+
+def _slanted(cx: float, cy: float, length: float, height: float, degrees: float):
+    """A reader's polygon for a line of text centred on (cx, cy), turned by *degrees*
+    (negative rises to the right, as on a slanted title), corners in reading order."""
+    a = math.radians(degrees)
+    ux, uy = math.cos(a), math.sin(a)
+    vx, vy = -uy, ux
+    corners = [
+        (-length / 2, -height / 2),
+        (length / 2, -height / 2),
+        (length / 2, height / 2),
+        (-length / 2, height / 2),
+    ]
+    return tuple((cx + s * ux + t * vx, cy + s * uy + t * vy) for s, t in corners)
+
+
+def _rectangle(polygon) -> tuple:
+    xs = [x for x, _y in polygon]
+    ys = [y for _x, y in polygon]
+    return ((min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys)))
+
+
+SLANTED_TITLE = _slanted(250, 330, 400, 70, -20)
+# A credit line set level above the title's left end: inside the title's bounding rectangle,
+# outside its polygon.
+CREDIT_ABOVE = ((70, 262), (200, 262), (200, 282), (70, 282))
+# The title's right half read again, turned with it.
+MISREAD_ON_TITLE = _slanted(340, 297, 180, 60, -20)
+# A box centred on the title's right end, turned with it: half on the title, half off it.
+_END = math.radians(-20)
+HALF_OFF_THE_END = _slanted(250 + 200 * math.cos(_END), 330 + 200 * math.sin(_END), 100, 70, -20)
+
+
+def test_second_read_overlap_is_measured_on_polygons_not_rectangles():
+    """Rectangles lie: the bounding rectangle of a slanted title covers the credit above it."""
+    assert ocr_filter._polygon_share_inside(CREDIT_ABOVE, _rectangle(SLANTED_TITLE)) == 1.0
+    assert ocr_filter._polygon_share_inside(CREDIT_ABOVE, SLANTED_TITLE) == 0.0
+    assert ocr_filter._polygon_share_inside(MISREAD_ON_TITLE, SLANTED_TITLE) == pytest.approx(1.0)
+    # Half of a box hanging over the title's end is half inside, whichever way the corners run.
+    assert ocr_filter._polygon_share_inside(HALF_OFF_THE_END, SLANTED_TITLE) == pytest.approx(0.5)
+    assert ocr_filter._polygon_share_inside(
+        HALF_OFF_THE_END[::-1], SLANTED_TITLE[::-1]
+    ) == pytest.approx(0.5)
+    assert ocr_filter._glyph_height(SLANTED_TITLE) == pytest.approx(70)
+
+
+def _second_read(
+    box_bbox, *, box_pass="bottom", anchor_pass="full", category="other", valid=True
+) -> bool:
+    anchor = ocr_filter._DetectedBox("KILL BILL", 0.95, SLANTED_TITLE)
+    box = ocr_filter._DetectedBox("NILL", 0.8, box_bbox, geometry_valid=valid)
+    return ocr_filter._is_second_read(
+        box, [anchor], pass_by_id={id(anchor): anchor_pass, id(box): box_pass}, category=category
+    )
+
+
+def test_a_second_read_is_another_pass_on_the_title_with_glyphs_of_its_size():
+    assert _second_read(MISREAD_ON_TITLE)
+    assert _second_read(MISREAD_ON_TITLE, box_pass="small_60")
+    # The same pass reading two boxes there is two pieces of text, not one read twice.
+    assert not _second_read(MISREAD_ON_TITLE, box_pass="full")
+    # The credit above the slanted title, read by the top strip, is not on the title, and a box
+    # half off the title's end is not on it enough.
+    assert not _second_read(CREDIT_ABOVE, box_pass="top")
+    assert not _second_read(HALF_OFF_THE_END)
+    # Small type inside the title box (a mark in its slack): a tenth of the title's height.
+    assert not _second_read(_slanted(340, 297, 120, 7, -20))
+    # The gate's classifier keeps studio marks and director's credits, wherever they lie.
+    assert not _second_read(MISREAD_ON_TITLE, category="studio")
+    assert not _second_read(MISREAD_ON_TITLE, category="director")
+    assert _second_read(MISREAD_ON_TITLE, category="billing")
+    # A box whose polygon is in a turned frame takes no part.
+    assert not _second_read(MISREAD_ON_TITLE, valid=False)
+
+
+# Rule C on recorded reader output of real posters (the fixed reader, the smaller-copy retry
+# on, the title-piece rule off, as on this machine). The eval3 fixtures are candidates the third
+# blind evaluation rejected as text_heavy with a title found, labelled by looking in session E7.
+
+SECOND_READS = {
+    # NATT: the bottom strip, read at twice its size, on the RIVER of WIND RIVER.
+    "wind-river-eval3-1": {"NATT"},
+    # "si" and "ns": the bottom strip on "signs", read whole by the full pass.
+    "signs-eval3-1": {"si", "ns"},
+    # DEKSEKK: the bottom strip on BERSERK (the owner's poster).
+    "berserk-the-golden-age-arc-ii-the-battle-for-doldrey-seed": {"DEKSEKK"},
+    # EINTHSNOS: the full pass on the SUNSHINE the 40% copy read.
+    "sunshine-eval3-1": {"EINTHSNOS"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(SECOND_READS))
+def test_second_read_rule_sets_aside_a_second_read_of_the_title(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fixture = _fixed_fixture(name)
+    expected = SECOND_READS[name]
+    off, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+    assert _outcome(off) == "text_heavy"
+    assert set(_counted(off)) == expected
+
+    on, _reader = _run(
+        fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False, second_read=True
+    )
+
+    assert on.accepted
+    set_aside = [box for box in _boxes(on) if box["is_second_read"]]
+    assert {box["text"] for box in set_aside} == expected
+    assert on.diagnostics["second_read_rule"] == {
+        "triggered": True,
+        "second_reads": len(set_aside),
+    }
+    assert not any(box["counts_toward_rejection"] or box["is_title"] for box in set_aside)
+    # Set aside, not made title: the title evidence and the title box are what they were, and
+    # the box stays a leftover box (the ranking's text_residual feature still counts it).
+    assert [box["is_title"] for box in _boxes(on)] == [box["is_title"] for box in _boxes(off)]
+    assert on.title_bbox == off.title_bbox
+    assert [box.text for box in on.residual_boxes] == [box.text for box in off.residual_boxes]
+
+
+def _counted_on(name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> dict:
+    """Runs a poster with other text with the rule on; it stays rejected and *text* counts."""
+    fixture = _fixed_fixture(name)
+    assert fixture["label"] == "other_text"
+    off, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+    on, _reader = _run(
+        fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False, second_read=True
+    )
+    assert _outcome(off) == _outcome(on) == "text_heavy"
+    assert on.diagnostics["second_read_rule"]["triggered"] is True
+    boxes = [box for box in _boxes(on) if box["text"] == text]
+    assert boxes
+    assert all(box["counts_toward_rejection"] and not box["is_second_read"] for box in boxes)
+    return {"on": on, "boxes": boxes}
+
+
+def _title_box(result: OCRCandidateResult, text: str) -> dict:
+    return next(box for box in _boxes(result) if box["is_title"] and box["text"] == text)
+
+
+def test_second_read_rule_keeps_a_studio_mark_inside_the_title_box(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The Incredibles: the top strip reads the Disney Pixar mark, which lies almost whole
+    inside the full pass's THE INCREDIBLES box and is set large enough for the height bound.
+    The gate's classifier calls it a studio mark, and a studio mark is never set aside."""
+    run = _counted_on("the-incredibles-eval3-1", tmp_path, monkeypatch, "DisNEp·PIXAR")
+    (mark,) = run["boxes"]
+    title = _title_box(run["on"], "THE INCREDIBLES")
+    assert (mark["pass"], mark["category"], title["pass"]) == ("top", "studio", "full")
+    assert ocr_filter._polygon_share_inside(_polygon(mark), _polygon(title)) > 0.9
+
+
+def _polygon(box: dict) -> tuple:
+    return tuple(tuple(point) for point in box["bbox"])
+
+
+def test_second_read_rule_keeps_a_credit_line_over_a_slanted_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Death Proof: QUENTIN TARANTINO'S over the slanted DEATH. The title's bounding rectangle
+    takes in most of the credit; its polygon takes in a third."""
+    run = _counted_on("death-proof-eval3-1", tmp_path, monkeypatch, "QUENTIN TARA")
+    (credit,) = run["boxes"]
+    title = _title_box(run["on"], "DEATH")
+    inside = ocr_filter._polygon_share_inside(_polygon(credit), _polygon(title))
+    rectangle = ocr_filter._polygon_share_inside(_polygon(credit), _rectangle(_polygon(title)))
+    assert rectangle > 0.75 > 0.4 > inside
+
+
+def test_second_read_rule_keeps_actor_names_under_the_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The Girl with the Dragon Tattoo: DANIEL CRAIG ROONEY MARA, read by the same pass as the
+    title and partly inside its box: two pieces of text, not one read twice."""
+    run = _counted_on(
+        "the-girl-with-the-dragon-tattoo-eval3-1", tmp_path, monkeypatch, "DANIEL CRAIG ROONEY MARA"
+    )
+    (names,) = run["boxes"]
+    assert names["pass"] == _title_box(run["on"], "DRAGON TATTOO")["pass"] == "full"
+
+
+def test_second_read_rule_keeps_a_tagline_inside_a_large_title_box(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Abigail: the title is read only on the smaller copies, and its box there takes in the
+    tagline DADDY'S LITTLE GIRL IS GETTING HUNGRY, read by the full pass and the top strip.
+    The tagline is set at a twentieth of the title's height: the height bound keeps it."""
+    run = _counted_on(
+        "abigail-eval3-1", tmp_path, monkeypatch, "DADDY'S LITTLE GIRL IS GETTING HUNGRY"
+    )
+    (tagline,) = run["boxes"]
+    title = _title_box(run["on"], "ABIGAL")
+    assert (tagline["pass"], title["pass"]) == ("full", "small_60")
+    assert ocr_filter._polygon_share_inside(_polygon(tagline), _polygon(title)) > 0.75
+    assert ocr_filter._glyph_height(_polygon(tagline)) < 0.1 * ocr_filter._glyph_height(
+        _polygon(title)
+    )
+
+
+def test_second_read_rule_keeps_artwork_text_counted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Monsters (the owner's poster): the INFECTED ZONE sign in the picture is not on the title."""
+    fixture = _fixed_fixture("monsters-seed")
+    on, _reader = _run(
+        fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False, second_read=True
+    )
+    assert _outcome(on) == "text_heavy"
+    assert _counted(on) == ["INFECTEBZONE"]
+    assert on.diagnostics["second_read_rule"] == {"triggered": True, "second_reads": 0}
+
+
+ACCEPTED_WITHOUT_THE_RULE = ["late-night-with-the-devil-4", "no-time-to-die-341"]
+
+
+@pytest.mark.parametrize("name", ACCEPTED_WITHOUT_THE_RULE)
+def test_second_read_rule_never_looks_at_a_poster_accepted_without_it(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fixture = _fixed_fixture(name)
+    off, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+    on, reader = _run(
+        fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False, second_read=True
+    )
+
+    assert off.accepted and on.accepted
+    assert on.diagnostics["second_read_rule"] == {"triggered": False, "second_reads": 0}
+    assert not any(box["is_second_read"] for box in _boxes(on))
+    trace = json.loads(json.dumps(on.diagnostics))
+    del trace["second_read_rule"]
+    for box in trace["detected_boxes"]:
+        del box["is_second_read"]
+    assert trace == json.loads(json.dumps(off.diagnostics))
+    assert len(reader.shapes) == len(fixture["calls"])
+
+
+@pytest.mark.parametrize("name", sorted(SECOND_READS))
+def test_second_read_switch_off_adds_nothing_to_the_trace(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With the switch off the poster is rejected as before and the trace has no block or mark
+    of the rule's (the earlier tests compare such traces with the stored ones exactly)."""
+    fixture = _fixed_fixture(name)
+    off, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+    assert _outcome(off) == "text_heavy"
+    assert "second_read_rule" not in off.diagnostics
+    assert not any("is_second_read" in box for box in _boxes(off))
