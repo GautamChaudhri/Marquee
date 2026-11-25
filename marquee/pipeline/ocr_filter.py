@@ -334,6 +334,39 @@ _TOP_BILLING_MIN_WIDTH_FRACTION = 0.28
 _TOP_BILLING_MAX_HEIGHT_FRACTION = 0.055
 _TOP_BILLING_MAX_HEIGHT_RATIO = 1.8
 
+# Title pieces (OCR_TITLE_PIECE_RULE). A stylised title is often read in pieces, and a
+# piece the matchers above cannot place ("RAHAWN" beside "TOMA" for TOMAHAWK, "Hake Hp"
+# for "Wake Up") is left over and rejects the poster as other text. A leftover box is a
+# piece of the title when it sits with a box that has title evidence (on its line, or
+# stacked against it), its glyphs are about as tall as that box's, most of its letters
+# are letters of the title, and it is no longer than the title. Height and letters work
+# together: a studio mark beside a title shares many of its letters ("DREAMWORKS" over
+# HOW TO TRAIN YOUR DRAGON, 6 of 10) but not three quarters of them, and a credit line
+# is set much smaller.
+# Tuned on the tuning half of session E5's labelled set (312 posters from the first
+# blind evaluation's masked runs, labelled by eye) and reported on the held-out half.
+# Of that half's posters rejected as text_heavy, these bounds pass 3 title-only posters
+# and none with other text; the start values (0.6 to 1.6, half the letters, no length
+# bound) passed 1 and 4 with other text.
+_PIECE_MIN_HEIGHT_RATIO = 0.4
+_PIECE_MAX_HEIGHT_RATIO = 1.6
+# Largest gap to the title box, in that box's glyph heights: beside it on its line, or
+# above or below it while overlapping it horizontally. 0.5 to 1.5 decided the same.
+_PIECE_MAX_GAP_RATIO = 1.0
+# Share of the box's letters (with repeats) that are letters of the title.
+_PIECE_MIN_LETTER_PRECISION = 0.75
+_PIECE_MIN_LETTERS = 2
+# Most letters a piece may hold, as a share of the title's letters: a piece of the
+# title is not longer than the title ("IN THEATRES, ON DIGITAL" under a subtitle).
+_PIECE_MAX_TITLE_SHARE = 1.0
+# Least height of a piece, as a share of the poster's tallest box with title evidence: a
+# small subtitle line must not take in text set at its own size beside it (a tagline by
+# THE LAST AIRBENDER under AANG, a studio mark by a small CAPTAIN AMERICA). Added after
+# the held-out half showed those three, at the owner's ruling; 0.4 is the largest value
+# that changes no decision on the tuning half (0.5 lost two title-only posters there), so
+# the held-out half is not a blind check of this one bound.
+_PIECE_MIN_SHARE_OF_TALLEST = 0.4
+
 # Smaller-copy retry (OCR_SMALL_COPY_RETRY): the whole poster read again at these
 # fractions of its 500 px size when no title was found. Copies are made from the
 # 500 px image and every box is mapped back to the poster's own coordinates.
@@ -495,6 +528,63 @@ def _find_title_evidence(
     ).items():
         evidence.setdefault(box_id, band_evidence)
     return evidence
+
+
+def _sits_with_title(box: _DetectedBox, anchor: _DetectedBox, image_height: int) -> bool:
+    """True when *box* is about as tall as *anchor* and sits beside it on its line, or
+    directly above or below it while overlapping it horizontally."""
+    left, top, right, bottom = _bbox_bounds(box.bbox)
+    a_left, a_top, a_right, a_bottom = _bbox_bounds(anchor.bbox)
+    height = max(1.0, bottom - top)
+    anchor_height = max(1.0, a_bottom - a_top)
+    if not _PIECE_MIN_HEIGHT_RATIO <= height / anchor_height <= _PIECE_MAX_HEIGHT_RATIO:
+        return False
+    max_gap = _PIECE_MAX_GAP_RATIO * anchor_height
+    # The line tolerance _same_line_groups uses.
+    line_tolerance = max(image_height * 0.018, max(height, anchor_height) * 0.70)
+    if abs((top + bottom) / 2 - (a_top + a_bottom) / 2) <= line_tolerance:
+        return max(0.0, max(left, a_left) - min(right, a_right)) <= max_gap
+    overlaps_horizontally = min(right, a_right) - max(left, a_left) > 0
+    return overlaps_horizontally and max(0.0, max(top, a_top) - min(bottom, a_bottom)) <= max_gap
+
+
+def _title_piece_evidence(
+    boxes: list[_DetectedBox],
+    title_evidence: dict[int, _TitleEvidence],
+    *,
+    title_text: str,
+    image_height: int,
+) -> dict[int, _TitleEvidence]:
+    """Leftover boxes that are pieces of the title (OCR_TITLE_PIECE_RULE)."""
+    title_sequence = [ch for ch in _compact_text(title_text) if ch.isalpha()]
+    title_letters = set(title_sequence)
+    if not title_letters:
+        return {}
+    candidates = []
+    for box in boxes:
+        if id(box) in title_evidence or not box.geometry_valid:
+            continue
+        letters = [ch for ch in _compact_text(box.text) if ch.isalpha()]
+        if not _PIECE_MIN_LETTERS <= len(letters) <= _PIECE_MAX_TITLE_SHARE * len(title_sequence):
+            continue
+        precision = sum(ch in title_letters for ch in letters) / len(letters)
+        if precision >= _PIECE_MIN_LETTER_PRECISION:
+            candidates.append(box)
+
+    anchors = [box for box in boxes if id(box) in title_evidence and box.geometry_valid]
+    if not anchors:
+        return {}
+    least_height = _PIECE_MIN_SHARE_OF_TALLEST * max(_bbox_height(a.bbox) for a in anchors)
+    pieces: dict[int, _TitleEvidence] = {}
+    for box in candidates:
+        if _bbox_height(box.bbox) < least_height:
+            continue
+        anchor = next((a for a in anchors if _sits_with_title(box, a, image_height)), None)
+        if anchor is not None:
+            pieces[id(box)] = _TitleEvidence(
+                source="title_piece", group_text=anchor.text, is_fragment=True
+            )
+    return pieces
 
 
 def _detect_top_billing_bands(
@@ -1938,11 +2028,14 @@ def _process_image(
     small_copy_triggered = False
     small_copy_recovered = False
     small_copy_error: str | None = None
+    title_piece_triggered = False
     season_number_ids: set[tuple[str, BoundingBox]] = set()
     season_title_ids: set[tuple[str, BoundingBox]] = set()
     season_edition_ids: set[tuple[str, BoundingBox]] = set()
     season_semantic_evidence: dict[tuple[str, BoundingBox], _SemanticEvidence] = {}
     rejection_box_keys: set[tuple[str, BoundingBox]] = set()
+    # Leftover boxes rule B made title pieces; _build_state adds them to the evidence.
+    title_pieces: dict[int, _TitleEvidence] = {}
 
     def _build_state() -> tuple[
         dict[int, _TitleEvidence],
@@ -1981,6 +2074,8 @@ def _process_image(
             image_width=image_width,
             image_height=image_height,
         )
+        for box_id, piece in title_pieces.items():
+            title_evidence.setdefault(box_id, piece)
         billing_band_ids = _detect_top_billing_bands(
             boxes,
             image_width=image_width,
@@ -2196,8 +2291,8 @@ def _process_image(
             prox=prox,
             pass_by_id=pass_by_id,
         )
-        # The smaller-copy retry reports only when switched on, so with it off the trace
-        # is exactly what it was before it.
+        # The two added rules report only when switched on, so with both off the trace
+        # is exactly what it was before them.
         extra: dict[str, object] = {}
         if pipeline_settings.OCR_SMALL_COPY_RETRY:
             extra["small_copy_retry"] = {
@@ -2206,6 +2301,18 @@ def _process_image(
                 "confidence_threshold": (pipeline_settings.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD),
                 "error": small_copy_error,
             }
+        if pipeline_settings.OCR_TITLE_PIECE_RULE:
+            extra["title_piece_rule"] = {
+                "triggered": title_piece_triggered,
+                "pieces": sum(
+                    1
+                    for box in boxes
+                    if (evidence := title_evidence.get(id(box))) is not None
+                    and evidence.source == "title_piece"
+                ),
+            }
+            for region in detected_boxes:
+                region["is_title_piece"] = region["title_match_source"] == "title_piece"
         return {
             "profile": {
                 "id": profile_id if isinstance(profile_id, str) else None,
@@ -2382,6 +2489,37 @@ def _process_image(
         except Exception as exc:
             small_copy_error = f"{type(exc).__name__}: {exc}"
             logger.warning("OCR smaller-copy retry failed for %s: %s", path.name, exc)
+
+    # Rule B, title pieces. Only a poster rejected for other text with a title found is
+    # looked at again, so a poster accepted today can never change by this rule.
+    if (
+        pipeline_settings.OCR_TITLE_PIECE_RULE
+        and not decision["accepted"]
+        and title_box is not None
+        and decision["reason"] == "text_heavy"
+    ):
+        title_piece_triggered = True
+        title_pieces = _title_piece_evidence(
+            boxes,
+            title_evidence,
+            title_text=title_text or "",
+            image_height=image_height,
+        )
+        if title_pieces:
+            (
+                title_evidence,
+                title_box,
+                residual,
+                significant_residual,
+                significant_area_fraction,
+                billing_band_ids,
+            ) = _build_state()
+            decision = _decide(
+                title_box=title_box,
+                significant_residual=significant_residual,
+                significant_area_fraction=significant_area_fraction,
+                detected_text_current=detected_text,
+            )
 
     return OCRCandidateResult(
         image_path=path,

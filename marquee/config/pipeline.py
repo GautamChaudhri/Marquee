@@ -334,6 +334,10 @@ class PipelineSettings(BaseSettings):
     # whole poster again at 60% and 40% of its size. Large or letter-spaced titles
     # the reader misses at 500 px are often read on a smaller copy.
     OCR_SMALL_COPY_RETRY: bool = True
+    # Title pieces: a leftover box that sits with a title box, is about as tall, and
+    # is made mostly of the title's letters counts as part of the title, not as other
+    # text (a stylised title read in pieces, one of them misread).
+    OCR_TITLE_PIECE_RULE: bool = True
 
     # ── Text-gate mode presets ───────────────────────────────────────
     # "title_only" = current strict behaviour (require title, reject residual).
@@ -523,6 +527,7 @@ class PipelineSettings(BaseSettings):
                     self.OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD
                 ),
                 "small_copy_retry": self.OCR_SMALL_COPY_RETRY,
+                "title_piece_rule": self.OCR_TITLE_PIECE_RULE,
             },
             "extended_features": {
                 "dino_enabled": self.DINO_ENABLED,

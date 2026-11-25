@@ -65,9 +65,11 @@ def _run(
     monkeypatch: pytest.MonkeyPatch,
     *,
     small_copy: bool,
+    title_piece: bool,
 ) -> tuple[OCRCandidateResult, _RecordedReader]:
     _defaults(monkeypatch)
     monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_SMALL_COPY_RETRY", small_copy)
+    monkeypatch.setattr(ocr_filter.pipeline_settings, "OCR_TITLE_PIECE_RULE", title_piece)
     reader = _RecordedReader(fixture["calls"])
     monkeypatch.setattr(ocr_filter, "_worker_ocr", reader)
     path = tmp_path / "poster.png"
@@ -95,17 +97,29 @@ def _boxes(result: OCRCandidateResult) -> list[dict]:
 
 
 ALL_FIXTURES = sorted(path.stem for path in FIXTURES.glob("*.json"))
+MISREAD_PIECES = ["zathura-a-space-adventure-619", "the-place-beyond-the-pines-554"]
+OTHER_TEXT = [
+    "hokum-467",  # "A FILM BY DAMIAN MCCARTHY" under the title
+    "how-to-train-your-dragon-2-469",  # the DREAMWORKS mark above the title
+    "black-panther-414",  # the MARVEL STUDIOS mark above the title
+    "conclave-430",  # actor names above the title
+    "mission-impossible-235",  # TOM CRUISE above the title
+    "zathura-a-space-adventure-620",  # COMING SOON
+    "sonic-the-hedgehog-2-587",  # "IN THEATRES, ON DIGITAL" under the subtitle
+    "no-time-to-die-14",  # the 007 mark beside the title (the owner's poster)
+    "no-time-to-die-538",  # the 007 mark beside the title
+]
 MISSED_AT_FULL_SIZE = ["late-night-with-the-devil-4", "kill-bill-vol-1-87"]
 
 
 @pytest.mark.parametrize("name", ALL_FIXTURES)
-def test_switched_off_the_gate_decides_exactly_as_before(
+def test_both_switches_off_decide_exactly_as_before(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """With the smaller-copy retry off the gate gives today's decision and today's trace."""
+    """With both switches off the gate gives today's decision and today's trace."""
     fixture = _fixture(name)
     today = fixture["today"]
-    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=False)
+    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=False, title_piece=False)
 
     assert len(reader.shapes) == today["calls_used"]
     assert result.accepted is today["accepted"]
@@ -117,6 +131,51 @@ def test_switched_off_the_gate_decides_exactly_as_before(
     assert json.loads(json.dumps(result.diagnostics)) == today["diagnostics"]
 
 
+@pytest.mark.parametrize("name", MISREAD_PIECES)
+def test_title_piece_rule_accepts_a_misread_piece_of_the_title(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fixture = _fixture(name)
+    assert fixture["today"]["reason"] == "text_heavy"
+    assert fixture["label"] == "title_only"
+
+    result, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
+
+    assert result.accepted
+    pieces = [box for box in _boxes(result) if box["is_title_piece"]]
+    assert pieces
+    assert all(box["is_title"] and box["title_match_source"] == "title_piece" for box in pieces)
+    assert result.diagnostics["title_piece_rule"] == {"triggered": True, "pieces": len(pieces)}
+    assert result.residual_boxes == [] or all(
+        box.text not in {piece["text"] for piece in pieces} for box in result.residual_boxes
+    )
+
+
+@pytest.mark.parametrize("name", OTHER_TEXT)
+def test_title_piece_rule_keeps_posters_with_other_text_out(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fixture = _fixture(name)
+    assert fixture["label"] == "other_text"
+
+    result, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
+
+    assert not result.accepted
+
+
+def test_title_piece_rule_alone_changes_nothing_for_the_007(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The owner's No Time to Die: the "007" has no letters, so it is never a piece."""
+    fixture = _fixture("no-time-to-die-14")
+    result, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=False, title_piece=True)
+
+    assert _outcome(result) == "text_heavy"
+    marks = [box for box in _boxes(result) if "007" in box["text"]]
+    assert marks
+    assert not any(box["is_title"] for box in marks)
+
+
 @pytest.mark.parametrize("name", MISSED_AT_FULL_SIZE)
 def test_small_copy_retry_reads_a_title_missed_at_full_size(
     name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -125,7 +184,7 @@ def test_small_copy_retry_reads_a_title_missed_at_full_size(
     assert fixture["today"]["reason"] in {"no_text", "no_title"}
     assert fixture["label"] == "title_only"
 
-    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True)
+    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
 
     assert result.accepted
     assert len(reader.shapes) == fixture["today"]["calls_used"] + 2
@@ -146,6 +205,25 @@ def test_small_copy_retry_reads_a_title_missed_at_full_size(
             ys = [y for _x, y in box["bbox"]]
             assert min(xs) >= -3 and max(xs) <= width + 3
             assert min(ys) >= -3 and max(ys) <= height + 3
+
+
+def test_both_rules_together_read_a_spaced_title_and_its_pieces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Signs: at 500 px only "si" is read, no title. The 60% copy reads "siqns"; the two
+    pieces read beside it at full size and 40% ("si", "ns") are pieces of the title."""
+    fixture = _fixture("signs-583")
+    assert fixture["today"]["reason"] == "text_heavy"
+    assert fixture["label"] == "title_only"
+
+    with_a_only, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+    assert _outcome(with_a_only) == "text_heavy"
+
+    result, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
+
+    assert result.accepted
+    assert result.diagnostics["small_copy_retry"]["recovered_title"] is True
+    assert {box["text"] for box in _boxes(result) if box["is_title_piece"]} == {"si", "ns"}
 
 
 def test_small_copy_boxes_come_back_in_the_posters_coordinates(
@@ -190,11 +268,12 @@ def test_small_copy_retry_never_runs_when_a_title_was_found(
     fixture = _fixture("black-panther-282")
     assert fixture["today"]["accepted"]
 
-    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True)
+    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
 
     assert len(reader.shapes) == fixture["today"]["calls_used"]
     assert "small_60" not in result.diagnostics["passes_run"]
     assert result.diagnostics["small_copy_retry"]["triggered"] is False
+    assert result.diagnostics["title_piece_rule"]["triggered"] is False
     assert result.accepted
 
 
@@ -205,7 +284,7 @@ def test_small_copy_retry_keeps_the_reason_when_the_copies_find_no_title(
     fixture = _fixture("f1-1")
     assert fixture["label"] == "no_title"
 
-    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True)
+    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
 
     assert len(reader.shapes) == fixture["today"]["calls_used"] + 2
     assert result.diagnostics["passes_run"][-2:] == ["small_60", "small_40"]
