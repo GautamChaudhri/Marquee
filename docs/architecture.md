@@ -397,8 +397,24 @@ leftover box (a word of four letters or more that is not the title's, or a box p
 limit) rejects the poster as `text_heavy`; a poster where no title was found is rejected as
 `no_title`, or `no_text` when nothing was read at all.
 
-Two rules, each behind a switch that is on by default, recover title-only posters the reader
-gets wrong:
+The reader is built in `_load_ocr`, once per OCR worker: PaddleOCR 3.6.0 with the
+`PP-OCRv5_mobile_det` detector and `PP-OCRv5_server_rec` recogniser, and text-line
+orientation on (a single line set vertically is read through it). PaddleOCR's **document
+preprocessor is off**. It is made for scanned pages: it classifies the whole image as upright
+or turned and turns it by 90°, 180°, or 270°, then unwarps it as if it were a photographed
+sheet. On posters the classifier turned about a third of them before reading, so their text
+boxes came back in the turned image's coordinates, every rule about size and position saw the
+wrong place, and the title often went unread; the unwarping bent every poster, turned or
+not. With it off the reader reads the poster as it is and every box is in the poster's own
+frame. It is a constant, not a setting (`OCR_DOCUMENT_PREPROCESSOR` in `config/pipeline.py`,
+`False`), so two coordinate frames never live side by side, and the run archive reports it as
+`config.ocr.document_preprocessor`; an archive without that field was made by the reader
+before the change. The reader opens three model folders under `data/models/paddlex/`
+(detection, recognition, text-line orientation). An installation from before the change also
+holds the preprocessor's two folders (`PP-LCNet_x1_0_doc_ori` and `UVDoc`); nothing opens them.
+
+Two rules, each behind a switch, recover title-only posters the reader gets wrong. The first
+is on by default, the second off:
 
 - **Smaller copies** (`OCR_SMALL_COPY_RETRY`). When every pass ends with no title found and the
   poster is rejected, the reader reads the whole poster again on copies at 60% and 40% of its
@@ -417,7 +433,11 @@ gets wrong:
   title does. Glyph height and letters together carry the rule: a studio mark or a credit
   line beside a title shares many of its letters but is set smaller, and a small subtitle
   line does not take in a tagline set at its own size. An accepted poster is never looked at
-  again. The bounds are constants beside the rule, each saying what it was tuned on.
+  again. The bounds are constants beside the rule, each saying what it was tuned on. The rule
+  is off by default: on a blind sample, measured before the reader's document preprocessor
+  was switched off, 72% of the posters it let through held only their title, against a bar of
+  90% (actor names, character names, and studio marks set at a title line's size). Set
+  `OCR_TITLE_PIECE_RULE=true` to run it.
 
 With both switches off every decision and the OCR trace are what they were before the two
 rules. With either on, the trace says what happened: `passes_run` lists `small_60` and
