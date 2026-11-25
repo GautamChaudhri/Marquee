@@ -1,8 +1,8 @@
 /** The web server's own settings, read at runtime from its environment.
  *
- *  `$env/dynamic/private`, never `$env/static/private`: a static import is inlined into the
- *  build, and the built app must hold no key. Nothing here may reach page data, a `PUBLIC_`
- *  variable, or a client bundle. */
+ *  `$app/env/private`, with both variables declared in `src/env.ts` as private and not static:
+ *  a static variable is inlined into the build, and the built app must hold no key. Nothing
+ *  here may reach page data, a public variable, or a client bundle. */
 import { MARQUEE_API_URL, MARQUEE_API_KEY } from '$app/env/private';
 
 export const DEFAULT_API_URL = 'http://127.0.0.1:8000';
