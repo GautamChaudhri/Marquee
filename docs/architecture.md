@@ -569,10 +569,22 @@ evaluation stays a clean measurement of it. Its life:
    passes the same artifact with the active profile's identity. `SCORER=weighted` is the off
    switch; no button or route trains, activates, or switches it off.
 
-The engine clamps each candidate's correction at `delta_max` before it compares a pair. With
-normalised features that sit well above zero, a learned weight can push both candidates of a
-pair to the clamp, and the held-out check then sees no improvement and changes nothing. That
-is the engine's behaviour, measured in M5c and left as it is.
+**How the engine trains it** (`ml/residual.py::train_residual`). Scoring
+(`score_residual_candidate`, at run time and in the held-out check) is the reference: a
+candidate's correction is `weights · features + bias`, clamped at `delta_max` (0.75), then
+multiplied by `alpha` (0.5) and added to the baseline's logit. The trainer trains exactly
+that. It centres the features on the mean of the training partition's distinct candidates
+(a candidate is one movie's one feature vector, counted once however many pairs it is in;
+never the validation or test movies), and the artifact's bias, `-(weights · mean)`, carries
+the centring into scoring. A pair's logit is the baseline's logit margin plus `alpha` times
+the difference of the two clamped corrections, the weighted logistic loss is minimised from
+zero weights, and a candidate whose correction is at the clamp passes no gradient. The
+held-out check scores with the trained weights and bias. The report holds the weights' feature
+names, the `bias`, `feature_means`, and each held-out partition's metrics, including
+`clamped_share` (the share of candidates whose correction is at or beyond the clamp). An
+owner who agrees with the baseline can get a lower held-out accuracy with a residual; the
+activation rules refuse it. (Until M5d the trainer clamped the difference between a pair's
+corrections instead, so with real feature values a trained residual changed nothing.)
 
 **The baseline stays the weighted scorer's.** An event's `exposed` rows carry `baseline_rank`
 and `baseline_score`, which the trainer reads as the weighted scorer's. For a run the residual
@@ -620,7 +632,9 @@ before the style stage has no embedding and is counted, not guessed.
 and card, where cards are design stacks in the order the Review page shows them; whether the
 pick is that exact candidate and whether it is the same design), `gated` (the stage and
 reason), `not_offered` (the closest candidate's cosine is kept), or `failed` (the run did not
-complete). **The summary** is computed from the rows whenever asked, for seed exemplars (the
+complete, or it ran against another profile than the evaluation names: a review answered while
+an evaluation runs queues a rebuild, and runs that start after it publishes measure the new
+profile; such a result says "the taste profile changed while the evaluation ran"). **The summary** is computed from the rows whenever asked, for seed exemplars (the
 headline: posters the owner picked by hand with nothing shown first), feedback exemplars, and
 both: evaluated, ranked, gated by stage and reason, not offered, failed, and over the ranked:
 exact, same design, first 3 and first 5 cards, the median card, and the mean reciprocal card.
@@ -659,7 +673,7 @@ of it. `marquee api` serves it under uvicorn.
 | `GET /api/runs/{id}/feedback` | yes | the run's events and the revokes of them |
 | `GET /api/feedback` | yes | every act of feedback, revokes included, newest first and paged, with an optional `movie_id`; each with its movie's title and year, how many candidates were shown (not the copy itself), and `revoked_by` |
 | `POST /api/feedback/{id}/revoke` | yes | revokes one event: 201, or 200 when it was revoked under the same key; 409 when it is a revoke or already revoked |
-| `GET /api/taste` | yes | what `marquee taste status` prints, and the blind evaluation's headline: the latest finished evaluation, the one before, and one running |
+| `GET /api/taste` | yes | what `marquee taste status` prints, and the blind evaluation's headline: the latest evaluation that succeeded, the one that succeeded before it, and one running (a cancelled or failed one is neither; it stays in the list and on its own page) |
 | `POST /api/taste/evaluations` | yes | `{"movie_ids", "limit"}`, both optional: queues a blind evaluation, 202 with it and its batch job; 409 while one runs or when a rebuild is due; 422 names movies that cannot be evaluated |
 | `GET /api/taste/evaluations` | yes | evaluations, newest first and paged, each with its state, progress, and summary |
 | `GET /api/taste/evaluations/{id}` | yes | one evaluation and its summary |
@@ -684,7 +698,8 @@ queues a job of an arbitrary kind.
 **`GET /api/system`** (`marquee/api/system.py`) is read-only and cheap: the version and
 environment; the database's schema revision against the newest in the code; the settings that
 shape behaviour (`DEPLOY_POLICY`, `RUN_NEW_MOVIES`, the sync interval, the movie roots, the
-data directory); library counts (movies, movies with a file, posters by origin, runs by state,
+data directory); library counts (movies, movies with a file, posters by origin, the product
+loop's runs by state, blind evaluations' masked runs by state apart (`masked_runs`),
 deployments, exemplars by state and polarity, preference events); each file the model
 manifest lists, whether it is there and its size (a stat, never a hash); the newest
 `library_sync` job's state and times; and the size of `runs/`, `backups/`, `cache/`, and `ml/`,
@@ -752,10 +767,10 @@ it sends one.
 | `/movies/[id]` | the poster at width 640, the facts, the latest run (when, blind, reviewed, the ranked candidates with rank, score, stack, and the pick, read-only), and the poster history, newest first | Run (`POST /api/movies/{id}/run`, then follows the job and shows the new run); put back what was there before a deployment, behind a confirmation |
 | `/review` | the runs waiting for an answer: the movie's poster now and the pick, title and year, how many were ranked, a Blind mark, and a mark when the deploy policy already wrote the pick | opens a run's review |
 | `/review/[runId]` | the movie, its poster now and whose it is, the run's line, the run's earlier answers (newest first), and the rank panel | the four answers, Undo, Next (below) |
-| `/taste` | the active profile, the exemplars by state and whether a rebuild is due, agreement over blind reviews (a percentage from 10; the others apart), the residual (in use or not and why, held-out accuracy before and after, the features it leans on, the last training, what is missing), the blind evaluation (the latest headline in a sentence, the one before, and one running with its progress), recent feedback, and a paged grid of exemplars filtered by polarity and state, each saying what ended it | Rebuild now (followed to its end); Run a blind evaluation, behind a confirmation that says how long it takes and that it changes nothing in the library (followed to its end); Undo on a recent answer |
+| `/taste` | the active profile, the exemplars by state and whether a rebuild is due, agreement over blind reviews (a percentage from 10; the others apart), the residual (in use or not and why, in one plain sentence that says each fact once and never shows an engine identifier, held-out accuracy before and after, the features it leans on, the last training, what is missing), the blind evaluation (the latest headline in a sentence, the one before, and one running with its progress), recent feedback, and a paged grid of exemplars filtered by polarity and state, each saying what ended it | Rebuild now (followed to its end); Run a blind evaluation, behind a confirmation that says how long it takes and that it changes nothing in the library (followed to its end); Undo on a recent answer |
 | `/taste/evaluations/[id]` | one evaluation's summary, then a row per movie: the owner's poster, the blind pick, the outcome in words ("Your design was 4th of 16", "Removed by the text gate: text_heavy", "Not among TMDB's candidates"), how the poster was found, filtered by outcome and by seed or feedback, paged | opens a result's masked run on its review page, read-only |
-| `/activity` | the worker's state; jobs newest first with kind, the movie they are about (linked), state, progress, and times, filtered by state and kind and paged; a job's events and error | Cancel and Retry where the API allows |
-| `/system` | plain tables of `GET /api/system` and `GET /api/worker`; a schema behind the code, a missing model file or manifest, and a worker that is not running are listed first as problems, in words | nothing: it changes no setting |
+| `/activity` | the worker's state; jobs newest first with kind (a masked run is a "Blind run"), the movie they are about (linked), state, progress, and times, filtered by state and kind and paged; a job's events and error | Cancel and Retry where the API allows |
+| `/system` | plain tables of `GET /api/system` and `GET /api/worker` (blind runs on their own line); a schema behind the code, a missing model file or manifest, and a worker that is not running are listed first as problems, in words | nothing: it changes no setting |
 
 The navigation is Library, Review (with the number waiting, read from `GET /api/taste` when
 the shell loads and after each answer), Taste, Activity, and System; on a narrow screen it
