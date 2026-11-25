@@ -385,6 +385,47 @@ name and the SHA-256 of the candidate file's bytes, and each entry records that 
 serves different bytes under one file name, and a name key would pair an embedding of one
 encoding with features measured on another.
 
+### The text gate
+
+`pipeline/ocr_filter.py` keeps a candidate only when it shows the movie's title and nothing
+else (the `title_only` text profile). It reads the candidate at the working size, 500 px wide,
+with PaddleOCR: the whole poster, the top and bottom strips at twice their size, a
+contrast-boosted copy when nothing was read, and a low-threshold title recovery when nothing
+read matches the title. A box whose text matches the title (whole, a word of it, a fuzzy or
+letter-spaced read) is title evidence; every other box is leftover text. One significant
+leftover box (a word of four letters or more that is not the title's, or a box past a size
+limit) rejects the poster as `text_heavy`; a poster where no title was found is rejected as
+`no_title`, or `no_text` when nothing was read at all.
+
+Two rules, each behind a switch that is on by default, recover title-only posters the reader
+gets wrong:
+
+- **Smaller copies** (`OCR_SMALL_COPY_RETRY`). When every pass ends with no title found and the
+  poster is rejected, the reader reads the whole poster again on copies at 60% and 40% of its
+  size, made from the 500 px image, at the title recovery's confidence threshold
+  (`OCR_TITLE_RECOVERY_CONFIDENCE_THRESHOLD`). Large or letter-spaced titles that come back
+  empty or as one stray letter at 500 px are often read on a smaller copy. The boxes are mapped
+  back to the poster's own coordinates and merged with what was read before, and when the
+  merged reads hold the title the poster is decided again by the same rules; otherwise it
+  keeps its reason. A poster where a title was found, an accepted poster, and a poster with a
+  format word never get these passes.
+- **Title pieces** (`OCR_TITLE_PIECE_RULE`). When a poster with a title found is rejected for
+  leftover text, a leftover box counts as part of the title when it sits with a box that has
+  title evidence (on its line, or directly above or below it while overlapping it), its glyphs
+  are about as tall as that box's and not far below the poster's tallest title box, three
+  quarters of its letters are letters of the title, and it holds no more letters than the
+  title does. Glyph height and letters together carry the rule: a studio mark or a credit
+  line beside a title shares many of its letters but is set smaller, and a small subtitle
+  line does not take in a tagline set at its own size. An accepted poster is never looked at
+  again. The bounds are constants beside the rule, each saying what it was tuned on.
+
+With both switches off every decision and the OCR trace are what they were before the two
+rules. With either on, the trace says what happened: `passes_run` lists `small_60` and
+`small_40` when they ran, a `small_copy_retry` and a `title_piece_rule` block say whether each
+rule ran and what it found, and every region carries `is_title_piece`. The run archive then
+keeps every candidate's regions, accepted ones too, each with the pass that read it and
+whether it counted as a piece of the title.
+
 ## Writing a poster
 
 `artwork/deploy.py::write_poster` is the one path that writes `poster.jpg` into a movie folder,
