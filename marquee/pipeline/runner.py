@@ -254,7 +254,25 @@ def _ocr_display_regions(diagnostics: dict | None) -> list[dict] | None:
                 else None,
             }
         )
+        if _reports_added_text_rules(diagnostics):
+            regions[-1]["pass"] = (
+                raw_box.get("pass") if isinstance(raw_box.get("pass"), str) else None
+            )
+            regions[-1]["is_title_piece"] = bool(raw_box.get("is_title_piece"))
     return regions
+
+
+def _reports_added_text_rules(diagnostics: dict | None) -> bool:
+    """Whether the text gate ran with the smaller-copy retry or the title-piece rule on.
+
+    Their trace blocks appear only when a switch is on. Then the archive keeps every
+    candidate's regions, accepted ones too, with the pass that read each region and
+    whether it counted as a piece of the title, so a later reader can tell why a poster
+    passed. With both switches off the archive is what it was before the two rules.
+    """
+    return isinstance(diagnostics, dict) and (
+        "small_copy_retry" in diagnostics or "title_piece_rule" in diagnostics
+    )
 
 
 def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) -> None:
@@ -272,7 +290,9 @@ def _attach_ocr_diagnostics(record: CandidateScore, result: OCRCandidateResult) 
     record.ocr_title_bbox = _ocr_bbox_to_list(result.title_bbox)
     record.ocr_residual_boxes = [_ocr_box_to_dict(box) for box in result.residual_boxes]
     record.ocr_display_regions = (
-        _ocr_display_regions(result.diagnostics) if not result.accepted else None
+        _ocr_display_regions(result.diagnostics)
+        if not result.accepted or _reports_added_text_rules(result.diagnostics)
+        else None
     )
     profile = result.diagnostics.get("profile") if isinstance(result.diagnostics, dict) else None
     record.ocr_text_profile = (
