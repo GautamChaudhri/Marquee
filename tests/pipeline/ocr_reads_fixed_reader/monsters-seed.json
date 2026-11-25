@@ -1,0 +1,138 @@
+{
+ "about": "Recorded output of the fixed reader for the owner's own poster of Monsters (the staged 500 px seed copy the taste trainer reads), with the context the trainer gives the gate (the title only). No image.",
+ "reader": "PaddleOCR 3.6.0 as pipeline/ocr_filter.py::_load_ocr builds it since session E6: no document preprocessor (use_doc_orientation_classify=False, use_doc_unwarping=False)",
+ "movie_title": "Monsters",
+ "title_text": "monsters",
+ "title_tokens": [
+  "monsters"
+ ],
+ "director_tokens": [],
+ "extras": {
+  "profile_scope": "movie"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "owner's seed poster",
+ "old_reader": {
+  "outcome": "accepted",
+  "detected_text": "monsters crl g",
+  "switches": "retry on, piece rule off"
+ },
+ "calls": [
+  {
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "INFECTEBZONE",
+    "MONSTERS",
+    ""
+   ],
+   "scores": [
+    0.9610216617584229,
+    0.9738649129867554,
+    0.0
+   ],
+   "polys": [
+    [
+     [
+      406.0,
+      346.0
+     ],
+     [
+      500.0,
+      395.0
+     ],
+     [
+      493.0,
+      416.0
+     ],
+     [
+      396.0,
+      368.0
+     ]
+    ],
+    [
+     [
+      58.0,
+      574.0
+     ],
+     [
+      443.0,
+      574.0
+     ],
+     [
+      443.0,
+      685.0
+     ],
+     [
+      58.0,
+      685.0
+     ]
+    ],
+    [
+     [
+      122.0,
+      674.0
+     ],
+     [
+      185.0,
+      674.0
+     ],
+     [
+      185.0,
+      683.0
+     ],
+     [
+      122.0,
+      683.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "MUNSTERS"
+   ],
+   "scores": [
+    0.9112951755523682
+   ],
+   "polys": [
+    [
+     [
+      121.0,
+      0.0
+     ],
+     [
+      890.0,
+      0.0
+     ],
+     [
+      887.0,
+      146.0
+     ],
+     [
+      118.0,
+      134.0
+     ]
+    ]
+   ]
+  }
+ ]
+}

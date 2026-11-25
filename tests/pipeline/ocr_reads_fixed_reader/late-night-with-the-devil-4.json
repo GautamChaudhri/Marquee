@@ -1,0 +1,264 @@
+{
+ "about": "Recorded output of the fixed reader for one labelled poster of Late Night with the Devil (session E5 labelled set #4, label title_only: LATE NIGHT with the DEVIL). No image.",
+ "reader": "PaddleOCR 3.6.0 as pipeline/ocr_filter.py::_load_ocr builds it since session E6: no document preprocessor (use_doc_orientation_classify=False, use_doc_unwarping=False)",
+ "movie_title": "Late Night with the Devil",
+ "title_text": "late night with the devil",
+ "title_tokens": [
+  "devil",
+  "late",
+  "night",
+  "the",
+  "with"
+ ],
+ "director_tokens": [
+  "cairnes",
+  "cameron"
+ ],
+ "extras": {
+  "profile": {
+   "mode": "title_only"
+  },
+  "profile_id": "title_only",
+  "profile_name": "Title Only",
+  "profile_scope": "movie",
+  "studio_tokens": [
+   "agc",
+   "fiend",
+   "films",
+   "future",
+   "good",
+   "image",
+   "nation",
+   "pictures",
+   "spooky",
+   "studios",
+   "vicscreen"
+  ],
+  "tagline": "do not adjust your set"
+ },
+ "image_size": [
+  500,
+  750
+ ],
+ "label": "title_only",
+ "old_reader": {
+  "outcome": "accepted",
+  "detected_text": "night m",
+  "switches": "retry on, piece rule off"
+ },
+ "calls": [
+  {
+   "shape": [
+    750,
+    500
+   ],
+   "texts": [
+    "LATE NIGHT",
+    "with",
+    "the",
+    "DEVIL"
+   ],
+   "scores": [
+    0.9103426933288574,
+    0.997837245464325,
+    0.9986596703529358,
+    0.9425386190414429
+   ],
+   "polys": [
+    [
+     [
+      3.0,
+      3.0
+     ],
+     [
+      367.0,
+      3.0
+     ],
+     [
+      367.0,
+      114.0
+     ],
+     [
+      3.0,
+      114.0
+     ]
+    ],
+    [
+     [
+      359.0,
+      21.0
+     ],
+     [
+      394.0,
+      21.0
+     ],
+     [
+      394.0,
+      47.0
+     ],
+     [
+      359.0,
+      47.0
+     ]
+    ],
+    [
+     [
+      355.0,
+      41.0
+     ],
+     [
+      389.0,
+      41.0
+     ],
+     [
+      389.0,
+      70.0
+     ],
+     [
+      355.0,
+      70.0
+     ]
+    ],
+    [
+     [
+      8.0,
+      88.0
+     ],
+     [
+      202.0,
+      88.0
+     ],
+     [
+      202.0,
+      192.0
+     ],
+     [
+      8.0,
+      192.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [
+    "LATE",
+    "NIGHT",
+    "Wit",
+    "the",
+    "DEVU"
+   ],
+   "scores": [
+    0.9341108798980713,
+    0.9870311617851257,
+    0.7159280776977539,
+    0.9979734420776367,
+    0.7515846490859985
+   ],
+   "polys": [
+    [
+     [
+      17.0,
+      10.0
+     ],
+     [
+      351.0,
+      13.0
+     ],
+     [
+      350.0,
+      220.0
+     ],
+     [
+      16.0,
+      217.0
+     ]
+    ],
+    [
+     [
+      326.0,
+      16.0
+     ],
+     [
+      730.0,
+      13.0
+     ],
+     [
+      731.0,
+      217.0
+     ],
+     [
+      328.0,
+      220.0
+     ]
+    ],
+    [
+     [
+      716.0,
+      62.0
+     ],
+     [
+      755.0,
+      48.0
+     ],
+     [
+      766.0,
+      78.0
+     ],
+     [
+      727.0,
+      93.0
+     ]
+    ],
+    [
+     [
+      717.0,
+      86.0
+     ],
+     [
+      771.0,
+      86.0
+     ],
+     [
+      771.0,
+      134.0
+     ],
+     [
+      717.0,
+      134.0
+     ]
+    ],
+    [
+     [
+      42.0,
+      202.0
+     ],
+     [
+      331.0,
+      202.0
+     ],
+     [
+      331.0,
+      270.0
+     ],
+     [
+      42.0,
+      270.0
+     ]
+    ]
+   ]
+  },
+  {
+   "shape": [
+    270,
+    1000
+   ],
+   "texts": [],
+   "scores": [],
+   "polys": []
+  }
+ ]
+}

@@ -8,7 +8,8 @@ blank image of the poster's size and the recorded answers come back in call orde
 
 The fixtures in ``ocr_reads/`` were recorded with the reader as it was before session E6
 (PaddleOCR's document preprocessor on, so some boxes are in a turned frame); they are
-inputs to the rules' logic and still test it.
+inputs to the rules' logic and still test it. ``ocr_reads_fixed_reader/`` holds answers
+recorded with the reader as ``_load_ocr`` builds it now, for the tests of that reader.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from marquee.pipeline import ocr_filter
 from marquee.pipeline.types import OCRCandidateResult
 
 FIXTURES = Path(__file__).parent / "ocr_reads"
+FIXED_FIXTURES = Path(__file__).parent / "ocr_reads_fixed_reader"
 
 
 def test_load_ocr_reads_the_poster_as_it_is(monkeypatch: pytest.MonkeyPatch):
@@ -328,3 +330,72 @@ def test_small_copy_retry_keeps_the_reason_when_the_copies_find_no_title(
     assert [box["text"] for box in _boxes(result)] == [
         box["text"] for box in fixture["today"]["diagnostics"]["detected_boxes"]
     ]
+
+
+# The fixed reader (no document preprocessor): every box is in the poster's own frame.
+
+
+def _fixed_fixture(name: str) -> dict:
+    return json.loads((FIXED_FIXTURES / f"{name}.json").read_text())
+
+
+def _counted(result: OCRCandidateResult) -> list[str]:
+    return [box["text"] for box in _boxes(result) if box["counts_toward_rejection"]]
+
+
+def test_fixed_reader_finds_a_title_at_the_top_in_the_top_third_of_the_poster(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Late Night with the Devil: the title is set across the top. The old reader turned the
+    poster a quarter round and found only "night", outside the poster (x 660 to 750 of 500),
+    and only on a smaller copy; the fixed reader reads the title where it is, in one pass."""
+    fixture = _fixed_fixture("late-night-with-the-devil-4")
+    width, height = fixture["image_size"]
+
+    result, reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+
+    assert result.accepted
+    assert result.diagnostics["passes_run"] == ["full", "top", "bottom"]
+    assert len(reader.shapes) == 3
+    titles = {box["text"] for box in _boxes(result) if box["is_title"]}
+    assert {"LATE NIGHT", "with", "the", "DEVIL"} <= titles
+    assert result.title_bbox is not None
+    xs = [x for x, _y in result.title_bbox]
+    ys = [y for _x, y in result.title_bbox]
+    assert max(ys) < height / 3
+    assert min(xs) >= 0 and max(xs) <= width and min(ys) >= 0
+
+
+@pytest.mark.parametrize("title_piece", [False, True])
+def test_fixed_reader_still_rejects_text_that_is_part_of_the_artwork(
+    title_piece: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Monsters (the owner's own poster): the fixed reader reads the INFECTED ZONE sign in the
+    picture, which the old reader never did. It is not the title, so the poster is rejected,
+    with the piece rule or without it."""
+    fixture = _fixed_fixture("monsters-seed")
+    assert fixture["old_reader"]["outcome"] == "accepted"
+
+    result, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=title_piece)
+
+    assert _outcome(result) == "text_heavy"
+    assert _counted(result) == ["INFECTEBZONE"]
+    assert any(box["is_title"] and box["text"] == "MONSTERS" for box in _boxes(result))
+
+
+def test_fixed_reader_misread_title_piece_rejects_unless_the_piece_rule_is_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Berserk II (the owner's own poster): the full pass reads BERSERK, and the bottom strip,
+    read at twice its size, reads the same title again as "DEKSEKK". With the piece rule off
+    (the default) that misread piece is other text; with it on it is a piece of the title."""
+    fixture = _fixed_fixture("berserk-the-golden-age-arc-ii-the-battle-for-doldrey-seed")
+    assert fixture["old_reader"]["outcome"] == "accepted"
+
+    off, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=False)
+    assert _outcome(off) == "text_heavy"
+    assert _counted(off) == ["DEKSEKK"]
+
+    on, _reader = _run(fixture, tmp_path, monkeypatch, small_copy=True, title_piece=True)
+    assert on.accepted
+    assert {box["text"] for box in _boxes(on) if box["is_title_piece"]} == {"DEKSEKK"}
