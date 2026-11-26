@@ -157,6 +157,7 @@ markers = [
     "models: needs model files under data/models; skipped when they are absent",
     "gpu: needs a CUDA GPU",
     "db: needs the Compose Postgres database",
+    "pg_client: needs pg_dump, pg_restore, and psql of the database server's major version",
 ]
 
 # Layering (see docs/architecture.md). Imports only point downward. Packages that do not
@@ -171,6 +172,7 @@ type = "layers"
 layers = [
     "marquee.api : marquee.cli : marquee.doctor : marquee.model_fetch",
     "marquee.jobs",
+    "marquee.maintenance",
     "marquee.taste",
     "marquee.artwork",
     "marquee.library",
@@ -195,6 +197,7 @@ source_modules = [
     "marquee.doctor",
     "marquee.model_fetch",
     "marquee.jobs",
+    "marquee.maintenance",
     "marquee.taste",
     "marquee.artwork",
     "marquee.library",
@@ -221,6 +224,7 @@ source_modules = [
     "marquee.doctor",
     "marquee.model_fetch",
     "marquee.jobs",
+    "marquee.maintenance",
     "marquee.taste",
     "marquee.artwork",
     "marquee.library",

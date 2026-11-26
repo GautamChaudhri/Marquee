@@ -159,11 +159,27 @@ async def test_a_long_stop_does_not_queue_a_burst(session: AsyncSession) -> None
 
 
 def test_the_sync_schedule_follows_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
-    (sync,) = schedules.SCHEDULES
+    sync = next(s for s in schedules.SCHEDULES if s.name == "library_sync")
     monkeypatch.setattr(settings, "SYNC_INTERVAL_MINUTES", 7)
 
-    assert (sync.name, sync.kind, sync.interval()) == (
+    assert (sync.name, sync.kind, sync.interval(), sync.first_due) == (
         "library_sync",
         "library_sync",
         timedelta(minutes=7),
+        "now",
     )
+
+
+def test_the_backup_schedule_follows_the_setting_and_fires_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backup = next(s for s in schedules.SCHEDULES if s.name == "db_backup")
+    monkeypatch.setattr(settings, "DB_BACKUP_INTERVAL_HOURS", 6)
+
+    assert (backup.kind, backup.interval(), backup.first_due) == (
+        "db_backup",
+        timedelta(hours=6),
+        "now",
+    )
+    monkeypatch.setattr(settings, "DB_BACKUP_INTERVAL_HOURS", 0)
+    assert backup.interval() == timedelta(0)

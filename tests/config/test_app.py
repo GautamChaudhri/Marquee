@@ -52,6 +52,7 @@ def test_runtime_paths_derive_from_data_dir(tmp_path: Path) -> None:
     assert settings.exemplars_dir == tmp_path / "ml" / "exemplars"
     assert settings.profiles_dir == tmp_path / "ml" / "profiles"
     assert settings.taste_build_dir == tmp_path / "cache" / "taste-build"
+    assert settings.db_backups_dir == tmp_path / "backups" / "db"
 
 
 def test_database_urls_quote_credentials() -> None:
@@ -66,6 +67,24 @@ def test_database_urls_quote_credentials() -> None:
         "postgresql+psycopg://mar%20quee:p%40ss%3Aword%2F1@db.example:6543/marquee"
     )
     assert settings.database_url_sync.startswith("postgresql://mar%20quee:p%40ss%3Aword%2F1@")
+
+
+def test_the_libpq_environment_carries_the_connection_unquoted() -> None:
+    settings = _settings(
+        POSTGRES_USER="mar quee",
+        POSTGRES_PASSWORD="p@ss:word/1",
+        POSTGRES_HOST="db.example",
+        POSTGRES_PORT=6543,
+        POSTGRES_DB="marquee",
+    )
+    assert settings.libpq_environment() == {
+        "PGHOST": "db.example",
+        "PGPORT": "6543",
+        "PGUSER": "mar quee",
+        "PGDATABASE": "marquee",
+        "PGPASSWORD": "p@ss:word/1",
+    }
+    assert "PGPASSWORD" not in _settings(POSTGRES_PASSWORD=None).libpq_environment()
 
 
 def test_secrets_never_appear_in_repr() -> None:
@@ -151,6 +170,22 @@ def test_job_settings_defaults_and_bounds() -> None:
     assert _settings(GPU_CHILD_MAX_RSS_MB=0).GPU_CHILD_MAX_RSS_MB == 0
     with pytest.raises(ValidationError):
         _settings(GPU_CHILD_MAX_RSS_MB=-1)
+
+
+def test_backup_and_retention_settings_defaults_and_bounds() -> None:
+    defaults = _settings()
+    assert (defaults.DB_BACKUP_INTERVAL_HOURS, defaults.DB_BACKUP_KEEP) == (24, 14)
+    assert (defaults.RETENTION_INTERVAL_HOURS, defaults.RETENTION_DAYS) == (24, 90)
+    assert _settings(DB_BACKUP_INTERVAL_HOURS=0).DB_BACKUP_INTERVAL_HOURS == 0
+    assert _settings(RETENTION_INTERVAL_HOURS=0).RETENTION_INTERVAL_HOURS == 0
+    for name, bad in (
+        ("DB_BACKUP_INTERVAL_HOURS", -1),
+        ("DB_BACKUP_KEEP", 0),
+        ("RETENTION_INTERVAL_HOURS", -1),
+        ("RETENTION_DAYS", 0),
+    ):
+        with pytest.raises(ValidationError):
+            _settings(**{name: bad})
 
 
 def test_secret_values_lists_every_secret_that_is_set() -> None:

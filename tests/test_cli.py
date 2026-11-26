@@ -84,6 +84,56 @@ def test_db_errors_never_show_the_password(
     assert "marquee db status:" in captured.err
 
 
+def test_db_backup_makes_a_manual_dump_and_backups_lists_them(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    import json
+    from datetime import UTC, datetime
+
+    from marquee.maintenance import dumps
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+    made: list[str] = []
+
+    def make_dump(kind: str, **_: object) -> dumps.DumpResult:
+        made.append(kind)
+        name = dumps.dump_name(kind, datetime(2026, 11, 26, 12, tzinfo=UTC), "0006")  # type: ignore[arg-type]
+        settings.db_backups_dir.mkdir(parents=True, exist_ok=True)
+        (settings.db_backups_dir / name).write_bytes(b"12345")
+        return dumps.DumpResult(name, kind, 5, "b" * 64, "0006", 1.25, 19, 19)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dumps, "make_dump", make_dump)
+
+    assert cli.main(["db", "backup"]) == 0
+    out = capsys.readouterr().out
+    assert made == ["manual"]
+    assert "file      manual-20261126T120000Z-0006.dump" in out
+    assert f"sha256    {'b' * 64}" in out
+    assert "revision  0006" in out
+
+    assert cli.main(["db", "backups"]) == 0
+    out = capsys.readouterr().out
+    assert "manual       0006" in out and out.splitlines()[-1] == "1 dump(s), 5 bytes"
+    assert cli.main(["db", "backups", "--json"]) == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert [(d["name"], d["kind"], d["revision"]) for d in listed] == [
+        ("manual-20261126T120000Z-0006.dump", "manual", "0006")
+    ]
+
+
+def test_db_backup_failures_say_why_without_the_password(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.maintenance import dumps
+
+    def make_dump(kind: str, **_: object) -> dumps.DumpResult:
+        raise dumps.DumpToolsError("pg_dump is not installed")
+
+    monkeypatch.setattr(dumps, "make_dump", make_dump)
+    assert cli.main(["db", "backup"]) == 1
+    assert capsys.readouterr().err == "marquee db backup: pg_dump is not installed\n"
+
+
 # ── marquee sync ──────────────────────────────────────────────────────────
 
 

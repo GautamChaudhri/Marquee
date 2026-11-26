@@ -368,6 +368,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "status",
         help="show the database's schema revision; exit 1 unless it is the newest",
     )
+    db_commands.add_parser(
+        "backup",
+        help="dump the database now (no worker or job needed)",
+        description="Dump the whole database to <data>/backups/db/manual-<UTC time>-<schema "
+        "revision>.dump with pg_dump, and check the dump reads back before it counts. Works "
+        "with the stack stopped and before a migration (the database itself must be up). "
+        "Marquee never deletes a dump made this way.",
+    )
+    backups = db_commands.add_parser("backups", help="list the database dumps, newest first")
+    backups.add_argument("--json", action="store_true", help="print them as JSON")
     revision = db_commands.add_parser(
         "revision",
         help="write a new migration from the models (for developers)",
@@ -666,7 +676,9 @@ def _jobs(args: argparse.Namespace) -> int:
 def _db(args: argparse.Namespace) -> int:
     from sqlalchemy.exc import SQLAlchemyError
 
+    from marquee.config import settings
     from marquee.db import migrate
+    from marquee.maintenance import dumps
 
     _quiet_logging()
     command = f"db {args.db_command}"
@@ -693,6 +705,34 @@ def _db(args: argparse.Namespace) -> int:
             path = migrate.revision(args.message)
             print(f"wrote     {path}")
             return 0
+        if args.db_command == "backup":
+            made = dumps.make_dump("manual")
+            print(f"database  {_database_target()}")
+            print(f"folder    {settings.db_backups_dir}")
+            print(f"file      {made.file}")
+            print(f"size      {made.size_bytes:,} bytes")
+            print(f"sha256    {made.sha256}")
+            print(f"revision  {made.revision or 'none'}")
+            print(
+                f"took      {made.seconds:.1f} s (pg_dump {made.client_major}, server {made.server_major})"
+            )
+            return 0
+        if args.db_command == "backups":
+            found = dumps.list_dumps()
+            if args.json:
+                print(json.dumps([dump.to_dict() for dump in found], indent=2))
+                return 0
+            print(f"folder    {settings.db_backups_dir}")
+            print(f"{'made (UTC)':<19}  {'kind':<11}  {'revision':<8}  {'size':>14}  file")
+            for dump in found:
+                print(
+                    f"{_when(dump.made_at):<19}  {dump.kind:<11}  {dump.revision or '-':<8}  "
+                    f"{dump.size_bytes:>14,}  {dump.name}"
+                )
+            print(f"{len(found)} dump(s), {sum(d.size_bytes for d in found):,} bytes")
+            return 0
+    except dumps.DumpError as exc:
+        return _fail(command, str(exc))
     except migrate.MigrationError as exc:
         return _fail(command, str(exc))
     except SQLAlchemyError as exc:

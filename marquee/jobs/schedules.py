@@ -45,8 +45,13 @@ def _sync_interval() -> timedelta:
     return timedelta(minutes=settings.SYNC_INTERVAL_MINUTES)
 
 
+def _backup_interval() -> timedelta:
+    return timedelta(hours=settings.DB_BACKUP_INTERVAL_HOURS)
+
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule("library_sync", kind="library_sync", interval=_sync_interval),
+    Schedule("db_backup", kind="db_backup", interval=_backup_interval),
 )
 
 

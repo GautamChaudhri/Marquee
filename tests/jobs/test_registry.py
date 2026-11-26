@@ -75,6 +75,7 @@ def test_the_kinds_of_this_milestone() -> None:
         "poster_deploy": ("media_write", 3, 300, None),
         "poster_restore": ("media_write", 3, 300, None),
         "taste_rebuild": ("gpu", 2, 900, "taste_rebuild:{revision}"),
+        "db_backup": ("maintenance", 3, 7200, "db_backup"),
     }
     assert kinds["gpu_selftest"].gpu_function == "marquee.jobs.handlers.gpu:gpu_selftest"
     assert kinds["taste_rebuild"].handler is not None

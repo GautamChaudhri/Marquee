@@ -86,6 +86,15 @@ class Settings(BaseSettings):
     # (only where there is no poster, or over the poster the policy itself deployed last;
     # never one the owner chose), all (also replaces the owner's).
     DEPLOY_POLICY: Literal["off", "missing", "all"] = "off"
+    # How often the worker dumps the database by itself, in hours; 0 turns the schedule off.
+    # The dumps go to <data>/backups/db; the newest DB_BACKUP_KEEP scheduled ones are kept.
+    DB_BACKUP_INTERVAL_HOURS: int = Field(default=24, ge=0)
+    DB_BACKUP_KEEP: int = Field(default=14, ge=1)
+    # How often the worker deletes what the retention rules say has gone stale, in hours; 0
+    # turns it off. The first time the schedule is seen it waits one whole interval.
+    RETENTION_INTERVAL_HOURS: int = Field(default=24, ge=0)
+    # Finished jobs, and runs nothing names, older than this many days are deleted.
+    RETENTION_DAYS: int = Field(default=90, ge=1)
     # A blind evaluation matches the owner's poster to a candidate of the masked run by TMDB
     # file name when it can, otherwise by CLIP cosine: the closest candidate at or above this.
     EVAL_MATCH_MIN_COSINE: float = Field(default=0.95, ge=0.0, le=1.0)
@@ -224,6 +233,11 @@ class Settings(BaseSettings):
         return self.DATA_DIR / "backups"
 
     @property
+    def db_backups_dir(self) -> Path:
+        """Database dumps: ``marquee-<UTC time>-<revision>.dump`` and ``pre-restore-*.dump``."""
+        return self.backups_dir / "db"
+
+    @property
     def deploy_staging_dir(self) -> Path:
         """Originals a deploy fetched, kept until the job records its write, so a retry
         writes the same bytes (TMDB's CDN can serve other bytes under one name)."""
@@ -260,6 +274,20 @@ class Settings(BaseSettings):
     def database_url_sync(self) -> str:
         """Plain libpq URL, as psycopg.connect() takes it."""
         return f"postgresql://{self._database_netloc()}/{quote(self.POSTGRES_DB, safe='')}"
+
+    def libpq_environment(self) -> dict[str, str]:
+        """The connection settings as libpq's environment variables, for a child process
+        such as ``pg_dump``: a password in a process's arguments is visible to every user of
+        the machine, in its environment it is not. It holds the password: never log it."""
+        environment = {
+            "PGHOST": self.POSTGRES_HOST,
+            "PGPORT": str(self.POSTGRES_PORT),
+            "PGUSER": self.POSTGRES_USER,
+            "PGDATABASE": self.POSTGRES_DB,
+        }
+        if self.POSTGRES_PASSWORD is not None:
+            environment["PGPASSWORD"] = self.POSTGRES_PASSWORD.get_secret_value()
+        return environment
 
 
 settings = Settings()
