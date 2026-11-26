@@ -414,6 +414,15 @@ def sha256_of_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sync(path: Path) -> None:
+    """Have the file's bytes on disk before it counts."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def check_dump(path: Path, tools: Tools) -> None:
     """``pg_restore --list`` must read the file; raises :class:`DumpError` otherwise."""
     code, listing, errors = _run(
@@ -475,20 +484,21 @@ def make_dump(
     if (base / name).exists():
         raise DumpError(f"a dump named {name} already exists; try again in a second")
     staged, fd = boundary.temporary_root_file(_ROOT, prefix=_TEMPORARY_PREFIX)
+    # The file exists now, private to this user; pg_dump opens it by name. Handed the open
+    # file as its standard output instead, pg_dump appends a second table of contents to the
+    # archive rather than completing the first.
+    os.close(fd)
     staged_path = base / staged.key.value
     try:
-        try:
-            code, _, errors = _run(
-                [tools["pg_dump"], "--format=custom", "--no-password"],
-                timeout_s=DUMP_TIMEOUT_S,
-                stdout=fd,
-                cancel=cancel,
-            )
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        code, _, errors = _run(
+            [tools["pg_dump"], "--format=custom", "--no-password", f"--file={staged_path}"],
+            timeout_s=DUMP_TIMEOUT_S,
+            stdout=subprocess.DEVNULL,
+            cancel=cancel,
+        )
         if code != 0:
             raise DumpError(f"pg_dump failed (exit {code}) on {_target()}: {_tail(errors)}")
+        _sync(staged_path)
         check_dump(staged_path, tools)
         os.chmod(staged_path, 0o600)
         boundary.atomic_replace(staged, boundary.from_key(_ROOT, name))

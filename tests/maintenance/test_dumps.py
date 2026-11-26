@@ -39,7 +39,9 @@ if mode == "fail":
 if mode == "slow":
     time.sleep(30)
 if name == "pg_dump":
-    sys.stdout.buffer.write({dump!r})
+    target = [a for a in sys.argv if a.startswith("--file=")][0][len("--file="):]
+    with open(target, "wb") as out:
+        out.write({dump!r})
 elif name == "pg_restore" and "--list" in sys.argv:
     path = sys.argv[-1]
     data = open(path, "rb").read()
@@ -146,7 +148,12 @@ def test_the_password_reaches_the_tools_only_through_their_environment(tools: Fa
         assert SECRET not in json.dumps(call["argv"])
         assert not any("://" in arg for arg in call["argv"])
     (dumped,) = tools.calls("pg_dump")[-1:]
-    assert dumped["argv"] == ["--format=custom", "--no-password"]
+    assert dumped["argv"][:2] == ["--format=custom", "--no-password"]
+    # pg_dump writes the staged file itself, by name, in the dumps folder.
+    (target,) = dumped["argv"][2:]
+    staged = Path(target.removeprefix("--file="))
+    assert target.startswith("--file=") and staged.name.startswith(".marquee-dump-")
+    assert staged.parent == settings.db_backups_dir
     assert dumped["env"]["PGPASSWORD"] == SECRET
     assert (dumped["env"]["PGHOST"], dumped["env"]["PGDATABASE"]) == (
         "db.example",

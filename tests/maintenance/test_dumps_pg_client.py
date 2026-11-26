@@ -80,6 +80,17 @@ def test_a_real_dump_reads_back_and_records_the_revision(database: str, tools: d
     assert [d.name for d in dumps.list_dumps()] == [result.file]
 
 
+def test_a_dump_holds_its_table_of_contents_once(database: str, tools: dumps.Tools) -> None:
+    # Given an open file as its standard output, pg_dump appends a second table of contents
+    # at the end of the archive; a dump cut short could then still restore.
+    _add_movies(database, 3)
+
+    result = dumps.make_dump("scheduled")
+
+    data = (settings.db_backups_dir / result.file).read_bytes()
+    assert data.count(b"CREATE TABLE public.movies") == 1
+
+
 def test_a_database_that_does_not_answer_fails_clearly_without_the_password(
     database: str, tools: dumps.Tools, monkeypatch: pytest.MonkeyPatch
 ) -> None:
