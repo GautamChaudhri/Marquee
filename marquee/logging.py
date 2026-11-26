@@ -4,6 +4,10 @@ Provides two formatters:
   - ``text``  — human-readable for development (default)
   - ``json``  — machine-parseable for production
 
+Every time in a log is UTC, on the host and in a container alike, and says so: the text
+format ends its time with ``Z``. Setting up logging also makes every other formatter in the
+process (the pipeline's run log, for one) write UTC.
+
 Usage::
 
     from marquee.logging import setup_logging
@@ -15,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import time
 from datetime import UTC, datetime
 
 # ---------------------------------------------------------------------------
@@ -31,7 +36,7 @@ class JsonFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -55,6 +60,20 @@ class JsonFormatter(logging.Formatter):
 TEXT_FORMAT = "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s"
 
 
+class UtcFormatter(logging.Formatter):
+    """``2026-11-26T01:02:03.456Z``: UTC, whatever the machine's time zone."""
+
+    converter = time.gmtime
+    default_time_format = "%Y-%m-%dT%H:%M:%S"
+    default_msec_format = "%s.%03dZ"
+
+
+# Loggers that would print what must stay out of the logs. httpx logs every request at
+# INFO with its full URL: Radarr's address on the LAN, TMDB's URLs.
+_WARNING_ONLY = ("httpx", "httpcore")
+_ERROR_ONLY = ("asyncpg", "psycopg", "sqlalchemy.engine", "watchfiles")
+
+
 # ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
@@ -67,6 +86,9 @@ def setup_logging(level: str = "INFO", fmt: str = "text") -> None:
         level: Log level name (DEBUG, INFO, WARNING, ERROR).
         fmt: ``"text"`` (default) or ``"json"``.
     """
+    # Formatters made elsewhere (the pipeline's run log) take their time from this.
+    logging.Formatter.converter = time.gmtime
+
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
@@ -79,10 +101,11 @@ def setup_logging(level: str = "INFO", fmt: str = "text") -> None:
     if fmt == "json":
         handler.setFormatter(JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter(TEXT_FORMAT))
+        handler.setFormatter(UtcFormatter(TEXT_FORMAT))
 
     root.addHandler(handler)
 
-    # Silence noisy third-party loggers
-    for name in ("asyncpg", "psycopg", "sqlalchemy.engine", "watchfiles"):
+    for name in _WARNING_ONLY:
+        logging.getLogger(name).setLevel(logging.WARNING)
+    for name in _ERROR_ONLY:
         logging.getLogger(name).setLevel(logging.ERROR)
