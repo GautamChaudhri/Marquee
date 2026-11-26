@@ -12,10 +12,17 @@ in order:
 2. The ``POSTGRES_*`` values in the repository's ``.env``, read here and only here, and only
    those values: the Compose database on a development machine.
 3. Otherwise the database tests skip, saying why.
+
+A database URL holds the server's password, and pytest prints a failing test's arguments.
+The URLs the fixtures hand out show ``***`` for the password when printed with ``repr``, and
+every failure report, and the output it captured, has the test server's password and any
+``scheme://user:password@`` credential replaced with ``***`` before pytest prints it, in
+every traceback style.
 """
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import secrets
@@ -24,6 +31,7 @@ import tempfile
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
 import pytest
 
@@ -48,6 +56,67 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     from marquee.config import settings
 
     assert str(settings.DATA_DIR) == _TEST_DATA_DIR, "settings were loaded before conftest ran"
+
+
+# ── No password in a failure report ─────────────────────────────────────────
+
+_URL_CREDENTIAL = re.compile(
+    r"(?P<head>\b[a-z][a-z0-9+.-]*://[^\s:/@'\"]*:)(?P<password>[^\s@/'\"]+)(?P<tail>@)",
+    re.IGNORECASE,
+)
+_HIDDEN = "***"
+
+
+class HiddenUrl(str):
+    """A database URL that shows ``***`` for its password when printed with ``repr``.
+
+    pytest prints a failing test's arguments with ``repr``; this keeps the password out of
+    that line. The string itself is the real URL, so code that connects with it works.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return repr(scrub_secrets(str(self)))
+
+
+@functools.cache
+def _test_server_passwords() -> tuple[str, ...]:
+    """The test server's password, as given and URL-quoted; empty when there is none."""
+    from sqlalchemy.engine import make_url
+
+    url = os.environ.get("MARQUEE_TEST_DATABASE_URL") or _server_from_env_file()
+    if not url:
+        return ()
+    try:
+        password = make_url(url).password
+    except Exception:  # noqa: BLE001 - a URL that does not parse has no password to hide
+        return ()
+    if not password or len(password) < 4:
+        return ()
+    return tuple(sorted({password, quote(password, safe="")}, key=len, reverse=True))
+
+
+def scrub_secrets(text: str) -> str:
+    """``text`` with URL credentials and the test server's password replaced by ``***``."""
+    text = _URL_CREDENTIAL.sub(rf"\g<head>{_HIDDEN}\g<tail>", text)
+    for password in _test_server_passwords():
+        text = text.replace(password, _HIDDEN)
+    return text
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Iterator[None]:
+    """Scrub each failure report and the output it captured before anything prints them."""
+    outcome = yield
+    report = outcome.get_result()
+    if report.failed and report.longrepr is not None:
+        text = str(report.longrepr)
+        clean = scrub_secrets(text)
+        if clean != text:
+            # The scrubbed text replaces the structured report; it prints the same lines.
+            report.longrepr = clean
+    report.sections = [(title, scrub_secrets(content)) for title, content in report.sections]
 
 
 # ── The test database ─────────────────────────────────────────────────────
@@ -161,7 +230,7 @@ def database_url(database_server: _Server) -> Iterator[str]:
     from marquee.db import migrate
 
     name = _new_test_database_name()
-    url = database_server.create(name)
+    url = HiddenUrl(database_server.create(name))
     try:
         migrate.upgrade(url=url)
         yield url
@@ -173,7 +242,7 @@ def database_url(database_server: _Server) -> Iterator[str]:
 def empty_database_url(database_server: _Server) -> Iterator[str]:
     """A throwaway database no migration has touched, for one test."""
     name = _new_test_database_name()
-    url = database_server.create(name)
+    url = HiddenUrl(database_server.create(name))
     try:
         yield url
     finally:
@@ -209,3 +278,8 @@ async def db_session(db_engine: object) -> AsyncIterator[object]:
 @pytest.fixture
 def test_database_name_check() -> Callable[[str], str]:
     return checked_test_database_name
+
+
+@pytest.fixture
+def secret_scrubbing() -> tuple[type[HiddenUrl], Callable[[str], str]]:
+    return HiddenUrl, scrub_secrets
