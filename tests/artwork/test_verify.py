@@ -261,6 +261,8 @@ def cli_database(
     monkeypatch.setattr(settings, "MOVIE_ROOTS", [library])
     monkeypatch.setattr(settings, "RADARR_MOVIE_ROOTS", [RADARR_ROOT])
     monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
+    # The command quiets logging for the whole process; later tests read log records.
+    monkeypatch.setattr(cli, "_quiet_logging", lambda level="ERROR": None)
     yield
 
 
