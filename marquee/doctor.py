@@ -1,8 +1,15 @@
 """`marquee doctor`: report whether this machine can run Marquee.
 
 Every check is read-only. Network checks time out after five seconds, media roots are
-inspected with ``os.access`` and directory listings only, and no secret is ever printed:
-settings are reported by name and by whether they are set.
+inspected through the mount's options, the folder's permission bits, and directory
+listings only (never by writing to them), and no secret is ever printed: settings are
+reported by name and by whether they are set.
+
+What is checked depends on the role (``MARQUEE_ROLE``, or ``--role``): the ``api`` service
+runs no GPU work, so the engine's checks are left out, and a read-only library is right for
+it; the ``worker`` must be able to write posters. In production (``MARQUEE_ENVIRONMENT`` is
+``production``) a fall-back to the CPU, a missing GPU, and a library the worker cannot
+write are failures, not warnings.
 """
 
 from __future__ import annotations
@@ -10,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -26,12 +34,17 @@ from marquee.config import pipeline_settings, settings
 from marquee.config.app import ENV_FILE
 
 Status = Literal["PASS", "WARN", "FAIL"]
+Role = Literal["all", "api", "worker"]
+ROLES: tuple[Role, ...] = ("all", "api", "worker")
 
 NETWORK_TIMEOUT_S = 5.0
 # Media roots live on a network share that mounts on demand; the first listing can be
 # slow, and a dead share can hang. Give up and say so rather than wait forever.
 MEDIA_LIST_TIMEOUT_S = 15.0
 CLIP_PROBE_BATCH = 8
+# Past this share of its limit the CUDA driver will soon evict kernels it compiled.
+CUDA_CACHE_NEAR_LIMIT = 0.9
+MOUNTINFO = Path("/proc/self/mountinfo")
 
 
 @dataclass(frozen=True)
@@ -51,6 +64,12 @@ def _scrub(text: str) -> str:
 def _error_text(exc: BaseException) -> str:
     message = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
     return _scrub(f"{type(exc).__name__}: {message}" if message else type(exc).__name__)
+
+
+def _on_cpu_status() -> Status:
+    """Engine work on the CPU: a warning in development, a failure in production, where
+    Marquee runs on an NVIDIA GPU only."""
+    return "FAIL" if settings.production else "WARN"
 
 
 # ── Individual checks ─────────────────────────────────────────────────────
@@ -73,7 +92,7 @@ _OPTIONAL_SETTINGS = (
 )
 
 
-def check_settings() -> CheckResult:
+def check_settings(role: Role = "all") -> CheckResult:
     # An empty MARQUEE_ENV_FILE deliberately selects no file, as in a container, where
     # Compose passes every setting through the environment. A named file that is
     # missing is a mistake.
@@ -86,7 +105,11 @@ def check_settings() -> CheckResult:
     unset = [name for name in _OPTIONAL_SETTINGS if not getattr(settings, name)]
     if unset:
         return CheckResult("Settings", "WARN", f"{source}; unset: {', '.join(unset)}")
-    return CheckResult("Settings", "PASS", f"{source}; environment {settings.MARQUEE_ENVIRONMENT}")
+    return CheckResult(
+        "Settings",
+        "PASS",
+        f"{source}; environment {settings.MARQUEE_ENVIRONMENT}, role {role}",
+    )
 
 
 def check_data_dir() -> CheckResult:
@@ -287,19 +310,22 @@ def check_onnx_runtime() -> CheckResult:
     if vectors.shape != (CLIP_PROBE_BATCH, 512) or not np.all(np.isfinite(vectors)):
         return CheckResult("ONNX Runtime", "FAIL", f"CLIP returned shape {vectors.shape}")
     ran = f"CLIP batch of {CLIP_PROBE_BATCH} in {elapsed_ms:.1f} ms; onnxruntime {ort.__version__}"
+    status, detail = _provider_verdict(requested, active)
+    return CheckResult("ONNX Runtime", status, f"{detail}; {ran}")
+
+
+def _provider_verdict(requested: str | None, active: str) -> tuple[Status, str]:
+    """What ONNX Runtime running on ``active`` means, when ``requested`` was asked for
+    (``None``: EXECUTION_PROVIDER=auto)."""
     if active in ("CUDAExecutionProvider", "TensorrtExecutionProvider"):
-        return CheckResult("ONNX Runtime", "PASS", f"{active} active; {ran}")
+        return "PASS", f"{active} active"
+    if settings.production:
+        return "FAIL", f"{active} is active, not CUDA; in production inference runs on the GPU"
     if requested is None:
-        return CheckResult(
-            "ONNX Runtime",
-            "WARN",
-            f"fell back to {active} with EXECUTION_PROVIDER=auto; {ran}",
-        )
+        return _on_cpu_status(), f"fell back to {active} with EXECUTION_PROVIDER=auto"
     if requested == active:
-        return CheckResult("ONNX Runtime", "PASS", f"{active} active as requested; {ran}")
-    return CheckResult(
-        "ONNX Runtime", "FAIL", f"{requested} requested but {active} is active; {ran}"
-    )
+        return "PASS", f"{active} active as requested"
+    return "FAIL", f"{requested} requested but {active} is active"
 
 
 def _nvidia_gpus() -> list[dict[str, object]]:
@@ -311,7 +337,10 @@ def _nvidia_gpus() -> list[dict[str, object]]:
 def check_gpu() -> CheckResult:
     gpus = _nvidia_gpus()
     if not gpus:
-        return CheckResult("GPU", "WARN", "NVML unavailable or no NVIDIA GPU visible")
+        needed = "; production needs one" if settings.production else ""
+        return CheckResult(
+            "GPU", _on_cpu_status(), f"NVML unavailable or no NVIDIA GPU visible{needed}"
+        )
     described = ", ".join(
         f"{gpu['name']} ({int(gpu['vram_total']) / 1024**3:.1f} GiB, "
         f"{int(gpu['vram_free']) / 1024**3:.1f} GiB free)"
@@ -343,12 +372,59 @@ def check_ocr() -> CheckResult:
         return CheckResult("OCR", "FAIL", f"PaddleOCR cannot load: {_error_text(exc)}")
 
     versions = f"paddlepaddle {paddle.__version__}, paddleocr {paddleocr.__version__}"
-    if device == "cpu" and _nvidia_gpus():
-        reason = "OCR_DEVICE=cpu" if pipeline_settings.OCR_DEVICE == "cpu" else diagnostic
+    reason = "OCR_DEVICE=cpu" if pipeline_settings.OCR_DEVICE == "cpu" else diagnostic
+    status, detail = _ocr_verdict(device, bool(_nvidia_gpus()), reason)
+    return CheckResult("OCR", status, f"{detail}; {versions}")
+
+
+def _ocr_verdict(device: str, gpu_visible: bool, reason: str | None) -> tuple[Status, str]:
+    """What PaddleOCR loading on ``device`` means; ``reason`` says why it is the CPU."""
+    if device != "cpu":
+        return "PASS", f"PaddleOCR loaded on {device}"
+    why = f" ({reason})" if reason else ""
+    if settings.production:
+        return "FAIL", f"PaddleOCR loaded on CPU{why}; in production OCR runs on the GPU"
+    if gpu_visible:
+        return _on_cpu_status(), f"PaddleOCR loaded on CPU on a CUDA host{why}"
+    return "PASS", "PaddleOCR loaded on cpu"
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    for folder, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(folder, name)).st_size
+            except FileNotFoundError:  # evicted while we walked
+                continue
+    return total
+
+
+def check_cuda_kernel_cache() -> CheckResult:
+    """The kernels the CUDA driver compiled for this card, against the driver's limit."""
+    name = "CUDA kernel cache"
+    cache = settings.cuda_kernel_cache_dir
+    limit = settings.cuda_kernel_cache_limit
+    if not cache.is_dir():
         return CheckResult(
-            "OCR", "WARN", f"PaddleOCR loaded on CPU on a CUDA host ({reason}); {versions}"
+            name,
+            "PASS",
+            f"{cache} is empty; the first GPU work compiles kernels for this card, "
+            "which makes the first run about four times slower",
         )
-    return CheckResult("OCR", "PASS", f"PaddleOCR loaded on {device}; {versions}")
+    try:
+        size = _tree_size(cache)
+    except OSError as exc:
+        return CheckResult(name, "WARN", f"cannot measure {cache}: {_error_text(exc)}")
+    used = f"{cache}: {_size(size)} of a {_size(limit)} limit"
+    if size >= limit * CUDA_CACHE_NEAR_LIMIT:
+        return CheckResult(
+            name,
+            "WARN",
+            f"{used}; past the limit the driver evicts kernels and runs slow down while it "
+            "compiles them again (CUDA_CACHE_MAXSIZE raises it, to 4 GiB at most)",
+        )
+    return CheckResult(name, "PASS", used)
 
 
 def check_database() -> CheckResult:
@@ -451,7 +527,53 @@ def _subdirectories(path: Path) -> list[Path]:
         )
 
 
-def _describe_root(root: Path) -> tuple[Status, str]:
+def _unescape_mount_path(field: str) -> str:
+    """mountinfo writes a space, tab, newline, or backslash in a path as an octal escape."""
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), field)
+
+
+def _mount_read_only(path: Path, mountinfo: Path = MOUNTINFO) -> bool | None:
+    """Whether the mount ``path`` is on is read-only, from this process's mount table; ``None``
+    when the table cannot say. Reads the table only: nothing is written to find out."""
+    try:
+        lines = mountinfo.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    target = os.path.realpath(path)
+    found: tuple[str, bool] | None = None
+    for line in lines:
+        fields = line.split(" ")
+        if "-" not in fields[6:] or len(fields) < 10:
+            continue
+        mount_point = _unescape_mount_path(fields[4])
+        inside = (
+            mount_point == "/"
+            or target == mount_point
+            or target.startswith(mount_point.rstrip("/") + "/")
+        )
+        if not inside:
+            continue
+        separator = fields.index("-", 6)
+        options = set(fields[5].split(","))
+        if len(fields) > separator + 3:
+            options |= set(fields[separator + 3].split(","))
+        # The deepest mount holds the path; of two at the same point, the later one is on top.
+        if found is None or len(mount_point) >= len(found[0]):
+            found = (mount_point, "ro" in options)
+    return None if found is None else found[1]
+
+
+def _write_blocker(root: Path) -> str | None:
+    """Why this process could not write in ``root``, judged without writing: first the
+    mount's options, then the folder's permission bits. ``None`` when it could."""
+    if _mount_read_only(root):
+        return "mounted read-only"
+    if not os.access(root, os.W_OK | os.X_OK):
+        return f"its permission bits do not let user {os.geteuid()} write"
+    return None
+
+
+def _describe_root(root: Path, role: Role = "all") -> tuple[Status, str]:
     if not root.exists():
         return "FAIL", f"{root}: missing (is the share mounted?)"
     if not root.is_dir() or not os.access(root, os.R_OK | os.X_OK):
@@ -462,12 +584,18 @@ def _describe_root(root: Path) -> tuple[Status, str]:
     counts = {group.name: len(_subdirectories(group)) for group in groups}
     summary = ", ".join(f"{name} {count}" for name, count in counts.items())
     detail = f"{root}: {summary} ({sum(counts.values())} folders)"
-    if not os.access(root, os.W_OK):
-        return "WARN", f"{detail}; readable but not writable"
-    return "PASS", detail
+    blocker = _write_blocker(root)
+    if blocker is None:
+        return "PASS", f"{detail}; writable" if role == "worker" else detail
+    if role == "api":
+        return "PASS", f"{detail}; {blocker}, as the api needs (it only reads)"
+    if role == "worker":
+        status: Status = "FAIL" if settings.production else "WARN"
+        return status, f"{detail}; not writable ({blocker}), so the worker cannot deploy"
+    return "WARN", f"{detail}; readable but not writable ({blocker})"
 
 
-def check_media_roots() -> CheckResult:
+def check_media_roots(role: Role = "all") -> CheckResult:
     roots = settings.MOVIE_ROOTS
     if not roots:
         return CheckResult("Media roots", "FAIL", "MOVIE_ROOTS is unset")
@@ -476,7 +604,7 @@ def check_media_roots() -> CheckResult:
     for root in roots:
         try:
             status, detail = _run_with_timeout(
-                lambda root=root: _describe_root(root), MEDIA_LIST_TIMEOUT_S
+                lambda root=root: _describe_root(root, role), MEDIA_LIST_TIMEOUT_S
             )
         except Exception as exc:  # noqa: BLE001 - doctor reports, never raises
             status, detail = "FAIL", f"{root}: {_error_text(exc)} (share unreachable?)"
@@ -587,6 +715,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_onnx_runtime,
     check_gpu,
     check_ocr,
+    check_cuda_kernel_cache,
     check_database,
     check_worker,
     check_media_roots,
@@ -594,13 +723,21 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_radarr,
     check_path_mapping,
 )
+# The engine's checks; the api service runs no GPU work and has no GPU.
+ENGINE_CHECKS = frozenset({check_onnx_runtime, check_gpu, check_ocr, check_cuda_kernel_cache})
+# Checks whose answer depends on the role.
+ROLE_CHECKS = frozenset({check_settings, check_media_roots})
 
 
-def run_checks() -> list[CheckResult]:
+def run_checks(role: Role | None = None) -> list[CheckResult]:
+    """Every check for ``role`` (default: ``MARQUEE_ROLE``)."""
+    role = role or settings.MARQUEE_ROLE
     results = []
     for check in CHECKS:
+        if role == "api" and check in ENGINE_CHECKS:
+            continue
         try:
-            results.append(check())
+            results.append(check(role) if check in ROLE_CHECKS else check())  # type: ignore[call-arg]
         except Exception as exc:  # noqa: BLE001 - one broken check must not hide the rest
             results.append(
                 CheckResult(check.__name__, "FAIL", f"check crashed: {_error_text(exc)}")
@@ -615,9 +752,9 @@ def render_table(results: list[CheckResult]) -> str:
     return "\n".join(lines)
 
 
-def main(*, as_json: bool = False) -> int:
+def main(*, as_json: bool = False, role: Role | None = None) -> int:
     """Run every check, print the report, and return the process exit code."""
-    results = run_checks()
+    results = run_checks(role)
     if as_json:
         print(json.dumps([asdict(result) for result in results], indent=2))
     else:

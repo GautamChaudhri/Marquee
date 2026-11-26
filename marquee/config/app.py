@@ -37,7 +37,13 @@ ENV_FILE = _resolve_env_file()
 class Settings(BaseSettings):
     """Application and infrastructure settings."""
 
+    # "production" in the Compose stack: no interactive API documentation, and `marquee
+    # doctor` fails where development only warns (no GPU, a mount a service needs).
     MARQUEE_ENVIRONMENT: str = "development"
+    # Which service of the Compose stack this process is, so `marquee doctor` checks what that
+    # service needs: `api` runs no GPU work and only reads the library; `worker` runs the
+    # engine and writes posters; `all` is one machine running everything (development).
+    MARQUEE_ROLE: Literal["all", "api", "worker"] = "all"
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
     # Relative values resolve against the repository root.
@@ -83,6 +89,12 @@ class Settings(BaseSettings):
     # file name when it can, otherwise by CLIP cosine: the closest candidate at or above this.
     EVAL_MATCH_MIN_COSINE: float = Field(default=0.95, ge=0.0, le=1.0)
 
+    # The CUDA driver reads these two itself: where it keeps the GPU kernels it compiled for
+    # this card, and that cache's size limit in bytes. The container image sets the path to
+    # the data directory. Marquee only reports on the cache (`marquee doctor`).
+    CUDA_CACHE_PATH: Path | None = None
+    CUDA_CACHE_MAXSIZE: int | None = Field(default=None, ge=0)
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_file_encoding="utf-8",
@@ -126,6 +138,20 @@ class Settings(BaseSettings):
     @classmethod
     def _resolve_data_dir(cls, value: Path) -> Path:
         return value if value.is_absolute() else (REPO_ROOT / value).resolve()
+
+    @property
+    def production(self) -> bool:
+        return self.MARQUEE_ENVIRONMENT == "production"
+
+    @property
+    def cuda_kernel_cache_dir(self) -> Path:
+        """Where the CUDA driver caches compiled kernels: its own default when unset."""
+        return self.CUDA_CACHE_PATH or Path.home() / ".nv" / "ComputeCache"
+
+    @property
+    def cuda_kernel_cache_limit(self) -> int:
+        """The cache's size limit in bytes; the driver's default is 1 GiB."""
+        return self.CUDA_CACHE_MAXSIZE or 1 << 30
 
     # Runtime data layout. Read-only; nothing here creates directories.
 

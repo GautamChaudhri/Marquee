@@ -32,6 +32,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     doctor = commands.add_parser("doctor", help="check that this machine can run Marquee")
     doctor.add_argument("--json", action="store_true", help="print the report as JSON")
+    doctor.add_argument(
+        "--role",
+        choices=("all", "api", "worker"),
+        help="check what this service needs (default: MARQUEE_ROLE, which the Compose stack "
+        "sets): api leaves out the GPU checks and accepts a read-only library; worker needs "
+        "to write it",
+    )
 
     models = commands.add_parser("models", help="build and check the model files")
     model_commands = models.add_subparsers(dest="models_command", required=True, metavar="command")
@@ -1676,7 +1683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # The checks load ONNX Runtime and PaddleOCR, which are chatty.
         _quiet_logging()
-        return doctor.main(as_json=args.json)
+        return doctor.main(as_json=args.json, role=args.role)
     if args.command == "models" and args.models_command == "fetch":
         from marquee import model_fetch
 

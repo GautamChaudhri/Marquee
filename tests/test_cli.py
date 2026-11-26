@@ -990,3 +990,15 @@ def test_taste_evaluate_evaluation_and_residual_commands(
     state = json.loads(run("taste", "residual", "status", "--json")[1])
     assert state["last_training"]["reason"] == "insufficient_evidence"
     assert state["in_use"] is False
+
+
+def test_doctor_takes_a_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marquee import doctor
+
+    seen: list[object] = []
+    monkeypatch.setattr(doctor, "main", lambda **kwargs: seen.append(kwargs) or 0)
+    assert cli.main(["doctor", "--role", "api"]) == 0
+    assert cli.main(["doctor"]) == 0
+    assert seen == [{"as_json": False, "role": "api"}, {"as_json": False, "role": None}]
+    with pytest.raises(SystemExit):
+        cli._build_parser().parse_args(["doctor", "--role", "web"])

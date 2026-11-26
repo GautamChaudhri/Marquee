@@ -167,3 +167,29 @@ def test_secret_values_lists_every_secret_that_is_set() -> None:
         "tmdb-secret",
     ]
     assert _settings().secret_values() == []
+
+
+def test_production_and_the_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MARQUEE_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("MARQUEE_ROLE", raising=False)
+    assert (_settings().production, _settings().MARQUEE_ROLE) == (False, "all")
+    assert _settings(MARQUEE_ENVIRONMENT="production").production is True
+    assert _settings(MARQUEE_ROLE="worker").MARQUEE_ROLE == "worker"
+    with pytest.raises(ValidationError):
+        _settings(MARQUEE_ROLE="web")
+
+
+def test_the_cuda_kernel_cache_is_where_the_driver_keeps_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("CUDA_CACHE_PATH", raising=False)
+    monkeypatch.delenv("CUDA_CACHE_MAXSIZE", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    default = _settings()
+    assert default.cuda_kernel_cache_dir == tmp_path / ".nv" / "ComputeCache"
+    assert default.cuda_kernel_cache_limit == 1024**3
+    monkeypatch.setenv("CUDA_CACHE_PATH", "/data/cache/cuda-jit")
+    monkeypatch.setenv("CUDA_CACHE_MAXSIZE", str(2 * 1024**3))
+    chosen = _settings()
+    assert chosen.cuda_kernel_cache_dir == Path("/data/cache/cuda-jit")
+    assert chosen.cuda_kernel_cache_limit == 2 * 1024**3

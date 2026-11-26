@@ -448,3 +448,192 @@ def test_backups_line(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         assert doctor.check_backups().status == "FAIL"
     finally:
         (tmp_path / "backups").chmod(0o700)
+
+
+# ── Production, roles, and the CUDA kernel cache ──────────────────────────
+
+
+@pytest.fixture
+def production(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ENVIRONMENT", "production")
+
+
+@pytest.fixture
+def development(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ENVIRONMENT", "development")
+
+
+def test_inference_on_the_gpu_passes_everywhere(production: None) -> None:
+    assert doctor._provider_verdict(None, "CUDAExecutionProvider")[0] == "PASS"
+
+
+def test_inference_on_the_cpu_fails_in_production(production: None) -> None:
+    for requested in (None, "CPUExecutionProvider"):
+        status, detail = doctor._provider_verdict(requested, "CPUExecutionProvider")
+        assert status == "FAIL"
+        assert "in production inference runs on the GPU" in detail
+
+
+def test_inference_on_the_cpu_only_warns_in_development(development: None) -> None:
+    assert doctor._provider_verdict(None, "CPUExecutionProvider")[0] == "WARN"
+    assert doctor._provider_verdict("CPUExecutionProvider", "CPUExecutionProvider") == (
+        "PASS",
+        "CPUExecutionProvider active as requested",
+    )
+    assert doctor._provider_verdict("CUDAExecutionProvider", "CPUExecutionProvider")[0] == "FAIL"
+
+
+def test_ocr_on_the_cpu_fails_in_production(production: None) -> None:
+    assert doctor._ocr_verdict("gpu:0", True, None) == ("PASS", "PaddleOCR loaded on gpu:0")
+    for gpu_visible in (True, False):
+        status, detail = doctor._ocr_verdict("cpu", gpu_visible, "no CUDA build")
+        assert status == "FAIL"
+        assert detail.startswith("PaddleOCR loaded on CPU (no CUDA build)")
+
+
+def test_ocr_on_the_cpu_warns_or_passes_in_development(development: None) -> None:
+    assert doctor._ocr_verdict("cpu", True, "OCR_DEVICE=cpu") == (
+        "WARN",
+        "PaddleOCR loaded on CPU on a CUDA host (OCR_DEVICE=cpu)",
+    )
+    assert doctor._ocr_verdict("cpu", False, None) == ("PASS", "PaddleOCR loaded on cpu")
+
+
+def test_no_gpu_fails_in_production_and_warns_in_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor, "_nvidia_gpus", lambda: [])
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ENVIRONMENT", "production")
+    assert doctor.check_gpu() == CheckResult(
+        "GPU", "FAIL", "NVML unavailable or no NVIDIA GPU visible; production needs one"
+    )
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ENVIRONMENT", "development")
+    assert doctor.check_gpu().status == "WARN"
+
+
+def _mountinfo(path: Path, *lines: str) -> Path:
+    path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    return path
+
+
+def test_the_mount_table_says_whether_a_folder_is_read_only(tmp_path: Path) -> None:
+    table = _mountinfo(
+        tmp_path / "mountinfo",
+        "1 0 0:1 / / rw,relatime - overlay overlay rw,lowerdir=a",
+        "2 1 0:2 / /media/movies ro,relatime master:1 - cifs //nas/media rw,vers=3.0",
+        "3 1 0:3 / /data rw,relatime - ext4 /dev/sdb rw",
+        "4 1 0:4 / /media/movies/4K rw,relatime - cifs //nas/4k rw",
+        "5 1 0:5 / /with\\040space rw - tmpfs tmpfs ro",
+    )
+    assert doctor._mount_read_only(Path("/media/movies/1080p/A (2001)"), table) is True
+    assert doctor._mount_read_only(Path("/media/movies"), table) is True
+    assert doctor._mount_read_only(Path("/media/movies/4K"), table) is False  # deeper mount
+    assert doctor._mount_read_only(Path("/media/moviesX"), table) is False  # not a prefix
+    assert doctor._mount_read_only(Path("/data/runs"), table) is False
+    assert doctor._mount_read_only(Path("/with space/x"), table) is True  # superblock ro
+    assert doctor._mount_read_only(Path("/x"), tmp_path / "absent") is None
+
+
+def test_the_later_of_two_mounts_on_one_point_decides(tmp_path: Path) -> None:
+    table = _mountinfo(
+        tmp_path / "mountinfo",
+        "1 0 0:1 / / rw - ext4 /dev/sda rw",
+        "2 1 0:2 / /media/movies rw - cifs //nas/media rw",
+        "3 2 0:3 / /media/movies ro - cifs //nas/media rw",
+    )
+    assert doctor._mount_read_only(Path("/media/movies"), table) is True
+
+
+@pytest.mark.parametrize(
+    ("role", "environment", "status", "says"),
+    [
+        ("api", "production", "PASS", "mounted read-only, as the api needs (it only reads)"),
+        ("worker", "production", "FAIL", "not writable (mounted read-only), so the worker"),
+        ("worker", "development", "WARN", "not writable (mounted read-only), so the worker"),
+        ("all", "production", "WARN", "readable but not writable (mounted read-only)"),
+    ],
+)
+def test_a_read_only_library_by_role(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    role: doctor.Role,
+    environment: str,
+    status: str,
+    says: str,
+) -> None:
+    _make_library(tmp_path)
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ENVIRONMENT", environment)
+    monkeypatch.setattr(doctor, "_mount_read_only", lambda path: True)
+    result = doctor._describe_root(tmp_path, role)
+    assert result[0] == status
+    assert says in result[1]
+
+
+def test_a_writable_library_passes_for_every_role(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, production: None
+) -> None:
+    _make_library(tmp_path)
+    monkeypatch.setattr(doctor, "_mount_read_only", lambda path: False)
+    monkeypatch.setattr(doctor.os, "access", lambda path, mode: True)
+    assert doctor._describe_root(tmp_path, "worker") == (
+        "PASS",
+        f"{tmp_path}: 1080p 2, 4K 1 (3 folders); writable",
+    )
+    assert doctor._describe_root(tmp_path, "api")[0] == "PASS"
+
+
+def test_permission_bits_that_deny_writing_are_named(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, production: None
+) -> None:
+    _make_library(tmp_path)
+    real_access = os.access
+    monkeypatch.setattr(doctor, "_mount_read_only", lambda path: False)
+    monkeypatch.setattr(
+        doctor.os,
+        "access",
+        lambda path, mode: False if mode & os.W_OK else real_access(path, mode),
+    )
+    status, detail = doctor._describe_root(tmp_path, "worker")
+    assert status == "FAIL"
+    assert f"its permission bits do not let user {os.geteuid()} write" in detail
+
+
+def test_the_api_role_leaves_out_the_engine_checks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _make_library(tmp_path)
+    monkeypatch.setattr(doctor.settings, "MOVIE_ROOTS", [tmp_path])
+    monkeypatch.setattr(doctor, "_nvidia_gpus", lambda: [])
+    monkeypatch.setattr(doctor, "_mount_read_only", lambda path: True)
+    monkeypatch.setattr(doctor, "CHECKS", (doctor.check_gpu, doctor.check_media_roots))
+    assert [r.name for r in doctor.run_checks("api")] == ["Media roots"]
+    assert [r.name for r in doctor.run_checks("worker")] == ["GPU", "Media roots"]
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ROLE", "api")
+    (only,) = doctor.run_checks()
+    assert (only.name, only.status) == ("Media roots", "PASS")
+
+
+def test_the_settings_line_names_the_environment_and_the_role(
+    monkeypatch: pytest.MonkeyPatch, production: None
+) -> None:
+    monkeypatch.setattr(doctor, "ENV_FILE", None)
+    _configure_every_optional_setting(monkeypatch)
+    assert doctor.check_settings("worker").detail.endswith("environment production, role worker")
+
+
+def test_the_cuda_kernel_cache_against_its_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = tmp_path / "cuda-jit"
+    monkeypatch.setattr(doctor.settings, "CUDA_CACHE_PATH", cache)
+    monkeypatch.setattr(doctor.settings, "CUDA_CACHE_MAXSIZE", 10_000)
+    empty = doctor.check_cuda_kernel_cache()
+    assert empty.status == "PASS" and "first run about four times slower" in empty.detail
+    (cache / "sm_120").mkdir(parents=True)
+    (cache / "sm_120" / "kernel").write_bytes(b"x" * 2048)
+    assert doctor.check_cuda_kernel_cache() == CheckResult(
+        "CUDA kernel cache", "PASS", f"{cache}: 2.0 KiB of a 9.8 KiB limit"
+    )
+    (cache / "index").write_bytes(b"x" * 7000)
+    near = doctor.check_cuda_kernel_cache()
+    assert near.status == "WARN" and "evicts kernels" in near.detail
