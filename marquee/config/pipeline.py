@@ -157,36 +157,37 @@ class PipelineSettings(BaseSettings):
     NORM_OFFICIAL_MIN: float = 0.60
     NORM_OFFICIAL_MAX: float = 0.95
 
-    # Phase-0 scorer weights. The scorer renormalizes by the total of the
-    # weights whose features are actually available, so the new features can
-    # be toggled off (or their models absent) without breaking the [0,1] range.
-    # 2026-06-11 rebalance from 3-movie labeled evidence: aesthetic
-    # anti-discriminates (LAION head loves slick fan art) so it dropped;
-    # provenance is nearly constant (TMDB poster votes are ~all zero) so it
-    # dropped; official_family (CLIP cosine to the TMDB primary poster) was
-    # the strongest single discriminator and dino/typicality both separated
-    # kept-vs-flagged, so they absorbed the freed weight.
-    WEIGHT_KNN_SIM: float = 0.30
-    WEIGHT_AESTHETIC: float = 0.12
-    WEIGHT_TITLE_COLORFULNESS: float = 0.15
-    WEIGHT_FACE_AREA: float = 0.15
-    WEIGHT_TEXT_RESIDUAL: float = 0.10
-    WEIGHT_PROVENANCE: float = 0.02
-    WEIGHT_SHARPNESS: float = 0.03
+    # Scorer weights. The scorer renormalizes by the total of the weights whose
+    # features are actually available, so a feature can be switched off (or its
+    # model be absent) without breaking the [0,1] range.
+    # Fitted on 2026-11-25 from blind evaluation 4's run archives: pairwise
+    # logistic, the owner's poster against other designs, pulled towards the
+    # earlier weights, trained on four fifths of the movies and measured on the
+    # other fifth over six shuffles. Held out, the pick is the owner's design
+    # about 73 times in 147 (53 with the earlier weights). Resolution and
+    # language match stay unweighted. See docs/architecture.md, "The ranking
+    # weights".
+    WEIGHT_KNN_SIM: float = 0.20
+    WEIGHT_AESTHETIC: float = 0.10
+    WEIGHT_TITLE_COLORFULNESS: float = 0.04
+    WEIGHT_FACE_AREA: float = 0.19
+    WEIGHT_TEXT_RESIDUAL: float = 0.14
+    WEIGHT_PROVENANCE: float = 0.04
+    WEIGHT_SHARPNESS: float = 0.06
     WEIGHT_RESOLUTION: float = 0.0
     WEIGHT_LANG_MATCH: float = 0.0
-    # New scorer features (recs 1-5). dino_knn only participates on GPU
-    # tiers; taste_typicality is the mean KDE typicality over
-    # TYPICALITY_FEATURES; quality_artifacts is monotonic (clean = 1).
-    WEIGHT_DINO_KNN: float = 0.12
-    WEIGHT_TASTE_TYPICALITY: float = 0.12
-    WEIGHT_QUALITY_ARTIFACTS: float = 0.03
+    # dino_knn only participates on GPU tiers; taste_typicality is the mean KDE
+    # typicality over TYPICALITY_FEATURES; quality_artifacts is monotonic
+    # (clean = 1).
+    WEIGHT_DINO_KNN: float = 0.03
+    WEIGHT_TASTE_TYPICALITY: float = 0.18
+    WEIGHT_QUALITY_ARTIFACTS: float = 0.10
     # CLIP cosine to the movie's TMDB primary poster — "is this the official
     # key-art family?". Fan art diverges from the primary; official variants
     # (including clean title-only versions of a text-heavy primary) cluster
     # around it. None (weight redistributed) when the primary was never
     # embedded this run.
-    WEIGHT_OFFICIAL_FAMILY: float = 0.12
+    WEIGHT_OFFICIAL_FAMILY: float = 0.18
 
     # Fine-grained features aggregated into taste_typicality. Each is scored
     # by closeness to the taste profile's own distribution of that feature.

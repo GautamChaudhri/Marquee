@@ -385,6 +385,39 @@ name and the SHA-256 of the candidate file's bytes, and each entry records that 
 serves different bytes under one file name, and a name key would pair an embedding of one
 encoding with features measured on another.
 
+### The ranking weights
+
+The weighted scorer adds each ranked candidate's normalised features, each times its
+`WEIGHT_*` setting in `config/pipeline.py`, and divides by the total weight of the features
+that candidate has. The defaults were fitted on 2026-11-25 from the run archives of the
+fourth blind evaluation (147 movies whose poster the owner picked by hand, with each
+movie's own exemplars masked): a pairwise logistic fit of the owner's poster against
+posters of other designs, pulled towards the earlier weights, trained on four fifths of the
+movies and measured on the other fifth, over six shuffles. Held out, the pick is the
+owner's design about 73 times in 147, against 53 with the earlier weights; the owner's
+design is in the first three cards about 107 times, against 93.
+
+| Feature | Weight | Earlier |
+|---|---:|---:|
+| `knn_sim` (taste similarity) | 0.20 | 0.30 |
+| `face_area` | 0.19 | 0.15 |
+| `taste_typicality` | 0.18 | 0.12 |
+| `official_family` | 0.18 | 0.12 |
+| `text_residual` | 0.14 | 0.10 |
+| `aesthetic` | 0.10 | 0.12 |
+| `quality_artifacts` | 0.10 | 0.03 |
+| `sharpness` | 0.06 | 0.03 |
+| `title_colorfulness` | 0.04 | 0.15 |
+| `provenance` | 0.04 | 0.02 |
+| `dino_knn` | 0.03 | 0.12 |
+| `resolution`, `lang_match` | 0 | 0 |
+
+They sum to 1.26, as the earlier ones did. Taste similarity stays the largest weight on
+purpose: it is how feedback reaches later picks, and a blind fit undervalues it because a
+masked run has the movie's own exemplar removed. Since the fit used the hand picks, a
+later blind evaluation is in sample by about four picks. Any weight can still be set in
+`.env` by name.
+
 ### The text gate
 
 `pipeline/ocr_filter.py` keeps a candidate only when it shows the movie's title and nothing
