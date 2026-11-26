@@ -2,7 +2,7 @@
 
 The lifespan builds the database engine and disposes of it; nothing connects at import time.
 ``/health/live`` and ``/health/ready`` need no key. Everything under ``/api`` needs the API
-key (:mod:`marquee.api.auth`). The interactive documentation and ``/openapi.json`` exist only
+key (:mod:`marquee.api.auth`), and an address that keeps sending a wrong one is slowed. The interactive documentation and ``/openapi.json`` exist only
 when ``MARQUEE_ENVIRONMENT`` is ``development``.
 
 Requests are logged as method, path, status, and time taken: never a header, and never a
@@ -22,6 +22,7 @@ from fastapi.responses import Response
 
 from marquee import __version__
 from marquee.api.auth import require_api_key
+from marquee.api.rate_limit import WrongKeyLimiter
 from marquee.api.routes import deployments, health, jobs, library, runs, system, taste
 from marquee.config import settings
 from marquee.db import migrate
@@ -30,8 +31,13 @@ from marquee.db.engine import create_engine, create_session_factory
 request_log = logging.getLogger("marquee.api.requests")
 
 
-def create_app(*, database_url: str | None = None) -> FastAPI:
-    """The API, on ``database_url`` or the configured database."""
+def create_app(
+    *, database_url: str | None = None, wrong_keys: WrongKeyLimiter | None = None
+) -> FastAPI:
+    """The API, on ``database_url`` or the configured database.
+
+    ``wrong_keys`` counts requests with a missing or wrong key; each app has its own.
+    """
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -53,6 +59,7 @@ def create_app(*, database_url: str | None = None) -> FastAPI:
         redoc_url=None,
         openapi_url="/openapi.json" if development else None,
     )
+    app.state.wrong_keys = wrong_keys if wrong_keys is not None else WrongKeyLimiter()
 
     @app.middleware("http")
     async def log_request(

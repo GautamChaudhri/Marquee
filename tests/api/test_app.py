@@ -6,6 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from marquee.api.app import create_app
+from marquee.api.rate_limit import WrongKeyLimiter
 from marquee.config import settings
 
 
@@ -20,10 +21,25 @@ async def test_documentation_only_in_development(monkeypatch: pytest.MonkeyPatch
 
 
 async def test_every_api_route_requires_the_key(
-    offline_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+    api_key: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "MARQUEE_ENVIRONMENT", "development")
     schema = create_app(database_url="postgresql+psycopg://u:p@127.0.0.1:1/x").openapi()
+    # 33 requests without a key from one address: a limiter that never slows them, so each
+    # route's own answer is seen (the limiter has its own tests in test_auth.py).
+    app = create_app(
+        database_url="postgresql+psycopg://u:p@127.0.0.1:1/x",
+        wrong_keys=WrongKeyLimiter(max_failures=1000),
+    )
+    transport = ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=transport, base_url="http://test") as offline_client,
+    ):
+        await _every_route_answers_401(schema, offline_client)
+
+
+async def _every_route_answers_401(schema: dict, offline_client: AsyncClient) -> None:
     api_paths = [path for path in schema["paths"] if path.startswith("/api")]
     assert len(api_paths) == 31
     operations = [(method, path) for path in api_paths for method in schema["paths"][path]]
