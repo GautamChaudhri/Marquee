@@ -101,6 +101,16 @@ repository root; `.env.example` lists every setting):
 - `PipelineSettings` (`marquee/config/pipeline.py`): every engine threshold, weight, and
   switch. Model and artifact paths default to locations under the data directory.
 
+`Settings` also holds `MARQUEE_ROLE` (`all`, `api`, or `worker`: which service of the Compose
+stack the process is, read by the doctor) and the two variables the CUDA driver reads,
+`CUDA_CACHE_PATH` and `CUDA_CACHE_MAXSIZE`, which Marquee only reports on. `production` is true
+when `MARQUEE_ENVIRONMENT` is `production`.
+
+Logging (`marquee/logging.py`) writes UTC times everywhere, and the text format ends its time
+with `Z`; setting it up also makes other formatters in the process (the pipeline's run log)
+write UTC. `httpx` and `httpcore` log warnings only, so a request line never puts Radarr's
+address or a TMDB URL in a log.
+
 The environment variable `MARQUEE_ENV_FILE` selects a different dotenv file, or none when set
 to an empty string. The test suite uses it so that no test reads a real `.env`, and the
 container image uses it so that every setting comes from the environment.
@@ -111,7 +121,7 @@ Everything an operator runs goes through the `marquee` command:
 
 | Command | Does |
 |---|---|
-| `marquee doctor` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile (and, once one is registered, whether the file is that build), and every connection |
+| `marquee doctor [--role all\|api\|worker] [--json]` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile (and, once one is registered, whether the file is that build), the CUDA kernel cache's size against the driver's limit, and every connection. The role (default `MARQUEE_ROLE`, which the Compose stack sets) decides what is checked: `api` leaves out the engine's checks (ONNX Runtime, GPU, OCR, kernel cache) and accepts a read-only library; `worker` needs to write the library. With `MARQUEE_ENVIRONMENT=production` a fall-back to the CPU, a missing GPU, and a library the worker cannot write fail instead of warning. Whether the library is writable is read from the mount table (`/proc/self/mountinfo`: the options of the deepest mount holding the folder) and the folder's permission bits (`access(2)`), never by writing |
 | `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights) and downloads the LAION aesthetic head and the SCRFD face detector, pinned by SHA-256. Checks each one before putting it in place, and writes `data/models/manifest.json`. CLIP, DINOv2, the zero-shot axes, and the aesthetic head's conversion need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
 | `marquee taste seed [--dry-run] [--rescan \| --reuse]` | Builds the first taste profile from the `poster.jpg` in each movie folder, staged as lossless 500 px wide copies. Refuses to scan again unless given `--rescan`; `--reuse` rebuilds from the staged copies. `--rescan` is refused once Marquee has written a poster, and every form is refused once exemplar records exist |
 | `marquee taste import-seed` | Makes each staged seed poster an exemplar record (matched to its movie by IMDb id) and registers the profile file as it is; writes nothing and exits 1 if anything does not match; a second run changes nothing |
@@ -135,7 +145,7 @@ Everything an operator runs goes through the `marquee` command:
 | `marquee sync [--dry-run] [--json]` | Checks that Radarr's root folders map to folders here, copies Radarr's movie list into the database, records each folder's poster, and fetches TMDB details once per movie; exits 1 when a movie failed or the path check failed |
 | `marquee api [--host] [--port]` | Serves the HTTP API under uvicorn, on `API_HOST` and `API_PORT` by default |
 | `marquee api-schema [--check] [--output PATH]` | Writes the API's OpenAPI document to `frontend/openapi.json`, which the web app's types are generated from; it needs no database and does not depend on `MARQUEE_ENVIRONMENT`. `--check` writes nothing and exits 1 when the file is missing or stale; the backend CI job runs it |
-| `marquee worker [--drain]` | Runs the job queue until SIGTERM or Ctrl-C, which stop it gracefully. Only one runs at a time; a second exits with "a worker is already running". `--drain` exits once nothing is running and nothing queued can start (a job that finishes while the worker looks keeps it going), and queues no scheduled work |
+| `marquee worker [--drain \| --health]` | Runs the job queue until SIGTERM or Ctrl-C, which stop it gracefully. Only one runs at a time; a second exits with "a worker is already running". `--drain` exits once nothing is running and nothing queued can start (a job that finishes while the worker looks keeps it going), and queues no scheduled work. `--health` runs nothing: it exits 0 when a worker holds the queue's lock and the database answers, 1 otherwise (the worker service's health check) |
 | `marquee jobs list [--state] [--kind] [--json]` | The newest 50 jobs |
 | `marquee jobs show <id>` | One job and its events |
 | `marquee jobs enqueue <kind> [--payload JSON] [--priority N]` | Queues a job of a registered kind; a kind that allows one active job returns the one already queued or running |
@@ -1005,11 +1015,10 @@ image runs as a non-root user whose user and group ids are build arguments (`MAR
 `MARQUEE_GID`, default 1000). Dependencies are installed from the lockfile in their own layer,
 before any source, so a code change rebuilds only the layer that installs the package.
 
-**State lives on one volume.** The image holds code and dependencies, never a model. A volume
-mounted at `/data` is the data directory (`DATA_DIR=/data`): models, taste data, caches, and
-runs. It must be writable by the image's user; PaddleX also writes lock and temporary folders
-beside the OCR weights. `/data` in the image belongs to that user, so a new named volume does
-too. The image also keeps the CUDA driver's kernel cache there (`CUDA_CACHE_PATH`, set to
+**State lives in one folder.** The image holds code and dependencies, never a model. The folder
+mounted at `/data` is the data directory (`DATA_DIR=/data`): models, taste data, caches, runs,
+and backups. It must be writable by the image's user; PaddleX also writes lock and temporary
+folders beside the OCR weights. The image also keeps the CUDA driver's kernel cache there (`CUDA_CACHE_PATH`, set to
 `/data/cache/cuda-jit`). The driver compiles some kernels for the card on first use; on a
 bare-metal host it keeps them in the user's home folder, but a container's home folder is
 discarded with the container, and compiling again made every run three times slower.
@@ -1019,15 +1028,77 @@ string, so the application reads no dotenv file inside a container, and `marquee
 the settings come from the environment. No `.env` file and no secret is ever copied into an
 image.
 
-In `compose.yaml`, the services `marquee` (target `runtime`) and `marquee-export` (target
-`export`) sit behind the `app` profile, so `docker compose up -d` still starts only the
-database. Both reserve the GPU, mount the volume `marquee-data` at `/data`, and mount the movie
-library read-only at `/media/movies` from the host path in `MOVIE_LIBRARY_HOST_PATH`. They take
-their settings from the host's `.env` through `env_file` and override the ones that differ
-inside a container: `MOVIE_ROOTS`, `POSTGRES_HOST`, `POSTGRES_PORT`, `DATA_DIR`, and
-`MARQUEE_ENV_FILE`. Each runs one command and exits; the API, worker, and web services that make
-up the full stack arrive later. Until then, `docker compose --profile app run --rm marquee
-marquee worker --drain` runs what is queued, GPU jobs included, and exits.
+The web app has an image of its own, built from `frontend/Dockerfile` with its own allowlist
+`.dockerignore`: a build stage runs `npm ci` and `npm run build`, and the runtime stage, on the
+official Node 26 slim image (pinned by tag), holds only the build output and the production
+dependencies and runs `node build` as the image's non-root `node` user (uid 1000). Nothing is
+read at build time: the server takes `MARQUEE_API_URL`, `MARQUEE_API_KEY`, `ORIGIN`, `HOST`,
+`PORT`, and `BODY_SIZE_LIMIT` from its environment when it starts, so the image holds no key.
+
+## The Compose stack
+
+`compose.yaml` is both development's database and the product. `docker compose up -d` with no
+profile starts only `db`, which is what development on the host needs. The stack is the `app`
+profile: `docker compose --profile app up -d`, or `docker compose up -d` where `.env` sets
+`COMPOSE_PROFILES=app`, as a machine that runs Marquee with Docker does. Two one-command
+containers sit behind the `tools` profile, which `docker compose run` turns on by itself.
+
+| Service | Profile | Image | Runs | GPU | Data folder | Library | Published | Health check | Restart |
+|---|---|---|---|---|---|---|---|---|---|
+| `db` | none | `postgres:19` | PostgreSQL | no | (volume `db-data`) | no | `127.0.0.1:POSTGRES_PORT` | `pg_isready` | `unless-stopped` |
+| `migrate` | `app` | `marquee:runtime` | `marquee db upgrade`, once | no | no | no | no | (exits 0) | no |
+| `api` | `app` | `marquee:runtime` | `marquee api` on `0.0.0.0:8000` | no | read-write | read-only | no | its own `/health/ready` | `unless-stopped` |
+| `worker` | `app` | `marquee:runtime` | `marquee worker` | yes | read-write | read-write | no | `marquee worker --health` | `unless-stopped` |
+| `web` | `app` | `marquee:web` | `node build` on `0.0.0.0:3000` | no | no | no | `MARQUEE_WEB_BIND:MARQUEE_WEB_PORT` | its own `/signin` | `unless-stopped` |
+| `setup` | `tools` | `marquee:export` | `marquee models fetch` | yes | read-write | no | no | none | no |
+| `marquee` | `tools` | `marquee:runtime` | any `marquee` command | yes | read-write | read-only | no | none | no |
+
+- **Order.** `migrate` waits for `db` to be healthy; `api` and `worker` start only after
+  `migrate` has exited successfully; `web` starts after `api`. A change of schema is applied by
+  `docker compose up -d` before anything uses it.
+- **One data directory.** The application containers bind-mount one host folder at `/data`
+  (`MARQUEE_DATA_HOST_PATH`, default `./data`, the repository's own `data/`), not a named
+  volume. Commands on the host and the containers therefore see the same models, taste
+  profile, exemplars, runs, and backups, and the owner can back the folder up. The containers'
+  user (1000:1000 by default) must own it. The database is the one thing that lives in a Docker
+  volume (`db-data`).
+- **The library** is mounted from `MOVIE_LIBRARY_HOST_PATH` at `/media/movies`, read-write in
+  the worker, the only service that writes posters, and read-only everywhere else.
+- **Settings.** `api`, `worker`, `migrate`, `setup`, and `marquee` take `.env` through
+  `env_file` and override what differs inside the stack: `MARQUEE_ENVIRONMENT=production`,
+  `MARQUEE_ENV_FILE` empty (the containers read no dotenv file), `DATA_DIR=/data`,
+  `MOVIE_ROOTS=/media/movies`, `POSTGRES_HOST=db`, `POSTGRES_PORT=5432`; the API also gets
+  `API_HOST=0.0.0.0` and `API_PORT=8000`. Each long-running service is told its role
+  (`MARQUEE_ROLE=api` or `worker`). **`web` gets no `env_file`**: only `MARQUEE_API_URL`
+  (`http://api:8000`), `MARQUEE_API_KEY` (the value of `API_KEY`: one secret, two names),
+  `ORIGIN` (from `MARQUEE_WEB_ORIGIN`), `HOST`, `PORT`, and `BODY_SIZE_LIMIT=1M`, the proxy's own
+  limit (the server's default, 512 KiB, would cut a larger body first). The web container never
+  holds the database password, the TMDB token, or Radarr's key.
+- **The browser's address is required.** Without `ORIGIN` every form post would be refused, so
+  the `web` service refuses to start without `MARQUEE_WEB_ORIGIN` and says why in its log. It
+  is checked in the service's command rather than with `${MARQUEE_WEB_ORIGIN:?}`, because
+  Compose reads the whole file even to start `db` alone, and development's `.env` has no reason
+  to set it. `MOVIE_LIBRARY_HOST_PATH` is required that way already.
+- **Only `web` is published.** The API is reached through the web server's proxy inside the
+  stack's network; a commented `ports` entry in `compose.yaml` publishes it on loopback.
+- **Health and restarts.** The four long-running services restart `unless-stopped`: a crash
+  brings a service back by itself, while `docker compose stop` (or `docker kill`) is taken as
+  meaning it. Health checks use what the images hold (Python and Node; no `curl`). The worker's
+  check, `marquee worker --health`, runs nothing: it exits 0 only when a worker holds the
+  queue's advisory lock and the database answers, on one short connection.
+- **The worker** runs with `init: true` (as PID 1 nothing would reap the GPU child and the OCR
+  processes it stops) and a 45-second stop grace period, enough for its own shutdown: it
+  signals cancel, waits up to 10 s, puts unfinished jobs back in the queue without counting
+  the attempt, and stops the GPU child. A worker killed outright leaves its job `running`; the
+  next worker to start puts it back as an orphan. Only one worker can run: a second one, in a
+  container or on the host, finds the lock taken and exits.
+- **Production mode.** `MARQUEE_ENVIRONMENT=production` hides the API's interactive
+  documentation and makes `marquee doctor` strict (see "Commands"): run in the `worker` it
+  fails when the engine falls back to the CPU, when no GPU is visible, or when the library is
+  not writable; run in the `api` it leaves the GPU checks out and accepts a read-only library.
+- **Logs** go to Docker's log (`docker compose logs`). Times are UTC, and the text format says
+  so (`2026-11-26T01:02:03.456Z`). `httpx` logs warnings only, so request lines with Radarr's
+  address and TMDB's URLs stay out. The API logs each request's method, path, status, and time.
 
 ## Adding a module
 

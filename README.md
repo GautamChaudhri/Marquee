@@ -19,8 +19,9 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > the library, each movie's latest run and poster history, and the job queue; its review page
 > answers a run (keep the pick, use another, rank the designs with a hate pile, or refuse them
 > all, then undo it), its taste page shows the profile, the agreement, and the exemplars, and
-> its system page shows how the installation is set. The learned correction to the score is
-> still to come.
+> its system page shows how the installation is set. A learned correction to the score turns
+> on once there is enough feedback. All of it runs as a Docker Compose stack; scheduled
+> database backups and retention of old runs are still to come.
 
 ## Why
 
@@ -54,16 +55,113 @@ title. The cheapest signals run first:
 6. Detail features: faces, people, palette, composition, artifacts, title geometry. Final gate.
 7. Rank with a weighted scorer, plus a small learned correction once there is enough feedback.
 
-## Deployment
+## Running Marquee with Docker
 
 Docker is the supported way to run Marquee: a Docker Compose stack on a Linux host with an
-NVIDIA GPU and the NVIDIA Container Toolkit. The container image already exists and the
-engine's commands run in it (see [docs/architecture.md](docs/architecture.md#container-image)).
-The full stack, with the API server, the job worker, and the web interface, arrives with the
-rest of the rebuild, and its install steps with it. Until then, the setup below runs the engine
-directly on a Linux machine, which is also how Marquee is developed.
+NVIDIA GPU. The stack is five services: PostgreSQL (`db`), a one-shot schema migration
+(`migrate`), the HTTP API (`api`), the job worker, which runs the engine on the GPU and writes
+posters (`worker`), and the web interface (`web`), the only one published on the network.
+Each long-running service has a health check and restarts by itself unless you stop it.
 
-## Requirements
+### What you need
+
+- A Linux x86_64 host with an NVIDIA GPU and its driver. CUDA comes inside the image; only
+  the driver is needed on the host.
+- Docker Engine with the Compose plugin, and the
+  [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  configured for Docker (`sudo nvidia-ctk runtime configure --runtime=docker`, then restart
+  Docker). `docker run --rm --gpus all ubuntu nvidia-smi` must list your GPU.
+- Your movie library on the host, laid out as Radarr manages it, writable by user id 1000
+  (the containers run as 1000:1000). On a network share, mount it with that owner.
+- Radarr's URL and API key, and a TMDB API read access token (v4).
+- About 25 GB of disk for the images and their build, and 2 GB for models and data to start.
+
+### Install
+
+```bash
+# 1. Get the code.
+git clone <this repository's URL> marquee
+cd marquee
+
+# 2. Settings. Every setting is listed, with a comment, in .env.example.
+cp .env.example .env
+#    Then edit .env:
+#    - COMPOSE_PROFILES=app (uncomment it), so `docker compose up -d` starts the stack
+#    - POSTGRES_PASSWORD and API_KEY: long random values, for example from
+#      python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+#    - MOVIE_LIBRARY_HOST_PATH: the library's folder on this host (it may hold several
+#      Radarr root folders, such as 1080p/ and 4K/)
+#    - RADARR_MOVIE_ROOTS: that same folder as Radarr sees it, if Radarr sees it at another
+#      path (Radarr in a container, or on another machine)
+#    - TMDB_READ_ACCESS_TOKEN, RADARR_URL, RADARR_API_KEY
+#    - MARQUEE_WEB_ORIGIN: the address you will type in the browser, for example
+#      http://marquee.example.lan:3000 (MARQUEE_WEB_PORT changes the port)
+#    The data folder is ./data unless MARQUEE_DATA_HOST_PATH says otherwise; if you move it,
+#    create the folder first and give it to user 1000 (`sudo chown 1000:1000 <folder>`).
+
+# 3. Build the images (marquee:runtime, about 7 minutes the first time, and marquee:web).
+docker compose build
+
+# 4. Build the models into the data folder (about 3 minutes; it downloads about 1.5 GB and
+#    builds its own image, marquee:export, the first time).
+docker compose run --rm setup
+
+# 5. Start the stack. The migration creates the database schema, then the API, the worker,
+#    and the web app start. The worker syncs the movie list from Radarr as soon as it starts.
+docker compose up -d
+docker compose ps                    # wait until api, worker, and web say (healthy)
+
+# 6. Build the first taste profile from the posters already in your library, then make them
+#    the first exemplar records (this needs the movie list, so let the first sync finish:
+#    `docker compose exec worker marquee jobs list` shows it).
+docker compose exec worker marquee taste seed --dry-run   # what would be seeded; writes nothing
+docker compose exec worker marquee taste seed
+docker compose exec worker marquee taste import-seed
+
+# 7. Check each service.
+docker compose exec worker marquee doctor
+docker compose exec api marquee doctor
+```
+
+Then open `MARQUEE_WEB_ORIGIN` in your browser and sign in with `API_KEY`.
+
+Any `marquee` command runs in the worker's container while the stack is up:
+`docker compose exec worker marquee <command>` (for example `marquee sync`, or
+`marquee run "Die Hard"`). When the stack is down, `docker compose run --rm marquee marquee
+<command>` runs one in a container of its own.
+
+**The first run of a movie takes about a minute** instead of about 20 seconds: the CUDA
+driver compiles GPU kernels for your card on first use. It keeps them in the data folder
+(`cache/cuda-jit`), so this happens once, not on every start.
+
+### Running it
+
+- `docker compose ps` shows each service and its health; `docker compose logs -f worker`
+  follows one service's log (times are UTC).
+- `docker compose stop` stops the stack and `docker compose up -d` starts it again; a job
+  that was running goes back to the queue and runs again. **Never run `docker compose down
+  -v`:** `-v` deletes the database volume, and with it every run, answer, and exemplar.
+- To update: `git pull`, `docker compose build`, `docker compose up -d`. The migration
+  brings the schema up to date before the API and the worker start.
+- Everything Marquee keeps on disk is in the data folder: models, the taste profile and the
+  exemplars' images, every run, and a backup of every poster it replaced. The database
+  lives in the Docker volume `<project>_db-data`.
+- Only one worker runs at a time. A second one, in a container or on the host, finds the
+  first one's lock and exits.
+- The web app is published on `MARQUEE_WEB_BIND:MARQUEE_WEB_PORT` (every address, port 3000,
+  by default), over plain HTTP. The API is not published; to reach it from the host itself,
+  uncomment the `ports` lines of the `api` service in `compose.yaml` (loopback only).
+- In the stack the services run in production mode: the API serves no interactive
+  documentation, and `marquee doctor` fails, rather than warns, when the engine falls back
+  to the CPU, when there is no GPU, or when the worker cannot write to the library. It
+  checks the library without writing to it.
+
+See [docs/architecture.md](docs/architecture.md#the-compose-stack) for what each service
+mounts and receives.
+
+## Development setup (on the host)
+
+Marquee is developed on the host, with only PostgreSQL in Docker. You need:
 
 - Linux x86_64.
 - [uv](https://docs.astral.sh/uv/) (it installs and manages Python 3.12 for the project).
@@ -71,8 +169,6 @@ directly on a Linux machine, which is also how Marquee is developed.
 - The system OpenGL library (`libGL.so.1`: `mesa-libGL` on Fedora, `libgl1` on Debian and
   Ubuntu). PaddleOCR requires the full OpenCV build, which links against it.
 - An NVIDIA GPU. CUDA and cuDNN come from Python wheels; only the driver is needed.
-
-## Setup
 
 ```bash
 # 1. Install the project environment. The cpu extra exists only for tests and CI.
@@ -267,10 +363,17 @@ sync, and `/api/worker`. Every `/api` request must carry the key in `API_KEY`, a
 
 `marquee doctor` prints one line per check (Python, settings, data directory, backups,
 models, model manifest, taste profile and whether it is the registered build, ONNX Runtime,
-GPU, OCR, database and its schema, the worker and the queue, media roots, TMDB, Radarr, path
-mapping) with `PASS`, `WARN`, or `FAIL`, and exits
-non-zero if anything fails. `--json`
-prints the same report as JSON. It never writes to a media folder and never prints a secret.
+GPU, OCR, the CUDA kernel cache's size against the driver's limit, database and its schema,
+the worker and the queue, media roots, TMDB, Radarr, path mapping) with `PASS`, `WARN`, or
+`FAIL`, and exits non-zero if anything fails. `--json` prints the same report as JSON. It
+never writes to a media folder (it judges whether one is writable from the mount's options
+and the folder's permission bits) and never prints a secret. `--role api` or `--role worker`
+checks what that service of the Compose stack needs (the stack sets `MARQUEE_ROLE` for
+each): the API runs no GPU work and only reads the library, the worker must be able to write
+it. With `MARQUEE_ENVIRONMENT=production`, as in the stack, a fall-back to the CPU, a missing
+GPU, and a library the worker cannot write are failures instead of warnings.
+`marquee worker --health` is the worker service's health check: it runs nothing and exits 0
+only when a worker holds the queue's lock and the database answers.
 
 Use `uv sync --extra nvidia` (or `--extra cpu`) whenever you sync: a plain `uv sync` removes
 the extra's packages.
@@ -280,7 +383,8 @@ the extra's packages.
 The web interface is a SvelteKit app in `frontend/` (Node 26, through
 [fnm](https://github.com/Schniz/fnm) and `frontend/.node-version`). The browser signs in with
 the API key and never holds it: the web server keeps the key and forwards `/api/*` to the API
-itself.
+itself. In the Compose stack it runs from its own image (`frontend/Dockerfile`, built by
+`docker compose build`); the steps below are for development.
 
 ```bash
 cd frontend
@@ -350,8 +454,9 @@ data/           runtime state: models, caches, runs, backups (not committed)
 docs/           architecture and other documentation
 frontend/       the web interface (SvelteKit)
 _salvage/       code from the earlier codebase still waiting to be re-homed
-compose.yaml    PostgreSQL for development, and the application image's services
-Dockerfile      the container image (targets runtime and export)
+compose.yaml    PostgreSQL for development, and the whole stack (profile app)
+Dockerfile      the application image (targets runtime and export)
+frontend/Dockerfile   the web interface's image
 ```
 
 See [docs/architecture.md](docs/architecture.md) for what each package is for, the layering
