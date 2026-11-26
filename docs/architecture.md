@@ -43,12 +43,15 @@ marquee/
                    (rebuild.py), agreement and the review list (agreement.py), the mask: a
                    profile without one movie's exemplars (blind.py), blind evaluation
                    (evaluation.py), and the residual's training and state (residuals.py)
+  maintenance/     keeping an installation in order: database dumps, their keep counts, and
+                   the restore (dumps.py), and retention, deleting by written rules what has
+                   gone stale (retention.py)
   jobs/            the job queue on PostgreSQL: kinds and class limits (registry.py), every
                    state change (queue.py), batches, schedules, the read queries, the worker,
                    the GPU child process (gpu_child.py), review.py (feedback with the deploy and
                    the rebuild it calls for, in one commit), and handlers/, adapters from a job
                    to the domain code that does the work (the sync, the run, deploy and
-                   restore, the taste rebuild)
+                   restore, the taste rebuild, the database dump, retention)
   api/             the HTTP API: the app factory, the server, and the OpenAPI document the
                    web app's types come from (app.py), API-key auth (auth.py),
                    routes/ (health, library, jobs, runs, deployments, taste, system),
@@ -62,8 +65,9 @@ Imports only point downward. `uv run lint-imports` enforces this with the contra
 `pyproject.toml`.
 
 ```
-6  api, cli, doctor, model_fetch
-5  jobs
+7  api, cli, doctor, model_fetch
+6  jobs
+5  maintenance
 4  taste  ->  artwork  ->  library     (within the layer, only in this direction)
 3  pipeline
 2  ml
@@ -92,12 +96,17 @@ repository root; `.env.example` lists every setting):
 - `Settings` (`marquee/config/app.py`): environment name, debug and log level, the data
   directory, PostgreSQL connection parts, the movie roots and how Radarr sees them
   (`RADARR_MOVIE_ROOTS`), integration credentials, the API's key, host, and port, and the
-  worker's knobs (`SYNC_INTERVAL_MINUTES`, `GPU_IDLE_SECONDS`, `GPU_CHILD_MAX_RSS_MB`). Secrets
+  worker's knobs (`SYNC_INTERVAL_MINUTES`, `GPU_IDLE_SECONDS`, `GPU_CHILD_MAX_RSS_MB`,
+  `DB_BACKUP_INTERVAL_HOURS`, `DB_BACKUP_KEEP`, `RETENTION_INTERVAL_HOURS`,
+  `RETENTION_DAYS`). Secrets
   are pydantic `SecretStr` values and never print; `secret_values()` lists them so error text
   can be scrubbed. It derives every runtime path and both database URLs: `database_url`
   (`postgresql+psycopg://`, used by SQLAlchemy's async engine and by Alembic) and
   `database_url_sync` (a plain libpq URL, for `psycopg.connect`). psycopg 3 is the only
   database driver. A database URL holds the password, so neither is ever logged or printed.
+  `libpq_environment()` gives the same connection as libpq's variables (`PGHOST`, `PGPASSWORD`,
+  ...) for a child process such as `pg_dump`: a password in a process's arguments is visible to
+  every user of the machine, in its environment it is not.
 - `PipelineSettings` (`marquee/config/pipeline.py`): every engine threshold, weight, and
   switch. Model and artifact paths default to locations under the data directory.
 
@@ -121,7 +130,7 @@ Everything an operator runs goes through the `marquee` command:
 
 | Command | Does |
 |---|---|
-| `marquee doctor [--role all\|api\|worker] [--json]` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile (and, once one is registered, whether the file is that build), the CUDA kernel cache's size against the driver's limit, and every connection. The role (default `MARQUEE_ROLE`, which the Compose stack sets) decides what is checked: `api` leaves out the engine's checks (ONNX Runtime, GPU, OCR, kernel cache) and accepts a read-only library; `worker` needs to write the library. With `MARQUEE_ENVIRONMENT=production` a fall-back to the CPU, a missing GPU, and a library the worker cannot write fail instead of warning. Whether the library is writable is read from the mount table (`/proc/self/mountinfo`: the options of the deepest mount holding the folder) and the folder's permission bits (`access(2)`), never by writing |
+| `marquee doctor [--role all\|api\|worker] [--json]` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile (and, once one is registered, whether the file is that build), the CUDA kernel cache's size against the driver's limit, and every connection. The role (default `MARQUEE_ROLE`, which the Compose stack sets) decides what is checked: `api` leaves out the engine's checks (ONNX Runtime, GPU, OCR, kernel cache) and accepts a read-only library; `worker` needs to write the library. With `MARQUEE_ENVIRONMENT=production` a fall-back to the CPU, a missing GPU, a library the worker cannot write, and (for the worker) missing or old backup tools fail instead of warning. Two lines report on backups: the client tools (`pg_dump`, `pg_restore`, `psql`, the server's major version or newer) and the newest dump's age against `DB_BACKUP_INTERVAL_HOURS` (a warning past two intervals, or with the schedule off). Whether the library is writable is read from the mount table (`/proc/self/mountinfo`: the options of the deepest mount holding the folder) and the folder's permission bits (`access(2)`), never by writing |
 | `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights) and downloads the LAION aesthetic head and the SCRFD face detector, pinned by SHA-256. Checks each one before putting it in place, and writes `data/models/manifest.json`. CLIP, DINOv2, the zero-shot axes, and the aesthetic head's conversion need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
 | `marquee taste seed [--dry-run] [--rescan \| --reuse]` | Builds the first taste profile from the `poster.jpg` in each movie folder, staged as lossless 500 px wide copies. Refuses to scan again unless given `--rescan`; `--reuse` rebuilds from the staged copies. `--rescan` is refused once Marquee has written a poster, and every form is refused once exemplar records exist |
 | `marquee taste import-seed` | Makes each staged seed poster an exemplar record (matched to its movie by IMDb id) and registers the profile file as it is; writes nothing and exits 1 if anything does not match; a second run changes nothing |
@@ -139,6 +148,11 @@ Everything an operator runs goes through the `marquee` command:
 | `marquee deploy <run id> [--candidate N]` | Queues the owner's deploy of the run's pick, or of another candidate |
 | `marquee deployments list [--movie-id N] [--json]` | The newest 50 deployments, with what a restore of each would put back |
 | `marquee restore <deployment id>` | Queues a restore of any deployment of a movie: it puts back what was in the folder before it |
+| `marquee deployments verify [--json]` | Read-only: for each movie's newest deployment, whether its `poster.jpg` is the file recorded, was replaced since, is gone, or cannot be read; for every backup a deployment names, whether it exists with its recorded hash. Compares hashes, never times. Exits 1 when a backup is missing or damaged |
+| `marquee db backup` | Dumps the database now, in this process (no worker or job), to `backups/db/manual-<UTC time>-<revision>.dump`; never deleted by Marquee |
+| `marquee db backups [--json]` | Every dump in `backups/db/`, newest first |
+| `marquee db restore <file> --yes` | Replaces the database's contents with a dump (see [Database dumps](#database-dumps)) |
+| `marquee retention [--dry-run] [--json]` | One retention pass now, or with `--dry-run` the list of what it would delete, per rule, with counts and bytes (see [Retention](#retention)) |
 | `marquee db upgrade` | Applies every migration the database lacks |
 | `marquee db status` | Shows the database's revision and the newest one; exits 1 when they differ |
 | `marquee db revision -m "<text>"` | For developers: writes a new migration from the difference between the models and a database at the newest revision |
@@ -272,7 +286,8 @@ sees a `run_after` come due and what keeps the queue correct when a notification
 If that connection is lost, the lock is gone with it and the worker stops.
 
 **Classes.** Each kind belongs to a class, and the worker runs at most `gpu` 1, `network` 4,
-`media_read` 2, and `media_write` 1 jobs of each at once. It claims the highest-priority,
+`media_read` 2, `media_write` 1, and `maintenance` 1 jobs of each at once (`maintenance`, the
+database dump and retention, from migration 0007). It claims the highest-priority,
 oldest queued job whose class has a free slot, with `FOR UPDATE SKIP LOCKED`, and runs it as
 a task with its own database sessions, a cancel signal (the `is_set()` shape of
 `marquee.cancellation`), a progress function that writes at most about once a second, and its
@@ -280,12 +295,14 @@ kind's timeout.
 
 | Kind | Class | Attempts | Timeout | Does |
 |---|---|---|---|---|
-| `library_sync` | network | 3 | 15 min | One Radarr sync (`library.sync.sync_from_settings`). Another sync holding its lock is a success marked skipped; folders that do not map are a permanent error. One active job at a time (dedupe key) |
+| `library_sync` | network | 3 | 15 min | One Radarr sync (`library.sync.sync_from_settings`). Another sync holding its lock is a success marked skipped; folders that do not map or do not exist are a permanent error, while a share or Radarr that did not answer in time is an ordinary failure, retried with backoff. One active job at a time (dedupe key) |
 | `gpu_selftest` | gpu | 1 | 5 min | In the GPU child, loads CLIP as the doctor does (once per child) and embeds one batch; reports the provider, the time, and whether the session was already loaded |
 | `poster_run` | gpu | 2 | 10 min | One movie (`{"movie_id": N}`) through the pipeline, with its run record (see [Runs](#runs)). One active run per movie (`poster_run:<movie id>`) |
 | `poster_run_masked` | gpu | 2 | 10 min | The same run against the active profile without the movie's own exemplars (`{"movie_id", "evaluation_id"}`), recorded as masked, and the evaluation's result for the movie (see [Blind evaluation](#blind-evaluation)). Its own dedupe key (`poster_run_masked:<movie id>`), so it and a normal run never swallow each other |
 | `poster_deploy` | media_write | 3 | 5 min | Writes a candidate's original into the movie folder (`{"candidate_id", "initiated_by", "movie_id"}`, and `event_id` when feedback asked for it); see [Writing a poster](#writing-a-poster). No dedupe key: the newest write request for a movie wins |
 | `poster_restore` | media_write | 3 | 5 min | Puts back what was in the folder before a deployment, any deployment of the movie (`{"deployment_id", "movie_id"}`); the newest write request wins here too |
+| `db_backup` | maintenance | 3 | 2 h | Dumps the database (`maintenance.dumps.make_dump`) to `backups/db/marquee-<UTC time>-<revision>.dump`, checked with `pg_restore --list` before it is renamed into place, then keeps the newest `DB_BACKUP_KEEP` scheduled dumps. Its result: the file's name, size, SHA-256, schema revision, seconds, and what was deleted. Missing or old client tools are a permanent error; anything else is retried. One active job (`db_backup`) |
+| `retention` | maintenance | 2 | 30 min | Deletes what the retention rules name (see [Retention](#retention)); its result holds counts and bytes per rule, never a path. A data folder that overlaps a movie root is a permanent refusal. One active job (`retention`) |
 | `taste_rebuild` | gpu | 2 | 15 min | Builds the taste profile from the active exemplars and publishes it (`{"revision", "force"}`), then trains the residual for it; see [Review and learning](#review-and-learning). One active rebuild per exemplar revision (`taste_rebuild:{revision}`) |
 
 A dedupe key may name payload fields in braces (`poster_run:{movie_id}`), so a kind can allow
@@ -333,11 +350,15 @@ a cancel was asked for, otherwise failed, with the counts in its result. Cancell
 cancels its queued children and asks its running ones to stop.
 
 **Schedules** are declared in code (`schedules.py`), with their intervals in settings; the
-table holds only when each is next due. A schedule seen for the first time is due at once.
-When one is due, its job is queued under a dedupe key and its due time moves on by the
-interval, in one transaction, so a schedule never has two jobs active and a long stop does
-not queue a burst. The only schedule so far is the library sync, every
-`SYNC_INTERVAL_MINUTES` (default 360; 0 turns it off). With `RUN_NEW_MOVIES` true, a sync job
+table holds only when each is next due. A schedule seen for the first time is due at once,
+unless it is declared to wait one whole interval first. When one is due, its job is queued
+under a dedupe key and its due time moves on by the interval, in one transaction, so a
+schedule never has two jobs active and a long stop does not queue a burst. Three schedules:
+the library sync, every `SYNC_INTERVAL_MINUTES` (default 360); the database dump,
+`db_backup`, every `DB_BACKUP_INTERVAL_HOURS` (default 24); and `retention`, every
+`RETENTION_INTERVAL_HOURS` (default 24), which waits one interval after it is first seen, so
+an updated installation deletes nothing before its owner has looked. 0 turns any of them
+off. With `RUN_NEW_MOVIES` true, a sync job
 that succeeds then queues a batch of runs of every eligible movie that has no run yet.
 
 Handlers must be safe to run twice: a job interrupted by a restart runs again.
@@ -774,6 +795,61 @@ both: evaluated, ranked, gated by stage and reason, not offered, failed, and ove
 exact, same design, first 3 and first 5 cards, the median card, and the mean reciprocal card.
 A cancelled batch's runs that never ran are counted as not run.
 
+## Database dumps
+
+`marquee/maintenance/dumps.py`. A dump is `pg_dump`'s custom format of the whole database,
+in `backups/db/` under the data folder: `marquee-<UTC time>-<revision>.dump` from the
+`db_backup` job, `manual-<UTC time>-<revision>.dump` from `marquee db backup`, and
+`pre-restore-<UTC time>.dump` from a restore. The tools come from PostgreSQL's own apt
+repository in the image (see [Container image](#container-image)); before every dump and
+restore the code checks that each is the server's major version or newer and says which is
+not. The connection reaches each tool through libpq's environment (`PGPASSWORD` among it),
+never its arguments, and nothing else of the process's environment is handed on; whatever a
+tool prints is scrubbed of every secret, connection-string credentials, and `password=`
+words before it is shown or logged.
+
+A dump is written under a temporary name in the same folder (mode 600; the folder is 700),
+read back with `pg_restore --list`, and only then renamed into place; a dump that fails or
+does not read back leaves nothing. The job keeps the newest `DB_BACKUP_KEEP` scheduled dumps,
+a restore the newest three pre-restore dumps, and manual dumps are never deleted.
+
+**Restore** is a command only, never a job or a route. It refuses unless `--yes` is given,
+the file reads as a dump of a schema revision this code knows, no worker holds the queue's
+lock, and no other session is connected to the database. It dumps the database as it is
+first (skipped when it has no tables), checked like any dump. Then `pg_restore` writes the
+whole dump out as one SQL script to a private temporary file and must succeed, and `psql
+--single-transaction` runs, in one transaction, a block that drops every table, view, and
+sequence in the `public` schema followed by that script; any error rolls it all back.
+(Streaming one tool into the other would let `psql` commit a partial restore when
+`pg_restore` stopped part way at the end of a statement; dropping the schema's objects
+first means a newer migration's tables do not survive a restore of an older dump.) When the
+dump's revision is older than the newest migration, the restore then upgrades the schema.
+
+## Retention
+
+`marquee/maintenance/retention.py`, run by the `retention` job and `marquee retention`. One
+pass plans what each rule would delete and, unless it is a dry run, deletes exactly that,
+checking each item again just before it goes.
+
+| Rule | Deletes |
+|---|---|
+| jobs | A top-level job finished more than `RETENTION_DAYS` ago, with its children and their events (they cascade). Never a queued or running job, a batch with a child that is not old enough, a job an evaluation names or its children (the evaluation's state and the Taste page's headline are read from them), or a schedule's `last_job_id` |
+| runs | A run (row, candidates, folder, through `artwork.runs.delete_runs`) older than `RETENTION_DAYS` (by `finished_at`, else `started_at`), not running, not its movie's newest run or newest completed run in the product loop, not named by a deployment or a preference event, and not a masked run of the newest evaluation or the newest that succeeded. A deployment's or result's link to a deleted job or run becomes null; the row stays |
+| run_folders | A folder in `runs/` that no `poster_runs.run_folder` names, untouched for 7 days |
+| thumbnails, embeddings | A file in `cache/thumbs/` untouched for 30 days; in `cache/embeddings/`, for `RETENTION_DAYS` |
+| leftovers | Anything in `cache/deploys/`, `cache/blind-profiles/`, `cache/taste-build/`, a dump's or restore's temporary file in `backups/db/`, a `.part` file in `ml/profiles/` or `ml/residuals/`, and `text_profiles.json.tmp`, untouched for 24 hours and owned by no queued or running job (by the job id in its name where there is one, else by kind). A residual's `.pending-<sha256>.json` goes only once a `residual_trainings` row records that artifact; until then the next rebuild reads it, so it is kept and the report says so |
+| profiles, residuals | A copy in `ml/profiles/` or `ml/residuals/` that is not the active one, not among the newest 20 rows, and (profiles) not the seed's, or (residuals) not named by a pending record. Rows stay |
+
+"Untouched" is the modification time; for a folder, the newest of anything in it. Never
+deleted: `backups/posters/`, deployments, preference events, exemplars and their images,
+evaluations and results, `ml/seed/`, models, the kernel cache, dumps, anything outside the
+data folder, and anything in it the rules do not name. Every file deletion goes through
+`marquee/fs/boundary.py` with the data folder as its root (run folders with the runs folder
+as theirs), so nothing outside it, and no symbolic link, is followed. The pass refuses to run
+when the data folder is inside a movie root or a movie root is inside it. The job's result
+holds counts, rows, and bytes per rule; paths are logged at DEBUG only. The schedule waits
+one whole interval after it is first seen.
+
 ## The HTTP API
 
 `marquee/api/app.py` builds the app; its lifespan creates the database engine and disposes
@@ -993,7 +1069,9 @@ data/
               driver there, not Marquee)
   runs/       one folder per run, named <run id, 8 digits>-<title slug>: the candidates it
               downloaded, ranked/ output, pipeline.log, and the run archive pipeline_run.json
-  backups/    posters/<movie id>/<sha256>.jpg: every poster a write replaced
+  backups/    posters/<movie id>/<sha256>.jpg: every poster a write replaced, and db/: the
+              database dumps (marquee-<UTC time>-<revision>.dump from the schedule,
+              manual-... from `marquee db backup`, pre-restore-<UTC time>.dump from a restore)
   text_profiles.json
 ```
 
@@ -1010,7 +1088,7 @@ repository root builds two targets:
 
 | Target | Holds | Used for |
 |---|---|---|
-| `runtime` | The package and its `nvidia` dependencies, installed from `uv.lock` into `/opt/venv`. No PyTorch | Everything that runs the product |
+| `runtime` | The package and its `nvidia` dependencies, installed from `uv.lock` into `/opt/venv`, and the PostgreSQL client tools. No PyTorch | Everything that runs the product |
 | `export` | `runtime` plus the `export` dependency group and `uv` | `marquee models fetch` only |
 
 CUDA and cuDNN come from the Python wheels, as on a bare-metal install. The base image is a
@@ -1018,6 +1096,15 @@ slim Python image, and the NVIDIA Container Toolkit on the host supplies only th
 image runs as a non-root user whose user and group ids are build arguments (`MARQUEE_UID` and
 `MARQUEE_GID`, default 1000). Dependencies are installed from the lockfile in their own layer,
 before any source, so a code change rebuilds only the layer that installs the package.
+
+**The PostgreSQL client.** The `runtime` target installs `postgresql-client-19` (`pg_dump`,
+`pg_restore`, `psql`) for the database dumps and the restore. The client must be the server's
+major version or newer and Debian's own is older, so it comes from the PostgreSQL project's
+apt repository, set up as postgresql.org describes it: the repository's signing key, fetched
+with `ADD` and pinned by SHA-256 (its fingerprint is in the Dockerfile), and a deb822 source
+with `Signed-By`. Only the client package is installed (about 66 MB with the Perl it needs);
+its folder, `/usr/lib/postgresql/19/bin`, comes first on `PATH`. `PG_CLIENT_MAJOR` (a build
+argument, 19) follows the server's version in `compose.yaml`.
 
 **State lives in one folder.** The image holds code and dependencies, never a model. The folder
 mounted at `/data` is the data directory (`DATA_DIR=/data`): models, taste data, caches, runs,
@@ -1103,6 +1190,8 @@ containers sit behind the `tools` profile, which `docker compose run` turns on b
 - **Logs** go to Docker's log (`docker compose logs`). Times are UTC, and the text format says
   so (`2026-11-26T01:02:03.456Z`). `httpx` logs warnings only, so request lines with Radarr's
   address and TMDB's URLs stay out. The API logs each request's method, path, status, and time.
+  Every service, the database included, uses Docker's `json-file` driver with `max-size: 10m`
+  and `max-file: "5"` (the `x-logging` block), so no log grows without limit.
 
 ## Adding a module
 

@@ -137,15 +137,18 @@ driver compiles GPU kernels for your card on first use. It keeps them in the dat
 ### Running it
 
 - `docker compose ps` shows each service and its health; `docker compose logs -f worker`
-  follows one service's log (times are UTC).
+  follows one service's log (times are UTC). Each service keeps at most five log files of
+  10 MB; older lines are dropped.
 - `docker compose stop` stops the stack and `docker compose up -d` starts it again; a job
   that was running goes back to the queue and runs again. **Never run `docker compose down
   -v`:** `-v` deletes the database volume, and with it every run, answer, and exemplar.
-- To update: `git pull`, `docker compose build`, `docker compose up -d`. The migration
-  brings the schema up to date before the API and the worker start.
+- To update: `git pull`, `docker compose build`, `docker compose run --rm marquee marquee db
+  backup` (a dump of the database before the update's migration: the way back), and
+  `docker compose up -d`. The migration brings the schema up to date before the API and the
+  worker start.
 - Everything Marquee keeps on disk is in the data folder: models, the taste profile and the
-  exemplars' images, every run, and a backup of every poster it replaced. The database
-  lives in the Docker volume `<project>_db-data`.
+  exemplars' images, every run, a backup of every poster it replaced, and the database
+  dumps. The database itself lives in the Docker volume `<project>_db-data`.
 - Only one worker runs at a time. A second one, in a container or on the host, finds the
   first one's lock and exits.
 - The web app is published on `MARQUEE_WEB_BIND:MARQUEE_WEB_PORT` (every address, port 3000,
@@ -158,6 +161,94 @@ driver compiles GPU kernels for your card on first use. It keeps them in the dat
 
 See [docs/architecture.md](docs/architecture.md#the-compose-stack) for what each service
 mounts and receives.
+
+### Backups and restore
+
+**What is backed up, where, and how often.** The worker dumps the whole database (movies,
+runs and their candidates, deployments, your answers, exemplar records, taste profiles'
+records, evaluations, jobs) with PostgreSQL's `pg_dump` into the data folder, under
+`backups/db/`, as `marquee-<UTC time>-<schema revision>.dump`. It makes the first dump
+when it starts, then one every `DB_BACKUP_INTERVAL_HOURS` (default 24; 0 turns it off), and
+keeps the newest `DB_BACKUP_KEEP` (default 14) of these. A dump counts only once it has been
+read back; each is readable by its owner only. The System page shows the newest dump and
+lists it under "Needs attention" when it is older than two intervals, or when the last
+backup job failed; `marquee doctor` reports its age too.
+
+- `marquee db backup` makes a dump now, in the command's own process: no worker or job is
+  needed, so it works while the stack is stopped (the database must be running) and before
+  an update's migration. Its name starts with `manual-`; Marquee never deletes one.
+- `marquee db backups` lists every dump, newest first.
+
+**What to copy off the machine.** The dumps hold the database; the files the database
+refers to are beside them in the data folder: the exemplars' images and the taste profiles
+(`ml/`), every poster backup (`backups/posters/`), and the runs. To be able to rebuild this
+installation elsewhere, copy the whole data folder off the machine, `backups/` and `ml/`
+at least. A dump alone brings back the records, not those files. Marquee does not copy or
+encrypt anything off the machine for you.
+
+**Restoring.** A restore replaces everything in the database with the dump. It is a
+command, never a job or a button, and it refuses to start while anything else uses the
+database, so stop the API, the worker, and the web app first (the database keeps running):
+
+```bash
+# 1. Stop everything that uses the database.
+docker compose --profile app stop api worker web
+# 2. Pick a dump.
+docker compose run --rm marquee marquee db backups
+# 3. Restore it (a file name in backups/db/, or a path inside the data folder as /data/...).
+docker compose run --rm marquee marquee db restore marquee-20261127T010000Z-0007.dump --yes
+# 4. Start the stack again and check it.
+docker compose --profile app up -d
+docker compose exec worker marquee doctor
+docker compose exec worker marquee deployments verify
+```
+
+Before it drops anything the restore dumps the database as it is to
+`pre-restore-<time>.dump` (the newest three are kept), so a restore can itself be undone.
+It loads the dump in one transaction: if anything fails, the database is left as it was.
+If the dump is from an older schema, it then brings the schema up to the newest one. It
+refuses without `--yes`, when the file is not a dump, when a worker is running, or while
+another connection is open. A restore does not undo files newer than the dump: runs made
+since, the taste profile and exemplar images in the data folder, and posters written to the
+library since. `marquee doctor` says whether the taste profile on disk is the one the
+records register (if not, `marquee taste rebuild --force` builds it from the restored
+exemplars), and `marquee deployments verify` compares the library's posters with the
+restored deployments.
+
+On a new machine: follow the install steps up to building the images, copy the old data
+folder into place, start only the database (`docker compose up -d db`), restore the dump as
+in step 3, then start the stack.
+
+### What Marquee deletes by itself
+
+Once a day (`RETENTION_INTERVAL_HOURS`, default 24; 0 turns it off) the worker deletes what
+has gone stale, by these rules. The first pass comes one whole interval after the worker
+first runs with it, never at once, so you can look first: `marquee retention --dry-run`
+lists, rule by rule, everything that would go, with counts and sizes; `marquee retention`
+does it now. The System page shows what the last pass freed.
+
+- **Finished jobs** (succeeded, failed, or cancelled) more than `RETENTION_DAYS` (default 90)
+  ago, with their events. Never a waiting or running job, never one batch job without the
+  rest of its batch, never the jobs of a blind evaluation, and never a schedule's last job.
+- **Runs** older than `RETENTION_DAYS`, with their candidates and folders, but never a
+  movie's newest run or newest completed run, never a run a deployment or one of your
+  answers came from, and never the newest evaluation's runs.
+- **Run folders no run belongs to**, a week after anything in them last changed.
+- **Poster thumbnails** not changed for 30 days, and **cached embeddings** not changed for
+  `RETENTION_DAYS`; both are made again when needed.
+- **Leftovers** a day old that no waiting or running job needs: what a deploy fetched, a
+  rebuild's staging folder, a blind run's profile, and temporary files.
+- **Old copies of taste profiles and residuals** beyond the active one and the newest 20
+  (the seed profile's copy is kept too); their records stay.
+
+Never deleted: poster backups, deployments, your answers, exemplars and their images,
+evaluations and their results, the seed posters, the models, the GPU kernel cache, the
+database dumps (beyond the counts above), anything outside the data folder, and anything in
+it not named above. Retention refuses to run if the data folder and the movie library
+overlap. Apart from retention, Marquee also deletes on its own: each movie's older blind
+evaluation run when a new evaluation runs it, profile copies beyond the newest five when a
+rebuild publishes one (the seed's and the active one stay), residual files beyond the newest
+five, and what a deploy fetched once its write is recorded.
 
 ## Development setup (on the host)
 
@@ -252,7 +343,12 @@ its file and the sync has fetched its TMDB details.
 original-size file of the candidate (it must be a JPEG, and it is never converted), backs up
 the `poster.jpg` already there to `data/backups/`, writes the new file under a temporary name
 and renames it into place, reads it back to check it, and records the write.
-`marquee deployments list` shows every write and what a restore of it would put back, and
+`marquee deployments verify` checks, reading only, that each movie's newest deployment is
+still what is in its folder (or reports it replaced since, gone, or unreadable when the share
+does not answer), and that every backup a deployment names exists and holds the poster it
+should; it exits 1 when a backup is missing or damaged, since that is the way back. A poster
+you replaced is not a fault (the sync hands it back to you), and nothing is written back by
+itself. `marquee deployments list` shows every write and what a restore of it would put back, and
 `marquee restore <deployment id>` restores any of them, not only the newest: it backs up what
 is there now and puts back exactly what was in the folder before that deployment, or removes
 the poster if there was none. Deploys and restores are jobs too, one at a time, and never
@@ -337,7 +433,10 @@ different path than Marquee does (Radarr in a container, for example), set
 `RADARR_MOVIE_ROOTS` to the folders in `MOVIE_ROOTS` as Radarr sees them, in the same order.
 
 `marquee worker` runs the job queue. It queues a library sync by itself every
-`SYNC_INTERVAL_MINUTES` (default 360; 0 turns it off), runs GPU jobs in a child process that
+`SYNC_INTERVAL_MINUTES` (default 360; 0 turns it off), a database dump every
+`DB_BACKUP_INTERVAL_HOURS` and a retention pass every `RETENTION_INTERVAL_HOURS` (see
+"Backups and restore" and "What Marquee deletes by itself"), retries a sync whose share or
+Radarr did not answer in time, runs GPU jobs in a child process that
 keeps its models loaded between jobs and stops after `GPU_IDLE_SECONDS` (default 300) without
 one or once it holds more than `GPU_CHILD_MAX_RSS_MB` of memory (default 4096), retries
 failed jobs with a growing delay, and, after a crash or a restart, picks up the
@@ -365,14 +464,16 @@ sync, and `/api/worker`. Every `/api` request must carry the key in `API_KEY`, a
 `marquee doctor` prints one line per check (Python, settings, data directory, backups,
 models, model manifest, taste profile and whether it is the registered build, ONNX Runtime,
 GPU, OCR, the CUDA kernel cache's size against the driver's limit, database and its schema,
-the worker and the queue, media roots, TMDB, Radarr, path mapping) with `PASS`, `WARN`, or
+the backup tools, the newest database dump's age, the worker and the queue, media roots,
+TMDB, Radarr, path mapping) with `PASS`, `WARN`, or
 `FAIL`, and exits non-zero if anything fails. `--json` prints the same report as JSON. It
 never writes to a media folder (it judges whether one is writable from the mount's options
 and the folder's permission bits) and never prints a secret. `--role api` or `--role worker`
 checks what that service of the Compose stack needs (the stack sets `MARQUEE_ROLE` for
 each): the API runs no GPU work and only reads the library, the worker must be able to write
 it. With `MARQUEE_ENVIRONMENT=production`, as in the stack, a fall-back to the CPU, a missing
-GPU, and a library the worker cannot write are failures instead of warnings.
+GPU, a library the worker cannot write, and (for the worker) missing or old backup tools
+are failures instead of warnings.
 `marquee worker --health` is the worker service's health check: it runs nothing and exits 0
 only when a worker holds the queue's lock and the database answers.
 
