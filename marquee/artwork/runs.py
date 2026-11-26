@@ -24,7 +24,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -46,6 +45,7 @@ from marquee.db.models.run import (
     RUN_STATES,
     in_product_loop,
 )
+from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
 
 logger = logging.getLogger(__name__)
 
@@ -98,14 +98,20 @@ def run_dir(name: str, runs_dir: Path | None = None) -> Path:
 def remove_run_folder(name: str, runs_dir: Path | None = None) -> bool:
     """Delete a run's folder and everything in it; ``False`` when there was none. Blocking.
 
-    A symbolic link in its place is refused, never followed.
+    The deletion goes through :mod:`marquee.fs.boundary`, confined to the runs directory. A
+    symbolic link in its place is refused; one inside it is removed as a link, never followed.
     """
-    folder = run_dir(name, runs_dir)
+    base = runs_dir or settings.runs_dir
+    folder = run_dir(name, base)
     if folder.is_symlink():
         raise RunRecordError(f"run folder {name!r} is a symbolic link; not removed")
     if not folder.exists():
         return False
-    shutil.rmtree(folder)
+    boundary = boundary_for_roots({"runs": base}, access="read_write", purpose="run folders")
+    try:
+        boundary.cleanup_directory(boundary.from_key("runs", name))
+    except FilesystemBoundaryError as exc:
+        raise RunRecordError(f"run folder {name!r} was not removed: {exc}") from exc
     return True
 
 
@@ -499,6 +505,37 @@ async def cancel(session: AsyncSession, run_id: int) -> bool:
     return True
 
 
+async def delete_runs(
+    session: AsyncSession, *conditions: ColumnElement[bool]
+) -> list[tuple[int, str, bool]]:
+    """Delete the runs matching ``conditions``, rows and folders, and commit. Returns each
+    run's id, folder name, and whether its folder was removed.
+
+    A run still running is never deleted. Candidates go with their run; a deployment, a
+    preference event, or an evaluation result that named it keeps its own record and loses
+    the link. The rows go first, in one transaction; then each folder, so a folder that
+    cannot be removed is left behind (it then has no row) rather than a row without its
+    folder.
+    """
+    rows = (
+        await session.execute(
+            delete(PosterRun)
+            .where(*conditions, PosterRun.state != RUN_ACTIVE)
+            .returning(PosterRun.id, PosterRun.run_folder)
+        )
+    ).all()
+    await session.commit()
+    removed: list[tuple[int, str, bool]] = []
+    for run_id, folder in rows:
+        try:
+            gone = await asyncio.to_thread(remove_run_folder, folder)
+        except (RunRecordError, OSError) as exc:
+            logger.warning("RUN | %d: its folder stays: %s", run_id, exc)
+            gone = False
+        removed.append((run_id, folder, gone))
+    return removed
+
+
 async def remove_older_masked(session: AsyncSession, movie_id: int, keep_run_id: int) -> list[int]:
     """Delete the movie's masked runs older than ``keep_run_id``, rows and folders, and commit.
 
@@ -506,32 +543,20 @@ async def remove_older_masked(session: AsyncSession, movie_id: int, keep_run_id:
     run is never touched. Candidates go with their run; an evaluation result keeps its
     numbers and loses its link. Returns the ids removed.
     """
-    rows = (
-        await session.execute(
-            delete(PosterRun)
-            .where(
-                PosterRun.movie_id == movie_id,
-                PosterRun.masked.is_(True),
-                PosterRun.id < keep_run_id,
-                PosterRun.state != RUN_ACTIVE,
-            )
-            .returning(PosterRun.id, PosterRun.run_folder)
-        )
-    ).all()
-    await session.commit()
-    for run_id, folder in rows:
-        try:
-            await asyncio.to_thread(remove_run_folder, folder)
-        except (RunRecordError, OSError) as exc:
-            logger.warning("RUN | %d: the folder of an older masked run stays: %s", run_id, exc)
+    rows = await delete_runs(
+        session,
+        PosterRun.movie_id == movie_id,
+        PosterRun.masked.is_(True),
+        PosterRun.id < keep_run_id,
+    )
     if rows:
         logger.info(
             "RUN | movie %d: %d older masked run(s) removed (%s)",
             movie_id,
             len(rows),
-            ", ".join(str(run_id) for run_id, _ in rows),
+            ", ".join(str(run_id) for run_id, _, _ in rows),
         )
-    return [run_id for run_id, _ in rows]
+    return [run_id for run_id, _, _ in rows]
 
 
 # ── Reading ───────────────────────────────────────────────────────────────

@@ -147,6 +147,22 @@ def test_remove_run_folder_refuses_a_symlink(tmp_path: Path) -> None:
     assert runs.remove_run_folder("00000002-missing", tmp_path) is False
 
 
+def test_removing_a_run_folder_never_follows_a_link_inside_it(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not the run's")
+    runs_dir = tmp_path / "runs"
+    folder = runs_dir / "00000003-heat"
+    (folder / "1-candidates").mkdir(parents=True)
+    (folder / "1-candidates" / "a.jpg").write_bytes(b"jpeg")
+    (folder / "link").symlink_to(outside)
+
+    assert runs.remove_run_folder("00000003-heat", runs_dir) is True
+
+    assert not folder.exists()
+    assert (outside / "keep.txt").read_text() == "not the run's"
+
+
 def test_read_run_folder_hashes_top_level_downloads_only(tmp_path: Path) -> None:
     folder = tmp_path / "00000001-die-hard"
     _write_folder(folder, LEDGER, IMAGES)

@@ -181,6 +181,63 @@ def test_db_restore_refusals_exit_1(
     )
 
 
+def test_retention_dry_run_lists_every_item_per_rule(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import json
+    from datetime import UTC, datetime
+
+    from marquee.maintenance import retention
+
+    seen: list[bool] = []
+
+    async def fake_run(session: object, *, dry_run: bool = False) -> retention.Report:
+        seen.append(dry_run)
+        return retention.Report(
+            now=datetime(2027, 3, 1, tzinfo=UTC),
+            dry_run=dry_run,
+            items=[
+                retention.Item("runs", "run 12 (00000012-heat)", 2048, 41),
+                retention.Item("thumbnails", "cache/thumbs/x-320.jpg", 5),
+            ],
+            kept=["leftovers: ml/residuals/.pending-x.json is kept: the next taste rebuild"],
+        )
+
+    monkeypatch.setattr(retention, "run", fake_run)
+
+    assert cli.main(["retention", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert seen == [True]
+    assert (
+        "old runs nothing names (rows, candidates, folders): would delete 1, 2,048 bytes, " in out
+    )
+    assert "  run 12 (00000012-heat)" in out and "  cache/thumbs/x-320.jpg" in out
+    assert "finished jobs and their events: would delete 0, 0 bytes" in out
+    assert "kept      leftovers: ml/residuals/.pending-x.json" in out
+    assert out.splitlines()[-1] == "dry run: would delete 2 item(s), 2,053 bytes"
+
+    assert cli.main(["retention", "--json"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert seen == [True, False]
+    assert [item["name"] for item in printed["items"]] == [
+        "run 12 (00000012-heat)",
+        "cache/thumbs/x-320.jpg",
+    ]
+
+
+def test_retention_refusals_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from marquee.maintenance import retention
+
+    async def refuses(session: object, *, dry_run: bool = False) -> retention.Report:
+        raise retention.RetentionRefusedError("the movie root /m is inside the data folder /m")
+
+    monkeypatch.setattr(retention, "run", refuses)
+    assert cli.main(["retention", "--dry-run"]) == 1
+    assert "marquee retention: the movie root /m is inside" in capsys.readouterr().err
+
+
 # ── marquee sync ──────────────────────────────────────────────────────────
 
 

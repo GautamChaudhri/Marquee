@@ -49,9 +49,20 @@ def _backup_interval() -> timedelta:
     return timedelta(hours=settings.DB_BACKUP_INTERVAL_HOURS)
 
 
+def _retention_interval() -> timedelta:
+    return timedelta(hours=settings.RETENTION_INTERVAL_HOURS)
+
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule("library_sync", kind="library_sync", interval=_sync_interval),
     Schedule("db_backup", kind="db_backup", interval=_backup_interval),
+    # Never at once: an updated installation deletes nothing before its owner has looked.
+    Schedule(
+        "retention",
+        kind="retention",
+        interval=_retention_interval,
+        first_due="after_one_interval",
+    ),
 )
 
 

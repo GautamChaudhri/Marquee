@@ -1,4 +1,4 @@
-"""The ``maintenance`` jobs: the scheduled database dump (and, with retention, what goes)."""
+"""The ``maintenance`` jobs: the scheduled database dump, and retention."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ import asyncio
 from typing import Any
 
 from marquee.config import settings
+from marquee.db.engine import create_engine, create_session_factory
 from marquee.jobs.registry import JobContext, JobError, JobKind, PermanentJobError
-from marquee.maintenance import dumps
+from marquee.maintenance import dumps, retention
 
 
 def _backup(ctx: JobContext) -> dict[str, Any]:
@@ -35,4 +36,28 @@ DB_BACKUP = JobKind(
     max_attempts=3,
     timeout_s=2 * 60 * 60,
     dedupe_key="db_backup",
+)
+
+
+async def retention_pass(ctx: JobContext) -> dict[str, Any]:
+    """Delete what the retention rules say has gone stale; the result holds counts and bytes
+    per rule, never a path. A data folder that overlaps a movie root is a permanent refusal."""
+    engine = create_engine()
+    try:
+        async with create_session_factory(engine)() as session:
+            report = await retention.run(session)
+    except retention.RetentionRefusedError as exc:
+        raise PermanentJobError(str(exc)) from exc
+    finally:
+        await engine.dispose()
+    return report.to_result()
+
+
+RETENTION = JobKind(
+    "retention",
+    "maintenance",
+    handler=retention_pass,
+    max_attempts=2,
+    timeout_s=30 * 60,
+    dedupe_key="retention",
 )

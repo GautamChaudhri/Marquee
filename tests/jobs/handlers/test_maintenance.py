@@ -103,3 +103,64 @@ def test_the_kind() -> None:
         3,
         "db_backup",
     )
+
+
+async def test_the_retention_job_records_counts_and_bytes_but_no_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import datetime
+
+    from marquee.jobs.handlers import maintenance
+    from marquee.maintenance import retention
+
+    report = retention.Report(
+        now=datetime(2027, 3, 1, tzinfo=UTC),
+        dry_run=False,
+        items=[
+            retention.Item("thumbnails", "cache/thumbs/x-320.jpg", 5),
+            retention.Item("jobs", "job 4", rows=3),
+        ],
+        kept=["leftovers: cache/deploys/9.jpg is kept: a queued or running job may own it"],
+    )
+
+    async def fake_run(session: Any, **_: Any) -> retention.Report:
+        return report
+
+    monkeypatch.setattr(retention, "run", fake_run)
+    monkeypatch.setattr(maintenance, "create_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(maintenance, "create_session_factory", lambda engine: _FakeSessions)
+
+    result = await maintenance.retention_pass(_context())
+
+    assert result["count"] == 2 and result["bytes"] == 5 and result["kept"] == 1
+    assert result["rules"]["thumbnails"] == {"count": 1, "bytes": 5, "rows": 0}
+    assert result["rules"]["jobs"] == {"count": 1, "bytes": 0, "rows": 3}
+    assert "cache/" not in str(result) and "items" not in result
+
+
+async def test_a_refused_retention_is_permanent(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marquee.jobs.handlers import maintenance
+    from marquee.maintenance import retention
+
+    async def refuses(session: Any, **_: Any) -> retention.Report:
+        raise retention.RetentionRefusedError("the data folder is inside the movie root /m")
+
+    monkeypatch.setattr(retention, "run", refuses)
+    monkeypatch.setattr(maintenance, "create_engine", lambda: _FakeEngine())
+    monkeypatch.setattr(maintenance, "create_session_factory", lambda engine: _FakeSessions)
+
+    with pytest.raises(PermanentJobError, match="inside the movie root"):
+        await maintenance.retention_pass(_context())
+
+
+class _FakeEngine:
+    async def dispose(self) -> None:
+        return None
+
+
+class _FakeSessions:
+    async def __aenter__(self) -> object:
+        return object()
+
+    async def __aexit__(self, *_: object) -> None:
+        return None

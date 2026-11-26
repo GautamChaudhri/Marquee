@@ -223,6 +223,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     restore_cmd.add_argument("deployment_id", type=int)
 
+    retention_cmd = commands.add_parser(
+        "retention",
+        help="delete what the retention rules say has gone stale (see --dry-run)",
+        description="Delete, by the written rules, finished jobs, old runs nothing names, run "
+        "folders with no run, stale cache files, leftovers, and old profile and residual "
+        "copies. Poster backups, deployments, feedback, exemplars and their images, "
+        "evaluations, the seed, models, and database dumps are never deleted. The worker "
+        "does this by itself every RETENTION_INTERVAL_HOURS.",
+    )
+    retention_cmd.add_argument(
+        "--dry-run", action="store_true", help="list what would go, per rule; delete nothing"
+    )
+    retention_cmd.add_argument("--json", action="store_true", help="print the report as JSON")
     review = commands.add_parser(
         "review",
         help="review what the AI picked: approve, pick, rank, reject, or take one back",
@@ -789,6 +802,63 @@ def _db_restore(file: Path, *, confirmed: bool) -> int:
         "runs, poster backups, the taste profile and exemplar images in the data folder, and "
         "posters in the library."
     )
+    return 0
+
+
+_RULE_LABELS = {
+    "jobs": "finished jobs and their events",
+    "runs": "old runs nothing names (rows, candidates, folders)",
+    "run_folders": "run folders with no run",
+    "thumbnails": "poster thumbnails",
+    "embeddings": "embedding cache",
+    "leftovers": "leftovers and temporary files",
+    "profiles": "old taste profile copies",
+    "residuals": "old residual artifacts",
+}
+
+
+def _retention(args: argparse.Namespace) -> int:
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from marquee.config import settings
+    from marquee.db.engine import create_engine, create_session_factory
+    from marquee.maintenance import retention
+
+    _quiet_logging()
+    command = "retention"
+
+    async def go() -> Any:
+        engine = create_engine()
+        try:
+            async with create_session_factory(engine)() as session:
+                return await retention.run(session, dry_run=args.dry_run)
+        finally:
+            await engine.dispose()
+
+    try:
+        report = asyncio.run(go())
+    except retention.RetentionRefusedError as exc:
+        return _fail(command, str(exc))
+    except SQLAlchemyError as exc:
+        return _fail(command, f"{_database_target()}: {_error_line(exc)}")
+    if args.json:
+        print(json.dumps(report.to_dict(), indent=2))
+        return 0
+    verb = "would delete" if report.dry_run else "deleted"
+    print(f"database  {_database_target()}")
+    print(f"data      {settings.DATA_DIR}")
+    print(f"now       {report.now.isoformat()}  (RETENTION_DAYS {settings.RETENTION_DAYS})")
+    for rule, total in report.totals().items():
+        rows = f", {total['rows']} database row(s)" if total["rows"] else ""
+        print(f"{_RULE_LABELS[rule]}: {verb} {total['count']}, {total['bytes']:,} bytes{rows}")
+        for item in report.items:
+            if item.rule == rule:
+                print(f"  {item.name}")
+    for note in report.kept:
+        print(f"kept      {note}")
+    count = len(report.items)
+    size = sum(item.size_bytes for item in report.items)
+    print(f"{'dry run: ' if report.dry_run else ''}{verb} {count} item(s), {size:,} bytes")
     return 0
 
 
@@ -1889,6 +1959,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _taste_async_command(
             f"taste residual {args.residual_command}", _residual_async(args)
         )
+    if args.command == "retention":
+        return _retention(args)
     if args.command == "review":
         return _review(args)
     if args.command == "run":
