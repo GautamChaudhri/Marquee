@@ -1023,6 +1023,8 @@ function addJob(
 	{ state: jobState = 'queued', auto = true, error = null, finished = false } = {}
 ) {
 	const at = new Date().toISOString();
+	// While the fake holds jobs, a job that would move on by itself waits for a release.
+	const held = auto && Boolean(state.holdJobs);
 	const job = {
 		id: state.nextJob++,
 		kind,
@@ -1043,7 +1045,8 @@ function addJob(
 		updated_at: at,
 		started_at: jobState === 'queued' ? null : at,
 		finished_at: finished || jobState === 'failed' || jobState === 'succeeded' ? at : null,
-		auto
+		auto: auto && !held,
+		held
 	};
 	state.jobs.unshift(job);
 	addEvent(state, job.id, 'queued');
@@ -1094,7 +1097,7 @@ setInterval(() => {
 // The `auto` flag is the fake's own; the API has no such field. `subject` is the movie the
 // payload names, as the API gives it.
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
-const publicJob = ({ auto, ...job }) => {
+const publicJob = ({ auto, held, ...job }) => {
 	const movie = state.movies.find((m) => m.id === job.payload?.movie_id);
 	return {
 		...job,
@@ -1384,6 +1387,7 @@ createServer((req, res) => {
 		}
 		state.systemProblems = url.searchParams.get('problems') === '1';
 		state.production = url.searchParams.get('production') === '1';
+		state.holdJobs = url.searchParams.get('hold') === '1';
 		if (url.searchParams.get('maintenance') === '1') {
 			addJob(state, 'db_backup', {}, { state: 'succeeded', auto: false });
 			addJob(state, 'retention', {}, { state: 'succeeded', auto: false });
@@ -1393,6 +1397,13 @@ createServer((req, res) => {
 		}
 		seedEvaluations(state, url.searchParams.get('evaluations') ?? 'none');
 		state.residual = url.searchParams.get('residual') ?? 'none';
+		return send(res, 200, { ok: true });
+	}
+	// Held jobs move on by themselves from now on, as a worker would run them.
+	if (url.pathname === '/__fake/release' && req.method === 'POST') {
+		state.holdJobs = false;
+		for (const job of state.jobs.filter((j) => j.held))
+			Object.assign(job, { auto: true, held: false });
 		return send(res, 200, { ok: true });
 	}
 	// Every JSON body the fake received for a path, oldest first.

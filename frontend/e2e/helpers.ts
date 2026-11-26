@@ -8,7 +8,9 @@ import { E2E_API_KEY, FAKE_URL } from '../playwright.config';
  *  residual, and `'refused'` a last training that changed nothing; `production` makes the
  *  system summary a Compose stack's (container paths); `deployedBy: 'owner'` makes Alien's
  *  poster, which the deploy policy wrote, the owner's choice instead; `maintenance` adds a
- *  finished database backup job and a finished retention job. */
+ *  finished database backup job and a finished retention job; `hold` keeps every job the
+ *  fake makes where it starts until `releaseJobs()`, so a test can look at a running job
+ *  without racing the fake's clock. */
 export async function resetBackend(
 	options: {
 		review?: 'none';
@@ -18,6 +20,7 @@ export async function resetBackend(
 		production?: boolean;
 		deployedBy?: 'owner';
 		maintenance?: boolean;
+		hold?: boolean;
 	} = {}
 ): Promise<void> {
 	const params = new URLSearchParams();
@@ -26,9 +29,16 @@ export async function resetBackend(
 	if (options.production) params.set('production', '1');
 	if (options.deployedBy) params.set('deployedBy', options.deployedBy);
 	if (options.maintenance) params.set('maintenance', '1');
+	if (options.hold) params.set('hold', '1');
 	if (options.evaluations) params.set('evaluations', options.evaluations);
 	if (options.residual) params.set('residual', options.residual);
 	const response = await fetch(`${FAKE_URL}/__fake/reset?${params}`, { method: 'POST' });
+	expect(response.ok).toBe(true);
+}
+
+/** Let the jobs `resetBackend({ hold: true })` kept move on by themselves. */
+export async function releaseJobs(): Promise<void> {
+	const response = await fetch(`${FAKE_URL}/__fake/release`, { method: 'POST' });
 	expect(response.ok).toBe(true);
 }
 

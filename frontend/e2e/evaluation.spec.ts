@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { receivedBodies, resetBackend, signIn } from './helpers';
+import { receivedBodies, releaseJobs, resetBackend, signIn } from './helpers';
 
 test.beforeEach(async ({ page }) => {
 	await signIn(page);
@@ -80,7 +80,9 @@ test('the results page lists every poster, filters, and opens a masked run', asy
 });
 
 test('running an evaluation asks first, then follows it to its end', async ({ page }) => {
-	await resetBackend();
+	// The fake keeps the evaluation running until it is released, so what the page shows
+	// while it runs is checked against that state, not against the fake's clock.
+	await resetBackend({ hold: true });
 	await page.goto('/taste');
 	await page.getByRole('button', { name: 'Run a blind evaluation' }).click();
 	const dialog = page.getByRole('dialog');
@@ -90,6 +92,7 @@ test('running an evaluation asks first, then follows it to its end', async ({ pa
 	await dialog.getByRole('button', { name: 'Run it' }).click();
 	await expect(page.getByTestId('evaluation-progress')).toContainText('Evaluation 1 is running');
 	await expect(page.getByRole('button', { name: 'Run a blind evaluation' })).toBeDisabled();
+	await releaseJobs();
 	await expect(page.getByTestId('evaluation-headline')).toContainText('On 3 posters', {
 		timeout: 10_000
 	});
