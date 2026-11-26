@@ -587,10 +587,14 @@ second time. A restore is itself a deployment, so it can be undone in turn.
 
 **Deploy policy.** Nothing deploys by itself unless `DEPLOY_POLICY` says so. When a run
 completes with a pick: `off` (the default) queues nothing; `missing` queues a deploy only when
-the movie has no poster or its poster is Marquee's own; `all` queues one whatever is there. A
-deploy the policy queued accepts only the pick, and checks the policy again when it runs: under
-`missing` the file in the folder must be absent or equal to an `artwork` row of origin
-`marquee`, or the job finishes as skipped and writes nothing. A deploy the owner asks for
+the movie has no poster or its poster is the one the policy itself deployed last; `all` queues
+one whatever is there. A deploy the policy queued accepts only the pick, and checks the policy
+again when it runs: under `missing` the file in the folder must be absent, or be the file the
+policy deployed last (the movie's newest deployment was initiated by `policy`, its
+`new_sha256` is the file on disk, and the `artwork` row still says origin `marquee` with that
+hash), or the job finishes as skipped and writes nothing. So a poster the owner chose in a
+review (an owner's deploy), put back (a restore), replaced by hand, or already had is never
+replaced by `missing`. A deploy the owner asks for
 accepts any downloaded candidate of a completed run.
 
 **The sync and Marquee's posters.** A poster row of origin `marquee` is kept, hashed again, or

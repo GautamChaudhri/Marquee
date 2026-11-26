@@ -385,7 +385,7 @@ async def test_a_guard_can_skip_the_write(
     (library / "poster.jpg").write_bytes(OLD)
     movie = await _movie(sessions)
 
-    result = await deploy.write_poster(sessions, _deploy(movie), guard=lambda current, row: "no")
+    result = await deploy.write_poster(sessions, _deploy(movie), guard=lambda current, row, newest: "no")
 
     assert (result.outcome, result.note) == ("skipped", "no")
     assert (library / "poster.jpg").read_bytes() == OLD

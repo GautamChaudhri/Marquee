@@ -100,13 +100,37 @@ async def _candidate(
     return candidate, run, movie
 
 
-def missing_guard(current: deploy.OnDisk | None, row: Artwork | None) -> str | None:
-    """``DEPLOY_POLICY=missing``, checked on the folder itself just before the write."""
-    if current is None:
+def policy_owns(row: Artwork | None, newest: Deployment | None, sha256: str) -> bool:
+    """Whether the poster ``sha256`` in a movie's folder is the file the deploy policy itself
+    put there last: the movie's newest deployment was the policy's and wrote exactly these
+    bytes, and the poster row still describes them as Marquee's.
+
+    Anything else is the owner's: their own file, a poster they chose (an owner's deploy),
+    one they put back (a restore), or one they replaced by hand. A policy deploy that found
+    the owner's own file already in place wrote nothing, and its row keeps the owner's
+    origin, so that file stays the owner's too.
+    """
+    return (
+        newest is not None
+        and newest.initiated_by == INITIATED_BY_POLICY
+        and newest.new_sha256 == sha256
+        and row is not None
+        and row.origin == ORIGIN_MARQUEE
+        and row.sha256 == sha256
+    )
+
+
+def missing_guard(
+    current: deploy.OnDisk | None, row: Artwork | None, newest: Deployment | None
+) -> str | None:
+    """``DEPLOY_POLICY=missing``, checked on the folder itself just before the write: the
+    policy writes only into a folder with no poster, or over the file it deployed itself."""
+    if current is None or policy_owns(row, newest, current.sha256):
         return None
-    if row is not None and row.origin == ORIGIN_MARQUEE and row.sha256 == current.sha256:
-        return None
-    return "DEPLOY_POLICY is missing and the folder holds a poster that is not Marquee's"
+    return (
+        "DEPLOY_POLICY is missing and the poster in the folder is not Marquee's to replace: "
+        "the policy did not put it there"
+    )
 
 
 def _staged_path(job_id: int) -> Path:
@@ -423,7 +447,9 @@ async def queue_policy_deploy(
     """After a run completes with a pick: queue the deploy ``DEPLOY_POLICY`` calls for.
 
     ``off`` queues nothing; ``missing`` only when the movie has no poster or its poster is
-    Marquee's own; ``all`` whatever is there. Returns what was done, or ``None`` for ``off``.
+    the one the policy itself deployed last (:func:`policy_owns`), never one the owner
+    chose; ``all`` whatever is there. Returns what was done, or ``None`` for ``off``. The
+    write checks ``missing`` again on the folder itself.
     """
     policy = settings.DEPLOY_POLICY
     if policy == "off":
@@ -434,8 +460,14 @@ async def queue_policy_deploy(
                 Artwork.movie_id == movie_id, Artwork.artwork_kind == ARTWORK_POSTER
             )
         )
-        if row is not None and row.origin != ORIGIN_MARQUEE:
+        if row is not None and not policy_owns(
+            row, await deploy.newest_deployment(session, movie_id), row.sha256
+        ):
             await session.commit()
-            return {"policy": policy, "queued": False, "note": "the poster is the owner's"}
+            return {
+                "policy": policy,
+                "queued": False,
+                "note": "the poster is not one the policy deployed",
+            }
     job, created = await enqueue_deploy(session, pick_id, initiated_by=INITIATED_BY_POLICY)
     return {"policy": policy, "queued": created, "job_id": job.id}

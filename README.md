@@ -309,9 +309,10 @@ appear in the review list and nothing is deployed from them. `EVAL_MATCH_MIN_COS
 is how alike a candidate must be to your poster to count as it when no TMDB file name says so.
 
 Two settings decide what happens without you asking. `DEPLOY_POLICY` (default `off`) makes a
-finished run deploy its pick by itself: `missing` only where the folder has no poster or the
-poster there is Marquee's own, `all` everywhere, replacing your own posters too (each still
-backed up). `RUN_NEW_MOVIES` (default `false`) makes the worker run every movie that has
+finished run deploy its pick by itself: `missing` only where the folder has no poster, or
+over the poster the policy itself deployed last, never over one you chose (your own file, a
+design you picked in a review, a poster you put back or replaced by hand); `all` everywhere,
+replacing your own posters too (each still backed up). `RUN_NEW_MOVIES` (default `false`) makes the worker run every movie that has
 never been run after each library sync. Once Marquee has written a poster,
 `marquee taste seed --rescan` is refused: the library then holds Marquee's picks beside
 yours, and the staged copies in `data/ml/seed/` stay the record of your own.

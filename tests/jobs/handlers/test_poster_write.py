@@ -36,6 +36,7 @@ def jpeg(colour: tuple[int, int, int]) -> bytes:
 OWNERS = jpeg((10, 10, 10))
 PICK = jpeg((250, 0, 0))
 OTHER = jpeg((0, 0, 250))
+LATER = jpeg((0, 250, 0))
 
 
 @pytest.fixture
@@ -54,7 +55,7 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database_url: str) 
 @pytest.fixture
 def fetched(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     calls: list[str] = []
-    files = {"pick.jpg": PICK, "other.jpg": OTHER}
+    files = {"pick.jpg": PICK, "other.jpg": OTHER, "later.jpg": LATER}
 
     async def fake_fetch(source_file: str, client: object = None) -> bytes:
         calls.append(source_file)
@@ -818,6 +819,141 @@ async def test_the_policy_after_a_run(
         if queued
         else []
     )
+
+
+async def _later_pick(sessions: async_sessionmaker[AsyncSession], ids: dict[str, int]) -> int:
+    """A later completed run of the movie whose pick is later.jpg; returns the pick's id."""
+    async with sessions() as session:
+        run = PosterRun(
+            movie_id=ids["movie"],
+            state="completed",
+            run_folder="00000002-heat",
+            started_at=datetime.now(UTC),
+        )
+        session.add(run)
+        await session.flush()
+        pick = RunCandidate(
+            run_id=run.id, source_file="later.jpg", sha256="3" * 64, rank=1, is_pick=True
+        )
+        session.add(pick)
+        await session.commit()
+        return pick.id
+
+
+async def _as_the_sync_records(sessions: async_sessionmaker[AsyncSession], folder: Path) -> None:
+    """What the next sync does to the poster row after the owner replaced the file by hand."""
+    found = stat_poster(folder / "poster.jpg")
+    assert found is not None
+    async with sessions() as session:
+        row = await session.scalar(select(Artwork))
+        assert row is not None
+        row.origin = "library"
+        row.sha256 = backup.sha256_of((folder / "poster.jpg").read_bytes())
+        row.size_bytes = found.size_bytes
+        row.file_modified_at = found.modified_at
+        await session.commit()
+
+
+MISSING_CASES = [
+    "no poster",
+    "the owner's own poster",
+    "a policy deploy",
+    "an owner's deploy",
+    "a policy deploy the owner replaced by hand, before the sync",
+    "a policy deploy the owner replaced by hand, after the sync",
+    "a restore of a policy deploy over the owner's poster",
+    "a restore of a policy deploy into an empty folder",
+    "a policy deploy that found the owner's own file in place",
+]
+
+
+@pytest.mark.parametrize("case", MISSING_CASES)
+async def test_missing_replaces_only_what_the_policy_itself_deployed(
+    library: Path,
+    sessions: async_sessionmaker[AsyncSession],
+    fetched: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    """DEPLOY_POLICY=missing writes into a folder with no poster, or over the file the
+    policy itself deployed last, and nowhere else: checked when the deploy is queued and
+    again at the write, against the folder itself."""
+    poster = library / "poster.jpg"
+    ids = await _setup(
+        sessions,
+        library,
+        owners_poster=case.startswith(
+            (
+                "the owner's own",
+                "an owner's",
+                "a restore of a policy deploy over",
+                "a policy deploy that found",
+            )
+        ),
+    )
+    monkeypatch.setattr(settings, "DEPLOY_POLICY", "missing")
+    if case == "a policy deploy that found the owner's own file in place":
+        fetched_files = {"pick.jpg": OWNERS, "later.jpg": LATER}
+
+        async def owners_file_is_the_pick(source_file: str, client: object = None) -> bytes:
+            return fetched_files[source_file]
+
+        monkeypatch.setattr(deploy, "fetch_original", owners_file_is_the_pick)
+        found = await _deploy(sessions, ids, by="policy")
+        assert found["outcome"] == "already_in_place" and poster.read_bytes() == OWNERS
+    elif case.startswith("a policy deploy") or case.endswith("into an empty folder"):
+        assert (await _deploy(sessions, ids, by="policy"))["outcome"] == "written"
+    elif case == "an owner's deploy":
+        assert (await _deploy(sessions, ids, "other", by="owner"))["outcome"] == "written"
+    elif case.startswith("a restore of a policy deploy over"):
+        monkeypatch.setattr(settings, "DEPLOY_POLICY", "all")
+        deployed = await _deploy(sessions, ids, by="policy")
+        assert deployed["outcome"] == "written"
+        monkeypatch.setattr(settings, "DEPLOY_POLICY", "missing")
+    if case.startswith("a restore"):
+        if case.endswith("into an empty folder"):
+            deployed = {"deployment_id": await _newest_deployment_id(sessions)}
+        assert (await _restore(sessions, ids, deployed["deployment_id"]))["outcome"] in (
+            "written",
+            "removed",
+        )
+    if case.startswith("a policy deploy the owner replaced by hand"):
+        poster.write_bytes(OWNERS)
+        if case.endswith("after the sync"):
+            await _as_the_sync_records(sessions, library)
+    before = poster.read_bytes() if poster.exists() else None
+    may_replace = case in (
+        "no poster",
+        "a policy deploy",
+        "a restore of a policy deploy into an empty folder",
+    )
+    # Queued after the next run, unless the folder visibly holds a poster the policy does not
+    # own; replaced by hand but not yet synced, the row still says the policy's, so it is
+    # queued and the write refuses.
+    queued_too = may_replace or case.endswith("before the sync")
+    later = await _later_pick(sessions, ids)
+
+    async with sessions() as session:
+        queued = await handler.queue_policy_deploy(session, ids["movie"], later)
+    assert queued is not None and queued["queued"] is queued_too, queued
+
+    job_id = await _job(sessions, "poster_deploy")
+    payload = {"candidate_id": later, "initiated_by": "policy", "movie_id": ids["movie"]}
+    written = await handler.poster_deploy(_ctx(job_id, payload))
+    if may_replace:
+        assert written["outcome"] == "written"
+        assert poster.read_bytes() == LATER
+    else:
+        assert written["skipped"] is True and "not Marquee's to replace" in written["note"]
+        assert (poster.read_bytes() if poster.exists() else None) == before
+        assert before is not None
+
+
+async def _newest_deployment_id(sessions: async_sessionmaker[AsyncSession]) -> int:
+    async with sessions() as session:
+        newest = await session.scalar(select(func.max(Deployment.id)))
+    assert newest is not None
+    return int(newest)
 
 
 async def test_nothing_is_deployed_from_a_masked_run(

@@ -363,8 +363,9 @@ class WriteResult:
         return asdict(self)
 
 
-Guard = Callable[[OnDisk | None, Artwork | None], str | None]
-"""Checked before an automatic write: returns why to skip it, or ``None`` to go ahead."""
+Guard = Callable[[OnDisk | None, Artwork | None, Deployment | None], str | None]
+"""Checked before an automatic write, with what is on disk, the poster row, and the movie's
+newest deployment: returns why to skip it, or ``None`` to go ahead."""
 
 
 async def _rows(
@@ -499,7 +500,7 @@ async def write_poster(
             note = "the file was already in place and no previous poster is recorded"
         outcome = "already_in_place"
     else:
-        if guard is not None and (reason := guard(current, row)) is not None:
+        if guard is not None and (reason := guard(current, row, newest)) is not None:
             return WriteResult(outcome="skipped", note=reason)
         if current is not None:  # step 4
             backup_file = await asyncio.to_thread(backup.store, current.data, movie.id)

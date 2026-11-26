@@ -83,7 +83,8 @@ class Settings(BaseSettings):
     # When true, a library sync that succeeds queues a run of every movie never run before.
     RUN_NEW_MOVIES: bool = False
     # What a finished run deploys by itself: off (nothing; every deploy is asked for), missing
-    # (only where there is no poster, or Marquee's own), all (also replaces the owner's).
+    # (only where there is no poster, or over the poster the policy itself deployed last;
+    # never one the owner chose), all (also replaces the owner's).
     DEPLOY_POLICY: Literal["off", "missing", "all"] = "off"
     # A blind evaluation matches the owner's poster to a candidate of the masked run by TMDB
     # file name when it can, otherwise by CLIP cosine: the closest candidate at or above this.
