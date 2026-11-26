@@ -1,0 +1,19 @@
+# The web image is built from the app's source and its lockfile, nothing else. Everything is
+# excluded, then only what `npm run build` needs is let back in. A new top-level file the
+# build needs must be added here.
+#
+# This keeps local settings (.env), node_modules, earlier builds, generated types, the tests,
+# and test output out of the build context.
+*
+
+!package.json
+!package-lock.json
+!.npmrc
+!openapi.json
+!tsconfig.json
+!vite.config.ts
+!src/
+!static/
+
+src/lib/api/generated/
+**/*.test.ts
