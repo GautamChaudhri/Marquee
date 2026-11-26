@@ -787,7 +787,9 @@ def _db_restore(file: Path, *, confirmed: bool) -> int:
             raise dumps.DumpError(f"the database {_database_target()} cannot be reached") from exc
 
     print(f"database  {_database_target()}")
-    print(f"dump      {file}")
+    # Flushed now: a refusal goes to standard error, which is not buffered, and would come out
+    # before these lines when standard output is a pipe.
+    print(f"dump      {file}", flush=True)
     done = dumps.restore(file, confirmed=confirmed, worker_holds_lock=worker_running)
     print(f"before    saved as {done.pre_restore}" if done.pre_restore else "before    no tables")
     for name in done.pre_restore_deleted:

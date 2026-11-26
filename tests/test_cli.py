@@ -181,6 +181,35 @@ def test_db_restore_refusals_exit_1(
     )
 
 
+def test_db_restore_prints_its_header_before_a_refusal_when_piped(tmp_path: Path) -> None:
+    """Standard output and standard error in one pipe, as `... 2>&1 | less` gives them."""
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from marquee.cli import main; sys.exit(main(sys.argv[1:]))",
+            "db",
+            "restore",
+            str(tmp_path / "x.dump"),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 1
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("database  ")
+    assert lines[1] == f"dump      {tmp_path / 'x.dump'}"
+    assert lines[2] == (
+        "marquee db restore: a restore replaces everything in the database with the dump; "
+        "add --yes to go ahead"
+    )
+
+
 def test_retention_dry_run_lists_every_item_per_rule(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
