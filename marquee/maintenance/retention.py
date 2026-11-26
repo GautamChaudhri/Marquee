@@ -336,9 +336,11 @@ async def _delete_runs(session: AsyncSession, cutoff: datetime, planned: list[It
 # ── Files ─────────────────────────────────────────────────────────────────
 
 
-def _files_older(folder: Path, before: float) -> list[Path]:
-    """Every regular file under ``folder`` last modified before ``before``; links skipped."""
-    found: list[Path] = []
+def _files_older(folder: Path, before: float) -> list[tuple[Path, int]]:
+    """Every regular file under ``folder`` last modified before ``before``, with its size;
+    links skipped. Each file is looked at once: one that another process deletes while the
+    folder is listed is left out, never an error."""
+    found: list[tuple[Path, int]] = []
     if not folder.is_dir() or folder.is_symlink():
         return found
     for root, _, files in os.walk(folder, followlinks=False):
@@ -349,7 +351,7 @@ def _files_older(folder: Path, before: float) -> list[Path]:
             except FileNotFoundError:
                 continue
             if stat.S_ISREG(info.st_mode) and info.st_mtime < before:
-                found.append(path)
+                found.append((path, info.st_size))
     return sorted(found)
 
 
@@ -493,12 +495,16 @@ def _copies(rule: str, folder: Path, keep: set[str], data: Path) -> list[Item]:
         return []
     items = []
     for entry in sorted(os.scandir(folder), key=lambda e: e.name):
-        if (
-            _ARTIFACT.fullmatch(entry.name)
-            and entry.name not in keep
-            and entry.is_file(follow_symlinks=False)
-        ):
-            items.append(Item(rule, _relative(data, Path(entry.path)), entry.stat().st_size))
+        if not _ARTIFACT.fullmatch(entry.name) or entry.name in keep:
+            continue
+        try:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            size = entry.stat(follow_symlinks=False).st_size
+        except FileNotFoundError:
+            # Deleted by another process (a rebuild's own clean-up) since the listing.
+            continue
+        items.append(Item(rule, _relative(data, Path(entry.path)), size))
     return items
 
 
@@ -555,7 +561,7 @@ async def plan(session: AsyncSession, *, now: datetime | None = None) -> Report:
         ("embeddings", settings.embedding_cache_dir, days),
     ):
         old = await asyncio.to_thread(_files_older, folder, (now - age).timestamp())
-        report.items += [Item(rule, _relative(data, p), p.stat().st_size) for p in old]
+        report.items += [Item(rule, _relative(data, path), size) for path, size in old]
     leftover_cutoff = (now - timedelta(hours=LEFTOVER_HOURS)).timestamp()
     report.items += await _plan_leftovers(session, data, leftover_cutoff, report.kept)
     profiles, residuals = await _kept_copies(session)

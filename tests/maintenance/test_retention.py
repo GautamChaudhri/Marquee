@@ -422,6 +422,63 @@ async def test_caches_go_when_untouched_long_enough(
     assert kernel.exists()
 
 
+async def test_a_cache_file_deleted_while_the_plan_looks_at_it_is_no_error(
+    data: Path, sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process (a thumbnail request, a rebuild's own clean-up) deletes a file between
+    the plan listing it and reading its size."""
+    cache = data / "cache"
+    gone_thumb = _file(cache / "thumbs" / "gone-320.jpg", OLD, b"thumb")
+    kept_thumb = _file(cache / "thumbs" / "kept-320.jpg", OLD, b"thumb")
+    profiles = data / "ml" / "profiles"
+    gone_copy = _file(profiles / f"{1:064x}.npz", OLD, b"profile")
+    _file(profiles / f"{2:064x}.npz", OLD, b"profile")
+
+    real_lstat, real_scandir = os.lstat, os.scandir
+
+    def lstat_then_delete(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        info = real_lstat(path, *args, **kwargs)
+        if Path(path) == gone_thumb and gone_thumb.exists():
+            gone_thumb.unlink()
+        return info
+
+    class Listing:
+        """What os.scandir gives: an iterator that is also a context manager."""
+
+        def __init__(self, entries: list[os.DirEntry[str]]) -> None:
+            self._entries = iter(entries)
+
+        def __iter__(self) -> Listing:
+            return self
+
+        def __next__(self) -> os.DirEntry[str]:
+            return next(self._entries)
+
+        def __enter__(self) -> Listing:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    def scandir_then_delete(path: Any = ".") -> Listing:
+        entries = list(real_scandir(path))
+        if Path(path) == profiles and gone_copy.exists():
+            gone_copy.unlink()
+        return Listing(entries)
+
+    monkeypatch.setattr(retention.os, "lstat", lstat_then_delete)
+    monkeypatch.setattr(retention.os, "scandir", scandir_then_delete)
+
+    report = await _plan(sessions)
+
+    assert not gone_thumb.exists() and not gone_copy.exists()
+    # A file looked at before it went is listed with the size it had; one gone before its
+    # size was read is left out. Everything else is planned as usual.
+    assert "cache/thumbs/kept-320.jpg" in _names(report, "thumbnails")
+    assert _names(report, "profiles") == [f"ml/profiles/{2:064x}.npz"]
+    assert kept_thumb.exists()
+
+
 async def test_leftovers_go_after_a_day_unless_a_job_still_owns_them(
     data: Path, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
