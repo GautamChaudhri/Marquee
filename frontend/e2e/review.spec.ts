@@ -141,7 +141,13 @@ test('another variant of a stack can be the one its card shows and sends', async
 	await first.getByRole('button', { name: /Show variant 1B/ }).click();
 	await expect(first).toHaveAttribute('data-candidate', '1203');
 	await page.getByTestId('deploy-checkbox').uncheck();
+	// The proxy answers only after the backend has the body, so wait for that answer.
+	const answered = page.waitForResponse(
+		(response) =>
+			response.request().method() === 'POST' && new URL(response.url()).pathname === FEEDBACK
+	);
 	await first.getByRole('button', { name: /^Use / }).click();
+	await answered;
 	const body = await lastBody();
 	expect(body.candidate_id).toBe(1203);
 	expect(body.shown).toEqual([1203, 1202, 1204, 1206, 1207, 1209]);
