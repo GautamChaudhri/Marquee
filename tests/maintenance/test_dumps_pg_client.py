@@ -7,6 +7,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import psycopg
@@ -157,8 +158,14 @@ def test_a_round_trip_brings_back_every_table_as_it_was_at_the_dump(
     changed = _snapshot(database)
     assert changed != at_dump
 
+    # Each restore saves the database as it was under the second it ran in; the two here are
+    # given times a minute apart so they never ask for the same name.
+    first = datetime.now(UTC)
     done = dumps.restore(
-        settings.db_backups_dir / made.file, confirmed=True, worker_holds_lock=_no_worker
+        settings.db_backups_dir / made.file,
+        confirmed=True,
+        worker_holds_lock=_no_worker,
+        now=first,
     )
 
     assert _snapshot(database) == at_dump
@@ -178,7 +185,10 @@ def test_a_round_trip_brings_back_every_table_as_it_was_at_the_dump(
     # The pre-restore dump holds the changed state, and it restores as well.
     assert done.pre_restore is not None
     dumps.restore(
-        settings.db_backups_dir / done.pre_restore, confirmed=True, worker_holds_lock=_no_worker
+        settings.db_backups_dir / done.pre_restore,
+        confirmed=True,
+        worker_holds_lock=_no_worker,
+        now=first + timedelta(minutes=1),
     )
     assert _snapshot(database) == changed
 
