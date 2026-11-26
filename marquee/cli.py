@@ -204,6 +204,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     deployments_list.add_argument("--movie-id", type=int, help="only this movie's")
     deployments_list.add_argument("--json", action="store_true", help="print them as JSON")
+    deployments_verify = deployments_commands.add_parser(
+        "verify",
+        help="check deployed posters and their backups against the records (read-only)",
+        description="For each movie's newest deployment, whether its poster.jpg is the file "
+        "recorded, was replaced since, or is gone; and for every backup a deployment names, "
+        "whether it exists with its recorded hash. Reads only. Exits 1 when a backup is "
+        "missing or damaged.",
+    )
+    deployments_verify.add_argument("--json", action="store_true", help="print it as JSON")
     restore_cmd = commands.add_parser(
         "restore",
         help="put back what a deployment replaced, as a job",
@@ -963,11 +972,48 @@ def _print_deployments(page: Any) -> None:
     print(f"{len(page.items)} of {page.total} deployment(s)")
 
 
+_POSTER_STATES = {
+    "as_recorded": "as recorded",
+    "replaced": "replaced since",
+    "gone": "gone",
+    "unreadable": "unreadable",
+}
+
+
+def _print_verify(report: Any) -> None:
+    print("Deployed posters (each movie's newest deployment):")
+    for check in report.posters:
+        found = (check.found_sha256 or "-")[:12]
+        recorded = (check.recorded_sha256 or "no poster")[:12]
+        note = f"  ({check.note})" if check.note else ""
+        print(
+            f"  movie {check.movie_id:>5}  deployment {check.deployment_id:>5}  "
+            f"{_POSTER_STATES[check.state]:<14}  recorded {recorded:<12}  found {found:<12}  "
+            f"{check.title}{note}"
+        )
+    print("Backups the deployments name:")
+    for check in report.backups:
+        note = f"  ({check.note})" if check.note else ""
+        names = ", ".join(str(i) for i in check.deployment_ids)
+        print(
+            f"  {check.state:<8} {check.backup_file or '(none recorded)'}  "
+            f"deployment(s) {names}{note}"
+        )
+    counts = report.counts()
+    posters = ", ".join(f"{n} {_POSTER_STATES[s]}" for s, n in counts["posters"].items())
+    backups = ", ".join(f"{n} {s}" for s, n in counts["backups"].items())
+    print(f"{len(report.posters)} movie(s): {posters}")
+    print(f"{len(report.backups)} backup(s): {backups}")
+    if not report.ok:
+        print("A backup is missing or damaged: the poster it holds cannot be put back.")
+
+
 async def _artwork_async(args: argparse.Namespace) -> int:
-    from marquee.artwork import deploy, runs
+    from marquee.artwork import deploy, runs, verify
     from marquee.db.engine import create_engine, create_session_factory
     from marquee.jobs.handlers import poster_run, poster_write
 
+    status = 0
     engine = create_engine()
     try:
         async with create_session_factory(engine)() as session:
@@ -1017,6 +1063,13 @@ async def _artwork_async(args: argparse.Namespace) -> int:
                     )
                 job, created = await poster_write.enqueue_deploy(session, candidate_id)
                 print(_queued_line(job, created))
+            elif args.command == "deployments" and args.deployments_command == "verify":
+                report = await verify.verify_deployments(session)
+                if args.json:
+                    print(json.dumps(report.to_dict(), indent=2))
+                else:
+                    _print_verify(report)
+                status = 0 if report.ok else 1
             elif args.command == "deployments":
                 page = await deploy.list_deployments(
                     session, movie_id=args.movie_id, page_size=JOBS_SHOWN
@@ -1032,7 +1085,7 @@ async def _artwork_async(args: argparse.Namespace) -> int:
         raise _CommandError(str(exc)) from exc
     finally:
         await engine.dispose()
-    return 0
+    return status
 
 
 def _artwork(args: argparse.Namespace) -> int:

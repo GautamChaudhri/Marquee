@@ -116,6 +116,18 @@ def verify(key: str, sha256: str, backups_dir: Path | None = None) -> bytes:
     return data
 
 
+def read_only(key: str, backups_dir: Path | None = None) -> bytes | None:
+    """The bytes of the backup ``key``, or ``None`` when it is not there. Unlike
+    :func:`verify` it creates nothing, not even the backups directory."""
+    base = backups_dir or settings.backups_dir
+    if not _KEY.fullmatch(key):
+        raise BackupError(f"{key!r} is not a backup's name")
+    if not base.is_dir():
+        return None
+    boundary = boundary_for_roots({ROOT: base}, access="read", purpose="backups")
+    return _read(boundary, base, key)
+
+
 def exists(movie_id: int, sha256: str, backups_dir: Path | None = None) -> bool:
     """Whether a verified backup of this poster is kept."""
     try:
