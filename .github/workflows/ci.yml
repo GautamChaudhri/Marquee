@@ -125,3 +125,41 @@ jobs:
       - name: End-to-end tests
         # The built app against the fake backend in e2e/; no real API, key, or library.
         run: npm run test:e2e
+
+  docker:
+    name: Compose file and web image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Compose file is valid with .env.example
+        # Compose reads .env as the stack's settings; the example must keep the file valid.
+        # Without a profile only the database starts, as development expects.
+        run: |
+          cp .env.example .env
+          docker compose version
+          docker compose config --quiet
+          docker compose --profile app --profile tools config --quiet
+          test "$(docker compose config --services)" = "db"
+
+      - name: Build the web image
+        run: docker build -t marquee:web frontend
+
+      - name: Smoke test the web image
+        # It starts with a throwaway key and no API behind it, and its sign-in page answers.
+        run: |
+          docker run -d --name web -p 127.0.0.1:3000:3000 \
+            -e ORIGIN=http://127.0.0.1:3000 -e MARQUEE_API_URL=http://127.0.0.1:9 \
+            -e MARQUEE_API_KEY=ci-throwaway marquee:web
+          code=000
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/signin) || true
+            [ "$code" = 200 ] && break
+            sleep 1
+          done
+          docker logs web
+          docker rm -f web
+          test "$code" = 200
