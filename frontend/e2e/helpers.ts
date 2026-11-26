@@ -5,18 +5,27 @@ import { E2E_API_KEY, FAKE_URL } from '../playwright.config';
  *  `problems` makes the system summary report a schema behind and a missing model;
  *  `evaluations` gives two finished blind evaluations, or those and one running, or those and
  *  a newer cancelled and a newer failed one (`stopped`); `residual: 'active'` gives an active
- *  residual, and `'refused'` a last training that changed nothing. */
+ *  residual, and `'refused'` a last training that changed nothing; `production` makes the
+ *  system summary a Compose stack's (container paths); `deployedBy: 'owner'` makes Alien's
+ *  poster, which the deploy policy wrote, the owner's choice instead; `maintenance` adds a
+ *  finished database backup job and a finished retention job. */
 export async function resetBackend(
 	options: {
 		review?: 'none';
 		problems?: boolean;
 		evaluations?: 'finished' | 'running' | 'stopped';
 		residual?: 'active' | 'refused';
+		production?: boolean;
+		deployedBy?: 'owner';
+		maintenance?: boolean;
 	} = {}
 ): Promise<void> {
 	const params = new URLSearchParams();
 	if (options.review) params.set('review', options.review);
 	if (options.problems) params.set('problems', '1');
+	if (options.production) params.set('production', '1');
+	if (options.deployedBy) params.set('deployedBy', options.deployedBy);
+	if (options.maintenance) params.set('maintenance', '1');
 	if (options.evaluations) params.set('evaluations', options.evaluations);
 	if (options.residual) params.set('residual', options.residual);
 	const response = await fetch(`${FAKE_URL}/__fake/reset?${params}`, { method: 'POST' });

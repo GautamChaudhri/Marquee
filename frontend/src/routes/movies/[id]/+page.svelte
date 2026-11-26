@@ -186,7 +186,9 @@
 			{:else}
 				<div class="none">{movie.poster ? 'Poster unavailable' : 'No poster'}</div>
 			{/if}
-			<span class="origin" data-testid="poster-origin">{originLabel(movie.poster_origin)}</span>
+			<span class="origin" data-testid="poster-origin"
+				>{originLabel(movie.poster_origin, history?.[0]?.initiated_by)}</span
+			>
 		</div>
 		<div class="facts">
 			<h1>{movie.title} <span class="year">{movie.year ?? ''}</span></h1>

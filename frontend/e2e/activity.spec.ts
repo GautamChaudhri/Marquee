@@ -78,3 +78,19 @@ test('a blind evaluation’s runs are named and can be filtered', async ({ page 
 	await expect(rows.first()).toContainText('Blind run');
 	await expect(rows.first()).not.toContainText('poster run masked');
 });
+
+test('the database backup and retention jobs are named and can be filtered', async ({ page }) => {
+	await resetBackend({ maintenance: true });
+	await page.goto('/activity');
+	const kind = page.getByLabel('Kind');
+	await expect(kind.locator('option', { hasText: 'Database backup' })).toHaveCount(1);
+	await expect(kind.locator('option', { hasText: 'Retention' })).toHaveCount(1);
+	const rows = page.getByTestId('job-row');
+	await kind.selectOption('db_backup');
+	await expect(rows).toHaveCount(1);
+	await expect(rows.first()).toContainText('Database backup');
+	await expect(rows.first()).not.toContainText('db backup');
+	await kind.selectOption('retention');
+	await expect(rows).toHaveCount(1);
+	await expect(rows.first()).toContainText('Retention');
+});

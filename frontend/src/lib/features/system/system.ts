@@ -48,6 +48,13 @@ export function problems(system: SystemInfo, worker: WorkerInfo | null): string[
 	return found;
 }
 
+/** Whose paths the settings table shows. In production (the Compose stack) the API reports
+ *  the paths inside its container; the host's folders are the ones the settings file names. */
+export function pathsNote(environment: string): string | null {
+	if (environment !== 'production') return null;
+	return 'Paths inside Marquee’s containers. On the host they are the folders named in the settings file (.env): MOVIE_LIBRARY_HOST_PATH for the movies, MARQUEE_DATA_HOST_PATH for the data.';
+}
+
 /** The newest dump in words: when, how big, and how many are kept. */
 export function backupLine(backups: Backups): string {
 	if (!backups.newest_at) return 'No dump yet';

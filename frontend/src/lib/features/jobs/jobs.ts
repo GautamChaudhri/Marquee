@@ -27,6 +27,8 @@ const KIND_LABELS: Record<string, string> = {
 	poster_restore: 'Restore',
 	taste_rebuild: 'Taste rebuild',
 	gpu_selftest: 'GPU self-test',
+	db_backup: 'Database backup',
+	retention: 'Retention',
 	batch: 'Batch'
 };
 

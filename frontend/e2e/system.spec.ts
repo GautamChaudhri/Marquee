@@ -13,6 +13,9 @@ test('System shows the installation in plain tables, and nothing is wrong', asyn
 	await expect(settings).toContainText('Every 6 h');
 	await expect(settings).toContainText('/srv/media/movies/4K');
 	await expect(settings).toContainText('/srv/marquee/data');
+	// On the host the paths are this machine's: no note about containers.
+	await expect(page.getByTestId('paths-note')).toHaveCount(0);
+	await expect(settings).not.toContainText('in the containers');
 	await expect(page.getByTestId('library')).toContainText('library 58, marquee 1');
 	// A blind evaluation's runs are counted on their own line, never among the runs.
 	await expect(page.getByTestId('masked-runs')).toHaveText('completed 147, failed 1');
@@ -63,4 +66,17 @@ test('System marks a schema behind, a missing model, a stopped worker, an overdu
 	await expect(page.getByTestId('schema')).toContainText('behind: this code needs 0005');
 	await expect(page.getByTestId('models')).toContainText('Missing');
 	await expect(page.getByTestId('worker')).toContainText('Not running');
+});
+
+test('System says the paths are the containers’ in the Compose stack', async ({ page }) => {
+	await resetBackend({ production: true });
+	await signIn(page);
+	await page.goto('/system');
+	const settings = page.getByTestId('settings');
+	await expect(settings).toContainText('Movie folders (in the containers)');
+	await expect(settings).toContainText('Data directory (in the containers)');
+	await expect(settings).toContainText('/media/movies/4K');
+	await expect(page.getByTestId('paths-note')).toHaveText(
+		'Paths inside Marquee’s containers. On the host they are the folders named in the settings file (.env): MOVIE_LIBRARY_HOST_PATH for the movies, MARQUEE_DATA_HOST_PATH for the data.'
+	);
 });

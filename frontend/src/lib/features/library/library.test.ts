@@ -72,7 +72,11 @@ describe('poster addresses', () => {
 
 	it('say whose poster it is', () => {
 		expect(originLabel('library')).toBe('Your poster');
-		expect(originLabel('marquee')).toBe('Marquee’s pick');
+		expect(originLabel('marquee', 'policy')).toBe('Marquee’s pick');
+		expect(originLabel('marquee', 'owner')).toBe('Your choice');
+		expect(originLabel('marquee')).toBe('Written by Marquee');
+		expect(originLabel('marquee', null)).toBe('Written by Marquee');
+		expect(originLabel('library', 'owner')).toBe('Your poster');
 		expect(originLabel(null)).toBe('No poster');
 	});
 });

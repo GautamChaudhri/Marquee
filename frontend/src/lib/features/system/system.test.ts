@@ -5,6 +5,7 @@ import {
 	backupSettingLine,
 	countsLine,
 	deployPolicyLine,
+	pathsNote,
 	problems,
 	retentionLine,
 	retentionSettingLine,
@@ -119,6 +120,15 @@ describe('settings in words', () => {
 	it('lists counts by key', () => {
 		expect(countsLine({ library: 147, marquee: 1 })).toBe('library 147, marquee 1');
 		expect(countsLine({})).toBe('none');
+	});
+});
+
+describe('whose paths', () => {
+	it('names the host folders in production, where the paths are the containers’', () => {
+		expect(pathsNote('production')).toContain('Paths inside Marquee’s containers');
+		expect(pathsNote('production')).toContain('MOVIE_LIBRARY_HOST_PATH');
+		expect(pathsNote('production')).toContain('MARQUEE_DATA_HOST_PATH');
+		expect(pathsNote('development')).toBeNull();
 	});
 });
 

@@ -110,6 +110,22 @@ test('a restore asks first, then follows its job', async ({ page }) => {
 	await expect(page.getByTestId('restore-job')).toContainText('Done', { timeout: 10_000 });
 });
 
+test('the caption says who chose the poster', async ({ page }) => {
+	// Heat's poster is the owner's own file; Alien's the deploy policy wrote.
+	await page.goto('/movies/1');
+	await expect(page.getByTestId('poster-origin')).toHaveText('Your poster');
+	await page.goto('/movies/2');
+	await expect(page.getByTestId('poster-history').locator('li')).toHaveCount(1);
+	await expect(page.getByTestId('poster-origin')).toHaveText('Marquee’s pick');
+
+	// The same poster, written because the owner chose it, reads as theirs.
+	await resetBackend({ deployedBy: 'owner' });
+	await page.goto('/movies/2');
+	await expect(page.getByTestId('poster-history').locator('li')).toHaveCount(1);
+	await expect(page.getByTestId('poster-origin')).toHaveText('Your choice');
+	await expect(page.locator('main')).not.toContainText('Marquee’s pick');
+});
+
 test('an unknown movie says so in words', async ({ page }) => {
 	await page.goto('/movies/999');
 	await expect(page.getByRole('alert')).toContainText('There is no such movie.');

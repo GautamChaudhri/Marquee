@@ -63,6 +63,9 @@ describe('jobs', () => {
 		expect(kindLabel('poster_restore')).toBe('Restore');
 		expect(kindLabel('poster_run_masked')).toBe('Blind run');
 		expect(KIND_NAMES).toContain('poster_run_masked');
+		expect(kindLabel('db_backup')).toBe('Database backup');
+		expect(kindLabel('retention')).toBe('Retention');
+		expect(KIND_NAMES).toEqual(expect.arrayContaining(['db_backup', 'retention']));
 		expect(kindLabel('something_new')).toBe('something new');
 	});
 

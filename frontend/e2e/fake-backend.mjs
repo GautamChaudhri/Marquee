@@ -149,6 +149,26 @@ function initialState() {
 			backup_file: 'posters/1/' + 'f'.repeat(64) + '.jpg',
 			restores_deployment_id: null,
 			created_at: iso(NOW - 2_400_000)
+		},
+		{
+			// Alien's poster: the deploy policy wrote it (reset with deployedBy=owner to make it
+			// the owner's choice instead).
+			id: 3,
+			movie_id: 2,
+			action: 'deploy',
+			initiated_by: 'policy',
+			run_id: null,
+			candidate_id: null,
+			source_file: 'a1.jpg',
+			job_id: 24,
+			file_name: 'poster.jpg',
+			new_sha256: 'd'.repeat(64),
+			new_size_bytes: 410_000,
+			previous_sha256: null,
+			previous_origin: null,
+			backup_file: null,
+			restores_deployment_id: null,
+			created_at: iso(NOW - 1_200_000)
 		}
 	];
 	Object.assign(runs, reviewRuns());
@@ -877,14 +897,17 @@ function systemInfo() {
 	const problems = state.systemProblems;
 	return {
 		version: '0.1.0',
-		environment: 'development',
+		environment: state.production ? 'production' : 'development',
 		schema: { current: problems ? '0004' : '0005', head: '0005', at_head: !problems },
 		settings: {
 			deploy_policy: 'off',
 			run_new_movies: false,
 			sync_interval_minutes: 360,
-			movie_roots: ['/srv/media/movies/1080p', '/srv/media/movies/4K'],
-			data_dir: '/srv/marquee/data'
+			// In the Compose stack the API reports the paths inside its container.
+			movie_roots: state.production
+				? ['/media/movies/1080p', '/media/movies/4K']
+				: ['/srv/media/movies/1080p', '/srv/media/movies/4K'],
+			data_dir: state.production ? '/data' : '/srv/marquee/data'
 		},
 		library: {
 			movies: state.movies.length,
@@ -988,6 +1011,8 @@ const CLASSES = {
 	poster_deploy: 'media_write',
 	taste_rebuild: 'gpu',
 	poster_run_masked: 'gpu',
+	db_backup: 'maintenance',
+	retention: 'maintenance',
 	batch: 'batch'
 };
 
@@ -1358,6 +1383,14 @@ createServer((req, res) => {
 			state.runs[11].state = 'running';
 		}
 		state.systemProblems = url.searchParams.get('problems') === '1';
+		state.production = url.searchParams.get('production') === '1';
+		if (url.searchParams.get('maintenance') === '1') {
+			addJob(state, 'db_backup', {}, { state: 'succeeded', auto: false });
+			addJob(state, 'retention', {}, { state: 'succeeded', auto: false });
+		}
+		if (url.searchParams.get('deployedBy') === 'owner') {
+			state.deployments.find((d) => d.id === 3).initiated_by = 'owner';
+		}
 		seedEvaluations(state, url.searchParams.get('evaluations') ?? 'none');
 		state.residual = url.searchParams.get('residual') ?? 'none';
 		return send(res, 200, { ok: true });

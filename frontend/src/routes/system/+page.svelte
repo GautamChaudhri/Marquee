@@ -8,6 +8,7 @@
 		backupSettingLine,
 		countsLine,
 		deployPolicyLine,
+		pathsNote,
 		problems,
 		retentionLine,
 		retentionSettingLine,
@@ -42,6 +43,7 @@
 	});
 
 	const found = $derived(system ? problems(system, worker) : []);
+	const inContainers = $derived(system ? pathsNote(system.environment) !== null : false);
 </script>
 
 <svelte:head><title>System · Marquee</title></svelte:head>
@@ -148,13 +150,23 @@
 					<tr><th>Database backup</th><td>{backupSettingLine(system.backups)}</td></tr>
 					<tr><th>Retention</th><td>{retentionSettingLine(system.retention)}</td></tr>
 					<tr>
-						<th>Movie folders</th>
+						<th>Movie folders{inContainers ? ' (in the containers)' : ''}</th>
 						<td>
 							{#each system.settings.movie_roots as root (root)}<code>{root}</code><br
 								/>{:else}none{/each}
 						</td>
 					</tr>
-					<tr><th>Data directory</th><td><code>{system.settings.data_dir}</code></td></tr>
+					<tr>
+						<th>Data directory{inContainers ? ' (in the containers)' : ''}</th>
+						<td><code>{system.settings.data_dir}</code></td>
+					</tr>
+					{#if pathsNote(system.environment)}
+						<tr>
+							<td colspan="2" class="note" data-testid="paths-note">
+								{pathsNote(system.environment)}
+							</td>
+						</tr>
+					{/if}
 				</tbody>
 			</table>
 		</section>
@@ -294,6 +306,10 @@
 	}
 	code {
 		font-family: var(--font-mono);
+		font-size: 12px;
+	}
+	td.note {
+		color: var(--muted);
 		font-size: 12px;
 	}
 	.models {
