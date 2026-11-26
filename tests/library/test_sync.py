@@ -19,6 +19,7 @@ from marquee.cancellation import JobCancelledError
 from marquee.db.engine import create_session_factory
 from marquee.db.models import Artwork, Movie
 from marquee.fs.paths import PathMapper, RootMapping
+from marquee.integrations.arr.exceptions import ArrConnectionError
 from marquee.integrations.tmdb.client import MovieDetails
 from marquee.library import sync
 from marquee.library.sync import (
@@ -27,6 +28,7 @@ from marquee.library.sync import (
     PosterStat,
     SyncAlreadyRunningError,
     SyncPathError,
+    SyncUnavailableError,
     apply_radarr_movie,
     check_root_folders,
     parse_radarr_movie,
@@ -571,6 +573,50 @@ async def test_a_missing_root_folder_stops_the_sync_before_any_write(
     with pytest.raises(SyncPathError, match="1080p"):
         await run(FakeRadarr([_radarr_movie()]))
     assert await _movies(factory) == []
+
+
+async def test_a_share_that_does_not_answer_in_time_is_not_a_missing_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A slow share may answer on the next attempt; a folder that is not there will not."""
+    root = _library(tmp_path / "movies")
+    release = threading.Event()
+
+    def hangs(root_folders: Any, mapper: PathMapper) -> int:
+        release.wait(5)
+        return 2
+
+    monkeypatch.setattr(sync, "check_root_folders", hangs)
+    monkeypatch.setattr(sync, "ROOT_FOLDER_TIMEOUT_S", 0.05)
+    try:
+        with pytest.raises(SyncUnavailableError, match="did not answer within") as raised:
+            await sync.sync_library(
+                session_factory=None,  # type: ignore[arg-type]
+                radarr=FakeRadarr([]),
+                mapper=_mapper(root),
+                movie_roots=[root],
+            )
+    finally:
+        release.set()
+    assert not isinstance(raised.value, SyncPathError)
+
+
+@pytest.mark.parametrize("request_name", ["get_root_folders", "get_movies"])
+async def test_radarr_not_answering_is_unavailable(request_name: str, tmp_path: Path) -> None:
+    root = _library(tmp_path / "movies")
+    radarr = FakeRadarr([])
+
+    async def times_out() -> list[dict]:
+        raise ArrConnectionError("Radarr request timed out.")
+
+    setattr(radarr, request_name, times_out)
+    with pytest.raises(SyncUnavailableError, match="Radarr did not answer: Radarr request timed"):
+        await sync.sync_library(
+            session_factory=None,  # type: ignore[arg-type]
+            radarr=radarr,
+            mapper=_mapper(root),
+            movie_roots=[root],
+        )
 
 
 @pytest.mark.db

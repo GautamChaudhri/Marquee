@@ -7,7 +7,7 @@ from typing import Any
 from marquee.config import settings
 from marquee.db.engine import create_engine, create_session_factory
 from marquee.jobs.handlers.poster_run import enqueue_scope
-from marquee.jobs.registry import JobContext, PermanentJobError
+from marquee.jobs.registry import JobContext, JobError, PermanentJobError
 from marquee.library import sync
 
 
@@ -28,13 +28,17 @@ async def library_sync(ctx: JobContext) -> dict[str, Any]:
     """The sync's report as a dict.
 
     Another sync holding the lock is a success that says it was skipped. Folders that do
-    not map are permanent: retrying cannot mount a share or fix a setting. A sync that ran
-    then queues runs of new movies when ``RUN_NEW_MOVIES`` is on.
+    not map or do not exist are permanent: retrying cannot mount a share or fix a setting.
+    A share or Radarr that did not answer in time is an ordinary failure, so the job's
+    retries with backoff apply (a share can take a while to answer after the host wakes).
+    A sync that ran then queues runs of new movies when ``RUN_NEW_MOVIES`` is on.
     """
     try:
         report = await sync.sync_from_settings(cancel=ctx.cancel)
     except sync.SyncAlreadyRunningError as exc:
         return {"skipped": True, "reason": str(exc)}
+    except sync.SyncUnavailableError as exc:
+        raise JobError(str(exc)) from exc
     except sync.SyncPathError as exc:
         raise PermanentJobError(str(exc)) from exc
     result: dict[str, Any] = {"skipped": False, "ok": report.ok, **report.to_dict()}

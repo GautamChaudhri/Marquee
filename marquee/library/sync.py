@@ -36,7 +36,7 @@ import logging
 import os
 import stat
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -58,6 +58,7 @@ from marquee.db.models import (
 from marquee.db.models.artwork import ORIGINS
 from marquee.fs.boundary import FilesystemBoundary, FilesystemBoundaryError, boundary_for_roots
 from marquee.fs.paths import PathMapper, PathMappingError, UnsafePathError
+from marquee.integrations.arr.exceptions import ArrConnectionError
 from marquee.library.folders import POSTER_NAME, LibraryRootError, MovieFolder, scan_movie_roots
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,11 @@ class SyncError(Exception):
 
 class SyncPathError(SyncError):
     """Radarr's folders do not map to folders here, or the library cannot be scanned."""
+
+
+class SyncUnavailableError(SyncError):
+    """The share or Radarr did not answer in time. Unlike a folder that does not map, a later
+    attempt may succeed (a share still waking up, a busy Radarr)."""
 
 
 class SyncAlreadyRunningError(SyncError):
@@ -538,6 +544,14 @@ async def _enrich_from_tmdb(
         report.tmdb_enriched += 1
 
 
+async def _from_radarr(request: Awaitable[Any]) -> Any:
+    """Await a request to Radarr; Radarr not answering becomes :class:`SyncUnavailableError`."""
+    try:
+        return await request
+    except ArrConnectionError as exc:
+        raise SyncUnavailableError(f"Radarr did not answer: {exc}") from exc
+
+
 async def sync_library(
     *,
     session_factory: async_sessionmaker[AsyncSession],
@@ -553,19 +567,19 @@ async def sync_library(
     report = SyncReport(dry_run=dry_run, tmdb_skipped=tmdb is None)
     now = datetime.now(UTC)
 
-    root_folders = await radarr.get_root_folders()
+    root_folders = await _from_radarr(radarr.get_root_folders())
     try:
         report.root_folders_checked = await asyncio.wait_for(
             asyncio.to_thread(check_root_folders, root_folders, mapper), ROOT_FOLDER_TIMEOUT_S
         )
     except TimeoutError as exc:
-        raise SyncPathError(
+        raise SyncUnavailableError(
             f"Radarr's root folders did not answer within {ROOT_FOLDER_TIMEOUT_S:.0f} s "
             "(is the share mounted?)"
         ) from exc
     raise_if_cancelled(cancel, _CANCELLED)
 
-    raw_movies = await radarr.get_movies()
+    raw_movies = await _from_radarr(radarr.get_movies())
     if not isinstance(raw_movies, list):
         raise SyncError("Radarr's movie list is not a list")
     report.movies_listed = len(raw_movies)
