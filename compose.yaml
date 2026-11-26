@@ -1,27 +1,43 @@
-# Postgres for development. Credentials come from .env (see .env.example).
+# Marquee's Compose file: the database for development, and the whole product as a stack.
 #
-# The marquee and marquee-export services run the container image (see Dockerfile). They sit
-# behind the "app" profile, so `docker compose up -d` still starts only the database. Run them
-# one command at a time, for example:
+#   docker compose up -d                   only the database (development: the app runs on
+#                                          the host and talks to it on 127.0.0.1)
+#   docker compose --profile app up -d     the stack: database, migration, API, worker, web
 #
-#   docker compose --profile app run --rm marquee-export marquee models fetch
-#   docker compose --profile app run --rm marquee marquee doctor
+# A production .env sets COMPOSE_PROFILES=app, so there `docker compose up -d` starts the
+# stack. The one-command containers sit behind the "tools" profile; `docker compose run`
+# starts them whatever the profile:
+#
+#   docker compose run --rm setup                      fetch and build the models
+#   docker compose run --rm marquee marquee doctor     any marquee command, once
+#
+# Every setting comes from .env (see .env.example). The application containers read no .env
+# file themselves (MARQUEE_ENV_FILE is empty): Compose passes the settings, overriding the
+# ones that differ inside a container. The web container gets only its own six.
 
-x-marquee: &marquee
-  profiles: ["app"]
-  # Settings come from .env, except those that differ inside a container. The container
-  # itself reads no .env file (MARQUEE_ENV_FILE is empty).
-  env_file: .env
-  environment:
-    MOVIE_ROOTS: /media/movies
-    POSTGRES_HOST: db
-    POSTGRES_PORT: "5432"
-    DATA_DIR: /data
-    MARQUEE_ENV_FILE: ""
-  volumes:
-    - marquee-data:/data
-    # The movie library, read-only. Its path on the host comes from .env.
-    - ${MOVIE_LIBRARY_HOST_PATH:?set MOVIE_LIBRARY_HOST_PATH in .env}:/media/movies:ro
+x-app-image: &app-image
+  image: marquee:runtime
+  build:
+    context: .
+    target: runtime
+    args: &app-build-args
+      # The container user's ids. They must own the data folder and be able to write the
+      # library; 1000 is the first user on most Linux machines.
+      MARQUEE_UID: "1000"
+      MARQUEE_GID: "1000"
+
+# What every application container is told, beyond .env.
+x-app-environment: &app-environment
+  MARQUEE_ENVIRONMENT: production
+  MARQUEE_ENV_FILE: ""
+  DATA_DIR: /data
+  MOVIE_ROOTS: /media/movies
+  POSTGRES_HOST: db
+  # Inside the stack the database always listens on 5432; POSTGRES_PORT in .env is the
+  # port it is published on, on the host.
+  POSTGRES_PORT: "5432"
+
+x-gpu: &gpu
   deploy:
     resources:
       reservations:
@@ -49,24 +65,161 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  marquee:
-    <<: *marquee
-    image: marquee:runtime
-    build:
-      context: .
-      target: runtime
-      args: &marquee-build-args
-        MARQUEE_UID: "1000"
-        MARQUEE_GID: "1000"
+  # One-shot: brings the database schema to the newest migration, then exits. The API and
+  # the worker start only after it has succeeded.
+  migrate:
+    <<: *app-image
+    profiles: ["app"]
+    command: ["marquee", "db", "upgrade"]
+    env_file: .env
+    environment:
+      <<: *app-environment
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
 
-  marquee-export:
-    <<: *marquee
+  api:
+    <<: *app-image
+    profiles: ["app"]
+    command: ["marquee", "api"]
+    env_file: .env
+    environment:
+      <<: *app-environment
+      MARQUEE_ROLE: api
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+    # Not published: only the web container talks to it, inside the stack. To reach it from
+    # the host itself, uncomment this (loopback only; it still needs the key):
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+    volumes:
+      # Thumbnails are cached in the data folder, so it is writable here too.
+      - ${MARQUEE_DATA_HOST_PATH:-./data}:/data
+      - ${MOVIE_LIBRARY_HOST_PATH:?set MOVIE_LIBRARY_HOST_PATH in .env}:/media/movies:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # The image has no curl; its Python asks the API's own readiness probe. A 503 raises.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4)"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+    restart: unless-stopped
+
+  worker:
+    <<: [*app-image, *gpu]
+    profiles: ["app"]
+    command: ["marquee", "worker"]
+    env_file: .env
+    environment:
+      <<: *app-environment
+      MARQUEE_ROLE: worker
+    volumes:
+      - ${MARQUEE_DATA_HOST_PATH:-./data}:/data
+      # Read-write: the worker writes posters into the movie folders, always backing up the
+      # poster it replaces.
+      - ${MOVIE_LIBRARY_HOST_PATH:?set MOVIE_LIBRARY_HOST_PATH in .env}:/media/movies
+    # The worker kills its GPU child and OCR processes when it stops; as PID 1 nothing would
+    # reap them.
+    init: true
+    # On SIGTERM it signals cancel, waits up to 10 s, puts unfinished jobs back, and stops
+    # the GPU child; give it time to do all of that before Docker kills it.
+    stop_grace_period: 45s
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Healthy only while a worker holds the queue's lock and the database answers.
+      test: ["CMD", "marquee", "worker", "--health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
+    restart: unless-stopped
+
+  web:
+    image: marquee:web
+    build:
+      context: frontend
+    profiles: ["app"]
+    # The browser's address is required: without it every form post is refused. It is
+    # checked here rather than with ${...:?} so that `docker compose up -d` for development
+    # (the database alone) works without it.
+    command:
+      - sh
+      - -c
+      - >-
+        [ -n "$$ORIGIN" ] || { echo "marquee web: set MARQUEE_WEB_ORIGIN in .env to the
+        address your browser uses, for example http://marquee.example.lan:3000" >&2; exit 1; };
+        exec node build
+    # No env_file: the web server holds the API key and nothing else secret.
+    environment:
+      MARQUEE_API_URL: http://api:8000
+      MARQUEE_API_KEY: ${API_KEY:-}
+      ORIGIN: ${MARQUEE_WEB_ORIGIN:-}
+      HOST: 0.0.0.0
+      PORT: "3000"
+      # The proxy refuses bodies over 1 MiB itself; the server's default limit (512 KiB) would
+      # cut them first, with a 502.
+      BODY_SIZE_LIMIT: 1M
+    ports:
+      - "${MARQUEE_WEB_BIND:-0.0.0.0}:${MARQUEE_WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/signin').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+      start_interval: 2s
+    restart: unless-stopped
+
+  # One-shot, on demand: builds or fetches every missing model into the data folder and
+  # writes its checksum manifest. The export image carries the tools the runtime lacks.
+  setup:
+    <<: *gpu
     image: marquee:export
     build:
       context: .
       target: export
-      args: *marquee-build-args
+      args: *app-build-args
+    profiles: ["tools"]
+    command: ["marquee", "models", "fetch"]
+    env_file: .env
+    environment:
+      <<: *app-environment
+    volumes:
+      - ${MARQUEE_DATA_HOST_PATH:-./data}:/data
+
+  # Any marquee command, once: `docker compose run --rm marquee marquee <command>`.
+  marquee:
+    <<: [*app-image, *gpu]
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      <<: *app-environment
+    volumes:
+      - ${MARQUEE_DATA_HOST_PATH:-./data}:/data
+      - ${MOVIE_LIBRARY_HOST_PATH:?set MOVIE_LIBRARY_HOST_PATH in .env}:/media/movies:ro
 
 volumes:
   db-data:
-  marquee-data:
