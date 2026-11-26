@@ -932,6 +932,34 @@ function systemInfo() {
 			started_at: iso(NOW - 590_000),
 			finished_at: iso(NOW - 580_000)
 		},
+		backups: {
+			interval_hours: 24,
+			keep: 14,
+			count: 3,
+			total_bytes: 9_000_000,
+			newest_at: iso(NOW - (problems ? 72 : 3) * 3_600_000),
+			newest_size_bytes: 3_000_000,
+			stale: problems,
+			last_job: {
+				job_id: problems ? 42 : 40,
+				state: problems ? 'failed' : 'succeeded',
+				created_at: iso(NOW - 3 * 3_600_000),
+				finished_at: iso(NOW - 3 * 3_600_000)
+			}
+		},
+		retention: {
+			interval_hours: 24,
+			days: 90,
+			last_job: {
+				job_id: problems ? 43 : 41,
+				state: problems ? 'failed' : 'succeeded',
+				created_at: iso(NOW - 2 * 3_600_000),
+				finished_at: iso(NOW - 2 * 3_600_000)
+			},
+			freed_items: 12,
+			freed_bytes: 4_194_304,
+			freed_at: iso(NOW - 26 * 3_600_000)
+		},
 		storage: {
 			runs: 741_000_000,
 			backups: 2_000_000,

@@ -637,3 +637,75 @@ def test_the_cuda_kernel_cache_against_its_limit(
     (cache / "index").write_bytes(b"x" * 7000)
     near = doctor.check_cuda_kernel_cache()
     assert near.status == "WARN" and "evicts kernels" in near.detail
+
+
+# ── Backups ───────────────────────────────────────────────────────────────
+
+
+def _backup_state(monkeypatch: pytest.MonkeyPatch, *, server: int | None, tools: object) -> None:
+    from marquee.maintenance import dumps
+
+    def state() -> dumps.DatabaseState:
+        if server is None:
+            raise dumps.DumpError("the database marquee@db:5432/marquee cannot be reached: x")
+        return dumps.DatabaseState(server, "0007", True, 0)
+
+    def find(server_major: int | None = None) -> dumps.Tools:
+        if isinstance(tools, Exception):
+            raise tools
+        return dumps.Tools(paths={}, major=tools)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(dumps, "database_state", state)
+    monkeypatch.setattr(dumps, "find_tools", find)
+
+
+def test_backup_tools_fail_the_worker_in_production_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from marquee.maintenance import dumps
+
+    _backup_state(monkeypatch, server=19, tools=19)
+    good = doctor.check_backup_tools("worker")
+    assert (good.status, good.detail) == (
+        "PASS",
+        "pg_dump, pg_restore, psql 19; the database server is 19",
+    )
+
+    old = dumps.DumpToolsError("pg_dump is version 17 and the database server is version 19")
+    _backup_state(monkeypatch, server=19, tools=old)
+    assert doctor.check_backup_tools("worker").status == "WARN"
+    monkeypatch.setattr(doctor.settings, "MARQUEE_ENVIRONMENT", "production")
+    failed = doctor.check_backup_tools("worker")
+    assert failed.status == "FAIL" and "version 17" in failed.detail
+    assert doctor.check_backup_tools("api").status == "WARN"
+
+    _backup_state(monkeypatch, server=None, tools=19)
+    unknown = doctor.check_backup_tools("worker")
+    assert unknown.status == "WARN" and "its version is unknown" in unknown.detail
+
+
+def test_the_newest_dump_and_its_age(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from marquee.maintenance import dumps
+
+    monkeypatch.setattr(doctor.settings, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(doctor.settings, "DB_BACKUP_INTERVAL_HOURS", 24)
+    now = datetime(2026, 11, 27, 12, tzinfo=UTC)
+
+    none = doctor.check_db_dumps(now)
+    assert none.status == "WARN" and "none yet" in none.detail
+
+    folder = doctor.settings.db_backups_dir
+    folder.mkdir(parents=True)
+    name = dumps.dump_name("scheduled", now - timedelta(hours=5), "0007")
+    (folder / name).write_bytes(b"x" * 2048)
+    fresh = doctor.check_db_dumps(now)
+    assert fresh.status == "PASS"
+    assert fresh.detail.startswith(f"newest {name}, 2.0 KiB, 5.0 h old; 1 dump(s) in ")
+    assert fresh.detail.endswith("one every 24 h")
+
+    late = doctor.check_db_dumps(now + timedelta(hours=44))
+    assert late.status == "WARN" and "older than two intervals (48 h)" in late.detail
+
+    monkeypatch.setattr(doctor.settings, "DB_BACKUP_INTERVAL_HOURS", 0)
+    off = doctor.check_db_dumps(now)
+    assert off.status == "WARN" and "the scheduled dump is off" in off.detail

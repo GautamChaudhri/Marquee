@@ -3,7 +3,16 @@
 	import { api, call } from '#lib/api/client.ts';
 	import type { SystemInfo, WorkerInfo } from '#lib/api/types.ts';
 	import StateBadge from '#lib/features/jobs/StateBadge.svelte';
-	import { countsLine, deployPolicyLine, problems, syncLine } from '#lib/features/system/system.ts';
+	import {
+		backupLine,
+		backupSettingLine,
+		countsLine,
+		deployPolicyLine,
+		problems,
+		retentionLine,
+		retentionSettingLine,
+		syncLine
+	} from '#lib/features/system/system.ts';
 	import { exemplarCounts } from '#lib/features/taste/taste.ts';
 	import { formatBytes, formatWhen } from '#lib/format.ts';
 	import Button from '#lib/ui/Button.svelte';
@@ -98,6 +107,30 @@
 							{/if}
 						</td>
 					</tr>
+					<tr>
+						<th>Database backup</th>
+						<td data-testid="backup" class:bad={system.backups.stale}>
+							{backupLine(system.backups)}
+							{#if system.backups.last_job}
+								<br /><a href="/activity?job={system.backups.last_job.job_id}"
+									>Job {system.backups.last_job.job_id}</a
+								>
+								<StateBadge state={system.backups.last_job.state} />
+							{/if}
+						</td>
+					</tr>
+					<tr>
+						<th>Retention</th>
+						<td data-testid="retention">
+							{retentionLine(system.retention)}
+							{#if system.retention.last_job}
+								<br /><a href="/activity?job={system.retention.last_job.job_id}"
+									>Job {system.retention.last_job.job_id}</a
+								>
+								<StateBadge state={system.retention.last_job.state} />
+							{/if}
+						</td>
+					</tr>
 				</tbody>
 			</table>
 		</section>
@@ -112,6 +145,8 @@
 						<td>{system.settings.run_new_movies ? 'Yes, after each sync' : 'No'}</td>
 					</tr>
 					<tr><th>Library sync</th><td>{syncLine(system.settings.sync_interval_minutes)}</td></tr>
+					<tr><th>Database backup</th><td>{backupSettingLine(system.backups)}</td></tr>
+					<tr><th>Retention</th><td>{retentionSettingLine(system.retention)}</td></tr>
 					<tr>
 						<th>Movie folders</th>
 						<td>

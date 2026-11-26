@@ -487,3 +487,12 @@ def test_the_newest_three_pre_restore_dumps_are_kept_but_never_the_one_restored(
     # Of five, the newest three stay; the oldest is the one restored, so it stays too.
     assert done.pre_restore_deleted == [old[1]]
     assert _files(folder) == sorted([old[0], old[2], old[3], done.pre_restore])
+
+
+def test_a_dump_is_stale_only_while_the_schedule_is_on() -> None:
+    newest = dumps.DumpFile("x", "scheduled", NOON, "0007", 1)
+    assert dumps.stale(None, 24, NOON) is True
+    assert dumps.stale(newest, 24, NOON + timedelta(hours=48)) is False
+    assert dumps.stale(newest, 24, NOON + timedelta(hours=48, seconds=1)) is True
+    assert dumps.stale(None, 0, NOON) is False
+    assert dumps.stale(newest, 0, NOON + timedelta(days=30)) is False

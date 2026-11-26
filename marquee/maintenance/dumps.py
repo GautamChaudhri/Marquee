@@ -38,7 +38,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -372,6 +372,14 @@ def list_dumps(folder: Path | None = None) -> list[DumpFile]:
         kind, made, revision = parsed
         found.append(DumpFile(entry.name, kind, made, revision, entry.stat().st_size))
     return sorted(found, key=lambda dump: (dump.made_at, dump.name), reverse=True)
+
+
+def stale(newest: DumpFile | None, interval_hours: int, now: datetime) -> bool:
+    """Whether the newest dump is missing, or older than two intervals, while the scheduled
+    dump is on. With the schedule off nothing is stale: that is the owner's choice."""
+    if interval_hours <= 0:
+        return False
+    return newest is None or now - newest.made_at > timedelta(hours=2 * interval_hours)
 
 
 def _boundary(folder: Path) -> FilesystemBoundary:

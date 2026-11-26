@@ -192,3 +192,72 @@ async def test_the_system_summary(
         for secret in secrets:
             assert secret not in text
         assert "postgresql" not in text and "psycopg" not in text
+
+
+async def test_backups_and_retention_say_what_was_kept_and_what_failed(
+    client: AsyncClient,
+    headers: dict[str, str],
+    db_session: AsyncSession,
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import timedelta
+
+    from marquee.db.models import Job
+    from marquee.maintenance import dumps
+
+    monkeypatch.setattr(settings, "DB_BACKUP_INTERVAL_HOURS", 24)
+    monkeypatch.setattr(settings, "DB_BACKUP_KEEP", 14)
+
+    body = (await client.get("/api/system", headers=headers)).json()
+    assert body["backups"] == {
+        "interval_hours": 24,
+        "keep": 14,
+        "count": 0,
+        "total_bytes": 0,
+        "newest_at": None,
+        "newest_size_bytes": None,
+        "stale": True,
+        "last_job": None,
+    }
+    assert body["retention"]["last_job"] is None and body["retention"]["freed_items"] is None
+
+    folder = settings.db_backups_dir
+    folder.mkdir(parents=True)
+    now = datetime.now(UTC)
+    fresh = dumps.dump_name("scheduled", now - timedelta(hours=3), "0007")
+    (folder / fresh).write_bytes(b"12345")
+    (folder / dumps.dump_name("manual", now - timedelta(days=9), "0006")).write_bytes(b"123")
+    db_session.add_all(
+        [
+            Job(kind="db_backup", job_class="maintenance", state="failed", finished_at=now),
+            Job(
+                kind="retention",
+                job_class="maintenance",
+                state="succeeded",
+                finished_at=now,
+                result={"count": 4, "bytes": 2048, "rules": {}},
+            ),
+            Job(kind="retention", job_class="maintenance", state="queued"),
+        ]
+    )
+    await db_session.commit()
+
+    body = (await client.get("/api/system", headers=headers)).json()
+    backups, kept = body["backups"], body["retention"]
+    assert (backups["count"], backups["total_bytes"], backups["newest_size_bytes"]) == (2, 8, 5)
+    assert backups["stale"] is False
+    assert backups["last_job"]["state"] == "failed"
+    assert (kept["freed_items"], kept["freed_bytes"]) == (4, 2048)
+    assert kept["last_job"]["state"] == "queued"  # the newest job, whatever its state
+    assert (kept["interval_hours"], kept["days"]) == (
+        settings.RETENTION_INTERVAL_HOURS,
+        settings.RETENTION_DAYS,
+    )
+
+    (folder / fresh).unlink()
+    body = (await client.get("/api/system", headers=headers)).json()
+    assert body["backups"]["stale"] is True  # the newest is now nine days old
+    monkeypatch.setattr(settings, "DB_BACKUP_INTERVAL_HOURS", 0)
+    body = (await client.get("/api/system", headers=headers)).json()
+    assert body["backups"]["stale"] is False  # off by choice: nothing is overdue

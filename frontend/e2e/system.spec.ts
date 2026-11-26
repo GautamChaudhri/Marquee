@@ -22,25 +22,44 @@ test('System shows the installation in plain tables, and nothing is wrong', asyn
 		'href',
 		'/activity?job=31'
 	);
+	// The database dump and retention, in the installation and settings tables.
+	await expect(page.getByTestId('backup')).toContainText('(2.9 MB); 3 dumps, 8.6 MB in all');
+	await expect(page.getByRole('link', { name: 'Job 40' })).toHaveAttribute(
+		'href',
+		'/activity?job=40'
+	);
+	await expect(page.getByTestId('retention')).toContainText('deleted 12 items, 4.0 MB');
+	await expect(settings).toContainText('Every 24 h; the newest 14 kept');
+	await expect(settings).toContainText('finished jobs and unneeded runs after 90 days');
 	// No raw JSON anywhere, and nothing on the page changes a setting.
 	await expect(page.locator('main')).not.toContainText('{');
 	await expect(page.locator('main').getByRole('button')).toHaveCount(0);
 	await expect(page.locator('main select, main input')).toHaveCount(0);
 });
 
-test('System marks a schema behind, a missing model, and a stopped worker in words', async ({
+test('System marks a schema behind, a missing model, a stopped worker, an overdue dump, and failed maintenance in words', async ({
 	page
 }) => {
 	await resetBackend({ problems: true });
 	await signIn(page);
 	await page.goto('/system');
 	const problems = page.getByTestId('problems').locator('li');
-	await expect(problems).toHaveCount(3);
+	await expect(problems).toHaveCount(6);
 	await expect(problems.nth(0)).toHaveText(
 		'The database schema is at 0004, and this code needs 0005. Run “marquee db upgrade”.'
 	);
 	await expect(problems.nth(1)).toContainText('models/dinov2-vits14.onnx is missing');
 	await expect(problems.nth(2)).toContainText('No worker is running');
+	await expect(problems.nth(3)).toContainText(
+		'older than two intervals (48 h). Is the backup job failing?'
+	);
+	await expect(problems.nth(4)).toHaveText(
+		'The last database backup (job 42) failed. Its error is on the Activity page.'
+	);
+	await expect(problems.nth(5)).toHaveText(
+		'The last retention pass (job 43) failed. Its error is on the Activity page.'
+	);
+	await expect(page.getByTestId('backup')).toHaveClass(/bad/);
 	await expect(page.getByTestId('schema')).toContainText('behind: this code needs 0005');
 	await expect(page.getByTestId('models')).toContainText('Missing');
 	await expect(page.getByTestId('worker')).toContainText('Not running');

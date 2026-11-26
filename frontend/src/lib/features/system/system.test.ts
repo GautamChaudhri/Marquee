@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { SystemInfo, WorkerInfo } from '#lib/api/types.ts';
-import { countsLine, deployPolicyLine, problems, syncLine } from './system';
+import {
+	backupLine,
+	backupSettingLine,
+	countsLine,
+	deployPolicyLine,
+	problems,
+	retentionLine,
+	retentionSettingLine,
+	syncLine
+} from './system';
 
 function system(overrides: Partial<SystemInfo> = {}): SystemInfo {
 	return {
@@ -26,6 +35,24 @@ function system(overrides: Partial<SystemInfo> = {}): SystemInfo {
 		},
 		models: { manifest: 'found', files: [] },
 		last_sync: null,
+		backups: {
+			interval_hours: 24,
+			keep: 14,
+			count: 2,
+			total_bytes: 3072,
+			newest_at: '2026-11-24T09:00:00Z',
+			newest_size_bytes: 2048,
+			stale: false,
+			last_job: null
+		},
+		retention: {
+			interval_hours: 24,
+			days: 90,
+			last_job: null,
+			freed_items: null,
+			freed_bytes: null,
+			freed_at: null
+		},
 		storage: { runs: 0, backups: 0, cache: 0, ml: 0, measured_at: '2026-11-24T12:00:00Z' },
 		...overrides
 	};
@@ -92,5 +119,74 @@ describe('settings in words', () => {
 	it('lists counts by key', () => {
 		expect(countsLine({ library: 147, marquee: 1 })).toBe('library 147, marquee 1');
 		expect(countsLine({})).toBe('none');
+	});
+});
+
+describe('backups and retention', () => {
+	const job = (state: 'failed' | 'succeeded', job_id: number) => ({
+		job_id,
+		state,
+		created_at: '2026-11-24T12:00:00Z',
+		finished_at: '2026-11-24T12:00:00Z'
+	});
+
+	it('names an overdue or missing dump and a failed backup or retention job', () => {
+		const base = system();
+		const found = problems(
+			system({
+				backups: { ...base.backups, stale: true, last_job: job('failed', 42) },
+				retention: { ...base.retention, last_job: job('failed', 43) }
+			}),
+			running
+		);
+		expect(found).toHaveLength(3);
+		expect(found[0]).toMatch(/older than two intervals \(48 h\)\. Is the backup job failing\?$/);
+		expect(found[1]).toBe(
+			'The last database backup (job 42) failed. Its error is on the Activity page.'
+		);
+		expect(found[2]).toBe(
+			'The last retention pass (job 43) failed. Its error is on the Activity page.'
+		);
+		const none = problems(
+			system({ backups: { ...base.backups, stale: true, newest_at: null, count: 0 } }),
+			running
+		);
+		expect(none).toEqual([
+			'No database dump has been made yet. The worker makes one when it starts; “marquee db backup” makes one now.'
+		]);
+		expect(
+			problems(system({ backups: { ...base.backups, last_job: job('succeeded', 40) } }), running)
+		).toEqual([]);
+	});
+
+	it('says the newest dump, what retention freed, and both settings in words', () => {
+		const base = system();
+		expect(backupLine(base.backups)).toMatch(/^Newest .*\(2\.0 KB\); 2 dumps, 3\.0 KB in all$/);
+		expect(backupLine({ ...base.backups, newest_at: null, count: 0 })).toBe('No dump yet');
+		expect(retentionLine(base.retention)).toBe(
+			'Not run yet: the first pass is one interval (24 h) after the worker first starts with it'
+		);
+		expect(
+			retentionLine({
+				...base.retention,
+				freed_items: 1,
+				freed_bytes: 1024,
+				freed_at: '2026-11-25T12:00:00Z'
+			})
+		).toMatch(/^Last pass .*: deleted 1 item, 1.0 KB$/);
+		expect(backupSettingLine(base.backups)).toBe('Every 24 h; the newest 14 kept');
+		expect(backupSettingLine({ ...base.backups, interval_hours: 0 })).toBe(
+			'Off: only the dumps you make with “marquee db backup”'
+		);
+		expect(retentionSettingLine(base.retention)).toBe(
+			'Every 24 h; finished jobs and unneeded runs after 90 days'
+		);
+		expect(retentionSettingLine({ ...base.retention, interval_hours: 0 })).toBe(
+			'Off: nothing is deleted by itself'
+		);
+	});
+
+	it('says the missing policy leaves your choices alone', () => {
+		expect(deployPolicyLine('missing')).toMatch(/never over a poster you chose/);
 	});
 });

@@ -2408,6 +2408,82 @@
         ],
         "title": "AgreementItem"
       },
+      "BackupsInfo": {
+        "properties": {
+          "interval_hours": {
+            "type": "integer",
+            "title": "Interval Hours",
+            "description": "DB_BACKUP_INTERVAL_HOURS; 0: the scheduled dump is off"
+          },
+          "keep": {
+            "type": "integer",
+            "title": "Keep",
+            "description": "DB_BACKUP_KEEP: scheduled dumps kept"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "description": "Dumps of every kind in the folder"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          },
+          "newest_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest At",
+            "description": "When the newest dump was made; null: none"
+          },
+          "newest_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Newest Size Bytes"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "description": "The schedule is on and the newest dump is missing or older than two intervals"
+          },
+          "last_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceJob"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest db_backup job"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval_hours",
+          "keep",
+          "count",
+          "total_bytes",
+          "newest_at",
+          "newest_size_bytes",
+          "stale",
+          "last_job"
+        ],
+        "title": "BackupsInfo",
+        "description": "The database dumps in the data folder's backups/db, and the scheduled dump."
+      },
       "BatchQueued": {
         "properties": {
           "batch": {
@@ -4817,6 +4893,51 @@
         "type": "object",
         "title": "Live"
       },
+      "MaintenanceJob": {
+        "properties": {
+          "job_id": {
+            "type": "integer",
+            "title": "Job Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "state",
+          "created_at",
+          "finished_at"
+        ],
+        "title": "MaintenanceJob",
+        "description": "The newest job of a maintenance kind."
+      },
       "ModelFile": {
         "properties": {
           "item": {
@@ -5633,6 +5754,77 @@
         ],
         "title": "ResidualTrainingItem"
       },
+      "RetentionInfo": {
+        "properties": {
+          "interval_hours": {
+            "type": "integer",
+            "title": "Interval Hours",
+            "description": "RETENTION_INTERVAL_HOURS; 0: retention is off"
+          },
+          "days": {
+            "type": "integer",
+            "title": "Days",
+            "description": "RETENTION_DAYS"
+          },
+          "last_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaintenanceJob"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The newest retention job"
+          },
+          "freed_items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freed Items",
+            "description": "What the newest successful pass deleted"
+          },
+          "freed_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freed Bytes"
+          },
+          "freed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval_hours",
+          "days",
+          "last_job",
+          "freed_items",
+          "freed_bytes",
+          "freed_at"
+        ],
+        "title": "RetentionInfo",
+        "description": "What retention deleted the last time it ran."
+      },
       "RevokeRequest": {
         "properties": {
           "idempotency_key": {
@@ -6279,6 +6471,12 @@
             ],
             "description": "The newest library sync job"
           },
+          "backups": {
+            "$ref": "#/components/schemas/BackupsInfo"
+          },
+          "retention": {
+            "$ref": "#/components/schemas/RetentionInfo"
+          },
           "storage": {
             "$ref": "#/components/schemas/StorageInfo"
           }
@@ -6292,6 +6490,8 @@
           "library",
           "models",
           "last_sync",
+          "backups",
+          "retention",
           "storage"
         ],
         "title": "SystemInfo"

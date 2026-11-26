@@ -20,10 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from marquee import __version__
 from marquee.api.schemas.system import (
+    BackupsInfo,
     LastSync,
     LibraryInfo,
+    MaintenanceJob,
     ModelFile,
     ModelsInfo,
+    RetentionInfo,
     SchemaInfo,
     SettingsInfo,
     StorageInfo,
@@ -41,6 +44,7 @@ from marquee.db.models import (
     PreferenceEvent,
 )
 from marquee.db.models.run import in_product_loop
+from marquee.maintenance import dumps
 from marquee.ml import model_manifest
 
 STORAGE_TTL_S = 60.0
@@ -171,6 +175,58 @@ async def last_sync(session: AsyncSession) -> LastSync | None:
     )
 
 
+async def _newest_job(session: AsyncSession, kind: str) -> Job | None:
+    return await session.scalar(
+        select(Job).where(Job.kind == kind).order_by(Job.id.desc()).limit(1)
+    )
+
+
+def _maintenance_job(job: Job | None) -> MaintenanceJob | None:
+    if job is None:
+        return None
+    return MaintenanceJob(
+        job_id=job.id,
+        state=job.state,  # type: ignore[arg-type]
+        created_at=job.created_at,
+        finished_at=job.finished_at,
+    )
+
+
+async def backups_info(session: AsyncSession, now: datetime | None = None) -> BackupsInfo:
+    found = await asyncio.to_thread(dumps.list_dumps)
+    newest = found[0] if found else None
+    return BackupsInfo(
+        interval_hours=settings.DB_BACKUP_INTERVAL_HOURS,
+        keep=settings.DB_BACKUP_KEEP,
+        count=len(found),
+        total_bytes=sum(dump.size_bytes for dump in found),
+        newest_at=newest.made_at if newest else None,
+        newest_size_bytes=newest.size_bytes if newest else None,
+        stale=dumps.stale(newest, settings.DB_BACKUP_INTERVAL_HOURS, now or datetime.now(UTC)),
+        last_job=_maintenance_job(await _newest_job(session, "db_backup")),
+    )
+
+
+async def retention_info(session: AsyncSession) -> RetentionInfo:
+    succeeded = await session.scalar(
+        select(Job)
+        .where(Job.kind == "retention", Job.state == "succeeded")
+        .order_by(Job.id.desc())
+        .limit(1)
+    )
+    result = (
+        succeeded.result if succeeded is not None and isinstance(succeeded.result, dict) else {}
+    )
+    return RetentionInfo(
+        interval_hours=settings.RETENTION_INTERVAL_HOURS,
+        days=settings.RETENTION_DAYS,
+        last_job=_maintenance_job(await _newest_job(session, "retention")),
+        freed_items=result.get("count") if succeeded is not None else None,
+        freed_bytes=result.get("bytes") if succeeded is not None else None,
+        freed_at=succeeded.finished_at if succeeded is not None else None,
+    )
+
+
 async def summary(session: AsyncSession, head_revision: str) -> SystemInfo:
     current = await session.run_sync(lambda sync: migrate.current_revision(sync.connection()))
     data_dir = settings.DATA_DIR
@@ -188,5 +244,7 @@ async def summary(session: AsyncSession, head_revision: str) -> SystemInfo:
         library=await library_counts(session),
         models=await asyncio.to_thread(models_on_disk, data_dir, settings.model_manifest_path),
         last_sync=await last_sync(session),
+        backups=await backups_info(session),
+        retention=await retention_info(session),
         storage=await storage_cache.get(data_dir),
     )

@@ -24,7 +24,7 @@ import time
 import warnings
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -389,6 +389,69 @@ def _ocr_verdict(device: str, gpu_visible: bool, reason: str | None) -> tuple[St
     return "PASS", "PaddleOCR loaded on cpu"
 
 
+def check_backup_tools(role: Role = "all") -> CheckResult:
+    """pg_dump, pg_restore, and psql, the server's major version or newer. Missing or old
+    tools fail the worker in production: it makes the scheduled database dump."""
+    from marquee.maintenance import dumps
+
+    name = "Backup tools"
+    missing: Status = "FAIL" if settings.production and role == "worker" else "WARN"
+    try:
+        server: int | None = dumps.database_state().server_major
+    except dumps.DumpError:
+        server = None
+    try:
+        tools = dumps.find_tools(server)
+    except dumps.DumpToolsError as exc:
+        return CheckResult(name, missing, _scrub(str(exc)))
+    found = f"pg_dump, pg_restore, psql {tools.major}"
+    if server is None:
+        return CheckResult(
+            name, "WARN", f"{found}; the database does not answer, so its version is unknown"
+        )
+    return CheckResult(name, "PASS", f"{found}; the database server is {server}")
+
+
+def _age(delta: timedelta) -> str:
+    hours = delta.total_seconds() / 3600
+    return f"{hours:.1f} h" if hours < 48 else f"{hours / 24:.1f} days"
+
+
+def check_db_dumps(now: datetime | None = None) -> CheckResult:
+    """The newest database dump and its age, against DB_BACKUP_INTERVAL_HOURS."""
+    from marquee.maintenance import dumps
+
+    name = "Database dumps"
+    interval = settings.DB_BACKUP_INTERVAL_HOURS
+    folder = settings.db_backups_dir
+    try:
+        found = dumps.list_dumps()
+    except OSError as exc:
+        return CheckResult(name, "WARN", f"cannot list {folder}: {_error_text(exc)}")
+    off = "the scheduled dump is off (DB_BACKUP_INTERVAL_HOURS=0)"
+    if not found:
+        if interval <= 0:
+            return CheckResult(name, "WARN", f"none in {folder}, and {off}")
+        return CheckResult(
+            name, "WARN", f"none yet in {folder}; the worker makes one when it starts"
+        )
+    newest = found[0]
+    now = now or datetime.now(UTC)
+    detail = (
+        f"newest {newest.name}, {_size(newest.size_bytes)}, {_age(now - newest.made_at)} old; "
+        f"{len(found)} dump(s) in {folder}"
+    )
+    if interval <= 0:
+        return CheckResult(name, "WARN", f"{detail}; {off}")
+    if dumps.stale(newest, interval, now):
+        return CheckResult(
+            name,
+            "WARN",
+            f"{detail}; older than two intervals ({2 * interval} h): is the backup job failing?",
+        )
+    return CheckResult(name, "PASS", f"{detail}; one every {interval} h")
+
+
 def _tree_size(path: Path) -> int:
     total = 0
     for folder, _, files in os.walk(path):
@@ -717,6 +780,8 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
     check_ocr,
     check_cuda_kernel_cache,
     check_database,
+    check_backup_tools,
+    check_db_dumps,
     check_worker,
     check_media_roots,
     check_tmdb,
@@ -726,7 +791,7 @@ CHECKS: tuple[Callable[[], CheckResult], ...] = (
 # The engine's checks; the api service runs no GPU work and has no GPU.
 ENGINE_CHECKS = frozenset({check_onnx_runtime, check_gpu, check_ocr, check_cuda_kernel_cache})
 # Checks whose answer depends on the role.
-ROLE_CHECKS = frozenset({check_settings, check_media_roots})
+ROLE_CHECKS = frozenset({check_settings, check_media_roots, check_backup_tools})
 
 
 def run_checks(role: Role | None = None) -> list[CheckResult]:
