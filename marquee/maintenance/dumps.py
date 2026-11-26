@@ -16,6 +16,13 @@ each child process through libpq's environment variables (``PGPASSWORD`` among t
 its arguments, and whatever a tool prints is scrubbed of secrets and connection strings
 before it is shown or logged.
 
+A restore (:func:`restore`) is a command only, never a job: it refuses unless it is told
+to go ahead, the file reads as a dump, no worker holds the queue's lock, and nothing else is
+connected to the database. It dumps the database as it is first, then drops Marquee's
+tables and loads the dump in one transaction (``psql --single-transaction``), so a failure
+leaves the database as it was, and finally brings the schema to the newest migration when
+the dump is older. Files in the data folder newer than the dump are not undone.
+
 Every function here is blocking: call it off the event loop.
 """
 
@@ -29,6 +36,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +46,7 @@ import psycopg
 
 from marquee.cancellation import CancellationSignal, raise_if_cancelled
 from marquee.config import settings
+from marquee.db import migrate
 from marquee.fs.boundary import FilesystemBoundary, boundary_for_roots
 
 logger = logging.getLogger(__name__)
@@ -67,12 +76,52 @@ _URL_CREDENTIALS = re.compile(r"(postgres(?:ql)?(?:\+\w+)?://)[^@\s/]*@", re.IGN
 _PASSWORD_WORDS = re.compile(r"(password\s*=\s*)\S+", re.IGNORECASE)
 
 
+# Drops what a Marquee database holds in its schema (tables with their sequences and
+# indexes, and any view or sequence of its own), in the restore's transaction, so the dump
+# is loaded into an empty schema even when the database holds objects the dump does not
+# (a newer migration's). The schema itself and everything outside it stay.
+_DROP_MARQUEE_OBJECTS = """
+SET client_min_messages = warning;
+DO $$
+DECLARE
+    item record;
+BEGIN
+    FOR item IN
+        SELECT c.relname, c.relkind
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_depend d
+              WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+          )
+        ORDER BY CASE c.relkind WHEN 'v' THEN 0 WHEN 'm' THEN 1 WHEN 'S' THEN 3 ELSE 2 END
+    LOOP
+        EXECUTE format(
+            'DROP %s IF EXISTS public.%I CASCADE',
+            CASE item.relkind
+                WHEN 'v' THEN 'VIEW'
+                WHEN 'm' THEN 'MATERIALIZED VIEW'
+                WHEN 'f' THEN 'FOREIGN TABLE'
+                WHEN 'S' THEN 'SEQUENCE'
+                ELSE 'TABLE'
+            END,
+            item.relname
+        );
+    END LOOP;
+END $$;
+"""
+
+
 class DumpError(Exception):
     """A dump or a restore cannot be done; the message says why and holds no secret."""
 
 
 class DumpToolsError(DumpError):
     """The PostgreSQL client tools are missing, or older than the server."""
+
+
+class RestoreRefusedError(DumpError):
+    """A restore is not safe to start; nothing was changed."""
 
 
 def scrub(text: str) -> str:
@@ -209,12 +258,10 @@ def _environment() -> dict[str, str]:
 class _Readers:
     """Threads that drain a process's open output pipes, so a full pipe never stalls it."""
 
-    def __init__(
-        self, process: subprocess.Popen[bytes], streams: tuple[str, ...] = ("stdout", "stderr")
-    ) -> None:
+    def __init__(self, process: subprocess.Popen[bytes]) -> None:
         self.outputs: dict[str, bytes] = {}
         self._threads: list[threading.Thread] = []
-        for name in streams:
+        for name in ("stdout", "stderr"):
             stream = getattr(process, name)
             if stream is not None and not stream.closed:
                 thread = threading.Thread(target=self._read, args=(name, stream), daemon=True)
@@ -332,12 +379,16 @@ def _boundary(folder: Path) -> FilesystemBoundary:
     return boundary_for_roots({_ROOT: folder}, access="read_write", purpose="database dumps")
 
 
-def prune(keep: int, kind: Kind = "scheduled", folder: Path | None = None) -> list[str]:
-    """Delete the dumps of ``kind`` beyond the newest ``keep``; returns the names deleted."""
+def prune(
+    keep: int, kind: Kind = "scheduled", folder: Path | None = None, *, spare: str | None = None
+) -> list[str]:
+    """Delete the dumps of ``kind`` beyond the newest ``keep``, never the one named ``spare``;
+    returns the names deleted."""
     if kind == "manual":
         raise ValueError("dumps made with `marquee db backup` are never deleted by Marquee")
     base = folder or settings.db_backups_dir
-    stale = [dump for dump in list_dumps(base) if dump.kind == kind][keep:]
+    stale = [d for d in list_dumps(base) if d.kind == kind][keep:]
+    stale = [dump for dump in stale if dump.name != spare]
     if not stale:
         return []
     boundary = _boundary(base)
@@ -455,3 +506,136 @@ def make_dump(
         result.seconds,
     )
     return result
+
+
+# ── Restoring a dump ──────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    file: str
+    restored_revision: str | None
+    revision_now: str | None
+    pre_restore: str | None
+    """The dump of the database as it was before, or ``None`` when it had no tables."""
+    pre_restore_deleted: list[str]
+    upgraded: bool
+    seconds: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def _load(path: Path, tools: Tools, folder: Path) -> None:
+    """Drop Marquee's objects and load the dump, in one transaction.
+
+    ``pg_restore`` first writes the dump out as a complete SQL script to a private temporary
+    file in ``folder``, and must succeed; only then does ``psql`` run the drops and that
+    script inside one transaction. Streaming one into the other would let ``psql`` commit a
+    partial restore when ``pg_restore`` stopped part way at the end of a statement.
+    """
+    boundary = _boundary(folder)
+    staged, fd = boundary.temporary_root_file(_ROOT, prefix=".marquee-restore-")
+    script = folder / staged.key.value
+    try:
+        try:
+            code, _, errors = _run(
+                [tools["pg_restore"], "--no-owner", "--no-privileges", "--file=-", str(path)],
+                timeout_s=DUMP_TIMEOUT_S,
+                stdout=fd,
+            )
+        finally:
+            os.close(fd)
+        if code != 0:
+            raise DumpError(
+                f"pg_restore cannot read all of {path.name} (exit {code}); nothing was changed: "
+                f"{_tail(errors)}"
+            )
+        code, _, errors = _run(
+            [
+                tools["psql"],
+                "--no-psqlrc",
+                "--quiet",
+                "--no-password",
+                "--single-transaction",
+                "--set=ON_ERROR_STOP=1",
+                f"--command={_DROP_MARQUEE_OBJECTS}",
+                f"--file={script}",
+            ],
+            timeout_s=DUMP_TIMEOUT_S,
+            stdout=subprocess.DEVNULL,
+        )
+        if code != 0:
+            raise DumpError(
+                f"the restore failed and was rolled back; the database is as it was: "
+                f"{_tail(errors)}"
+            )
+    finally:
+        boundary.delete_file(staged, missing_ok=True)
+
+
+def restore(
+    path: Path,
+    *,
+    confirmed: bool,
+    worker_holds_lock: Callable[[], bool],
+    folder: Path | None = None,
+    now: datetime | None = None,
+) -> RestoreResult:
+    """Replace the database's contents with the dump at ``path``. See the module docstring."""
+    started = time.monotonic()
+    if not confirmed:
+        raise RestoreRefusedError(
+            "a restore replaces everything in the database with the dump; add --yes to go ahead"
+        )
+    if path.is_symlink() or not path.is_file():
+        raise RestoreRefusedError(f"{path} is not a file")
+    state = database_state()
+    tools = find_tools(state.server_major)
+    try:
+        check_dump(path, tools)
+        revision = dump_revision(path, tools)
+    except DumpError as exc:
+        raise RestoreRefusedError(str(exc)) from None
+    if revision is not None and revision not in migrate.known_revisions():
+        raise RestoreRefusedError(
+            f"{path.name} holds schema revision {revision}, which this version of Marquee does "
+            "not know (was it made by a newer version?)"
+        )
+    if worker_holds_lock():
+        raise RestoreRefusedError(
+            "a worker is running (it holds the queue's lock); stop the API, the worker, and "
+            "the web app first: docker compose --profile app stop api worker web"
+        )
+    if state.other_connections:
+        raise RestoreRefusedError(
+            f"{state.other_connections} other connection(s) are open to the database; stop "
+            "everything that uses it first: docker compose --profile app stop api worker web"
+        )
+    base = folder or settings.db_backups_dir
+    pre: DumpResult | None = None
+    if state.has_tables:
+        # Checked with pg_restore --list before anything is dropped.
+        pre = make_dump("pre-restore", folder=base, now=now)
+    logger.info("RESTORE | loading %s (revision %s)", path.name, revision)
+    try:
+        _load(path, tools, base)
+    except DumpError as exc:
+        kept = f" (the database as it was is also in {pre.file})" if pre else ""
+        raise DumpError(f"{exc}{kept}") from None
+    spare = path.name if path.resolve().parent == base.resolve() else None
+    deleted = prune(PRE_RESTORE_KEEP, "pre-restore", base, spare=spare) if pre else []
+    upgraded = False
+    revision_now = revision
+    if revision != migrate.head_revision():
+        revision_now = migrate.upgrade().current
+        upgraded = True
+    return RestoreResult(
+        file=path.name,
+        restored_revision=revision,
+        revision_now=revision_now,
+        pre_restore=pre.file if pre else None,
+        pre_restore_deleted=deleted,
+        upgraded=upgraded,
+        seconds=round(time.monotonic() - started, 2),
+    )

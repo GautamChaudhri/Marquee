@@ -134,6 +134,53 @@ def test_db_backup_failures_say_why_without_the_password(
     assert capsys.readouterr().err == "marquee db backup: pg_dump is not installed\n"
 
 
+def test_db_restore_finds_a_dump_by_name_and_says_what_to_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    from marquee.maintenance import dumps
+
+    monkeypatch.setattr(settings, "DATA_DIR", tmp_path)
+    seen: dict[str, object] = {}
+
+    def restore(path: Path, *, confirmed: bool, worker_holds_lock: object) -> dumps.RestoreResult:
+        seen.update(path=path, confirmed=confirmed)
+        return dumps.RestoreResult(
+            file=path.name,
+            restored_revision="0006",
+            revision_now="0007",
+            pre_restore="pre-restore-20261126T120000Z.dump",
+            pre_restore_deleted=["pre-restore-20261120T120000Z.dump"],
+            upgraded=True,
+            seconds=2.5,
+        )
+
+    monkeypatch.setattr(dumps, "restore", restore)
+    name = "marquee-20261126T110000Z-0006.dump"
+
+    assert cli.main(["db", "restore", name, "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert seen == {"path": settings.db_backups_dir / name, "confirmed": True}
+    assert "before    saved as pre-restore-20261126T120000Z.dump" in out
+    assert "restored  revision 0006" in out and "migrated  to revision 0007" in out
+    assert "Next: run `marquee doctor`" in out
+
+
+def test_db_restore_refusals_exit_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    from marquee.maintenance import dumps
+
+    def restore(path: Path, *, confirmed: bool, worker_holds_lock: object) -> dumps.RestoreResult:
+        assert not confirmed
+        raise dumps.RestoreRefusedError("a restore replaces everything; add --yes to go ahead")
+
+    monkeypatch.setattr(dumps, "restore", restore)
+    assert cli.main(["db", "restore", str(tmp_path / "x.dump")]) == 1
+    assert capsys.readouterr().err == (
+        "marquee db restore: a restore replaces everything; add --yes to go ahead\n"
+    )
+
+
 # ── marquee sync ──────────────────────────────────────────────────────────
 
 

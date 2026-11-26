@@ -60,6 +60,11 @@ def head_revision() -> str:
     return head
 
 
+def known_revisions() -> set[str]:
+    """Every revision the package's migrations know. Reads the scripts; touches no database."""
+    return {rev.revision for rev in ScriptDirectory.from_config(alembic_config()).walk_revisions()}
+
+
 def current_revision(connection: Connection) -> str | None:
     """The revision the database on ``connection`` is at, or ``None``."""
     return MigrationContext.configure(connection).get_current_revision()

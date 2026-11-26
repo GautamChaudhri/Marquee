@@ -378,6 +378,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     backups = db_commands.add_parser("backups", help="list the database dumps, newest first")
     backups.add_argument("--json", action="store_true", help="print them as JSON")
+    restore_db = db_commands.add_parser(
+        "restore",
+        help="replace the database's contents with a dump (stop the stack first)",
+        description="Replace everything in the database with the dump. Refused unless --yes "
+        "is given, the file reads as a dump, no worker is running, and nothing else is "
+        "connected to the database (stop the API, the worker, and the web app first). The "
+        "database as it is is dumped first (pre-restore-<time>.dump, the newest three kept); "
+        "the dump is loaded in one transaction, so a failure leaves the database as it was; "
+        "then the schema is brought to the newest migration if the dump is older. Files in "
+        "the data folder newer than the dump are not undone.",
+    )
+    restore_db.add_argument(
+        "file", type=Path, help="the dump: a path, or a file name in <data>/backups/db"
+    )
+    restore_db.add_argument("--yes", action="store_true", help="go ahead: this is destructive")
     revision = db_commands.add_parser(
         "revision",
         help="write a new migration from the models (for developers)",
@@ -731,6 +746,8 @@ def _db(args: argparse.Namespace) -> int:
                 )
             print(f"{len(found)} dump(s), {sum(d.size_bytes for d in found):,} bytes")
             return 0
+        if args.db_command == "restore":
+            return _db_restore(args.file, confirmed=args.yes)
     except dumps.DumpError as exc:
         return _fail(command, str(exc))
     except migrate.MigrationError as exc:
@@ -738,6 +755,41 @@ def _db(args: argparse.Namespace) -> int:
     except SQLAlchemyError as exc:
         return _fail(command, f"{_database_target()}: {_error_line(exc)}")
     raise AssertionError(f"unhandled db command {args.db_command!r}")
+
+
+def _db_restore(file: Path, *, confirmed: bool) -> int:
+    import psycopg
+
+    from marquee.config import settings
+    from marquee.jobs.queries import worker_holds_lock
+    from marquee.maintenance import dumps
+
+    if not file.is_absolute() and not file.exists():
+        file = settings.db_backups_dir / file
+
+    def worker_running() -> bool:
+        try:
+            return worker_holds_lock(settings.database_url_sync)
+        except psycopg.Error as exc:
+            raise dumps.DumpError(f"the database {_database_target()} cannot be reached") from exc
+
+    print(f"database  {_database_target()}")
+    print(f"dump      {file}")
+    done = dumps.restore(file, confirmed=confirmed, worker_holds_lock=worker_running)
+    print(f"before    saved as {done.pre_restore}" if done.pre_restore else "before    no tables")
+    for name in done.pre_restore_deleted:
+        print(f"deleted   {name} (the newest {dumps.PRE_RESTORE_KEEP} pre-restore dumps are kept)")
+    print(f"restored  revision {done.restored_revision or 'none'}")
+    if done.upgraded:
+        print(f"migrated  to revision {done.revision_now}")
+    print(f"took      {done.seconds:.1f} s")
+    print(
+        "Next: run `marquee doctor`, then start the stack again "
+        "(docker compose --profile app up -d). Files newer than the dump were not undone: "
+        "runs, poster backups, the taste profile and exemplar images in the data folder, and "
+        "posters in the library."
+    )
+    return 0
 
 
 FOLLOW_POLL_S = 0.5
