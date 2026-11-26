@@ -91,7 +91,7 @@ def test_the_migration_applies_to_an_empty_database(empty_database_url: str) -> 
 
     after = migrate.upgrade(url=empty_database_url)
     assert after.at_head
-    assert after.current == migrate.head_revision() == "0006"
+    assert after.current == migrate.head_revision() == "0007"
     assert _tables(empty_database_url) == {
         "alembic_version",
         "movies",
@@ -161,7 +161,7 @@ def test_the_exemplar_endings_migration_keeps_ended_rows_and_downgrades(
                 ),
                 {"sha": SHA, "name": f"{SHA}.png"},
             )
-        assert migrate.upgrade(url=empty_database_url).current == "0006"
+        assert migrate.upgrade(url=empty_database_url).current == "0007"
         with engine.connect() as conn:
             row = conn.execute(text("select ended_by_event_id, updated_at from exemplars")).one()
         assert row.ended_by_event_id is None and row.updated_at is not None
@@ -212,8 +212,38 @@ def test_the_runs_migration_refuses_to_forget_a_marquee_poster(empty_database_ur
     with pytest.raises(IntegrityError):
         migrate.downgrade("0002", url=empty_database_url)
     # The whole downgrade is one transaction: nothing was undone.
-    assert migrate.status(url=empty_database_url).current == "0006"
+    assert migrate.status(url=empty_database_url).current == "0007"
     assert _tables(empty_database_url) >= TASTE_TABLES
+
+
+def test_the_maintenance_class_migration_widens_one_constraint_and_downgrades(
+    empty_database_url: str,
+) -> None:
+    migrate.upgrade("0006", url=empty_database_url)
+    tables = _tables(empty_database_url)
+    insert = text(
+        "insert into jobs (kind, job_class, state) values ('db_backup', 'maintenance', 'queued')"
+    )
+    engine = _sync_engine(empty_database_url)
+    try:
+        with pytest.raises(IntegrityError), engine.begin() as conn:
+            conn.execute(insert)
+        assert migrate.upgrade(url=empty_database_url).current == "0007"
+        assert _tables(empty_database_url) == tables
+        assert "'maintenance'::text" in _check_definition(empty_database_url, "ck_jobs_job_class")
+        with engine.begin() as conn:
+            conn.execute(insert)
+        # A maintenance job is kept, so the old constraint cannot come back; nothing changes.
+        with pytest.raises(IntegrityError):
+            migrate.downgrade("0006", url=empty_database_url)
+        assert migrate.status(url=empty_database_url).current == "0007"
+        with engine.begin() as conn:
+            conn.execute(text("delete from jobs"))
+    finally:
+        engine.dispose()
+    assert migrate.downgrade("0006", url=empty_database_url).current == "0006"
+    assert "maintenance" not in _check_definition(empty_database_url, "ck_jobs_job_class")
+    assert migrate.upgrade(url=empty_database_url).at_head
 
 
 def test_the_jobs_migration_downgrades_to_the_baseline(empty_database_url: str) -> None:
@@ -439,7 +469,7 @@ def test_every_timestamp_column_is_timestamptz(database_url: str) -> None:
 
 
 def test_the_next_revision_is_numbered_after_the_newest() -> None:
-    assert migrate._next_revision_id() == "0007"
+    assert migrate._next_revision_id() == "0008"
 
 
 # ── Constraints ───────────────────────────────────────────────────────────

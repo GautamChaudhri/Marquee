@@ -2,7 +2,9 @@
 
 The schedules are declared here, in code, with their intervals in settings; the
 ``job_schedules`` table holds only when each is next due. A schedule seen for the first time
-is due at once. When one is due, its job is queued under a dedupe key (so a schedule never
+is due at once, unless it says to wait one whole interval first (retention does, so that
+starting an updated installation never deletes anything before its owner has looked). When
+one is due, its job is queued under a dedupe key (so a schedule never
 has two jobs queued or running) and its due time moves on by the interval, in one
 transaction. An interval of 0 turns a schedule off, and a shortened interval takes effect
 within one new interval.
@@ -14,7 +16,7 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -35,6 +37,8 @@ class Schedule:
     interval: Callable[[], timedelta]
     """Read on every check, so it follows the settings."""
     payload: dict[str, Any] = field(default_factory=dict)
+    first_due: Literal["now", "after_one_interval"] = "now"
+    """When a schedule seen for the first time is due: at once, or one interval later."""
 
 
 def _sync_interval() -> timedelta:
@@ -56,9 +60,10 @@ async def run_due(
         kind = registry.get(schedule.kind)
         if interval <= timedelta(0) or kind is None:
             continue
+        first = func.now() if schedule.first_due == "now" else func.now() + interval
         await session.execute(
             insert(JobSchedule)
-            .values(name=schedule.name, next_due_at=func.now())
+            .values(name=schedule.name, next_due_at=first)
             .on_conflict_do_nothing()
         )
         await session.execute(

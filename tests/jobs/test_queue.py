@@ -133,7 +133,8 @@ async def test_a_class_at_its_limit_is_skipped(session: AsyncSession) -> None:
 
     assert claimed is not None and claimed.id == net.id
     assert (await _job(session, media.id)).state == "queued"
-    assert free_classes({"network": 4, "gpu": 1, "media_read": 2, "media_write": 1}) == []
+    full = {"network": 4, "gpu": 1, "media_read": 2, "media_write": 1, "maintenance": 1}
+    assert free_classes(full) == []
 
 
 async def test_a_locked_job_is_skipped_not_waited_for(

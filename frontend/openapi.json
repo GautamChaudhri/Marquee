@@ -4406,6 +4406,7 @@
               "network",
               "media_read",
               "media_write",
+              "maintenance",
               "batch"
             ],
             "title": "Job Class"

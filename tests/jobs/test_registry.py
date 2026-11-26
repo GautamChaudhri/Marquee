@@ -22,13 +22,25 @@ async def _noop(ctx: JobContext) -> None:
 
 
 def test_class_limits() -> None:
-    assert dict(CLASS_LIMITS) == {"gpu": 1, "network": 4, "media_read": 2, "media_write": 1}
+    assert dict(CLASS_LIMITS) == {
+        "gpu": 1,
+        "network": 4,
+        "media_read": 2,
+        "media_write": 1,
+        "maintenance": 1,
+    }
 
 
 def test_free_classes() -> None:
-    assert free_classes({}) == ["gpu", "network", "media_read", "media_write"]
-    assert free_classes({"gpu": 1, "network": 3}) == ["network", "media_read", "media_write"]
-    assert free_classes({"network": 4, "media_read": 2}) == ["gpu", "media_write"]
+    assert free_classes({}) == ["gpu", "network", "media_read", "media_write", "maintenance"]
+    assert free_classes({"gpu": 1, "network": 3}) == [
+        "network",
+        "media_read",
+        "media_write",
+        "maintenance",
+    ]
+    assert free_classes({"network": 4, "media_read": 2}) == ["gpu", "media_write", "maintenance"]
+    assert free_classes({"maintenance": 1}) == ["gpu", "network", "media_read", "media_write"]
 
 
 def test_a_kind_is_checked() -> None:

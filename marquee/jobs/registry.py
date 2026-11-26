@@ -16,10 +16,17 @@ from typing import Any, Literal
 
 from marquee.cancellation import CancellationSignal
 
-JobClass = Literal["gpu", "network", "media_read", "media_write"]
+JobClass = Literal["gpu", "network", "media_read", "media_write", "maintenance"]
 
-# One GPU; the network class is mostly waiting; the media share is slow and shared.
-CLASS_LIMITS: Mapping[str, int] = {"gpu": 1, "network": 4, "media_read": 2, "media_write": 1}
+# One GPU; the network class is mostly waiting; the media share is slow and shared; the
+# database backup and retention run one at a time, beside everything else.
+CLASS_LIMITS: Mapping[str, int] = {
+    "gpu": 1,
+    "network": 4,
+    "media_read": 2,
+    "media_write": 1,
+    "maintenance": 1,
+}
 BATCH = "batch"
 """The kind and class of a batch's parent row, which the worker never runs."""
 

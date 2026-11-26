@@ -26,7 +26,7 @@ from marquee.db.base import Base, TimestampMixin
 JOB_STATES = ("queued", "running", "succeeded", "failed", "cancelled")
 ACTIVE_STATES = ("queued", "running")
 FINAL_STATES = ("succeeded", "failed", "cancelled")
-JOB_CLASSES = ("gpu", "network", "media_read", "media_write", "batch")
+JOB_CLASSES = ("gpu", "network", "media_read", "media_write", "maintenance", "batch")
 EVENT_TYPES = (
     "queued",
     "started",

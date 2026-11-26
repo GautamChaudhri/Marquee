@@ -66,6 +66,32 @@ async def test_a_new_schedule_fires_at_once_and_then_waits(session: AsyncSession
     assert 3590 <= wait <= 3610
 
 
+async def test_a_schedule_may_wait_one_interval_before_its_first_job(
+    session: AsyncSession,
+) -> None:
+    waits = schedules.Schedule(
+        "every",
+        kind="fake_sync",
+        interval=lambda: timedelta(hours=24),
+        first_due="after_one_interval",
+    )
+    before = datetime.now(UTC)
+
+    assert await schedules.run_due(session, [waits], REGISTRY) == []
+    assert await schedules.run_due(session, [waits], REGISTRY) == []
+
+    assert await _jobs(session) == []
+    row = await _row(session)
+    assert row is not None and row.last_job_id is None
+    wait = (row.next_due_at - before).total_seconds()
+    assert 24 * 3600 - 10 <= wait <= 24 * 3600 + 10
+    # Once that interval has passed, it fires like any other.
+    await session.execute(update(JobSchedule).values(next_due_at=func.now()))
+    await session.commit()
+    (job,) = await schedules.run_due(session, [waits], REGISTRY)
+    assert [j.id for j in await _jobs(session)] == [job]
+
+
 async def test_a_due_schedule_never_queues_a_second_active_job(session: AsyncSession) -> None:
     await schedules.run_due(session, [_every(60)], REGISTRY)
     await session.execute(update(JobSchedule).values(next_due_at=func.now()))

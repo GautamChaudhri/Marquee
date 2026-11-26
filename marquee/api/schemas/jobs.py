@@ -31,7 +31,7 @@ class JobItem(BaseModel):
 
     id: int
     kind: str
-    job_class: Literal["gpu", "network", "media_read", "media_write", "batch"]
+    job_class: Literal["gpu", "network", "media_read", "media_write", "maintenance", "batch"]
     state: JobState
     priority: int
     payload: dict[str, Any]
