@@ -65,6 +65,33 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
 
 # ── runtime ─────────────────────────────────────────────────────────────────
 FROM deps AS runtime
+# The PostgreSQL client tools (pg_dump, pg_restore, psql) for the scheduled database dump and
+# `marquee db restore`. They must be the database server's major version or newer, which
+# Debian does not carry, so they come from the PostgreSQL project's own apt repository, as
+# postgresql.org/download/linux/debian sets it up: its signing key (pinned here by checksum;
+# fingerprint B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8) and a deb822 source that names it.
+# Only the client package; no server.
+ARG PG_CLIENT_MAJOR=19
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 \
+    https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+# apt reads the key as its own unprivileged user.
+RUN chmod 755 /usr/share/postgresql-common /usr/share/postgresql-common/pgdg \
+    && chmod 644 /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && . /etc/os-release \
+    && printf '%s\n' \
+        'Types: deb' \
+        'URIs: https://apt.postgresql.org/pub/repos/apt' \
+        "Suites: ${VERSION_CODENAME}-pgdg" \
+        'Architectures: amd64' \
+        'Components: main' \
+        'Signed-By: /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc' \
+        > /etc/apt/sources.list.d/pgdg.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends "postgresql-client-${PG_CLIENT_MAJOR}" \
+    && rm -rf /var/lib/apt/lists/*
+# Its own folder holds only the PostgreSQL tools; first, so no wrapper stands in for them.
+ENV PATH=/usr/lib/postgresql/${PG_CLIENT_MAJOR}/bin:${PATH}
 # The package is installed into the environment, not left as source in the image.
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \

@@ -37,6 +37,15 @@ x-app-environment: &app-environment
   # port it is published on, on the host.
   POSTGRES_PORT: "5432"
 
+# Docker's json-file driver keeps every line a container prints unless told otherwise. Each
+# service keeps at most five files of 10 MB.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "5"
+
 x-gpu: &gpu
   deploy:
     resources:
@@ -48,6 +57,7 @@ x-gpu: &gpu
 
 services:
   db:
+    <<: *logging
     image: postgres:19
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
@@ -68,7 +78,7 @@ services:
   # One-shot: brings the database schema to the newest migration, then exits. The API and
   # the worker start only after it has succeeded.
   migrate:
-    <<: *app-image
+    <<: [*app-image, *logging]
     profiles: ["app"]
     command: ["marquee", "db", "upgrade"]
     env_file: .env
@@ -80,7 +90,7 @@ services:
     restart: "no"
 
   api:
-    <<: *app-image
+    <<: [*app-image, *logging]
     profiles: ["app"]
     command: ["marquee", "api"]
     env_file: .env
@@ -117,7 +127,7 @@ services:
     restart: unless-stopped
 
   worker:
-    <<: [*app-image, *gpu]
+    <<: [*app-image, *gpu, *logging]
     profiles: ["app"]
     command: ["marquee", "worker"]
     env_file: .env
@@ -151,6 +161,7 @@ services:
     restart: unless-stopped
 
   web:
+    <<: *logging
     image: marquee:web
     build:
       context: frontend
@@ -196,7 +207,7 @@ services:
   # One-shot, on demand: builds or fetches every missing model into the data folder and
   # writes its checksum manifest. The export image carries the tools the runtime lacks.
   setup:
-    <<: *gpu
+    <<: [*gpu, *logging]
     image: marquee:export
     build:
       context: .
@@ -212,7 +223,7 @@ services:
 
   # Any marquee command, once: `docker compose run --rm marquee marquee <command>`.
   marquee:
-    <<: [*app-image, *gpu]
+    <<: [*app-image, *gpu, *logging]
     profiles: ["tools"]
     env_file: .env
     environment:
