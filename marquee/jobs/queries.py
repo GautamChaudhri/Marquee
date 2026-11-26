@@ -14,12 +14,16 @@ from marquee.db.models import Job, JobEvent, Movie
 from marquee.jobs.registry import BATCH
 from marquee.jobs.store import WORKER_LOCK_KEY
 
-_LOCK_HOLDER = text(
+# The worker's advisory lock, with the start of the connection that holds it. Written with
+# psycopg's parameter style for `worker_holds_lock`, and turned into SQLAlchemy's below.
+_LOCK_HOLDER_SQL = (
     "SELECT a.backend_start FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
     "WHERE l.locktype = 'advisory' AND l.granted AND l.objsubid = 1 "
     "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
-    "AND ((l.classid::bigint << 32) | l.objid::bigint) = :key"
+    "AND ((l.classid::bigint << 32) | l.objid::bigint) = %(key)s"
 )
+_LOCK_HOLDER = text(_LOCK_HOLDER_SQL.replace("%(key)s", ":key"))
+HEALTH_APPLICATION_NAME = "marquee-health"
 
 
 @dataclass(frozen=True)
@@ -139,6 +143,18 @@ async def worker_status(session: AsyncSession) -> WorkerStatus:
         running_jobs=counts.get("running", 0),
         failed=counts.get("failed", 0),
     )
+
+
+def worker_holds_lock(conninfo: str, *, timeout_s: int = 5) -> bool:
+    """Whether a worker holds the queue's lock, asked on a short connection of its own: the
+    worker service's health check. Raises ``psycopg.Error`` when the database does not
+    answer. ``conninfo`` holds the password: never log it."""
+    import psycopg
+
+    with psycopg.connect(
+        conninfo, connect_timeout=timeout_s, application_name=HEALTH_APPLICATION_NAME
+    ) as conn:
+        return conn.execute(_LOCK_HOLDER_SQL, {"key": WORKER_LOCK_KEY}).fetchone() is not None
 
 
 def _iso(value: datetime | None) -> str | None:

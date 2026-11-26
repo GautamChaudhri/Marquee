@@ -992,6 +992,14 @@ def test_taste_evaluate_evaluation_and_residual_commands(
     assert state["in_use"] is False
 
 
+def test_worker_health_and_drain_are_separate_modes() -> None:
+    parse = cli._build_parser().parse_args
+    assert parse(["worker", "--health"]).health is True
+    assert parse(["worker"]).health is False
+    with pytest.raises(SystemExit):
+        parse(["worker", "--health", "--drain"])
+
+
 def test_doctor_takes_a_role(monkeypatch: pytest.MonkeyPatch) -> None:
     from marquee import doctor
 
@@ -1002,3 +1010,42 @@ def test_doctor_takes_a_role(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen == [{"as_json": False, "role": "api"}, {"as_json": False, "role": None}]
     with pytest.raises(SystemExit):
         cli._build_parser().parse_args(["doctor", "--role", "web"])
+
+
+def test_worker_health_fails_when_the_database_does_not_answer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(settings, "POSTGRES_HOST", "127.0.0.1")
+    monkeypatch.setattr(settings, "POSTGRES_PORT", 1)
+    monkeypatch.setattr(settings, "POSTGRES_PASSWORD", SecretStr("health-secret"))
+    assert cli.main(["worker", "--health"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("marquee worker --health: marquee@127.0.0.1:1/")
+    assert "health-secret" not in err
+
+
+@pytest.mark.db
+def test_worker_health_passes_only_while_a_worker_holds_the_lock(
+    monkeypatch: pytest.MonkeyPatch, database_url: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import psycopg
+    from sqlalchemy.engine import make_url
+
+    from marquee.jobs.store import WORKER_LOCK_KEY
+
+    parsed = make_url(database_url)
+    for name, value in (
+        ("POSTGRES_USER", parsed.username),
+        ("POSTGRES_PASSWORD", SecretStr(parsed.password or "")),
+        ("POSTGRES_HOST", parsed.host),
+        ("POSTGRES_PORT", parsed.port),
+        ("POSTGRES_DB", parsed.database),
+    ):
+        monkeypatch.setattr(settings, name, value)
+    assert cli.main(["worker", "--health"]) == 1
+    assert "no worker holds the queue's lock" in capsys.readouterr().err
+    with psycopg.connect(settings.database_url_sync, autocommit=True) as holder:
+        holder.execute("SELECT pg_advisory_lock(%s)", [WORKER_LOCK_KEY])
+        assert cli.main(["worker", "--health"]) == 0
+    assert capsys.readouterr().out == "a worker holds the queue's lock\n"
+    assert cli.main(["worker", "--health"]) == 1  # the lock went with the connection

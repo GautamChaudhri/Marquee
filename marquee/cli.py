@@ -307,10 +307,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "putting unfinished jobs back in the queue. Only one worker runs at a time. GPU jobs "
         "run in a child process, stopped after GPU_IDLE_SECONDS without a job.",
     )
-    worker.add_argument(
+    worker_mode = worker.add_mutually_exclusive_group()
+    worker_mode.add_argument(
         "--drain",
         action="store_true",
         help="exit once nothing in the queue is runnable; scheduled work is not queued",
+    )
+    worker_mode.add_argument(
+        "--health",
+        action="store_true",
+        help="run nothing: exit 0 when a worker holds the queue's lock and the database "
+        "answers, 1 otherwise (the worker service's health check)",
     )
 
     jobs = commands.add_parser("jobs", help="list, inspect, queue, cancel, and retry jobs")
@@ -511,6 +518,8 @@ def _worker(args: argparse.Namespace) -> int:
     )
     from marquee.logging import setup_logging
 
+    if args.health:
+        return _worker_health()
     setup_logging(level=settings.LOG_LEVEL)
     try:
         asyncio.run(serve(Worker(drain=args.drain)))
@@ -518,6 +527,23 @@ def _worker(args: argparse.Namespace) -> int:
         return _fail("worker", str(exc))
     except (SQLAlchemyError, psycopg.Error, OSError) as exc:
         return _fail("worker", f"{_database_target()}: {_error_line(exc)}")
+    return 0
+
+
+def _worker_health() -> int:
+    """Exit 0 only when a worker holds the queue's lock and the database answers."""
+    import psycopg
+
+    from marquee.config import settings
+    from marquee.jobs.queries import worker_holds_lock
+
+    try:
+        held = worker_holds_lock(settings.database_url_sync)
+    except psycopg.Error as exc:
+        return _fail("worker --health", f"{_database_target()}: {_error_line(exc)}")
+    if not held:
+        return _fail("worker --health", "no worker holds the queue's lock")
+    print("a worker holds the queue's lock")
     return 0
 
 
