@@ -797,8 +797,11 @@ doctor or loads a model.
 
 ## The web app
 
-`frontend/` is a SvelteKit 2 app (Svelte 5 runes, TypeScript strict) built with
-`adapter-node`. It talks to nothing but the HTTP API, and the browser never holds the API key.
+`frontend/` is a SvelteKit 3 app (Svelte 5 runes, TypeScript strict) built with
+`adapter-node`, configured in `vite.config.ts` (there is no `svelte.config.js`); the unit tests'
+`vitest.config.ts` extends it. Modules under `src/lib/` are imported as `#lib/...` with their
+extension, through the `imports` map in `package.json`. It talks to nothing but the HTTP API, and
+the browser never holds the API key.
 
 **How the browser reaches the API.** The browser calls this site's own `/api/*`. The route
 `src/routes/api/[...path]/+server.ts` forwards each request to `MARQUEE_API_URL` with
@@ -807,9 +810,10 @@ the browser's cookies, and any credential the browser sent; refuses a body over 
 up after 20 s (504) and says so when the API is down (502); and streams the answer back with its
 status, `ETag`, and `Cache-Control`, so a 304 stays a 304. It uses the plain `fetch`, not
 SvelteKit's, which would add the browser's cookies to a request for the same host name. Both
-settings are read at runtime through `$env/dynamic/private` (`src/lib/server/env.ts`), so the
-built app holds no key, and nothing with the key reaches page data, a `PUBLIC_` variable, or
-a client bundle.
+settings are declared in `src/env.ts` as private and not static, and read through
+`$app/env/private` (`src/lib/server/env.ts`) when the server starts, so the built app holds no
+key, and nothing with the key reaches page data, a public variable, or a client bundle. Both may
+be missing: the sign-in page then says no key is configured, and the API address has a default.
 
 **Sign-in.** The owner signs in with the API key at `/signin` (a form action). The server
 compares it with its own in constant time (both sides hashed first) and sets the cookie
@@ -820,12 +824,16 @@ API key signs everyone out. Five failed attempts within a minute from one addres
 until the minute passes (in memory). `POST /signout` deletes the cookie. With no key configured
 the sign-in page says so and nothing else is served.
 
-**Every request** passes `src/hooks.server.ts` first. A request that changes something
-(anything but GET, HEAD, OPTIONS) is refused with 403 unless the browser's `Origin` (or, with
-none, `Sec-Fetch-Site: same-origin`) says it came from this site. Only the sign-in page is
-open: any other page without a valid session goes to `/signin?next=...`, and `/api/*` answers
-401. Static assets are served before the hooks run. Responses carry `X-Content-Type-Options:
-nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: same-origin`. The built server needs
+**Every request** passes two same-origin checks. SvelteKit's own, always on, comes first: a
+change (POST, PUT, PATCH, DELETE) sent as a form or with no `Content-Type` is refused with a
+plain-text 403 unless its `Origin` is this site's. Then `src/hooks.server.ts`: a request that
+changes something (anything but GET, HEAD, OPTIONS) is refused with 403 unless the browser's
+`Origin` (or, with none, `Sec-Fetch-Site: same-origin`) says it came from this site. Only the
+sign-in page is open: any other page without a valid session goes to `/signin?next=...`, and
+`/api/*` answers 401. Static assets are served before the hooks run, from a list made at build
+time, and only to GET and HEAD (any other method is 405). Every answer that passes the hooks
+carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy:
+same-origin`; static files and SvelteKit's own refusals do not. The built server needs
 `ORIGIN` set to the address the browser uses (or a proxy's `PROTOCOL_HEADER` and `HOST_HEADER`),
 or it takes the request for HTTPS and the same-origin check refuses every form.
 
