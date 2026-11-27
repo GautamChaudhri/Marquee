@@ -69,8 +69,10 @@ class UtcFormatter(logging.Formatter):
 
 
 # Loggers that would print what must stay out of the logs. httpx logs every request at
-# INFO with its full URL: Radarr's address on the LAN, TMDB's URLs.
-_WARNING_ONLY = ("httpx", "httpcore")
+# INFO with its full URL: Radarr's address on the LAN, TMDB's URLs. huggingface_hub, which
+# PaddleX downloads the OCR models through, carries a second copy under other names
+# (httpx2, httpcore2). Alembic names each of its plugins at INFO whenever it loads.
+_WARNING_ONLY = ("httpx", "httpcore", "httpx2", "httpcore2", "alembic.runtime.plugins")
 _ERROR_ONLY = ("asyncpg", "psycopg", "sqlalchemy.engine", "watchfiles")
 
 

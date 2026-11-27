@@ -18,7 +18,8 @@ def _restore_logging() -> Iterator[None]:
     root = logging.getLogger()
     handlers, level = list(root.handlers), root.level
     converter = logging.Formatter.converter
-    levels = {name: logging.getLogger(name).level for name in ("httpx", "httpcore", "psycopg")}
+    names = ("httpx", "httpcore", "httpx2", "httpcore2", "alembic.runtime.plugins", "psycopg")
+    levels = {name: logging.getLogger(name).level for name in names}
     yield
     root.handlers[:] = handlers
     root.setLevel(level)
@@ -79,3 +80,17 @@ def test_request_lines_from_httpx_stay_out_of_the_logs() -> None:
     logging.getLogger("httpcore.http11").debug("send_request_headers.started")
     logging.getLogger("httpx").warning("a real problem")
     assert seen == ["a real problem"]
+
+
+def test_the_second_httpx_and_alembic_plugins_stay_quiet() -> None:
+    setup_logging("DEBUG")
+    seen: list[str] = []
+    collector = logging.Handler()
+    collector.emit = lambda record: seen.append(record.getMessage())  # type: ignore[method-assign]
+    logging.getLogger().addHandler(collector)
+    logging.getLogger("httpx2").info('HTTP Request: GET https://huggingface.co/x "200 OK"')
+    logging.getLogger("httpcore2.http11").debug("receive_response_headers.complete")
+    logging.getLogger("alembic.runtime.plugins").info("setup plugin alembic.autogenerate.types")
+    logging.getLogger("alembic.runtime.migration").info("Running upgrade 0006 -> 0007")
+    logging.getLogger("httpx2").warning("a real problem")
+    assert seen == ["Running upgrade 0006 -> 0007", "a real problem"]

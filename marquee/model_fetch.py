@@ -469,6 +469,18 @@ def build_yolo(paths: ModelPaths) -> Built:
     return Built([entry], f"640x640 input gives output {shape}")
 
 
+# A first OCR load downloads the weights through huggingface_hub, whose HTTP client logs
+# every request at INFO; PaddlePaddle then sets the probe's root logger to INFO with its own
+# handler, so they would all reach the console. httpx2 and httpcore2 are the second copy of
+# httpx that huggingface_hub uses.
+DOWNLOAD_LOGGERS = ("httpx", "httpcore", "httpx2", "httpcore2", "huggingface_hub")
+
+
+def _quiet_download_logging() -> None:
+    for name in DOWNLOAD_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def _ocr_probe() -> dict[str, object]:
     """Load PaddleOCR once and report the device and the model folders it opened.
 
@@ -478,9 +490,7 @@ def _ocr_probe() -> dict[str, object]:
     import warnings
 
     warnings.simplefilter("ignore")
-    # A first load downloads the weights; keep each HTTP request out of the console.
-    for name in ("httpx", "httpcore", "huggingface_hub"):
-        logging.getLogger(name).setLevel(logging.WARNING)
+    _quiet_download_logging()
     # ocr_filter imports marquee.ml.hardware, which points PaddleX at the data directory.
     from marquee.pipeline import ocr_filter
 

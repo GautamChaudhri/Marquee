@@ -709,3 +709,44 @@ def test_the_newest_dump_and_its_age(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setattr(doctor.settings, "DB_BACKUP_INTERVAL_HOURS", 0)
     off = doctor.check_db_dumps(now)
     assert off.status == "WARN" and "the scheduled dump is off" in off.detail
+
+
+def test_what_a_library_prints_during_the_checks_leaves_the_json_alone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ONNX Runtime prints its fall-back from CUDA to the CPU on standard output."""
+
+    def falls_back() -> CheckResult:
+        print("EP Error: CUDA failure 100 using ['CUDAExecutionProvider']")
+        print("Falling back to ['CPUExecutionProvider'] and retrying.")
+        return CheckResult("ONNX Runtime", "WARN", "running on the CPU")
+
+    monkeypatch.setattr(doctor, "CHECKS", (falls_back,))
+    assert doctor.main(as_json=True) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == [
+        {"name": "ONNX Runtime", "status": "WARN", "detail": "running on the CPU"}
+    ]
+    assert "Falling back to ['CPUExecutionProvider']" in captured.err
+
+
+def test_paddles_own_warnings_are_turned_down_before_it_loads(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # glog's own spelling of the name.
+    name = "GLOG_minloglevel"
+    monkeypatch.delenv(name, raising=False)
+    seen: list[str | None] = []
+
+    def check() -> CheckResult:
+        seen.append(os.environ.get(name))
+        return CheckResult("x", "PASS", "")
+
+    monkeypatch.setattr(doctor, "CHECKS", (check,))
+    doctor.main()
+    assert seen == ["2"]
+    # An owner's own setting wins.
+    monkeypatch.setenv(name, "0")
+    seen.clear()
+    doctor.main()
+    assert seen == ["0"]

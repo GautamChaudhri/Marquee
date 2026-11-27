@@ -438,3 +438,26 @@ def test_aesthetic_values_checksum_reads_weights_then_bias(tmp_path: Path) -> No
     np.savez(npz, weight=HEAD_WEIGHT[:10], bias=HEAD_BIAS)
     with pytest.raises(BuildError, match="shapes"):
         model_fetch.aesthetic_values_sha256(npz)
+
+
+def test_the_ocr_probe_keeps_every_download_request_out_of_the_console() -> None:
+    import logging
+
+    root = logging.getLogger()
+    saved = {name: logging.getLogger(name).level for name in model_fetch.DOWNLOAD_LOGGERS}
+    saved_root = root.level
+    try:
+        for name in saved:
+            logging.getLogger(name).setLevel(logging.NOTSET)
+        # PaddlePaddle sets the probe's root logger to INFO when it is imported.
+        root.setLevel(logging.INFO)
+        model_fetch._quiet_download_logging()
+        assert {"httpx", "httpcore", "httpx2", "httpcore2", "huggingface_hub"} <= set(saved)
+        for name in saved:
+            assert logging.getLogger(name).level == logging.WARNING, name
+        assert not logging.getLogger("httpx2").isEnabledFor(logging.INFO)
+        assert not logging.getLogger("httpcore2.http11").isEnabledFor(logging.INFO)
+    finally:
+        for name, level in saved.items():
+            logging.getLogger(name).setLevel(level)
+        root.setLevel(saved_root)

@@ -10,6 +10,7 @@ import multiprocessing
 import os
 import queue
 import re
+import signal
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -1978,6 +1979,16 @@ def _init_worker(
         _worker_ocr = _load_ocr()
 
 
+def _stop_quietly_on_sigterm() -> None:
+    """Let SIGTERM end this process as it does by default.
+
+    Importing PaddlePaddle installs C++ signal handlers. On SIGTERM (a worker stopped on a
+    cancel or after a shutdown that timed out) its handler prints a "Termination signal"
+    traceback, though nothing failed. Paddle's handlers for crash signals stay.
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def _exit_worker(result_queue: Any, exit_code: int) -> NoReturn:
     """Flush pending messages without invoking Paddle's native destructors."""
     result_queue.close()
@@ -2014,6 +2025,7 @@ def _worker_main(
         task_queue.cancel_join_thread()
         _exit_worker(result_queue, 1)
 
+    _stop_quietly_on_sigterm()
     result_queue.put((_WORKER_READY, os.getpid(), None))
     while True:
         task = task_queue.get()

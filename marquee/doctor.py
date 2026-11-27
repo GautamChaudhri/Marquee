@@ -14,6 +14,7 @@ write are failures, not warnings.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -818,8 +819,18 @@ def render_table(results: list[CheckResult]) -> str:
 
 
 def main(*, as_json: bool = False, role: Role | None = None) -> int:
-    """Run every check, print the report, and return the process exit code."""
-    results = run_checks(role)
+    """Run every check, print the report, and return the process exit code.
+
+    While the checks run, whatever a library prints on standard output goes to standard
+    error instead (ONNX Runtime prints its fall-back from CUDA to the CPU there), so standard
+    output holds the report alone and ``--json`` stays one JSON document.
+    """
+    # PaddlePaddle's own warnings (libcuda not found by name under WSL, its device notes)
+    # go to standard error from C++ and say nothing the OCR line does not. Read when Paddle
+    # is first imported; errors still show.
+    os.environ.setdefault("GLOG_minloglevel", "2")
+    with contextlib.redirect_stdout(sys.stderr):
+        results = run_checks(role)
     if as_json:
         print(json.dumps([asdict(result) for result in results], indent=2))
     else:

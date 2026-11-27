@@ -732,3 +732,67 @@ def test_second_read_switch_off_adds_nothing_to_the_trace(
     assert _outcome(off) == "text_heavy"
     assert "second_read_rule" not in off.diagnostics
     assert not any("is_second_read" in box for box in _boxes(off))
+
+
+# A worker as _worker_main runs it, with PaddlePaddle imported (as loading OCR imports it) and
+# no model: it says it is ready, then waits for a task until it is stopped.
+_WORKER_UNTIL_STOPPED = """
+import sys, time
+from marquee.pipeline import ocr_filter
+
+def init(*args, **kwargs):
+    import paddle  # noqa: F401 - installs Paddle's C++ signal handlers
+
+ocr_filter._init_worker = init
+if sys.argv[1] == "without-the-fix":
+    ocr_filter._stop_quietly_on_sigterm = lambda: None
+
+class Tasks:
+    def get(self):
+        time.sleep(120)
+
+    def cancel_join_thread(self):
+        pass
+
+class Results:
+    def put(self, item):
+        print("ready", flush=True)
+
+ocr_filter._worker_main(Tasks(), Results(), set(), set())
+"""
+
+
+def _stop_a_worker(mode: str) -> tuple[int, str]:
+    import signal
+    import time
+
+    process = subprocess.Popen(
+        [sys.executable, "-c", _WORKER_UNTIL_STOPPED, mode],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert process.stdout is not None
+    lines = []
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        line = process.stdout.readline()
+        if not line:
+            break
+        lines.append(line)
+        if line.strip() == "ready":
+            break
+    assert lines and lines[-1].strip() == "ready", "".join(lines)
+    process.send_signal(signal.SIGTERM)
+    rest, _ = process.communicate(timeout=60)
+    return process.returncode, rest
+
+
+def test_an_ocr_worker_stopped_with_sigterm_prints_no_paddle_traceback() -> None:
+    code, output = _stop_a_worker("with-the-fix")
+    assert code == -15
+    assert "Termination signal" not in output
+    assert "C++ Traceback" not in output
+    # Without it, Paddle's handler prints its traceback: the check above can see one.
+    code, output = _stop_a_worker("without-the-fix")
+    assert "Termination signal" in output
