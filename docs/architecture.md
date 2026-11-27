@@ -131,7 +131,7 @@ Everything an operator runs goes through the `marquee` command:
 | Command | Does |
 |---|---|
 | `marquee doctor [--role all\|api\|worker] [--json]` | Read-only checks of the machine, the backups directory, the models, the manifest, the taste profile (and, once one is registered, whether the file is that build), the CUDA kernel cache's size against the driver's limit, and every connection. The role (default `MARQUEE_ROLE`, which the Compose stack sets) decides what is checked: `api` leaves out the engine's checks (ONNX Runtime, GPU, OCR, kernel cache) and accepts a read-only library; `worker` needs to write the library. With `MARQUEE_ENVIRONMENT=production` a fall-back to the CPU, a missing GPU, a library the worker cannot write, and (for the worker) missing or old backup tools fail instead of warning. Two lines report on backups: the client tools (`pg_dump`, `pg_restore`, `psql`, the server's major version or newer) and the newest dump's age against `DB_BACKUP_INTERVAL_HOURS` (a warning past two intervals, or with the schedule off). Whether the library is writable is read from the mount table (`/proc/self/mountinfo`: the options of the deepest mount holding the folder) and the folder's permission bits (`access(2)`), never by writing |
-| `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights) and downloads the LAION aesthetic head and the SCRFD face detector, pinned by SHA-256. Checks each one before putting it in place, and writes `data/models/manifest.json`. CLIP, DINOv2, the zero-shot axes, and the aesthetic head's conversion need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
+| `marquee models fetch [--force ITEM]` | Builds every model that is missing (CLIP, DINOv2, zero-shot axes, YOLO person, OCR weights) and downloads the LAION aesthetic head and the SCRFD face detector. Every input is pinned in `marquee/model_fetch.py`: each downloaded file is checked against its SHA-256 before anything uses it (the CLIP files at a fixed Hugging Face revision, the DINOv2 code at a fixed commit and its weights, the YOLO weights, the aesthetic head, the face detector, and the three OCR folders by a digest over their files); the exported models are pinned through those inputs. Checks each build before putting it in place, and writes `data/models/manifest.json`, which records what each machine built. The models' licences are in [third-party.md](third-party.md). CLIP, DINOv2, the zero-shot axes, and the aesthetic head's conversion need the `export` dependency group; the YOLO exporter runs in its own isolated `uv` tool environment |
 | `marquee taste seed [--dry-run] [--rescan \| --reuse]` | Builds the first taste profile from the `poster.jpg` in each movie folder, staged as lossless 500 px wide copies. Refuses to scan again unless given `--rescan`; `--reuse` rebuilds from the staged copies. `--rescan` is refused once Marquee has written a poster, and every form is refused once exemplar records exist |
 | `marquee taste import-seed` | Makes each staged seed poster an exemplar record (matched to its movie by IMDb id) and registers the profile file as it is; writes nothing and exits 1 if anything does not match; a second run changes nothing |
 | `marquee taste rebuild [--force] [--no-wait]` | Queues a `taste_rebuild` of the active exemplars and follows it |
@@ -896,7 +896,11 @@ of it. `marquee api` serves it under uvicorn.
 Every `/api` route requires the key in `API_KEY`, as `Authorization: Bearer <key>` or
 `X-Api-Key: <key>`, compared in constant time: missing or wrong is 401, and with no key
 configured the API answers 503. There is no bypass: not for debug mode, not for loopback
-clients, and never a key in a query string. Every response is a pydantic model, so the
+clients, and never a key in a query string. After ten requests with a missing or wrong key
+within a minute from one client address, that address gets 429 with `Retry-After` until the
+minute has passed (`marquee/api/rate_limit.py`, in memory, per app, at most 10,000
+addresses); the right key is never slowed and clears nothing, and the health probes are
+outside `/api`. In the stack only the web server reaches the API, always with the right key. Every response is a pydantic model, so the
 OpenAPI schema is fully typed, and no response carries Radarr's path or a local path, except
 `GET /api/system`'s movie roots and data directory, which are its point. The
 interactive documentation and `/openapi.json` are served only when `MARQUEE_ENVIRONMENT` is
@@ -942,9 +946,12 @@ be missing: the sign-in page then says no key is configured, and the API address
 compares it with its own in constant time (both sides hashed first) and sets the cookie
 `marquee_session`: an expiry time and an HMAC-SHA256 of it, keyed by an HMAC of a fixed label
 under the API key (`src/lib/server/session.ts`); `HttpOnly`, `SameSite=Strict`, `Path=/`,
-`Secure` when the request came over HTTPS, 30 days. There is no session store: changing the
-API key signs everyone out. Five failed attempts within a minute from one address answer 429
-until the minute passes (in memory). `POST /signout` deletes the cookie. With no key configured
+`Secure` when the site's address (`ORIGIN`) is `https://`, 30 days. There is no session
+store: signing out forgets the cookie in that browser, and changing the API key signs everyone
+out. Five failed attempts within a minute from one address answer 429 until the minute passes
+(in memory). Behind a reverse proxy every visitor arrives from the proxy's address; the
+adapter's `ADDRESS_HEADER` and `XFF_DEPTH` (from `MARQUEE_WEB_ADDRESS_HEADER` and
+`MARQUEE_WEB_XFF_DEPTH`) make it read the visitor's own from the proxy's header. `POST /signout` deletes the cookie. With no key configured
 the sign-in page says so and nothing else is served.
 
 **Every request** passes two same-origin checks. SvelteKit's own, always on, comes first: a
@@ -956,7 +963,20 @@ sign-in page is open: any other page without a valid session goes to `/signin?ne
 `/api/*` answers 401. Static assets are served before the hooks run, from a list made at build
 time, and only to GET and HEAD (any other method is 405). Every answer that passes the hooks
 carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy:
-same-origin`; static files and SvelteKit's own refusals do not. The built server needs
+same-origin`, and, when the site's address is `https://`, `Strict-Transport-Security:
+max-age=31536000` (`src/lib/server/headers.ts`); static files and SvelteKit's own refusals do
+not.
+
+**The Content-Security-Policy.** Every page carries one, set by SvelteKit itself from
+`vite.config.ts`: `default-src 'self'`; scripts from this origin and SvelteKit's per-response
+nonce (its own inline scripts and `app.html`'s theme script, which carries
+`%sveltekit.nonce%`); styles, fonts, and requests from this origin; images also from `data:`
+and `blob:`; `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`,
+`frame-ancestors 'none'`. Nothing inline is allowed but style attributes
+(`style-src-attr 'unsafe-inline'`), which SvelteKit's own route announcer uses; the app's
+components set dynamic styles through the DOM (`element.style`), which the policy allows. In
+development SvelteKit adds `'unsafe-inline'` for styles so that Vite can inject them. Every
+end-to-end test fails if the browser reports a violation (`e2e/fixtures.ts`). The built server needs
 `ORIGIN` set to the address the browser uses (or a proxy's `PROTOCOL_HEADER` and `HOST_HEADER`),
 or it takes the request for HTTPS and the same-origin check refuses every form.
 
@@ -969,7 +989,7 @@ place a backend `detail` or a status becomes a sentence, and one middleware send
 sign-in. `src/lib/api/types.ts` only names schemas.
 
 **Layout of `src/lib/`:** `api/` (the client), `server/` (server-only: settings, session,
-rate limit, origin check, proxy), `ui/` (design-system primitives: buttons, notices, the top
+rate limit, origin check, security headers, proxy), `ui/` (design-system primitives: buttons, notices, the top
 bar, navigation, toasts, the confirm dialog), `features/<area>/` (what knows about the library,
 runs, jobs, review, taste, or the system), and `stores/` (theme, toasts, how many reviews
 wait). Colours, radii, and fonts come from the tokens in `src/app.css`. The one runtime
@@ -988,7 +1008,7 @@ it sends one.
 | `/taste` | the active profile, the exemplars by state and whether a rebuild is due, agreement over blind reviews (a percentage from 10; the others apart), the residual (in use or not and why, in one plain sentence that says each fact once and never shows an engine identifier, held-out accuracy before and after, the features it leans on, the last training, what is missing), the blind evaluation (the latest headline in a sentence, the one before, and one running with its progress), recent feedback, and a paged grid of exemplars filtered by polarity and state, each saying what ended it | Rebuild now (followed to its end); Run a blind evaluation, behind a confirmation that says how long it takes and that it changes nothing in the library (followed to its end); Undo on a recent answer |
 | `/taste/evaluations/[id]` | one evaluation's summary, then a row per movie: the owner's poster, the blind pick, the outcome in words ("Your design was 4th of 16", "Removed by the text gate: text_heavy", "Not among TMDB's candidates"), how the poster was found, filtered by outcome and by seed or feedback, paged | opens a result's masked run on its review page, read-only |
 | `/activity` | the worker's state; jobs newest first with kind (a masked run is a "Blind run"), the movie they are about (linked), state, progress, and times, filtered by state and kind and paged; a job's events and error | Cancel and Retry where the API allows |
-| `/system` | plain tables of `GET /api/system` and `GET /api/worker` (blind runs on their own line); a schema behind the code, a missing model file or manifest, and a worker that is not running are listed first as problems, in words | nothing: it changes no setting |
+| `/system` | plain tables of `GET /api/system` and `GET /api/worker` (blind runs on their own line); in production the paths are labelled as the containers' and the settings that hold the host's folders are named; a schema behind the code, a missing model file or manifest, and a worker that is not running are listed first as problems, in words; at the foot, Credits: TMDB's logo and the notice its terms ask for | nothing: it changes no setting |
 
 The navigation is Library, Review (with the number waiting, read from `GET /api/taste` when
 the shell loads and after each answer), Taste, Activity, and System; on a narrow screen it
@@ -1093,9 +1113,18 @@ repository root builds two targets:
 
 CUDA and cuDNN come from the Python wheels, as on a bare-metal install. The base image is a
 slim Python image, and the NVIDIA Container Toolkit on the host supplies only the driver. The
-image runs as a non-root user whose user and group ids are build arguments (`MARQUEE_UID` and
-`MARQUEE_GID`, default 1000). Dependencies are installed from the lockfile in their own layer,
-before any source, so a code change rebuilds only the layer that installs the package.
+base images (`PYTHON_IMAGE`, `UV_IMAGE`) are pinned by tag and digest. The image runs as a
+non-root user whose user and group ids are build arguments (`MARQUEE_UID` and `MARQUEE_GID`,
+default 1000; Compose passes them from `.env`). Dependencies are installed from the lockfile
+in their own layer, before any source, so a code change rebuilds only the layer that installs
+the package. The build works in `/src`, which the images do not keep.
+
+**The CPU build, for CI only.** The build argument `MARQUEE_EXTRA` (default `nvidia`) names
+the dependency extra. CI builds the `runtime` target with `MARQUEE_EXTRA=cpu`, since a hosted
+runner cannot build the 18 GB NVIDIA image, and smoke-tests it: a non-root user, `marquee
+--help`, `pg_dump` 19, and the stack's `db`, `migrate`, `api`, and `web` started from the
+images CI built, with a sign-in through the web app and `/api/system` answering 200. The CPU
+build is not a supported way to run Marquee.
 
 **The PostgreSQL client.** The `runtime` target installs `postgresql-client-19` (`pg_dump`,
 `pg_restore`, `psql`) for the database dumps and the restore. The client must be the server's
@@ -1121,10 +1150,11 @@ image.
 
 The web app has an image of its own, built from `frontend/Dockerfile` with its own allowlist
 `.dockerignore`: a build stage runs `npm ci` and `npm run build`, and the runtime stage, on the
-official Node 26 slim image (pinned by tag), holds only the build output and the production
-dependencies and runs `node build` as the image's non-root `node` user (uid 1000). Nothing is
-read at build time: the server takes `MARQUEE_API_URL`, `MARQUEE_API_KEY`, `ORIGIN`, `HOST`,
-`PORT`, and `BODY_SIZE_LIMIT` from its environment when it starts, so the image holds no key.
+official Node 26 slim image (pinned by tag and digest), holds only the build output and the
+production dependencies and runs `node build` as the image's non-root `node` user (uid 1000).
+Nothing is read at build time: the server takes `MARQUEE_API_URL`, `MARQUEE_API_KEY`,
+`ORIGIN`, `HOST`, `PORT`, `BODY_SIZE_LIMIT`, `ADDRESS_HEADER`, and `XFF_DEPTH` from its
+environment when it starts, so the image holds no key.
 
 ## The Compose stack
 
@@ -1151,7 +1181,7 @@ containers sit behind the `tools` profile, which `docker compose run` turns on b
   (`MARQUEE_DATA_HOST_PATH`, default `./data`, the repository's own `data/`), not a named
   volume. Commands on the host and the containers therefore see the same models, taste
   profile, exemplars, runs, and backups, and the owner can back the folder up. The containers'
-  user (1000:1000 by default) must own it. The database is the one thing that lives in a Docker
+  user (1000:1000 unless `MARQUEE_UID` and `MARQUEE_GID` in `.env` say otherwise) must own it. The database is the one thing that lives in a Docker
   volume (`db-data`).
 - **The library** is mounted from `MOVIE_LIBRARY_HOST_PATH` at `/media/movies`, read-write in
   the worker, the only service that writes posters, and read-only everywhere else.
@@ -1162,8 +1192,10 @@ containers sit behind the `tools` profile, which `docker compose run` turns on b
   `API_HOST=0.0.0.0` and `API_PORT=8000`. Each long-running service is told its role
   (`MARQUEE_ROLE=api` or `worker`). **`web` gets no `env_file`**: only `MARQUEE_API_URL`
   (`http://api:8000`), `MARQUEE_API_KEY` (the value of `API_KEY`: one secret, two names),
-  `ORIGIN` (from `MARQUEE_WEB_ORIGIN`), `HOST`, `PORT`, and `BODY_SIZE_LIMIT=1M`, the proxy's own
-  limit (the server's default, 512 KiB, would cut a larger body first). The web container never
+  `ORIGIN` (from `MARQUEE_WEB_ORIGIN`), `HOST`, `PORT`, `BODY_SIZE_LIMIT=1M`, the proxy's own
+  limit (the server's default, 512 KiB, would cut a larger body first), and `ADDRESS_HEADER`
+  and `XFF_DEPTH` (from `MARQUEE_WEB_ADDRESS_HEADER`, empty, and `MARQUEE_WEB_XFF_DEPTH`, 1 when
+  empty), for a reverse proxy. The web container never
   holds the database password, the TMDB token, or Radarr's key.
 - **The browser's address is required.** Without `ORIGIN` every form post would be refused, so
   the `web` service refuses to start without `MARQUEE_WEB_ORIGIN` and says why in its log. It
@@ -1176,7 +1208,8 @@ containers sit behind the `tools` profile, which `docker compose run` turns on b
   brings a service back by itself, while `docker compose stop` (or `docker kill`) is taken as
   meaning it. Health checks use what the images hold (Python and Node; no `curl`). The worker's
   check, `marquee worker --health`, runs nothing: it exits 0 only when a worker holds the
-  queue's advisory lock and the database answers, on one short connection.
+  queue's advisory lock and the database answers, on one short connection. It does not prove
+  the worker makes progress: a worker stuck inside a job still holds the lock.
 - **The worker** runs with `init: true` (as PID 1 nothing would reap the GPU child and the OCR
   processes it stops) and a 45-second stop grace period, enough for its own shutdown: it
   signals cancel, waits up to 10 s, puts unfinished jobs back in the queue without counting
@@ -1188,8 +1221,10 @@ containers sit behind the `tools` profile, which `docker compose run` turns on b
   fails when the engine falls back to the CPU, when no GPU is visible, or when the library is
   not writable; run in the `api` it leaves the GPU checks out and accepts a read-only library.
 - **Logs** go to Docker's log (`docker compose logs`). Times are UTC, and the text format says
-  so (`2026-11-26T01:02:03.456Z`). `httpx` logs warnings only, so request lines with Radarr's
-  address and TMDB's URLs stay out. The API logs each request's method, path, status, and time.
+  so (`2026-11-26T01:02:03.456Z`). `httpx` (and `httpx2`, the copy huggingface_hub uses) logs
+  warnings only, so request lines with Radarr's address and TMDB's URLs stay out; so do
+  Alembic's plugin lines. An OCR process stopped with SIGTERM ends quietly instead of printing
+  PaddlePaddle's C++ traceback. The API logs each request's method, path, status, and time.
   Every service, the database included, uses Docker's `json-file` driver with `max-size: 10m`
   and `max-file: "5"` (the `x-logging` block), so no log grows without limit.
 

@@ -20,8 +20,8 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > answers a run (keep the pick, use another, rank the designs with a hate pile, or refuse them
 > all, then undo it), its taste page shows the profile, the agreement, and the exemplars, and
 > its system page shows how the installation is set. A learned correction to the score turns
-> on once there is enough feedback. All of it runs as a Docker Compose stack; scheduled
-> database backups and retention of old runs are still to come.
+> on once there is enough feedback. All of it runs as a Docker Compose stack that dumps its
+> database on a schedule and deletes old runs by written rules.
 
 ## Why
 
@@ -71,8 +71,9 @@ Each long-running service has a health check and restarts by itself unless you s
   [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
   configured for Docker (`sudo nvidia-ctk runtime configure --runtime=docker`, then restart
   Docker). `docker run --rm --gpus all ubuntu nvidia-smi` must list your GPU.
-- Your movie library on the host, laid out as Radarr manages it, writable by user id 1000
-  (the containers run as 1000:1000). On a network share, mount it with that owner.
+- Your movie library on the host, laid out as Radarr manages it, writable by the user the
+  containers run as: 1000:1000 unless you choose other ids (see "If your library's owner is
+  not user 1000"). On a network share, mount it with that owner.
 - Radarr's URL and API key, and a TMDB API read access token (v4).
 - About 25 GB of disk for the images and their build, and 2 GB for models and data to start.
 
@@ -97,7 +98,8 @@ cp .env.example .env
 #    - MARQUEE_WEB_ORIGIN: the address you will type in the browser, for example
 #      http://marquee.example.lan:3000 (MARQUEE_WEB_PORT changes the port)
 #    The data folder is ./data unless MARQUEE_DATA_HOST_PATH says otherwise; if you move it,
-#    create the folder first and give it to user 1000 (`sudo chown 1000:1000 <folder>`).
+#    create the folder first and give it to the containers' user (`sudo chown 1000:1000
+#    <folder>`, or the ids in MARQUEE_UID and MARQUEE_GID).
 
 # 3. Build the images (marquee:runtime, about 7 minutes the first time, and marquee:web).
 docker compose build
@@ -134,6 +136,21 @@ Any `marquee` command runs in the worker's container while the stack is up:
 driver compiles GPU kernels for your card on first use. It keeps them in the data folder
 (`cache/cuda-jit`), so this happens once, not on every start.
 
+**A small library.** `marquee taste seed` builds the first taste profile from however many
+posters you picked by hand, but rebuilding the profile from your feedback needs at least 50
+active positive exemplars (`TASTE_SEEDING_MIN_POSTERS`). With fewer, Marquee ranks with the
+seeded profile and records every answer you give; each poster you choose in a review adds a
+positive, and the first rebuild happens once there are 50.
+
+### If your library's owner is not user 1000
+
+The application containers run as user and group 1000 by default, and that user must be able
+to write in the movie folders (the worker writes posters) and own the data folder. If your
+library belongs to another user, set `MARQUEE_UID` and `MARQUEE_GID` in `.env` to that user's
+ids (`id -u` and `id -g` as that user), give the data folder to the same ids (`sudo chown
+<uid>:<gid> data`), and build the images again: `docker compose build` and `docker compose
+build setup`. The web container runs as Node's own user and touches none of your folders.
+
 ### Running it
 
 - `docker compose ps` shows each service and its health; `docker compose logs -f worker`
@@ -142,18 +159,16 @@ driver compiles GPU kernels for your card on first use. It keeps them in the dat
 - `docker compose stop` stops the stack and `docker compose up -d` starts it again; a job
   that was running goes back to the queue and runs again. **Never run `docker compose down
   -v`:** `-v` deletes the database volume, and with it every run, answer, and exemplar.
-- To update: `git pull`, `docker compose build`, `docker compose run --rm marquee marquee db
-  backup` (a dump of the database before the update's migration: the way back), and
-  `docker compose up -d`. The migration brings the schema up to date before the API and the
-  worker start.
+- To update, see "Updating and going back" below.
 - Everything Marquee keeps on disk is in the data folder: models, the taste profile and the
   exemplars' images, every run, a backup of every poster it replaced, and the database
   dumps. The database itself lives in the Docker volume `<project>_db-data`.
 - Only one worker runs at a time. A second one, in a container or on the host, finds the
   first one's lock and exits.
 - The web app is published on `MARQUEE_WEB_BIND:MARQUEE_WEB_PORT` (every address, port 3000,
-  by default), over plain HTTP. The API is not published; to reach it from the host itself,
-  uncomment the `ports` lines of the `api` service in `compose.yaml` (loopback only).
+  by default), over plain HTTP; "Serving Marquee over HTTPS" below puts it behind a reverse
+  proxy. The API is not published; to reach it from the host itself, uncomment the `ports`
+  lines of the `api` service in `compose.yaml` (loopback only).
 - In the stack the services run in production mode: the API serves no interactive
   documentation, and `marquee doctor` fails, rather than warns, when the engine falls back
   to the CPU, when there is no GPU, or when the worker cannot write to the library. It
@@ -161,6 +176,109 @@ driver compiles GPU kernels for your card on first use. It keeps them in the dat
 
 See [docs/architecture.md](docs/architecture.md#the-compose-stack) for what each service
 mounts and receives.
+
+### Security
+
+- **What is reachable.** Only the web app, on `MARQUEE_WEB_BIND:MARQUEE_WEB_PORT`. The API is
+  not published, and the database is published on this machine's loopback address only (for
+  `marquee` commands run on the host).
+- **The key.** Every API request needs `API_KEY`, and you sign in to the web app with it. The
+  web server keeps the key and forwards your requests to the API itself; the browser never
+  holds it. No secret is built into an image or written to a log.
+- **Sessions.** Signing in sets a signed cookie that lasts 30 days, and the server keeps no
+  list of sessions, so signing out forgets the cookie in that browser only. Changing `API_KEY`
+  (then `docker compose up -d`) ends every session.
+- **Two limiters.** Five wrong keys at sign-in within a minute from one address, and that
+  address waits until the minute has passed. The API answers 429 to an address that sent more
+  than ten requests with a missing or wrong key within a minute, until the minute has passed;
+  the right key is never slowed. Both are held in memory and forgotten on a restart.
+- **The pages' policy.** Every page carries a Content-Security-Policy: the browser runs only
+  the app's own scripts and loads scripts, styles, images, and data from this site alone, and
+  no other site can frame it. Every answer also says `nosniff`, `X-Frame-Options: DENY`, and
+  `Referrer-Policy: same-origin`, and over HTTPS, `Strict-Transport-Security`.
+- **Plain HTTP** is for a network you trust: over it, the key you type at sign-in and the
+  session cookie cross the network unencrypted.
+
+### Serving Marquee over HTTPS
+
+Marquee does not terminate TLS itself. To serve it over HTTPS, put a reverse proxy that does
+in front of the web app, and set in `.env`:
+
+- `MARQUEE_WEB_ORIGIN=https://marquee.example.org`, the address you open. The session cookie
+  is then `Secure`, and every answer carries `Strict-Transport-Security: max-age=31536000`, so
+  a browser that has seen it uses HTTPS for that name for a year.
+- `MARQUEE_WEB_BIND=127.0.0.1` when the proxy runs on the same host, so that only the proxy
+  reaches the web app.
+- `MARQUEE_WEB_ADDRESS_HEADER=x-forwarded-for` and `MARQUEE_WEB_XFF_DEPTH=1` (the number of
+  trusted proxies in front of Marquee), so the sign-in limiter counts each visitor on their
+  own rather than every visitor as the proxy. With a header set, a request that does not come
+  through the proxy cannot sign in.
+
+Then `docker compose up -d` recreates the web container. With [Caddy](https://caddyserver.com/)
+on the same host, which obtains the certificate and sets `X-Forwarded-For` itself, the whole
+`Caddyfile` is:
+
+```
+marquee.example.org {
+	reverse_proxy 127.0.0.1:3000
+}
+```
+
+Over plain HTTP, without a proxy, the API key and the session cookie cross the network
+unencrypted.
+
+### Updating and going back
+
+```bash
+git pull
+docker compose run --rm marquee marquee db backup   # a dump first: the way back
+docker compose pull db                              # PostgreSQL's newest 19.x release
+docker compose --profile app up -d --build
+```
+
+`up -d --build` builds the images again and recreates what changed; the migration brings the
+database's schema up to date before the API and the worker start. The `manual-…` dump the
+second line makes is never deleted by Marquee.
+
+**Going back to older code after an update migrated the database.** Checking out the older
+code is not enough: its migration does not know the newer schema, so the API and the worker
+would not start. And `marquee db restore` always brings a dump up to the running code's
+newest schema. So restore the dump you made before the update with the older code itself:
+
+```bash
+docker compose --profile app stop api worker web
+git checkout <the version you updated from>
+docker compose --profile app build
+docker compose run --rm marquee marquee db restore manual-<time>-<revision>.dump --yes
+docker compose --profile app up -d
+```
+
+The dump's schema is the older code's own, so it loads as it is. Everything the database
+recorded after the dump is gone (runs, answers, deployments since); files written since stay
+in the data folder and the library, and `marquee doctor` and `marquee deployments verify` say
+what no longer matches. This needs a version with `marquee db restore` (this one and later).
+There is no downgrade command.
+
+**Moving a pin.** The base images are pinned by digest in `Dockerfile` (`PYTHON_IMAGE`,
+`UV_IMAGE`) and `frontend/Dockerfile` (`NODE_IMAGE`), and every model input in
+`marquee/model_fetch.py` (a Hugging Face revision, a commit, and a SHA-256 for each
+download). To move an image, put the new tag's digest (`docker buildx imagetools inspect
+<image>:<tag>`) in its line and build again. To move a model, change its revision or address
+and its SHA-256, build `setup` again, and run `docker compose run --rm setup marquee models
+fetch --force <item>`. A changed model is a different model: `marquee doctor`'s manifest
+check must pass again, and measurements made with the old model no longer describe it.
+
+### Operations notes
+
+- **`docker kill` is not a crash** to Docker's restart policy: it is taken as a deliberate
+  stop, and the service stays down until `docker compose up -d`. A process that dies on its
+  own is restarted.
+- **Start a stopped service with `docker compose up -d`,** not `docker compose start
+  <service>`: `start` runs the one-shot `migrate` again as well, while `up -d` starts what is
+  stopped and leaves the rest alone.
+- **What the worker's health check proves:** that a worker holds the queue's lock and the
+  database answers. It does not prove that the worker makes progress: a worker stuck inside a
+  job still holds the lock. The Activity page shows what is running and how far it has got.
 
 ### Backups and restore
 
@@ -311,9 +429,13 @@ uv run marquee api
 `marquee models fetch` builds every model that is missing and leaves alone what is present:
 the CLIP image encoder, DINOv2, the zero-shot style axes, the YOLO person detector (exported
 in an isolated environment, so its dependencies never enter the project), the OCR weights,
-the LAION aesthetic head, and the SCRFD face detector. The last two are downloaded from
-their publishers and must match a pinned SHA-256. Each build is checked before it is put in
-place, and `data/models/manifest.json` records every model's size, SHA-256, and origin.
+the LAION aesthetic head, and the SCRFD face detector. Everything it downloads is pinned and
+must match a SHA-256 in `marquee/model_fetch.py` (the CLIP files at a fixed revision, the
+DINOv2 code at a fixed commit and its weights, the YOLO weights, the OCR folders, the aesthetic
+head, the face detector), so a fresh machine builds the models every measurement was made
+with. Each build is checked before it is put in place, and `data/models/manifest.json`
+records every model's size, SHA-256, and origin. Their licences are in
+[docs/third-party.md](docs/third-party.md).
 `--force ITEM` rebuilds one item.
 
 `marquee taste seed` treats the `poster.jpg` in each movie folder as a poster you chose, at
