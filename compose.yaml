@@ -21,10 +21,11 @@ x-app-image: &app-image
     context: .
     target: runtime
     args: &app-build-args
-      # The container user's ids. They must own the data folder and be able to write the
-      # library; 1000 is the first user on most Linux machines.
-      MARQUEE_UID: "1000"
-      MARQUEE_GID: "1000"
+      # The container user's ids, from MARQUEE_UID and MARQUEE_GID in .env. They must own
+      # the data folder and be able to write the library; 1000 (the first user on most Linux
+      # machines) when unset.
+      MARQUEE_UID: ${MARQUEE_UID:-1000}
+      MARQUEE_GID: ${MARQUEE_GID:-1000}
 
 # What every application container is told, beyond .env.
 x-app-environment: &app-environment

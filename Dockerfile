@@ -32,7 +32,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0t64 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# A fixed id for now, matching the owner of the media share on the host.
+# The user's ids: they must own the data folder and be able to write the library. Compose
+# passes MARQUEE_UID and MARQUEE_GID from the settings file (default 1000).
 ARG MARQUEE_UID=1000
 ARG MARQUEE_GID=1000
 RUN groupadd --gid "${MARQUEE_GID}" marquee \
