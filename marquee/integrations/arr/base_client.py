@@ -1,4 +1,4 @@
-"""Base HTTP client for Sonarr and Radarr APIs.
+"""Base HTTP client for the *arr APIs (Radarr).
 
 Shared error wrapping, connection lifecycle, and convenience methods.
 """
@@ -19,7 +19,7 @@ class ArrClient:
     """Base class for *arr API clients.
 
     Handles connection lifecycle, authentication headers, and unified
-    error wrapping. Subclass for Radarr or Sonarr — just add endpoint methods.
+    error wrapping. A client for one service subclasses it and adds its endpoints.
     """
 
     def __init__(self, base_url: str, api_key: str, service_name: str):
@@ -81,5 +81,5 @@ class ArrClient:
     # ── Shared endpoints ─────────────────────────────────────────────
 
     async def get_system_status(self) -> dict:
-        """Check if the service is reachable. Works on both Radarr and Sonarr."""
+        """Check that the service is reachable (every *arr API answers this)."""
         return await self._get("/api/v3/system/status")

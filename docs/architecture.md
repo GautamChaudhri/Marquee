@@ -22,7 +22,7 @@ marquee/
                    migrate.py, which applies them
   fs/              filesystem safety: confined roots, symlink rejection, download validation,
                    and paths.py, the only place a path from Radarr becomes a local path
-  integrations/    thin HTTP clients: arr/ (Radarr, Sonarr), tmdb/, URL validation
+  integrations/    thin HTTP clients: arr/ (Radarr), tmdb/, URL validation
   ml/              model wrappers (CLIP, aesthetic head, faces, people, DINOv2, zero-shot axes),
                    hardware and execution-provider selection, the taste store, calibration,
                    the residual learner, geometry types, the model checksum manifest

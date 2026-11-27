@@ -1,4 +1,4 @@
-"""*arr API clients — Radarr and Sonarr."""
+"""*arr API clients: Radarr (TV and Sonarr come later, written against the structure then)."""
 
 from marquee.integrations.arr.base_client import ArrClient
 from marquee.integrations.arr.exceptions import (
@@ -9,7 +9,6 @@ from marquee.integrations.arr.exceptions import (
     ArrResponseError,
 )
 from marquee.integrations.arr.radarr_client import RadarrClient
-from marquee.integrations.arr.sonarr_client import SonarrClient
 
 __all__ = [
     "ArrClient",
@@ -19,5 +18,4 @@ __all__ = [
     "ArrNotFoundError",
     "ArrResponseError",
     "RadarrClient",
-    "SonarrClient",
 ]
