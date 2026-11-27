@@ -10,6 +10,27 @@ export default defineConfig({
 	plugins: [
 		sveltekit({
 			adapter: adapter(),
+			// The Content-Security-Policy of every page. SvelteKit adds a nonce for the inline
+			// scripts it writes (and for app.html's, which carries %sveltekit.nonce%). Images and
+			// every request come from this origin: the browser reaches the API through /api here.
+			// Inline style attributes, and only those, are allowed: SvelteKit's own route
+			// announcer (#svelte-announcer, in the root component it generates) carries one.
+			csp: {
+				mode: 'auto',
+				directives: {
+					'default-src': ['self'],
+					'script-src': ['self'],
+					'style-src': ['self'],
+					'style-src-attr': ['unsafe-inline'],
+					'img-src': ['self', 'data:', 'blob:'],
+					'font-src': ['self'],
+					'connect-src': ['self'],
+					'object-src': ['none'],
+					'base-uri': ['self'],
+					'form-action': ['self'],
+					'frame-ancestors': ['none']
+				}
+			},
 			// This app's components are compiled in runes mode; dependencies keep their own.
 			dynamicCompileOptions: ({ filename, compileOptions }) => {
 				const isDependency = filename.split(/[/\\]/).includes('node_modules');

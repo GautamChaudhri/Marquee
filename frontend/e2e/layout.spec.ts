@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { resetBackend, signIn } from './helpers';
 
 async function overflowsSideways(page: Page): Promise<boolean> {

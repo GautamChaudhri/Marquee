@@ -121,6 +121,12 @@ body {
 	height: 100%;
 }
 
+/* The wrapper app.html puts around the app; a class, since the page's policy allows no
+   inline style. */
+.app-root {
+	display: contents;
+}
+
 html {
 	/* The page scrollbar appearing and vanishing changed the content width by
 	   10px, which resized anything viewport-sized (the taste map plot) and

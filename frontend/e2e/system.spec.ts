@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { resetBackend, signIn } from './helpers';
 
 test('System shows the installation in plain tables, and nothing is wrong', async ({ page }) => {

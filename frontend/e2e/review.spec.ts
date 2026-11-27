@@ -1,4 +1,5 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { failNext, receivedBodies, resetBackend, signIn } from './helpers';
 
 // Run 12 (Film 05, the owner's own poster) shows six designs, in rank order:

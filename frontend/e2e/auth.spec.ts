@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { APP_URL, E2E_API_KEY } from '../playwright.config';
 import { lastBackendRequest, resetBackend, signIn } from './helpers';
 
