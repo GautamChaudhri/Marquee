@@ -101,8 +101,11 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,target=/src,rw \
     uv sync --locked --extra nvidia --no-dev --no-editable
-USER marquee
+# The build ran in /src (the dependency stage's folder and the bind mount above); the image
+# keeps no empty folder of it.
 WORKDIR /home/marquee
+RUN rmdir /src
+USER marquee
 CMD ["marquee", "doctor"]
 
 # ── export ──────────────────────────────────────────────────────────────────
@@ -117,6 +120,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,target=/src,rw \
     uv sync --locked --extra nvidia --no-dev --group export --no-editable
-USER marquee
 WORKDIR /home/marquee
+RUN rmdir /src
+USER marquee
 CMD ["marquee", "models", "fetch"]
