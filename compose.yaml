@@ -13,7 +13,7 @@
 #
 # Every setting comes from .env (see .env.example). The application containers read no .env
 # file themselves (MARQUEE_ENV_FILE is empty): Compose passes the settings, overriding the
-# ones that differ inside a container. The web container gets only its own six.
+# ones that differ inside a container. The web container gets only its own eight.
 
 x-app-image: &app-image
   image: marquee:runtime
@@ -186,6 +186,13 @@ services:
       # The proxy refuses bodies over 1 MiB itself; the server's default limit (512 KiB) would
       # cut them first, with a 502.
       BODY_SIZE_LIMIT: 1M
+      # Behind a reverse proxy every visitor arrives from the proxy's address, and the sign-in
+      # limiter would count them all as one. The header the proxy puts the visitor's address
+      # in (x-forwarded-for, or one such as x-real-ip), and with x-forwarded-for how many
+      # trusted proxies stand in front (the adapter reads that many addresses from the right).
+      # Unset: the connection's own address, as without a proxy.
+      ADDRESS_HEADER: ${MARQUEE_WEB_ADDRESS_HEADER:-}
+      XFF_DEPTH: ${MARQUEE_WEB_XFF_DEPTH:-1}
     ports:
       - "${MARQUEE_WEB_BIND:-0.0.0.0}:${MARQUEE_WEB_PORT:-3000}:3000"
     depends_on:

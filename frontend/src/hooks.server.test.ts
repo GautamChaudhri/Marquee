@@ -10,8 +10,13 @@ vi.mock('#lib/server/env.ts', () => ({
 
 const { handle } = await import('./hooks.server');
 
-function event(path: string, init: RequestInit = {}, cookie?: string) {
-	const url = new URL(`http://localhost:3000${path}`);
+function event(
+	path: string,
+	init: RequestInit = {},
+	cookie?: string,
+	origin = 'http://localhost:3000'
+) {
+	const url = new URL(`${origin}${path}`);
 	return {
 		url,
 		request: new Request(url, init),
@@ -19,11 +24,11 @@ function event(path: string, init: RequestInit = {}, cookie?: string) {
 	};
 }
 
-async function run(path: string, init: RequestInit = {}, cookie?: string) {
+async function run(path: string, init: RequestInit = {}, cookie?: string, origin?: string) {
 	const resolve = vi.fn().mockResolvedValue(new Response('page'));
 	try {
 		const response = (await handle({
-			event: event(path, init, cookie),
+			event: event(path, init, cookie, origin),
 			resolve
 		} as never)) as Response;
 		return { response, resolve, redirect: null };
@@ -36,6 +41,18 @@ async function run(path: string, init: RequestInit = {}, cookie?: string) {
 describe('the hooks', () => {
 	beforeEach(() => {
 		settings.key = 'the-api-key';
+	});
+
+	it('sends HSTS when the site is served over https, and only then', async () => {
+		const https = await run('/signin', {}, undefined, 'https://marquee.example.org');
+		expect(https.response?.headers.get('strict-transport-security')).toBe('max-age=31536000');
+		expect(https.response?.headers.get('x-frame-options')).toBe('DENY');
+		const refused = await run('/api/movies', {}, undefined, 'https://marquee.example.org');
+		expect(refused.response?.status).toBe(401);
+		expect(refused.response?.headers.get('strict-transport-security')).toBe('max-age=31536000');
+		const http = await run('/signin');
+		expect(http.response?.headers.get('strict-transport-security')).toBeNull();
+		expect(http.response?.headers.get('x-content-type-options')).toBe('nosniff');
 	});
 
 	it('serves the sign-in page to anyone', async () => {
