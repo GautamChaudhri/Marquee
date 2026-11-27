@@ -8,6 +8,10 @@ database) with a plain JSON payload, then reads the archive the pipeline left in
 folder, hashes the downloads, and completes the record. Every step is safe to repeat: a
 second attempt of the job reuses the run's row and starts its folder over.
 
+A run of the product loop then fetches a large copy of each ranked poster for the web app
+(:mod:`marquee.artwork.large`). The run is complete by then, and a copy that cannot be
+fetched changes nothing about it.
+
 Both kinds hand the child the active profile's and residual artifact's identity, so the
 engine ranks with the active residual when it is compatible. A masked run also hands it the
 exemplars to leave out; it is never part of the product loop (no deploy policy), a movie
@@ -27,7 +31,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from marquee.artwork import runs
+from marquee.artwork import large, runs
 from marquee.cancellation import JobCancelledError
 from marquee.config import pipeline_settings
 from marquee.db.engine import create_engine, create_session_factory
@@ -155,6 +159,31 @@ async def _policy(
             return {"queued": False, "note": str(exc)}
 
 
+async def _large_copies(run_id: int, folder: str, read: runs.RunFolder) -> dict[str, int] | None:
+    """Fetch a large copy of each ranked poster that was downloaded, best first; what the
+    result reports. Never fails the job: the run is complete, and the copies are extra."""
+    ranked = sorted(
+        (c for c in read.candidates if c.rank is not None and c.sha256 is not None),
+        key=lambda c: c.rank or 0,
+    )
+    if not ranked:
+        return None
+    try:
+        copies = await large.fetch_large(folder, [c.source_file for c in ranked])
+    except Exception as exc:
+        logger.warning("RUN | %d: no large copies: %s", run_id, describe_error(exc))
+        return {"saved": 0, "failed": len(ranked)}
+    for source_file, reason in copies.failed.items():
+        logger.warning("RUN | %d: no large copy of %s: %s", run_id, source_file, reason)
+    logger.info(
+        "RUN | %d: %d large copies kept, %d left out",
+        run_id,
+        len(copies.saved),
+        len(copies.failed),
+    )
+    return {"saved": len(copies.saved), "failed": len(copies.failed)}
+
+
 async def _recorded(session: AsyncSession, run: PosterRun, movie: Movie) -> dict[str, Any]:
     """The result of a run that already completed, from its record. Nothing is changed."""
     candidates = await runs.candidates_of(session, run.id)
@@ -173,6 +202,7 @@ async def _recorded(session: AsyncSession, run: PosterRun, movie: Movie) -> dict
         "ranked": ranked[: runs.RANKED_SHOWN],
         "pick": {"candidate_id": pick.id, **runs.candidate_row(pick)} if pick else None,
         "deploy": None,
+        "large": None,
         "seconds": 0.0,
         "already_completed": True,
     }
@@ -228,6 +258,7 @@ async def _run(
             await _end_run(sessions, ctx, run_id, exc)
         raise
     deployed = None if masked else await _policy(sessions, movie_id, pick_id)
+    copies = None if masked else await _large_copies(run_id, folder, read)
     pick_row = next((row for row in read.ranked if row["file"] == result.pick_file), None)
     return {
         "run_id": run_id,
@@ -242,6 +273,7 @@ async def _run(
         "ranked": read.ranked,
         "pick": {"candidate_id": pick_id, **pick_row} if pick_row else None,
         "deploy": deployed,
+        "large": copies,
         "masked": masked,
         "seconds": round(time.perf_counter() - started, 1),
     }

@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -335,6 +336,83 @@ def read_run_folder(folder: Path) -> RunFolder:
         residual_ranked=bool(ranked)
         and all(RESIDUAL_MARK in (row.get("contributions") or {}) for row in ranked),
     )
+
+
+# ── What a score is made of ───────────────────────────────────────────────
+
+RESIDUAL_PART = "residual"
+"""The part that holds what the residual changed, in a run the residual ranked."""
+_BASELINE_PREFIX = "baseline:"
+
+
+@dataclass(frozen=True)
+class ScorePart:
+    """One part of a ranked candidate's score."""
+
+    feature: str
+    """The engine's name for it (``knn_sim``), or :data:`RESIDUAL_PART`."""
+    contribution: float
+    """What it added to the final score; the parts of one candidate sum to its score."""
+    value: float | None
+    """How the candidate did on the feature, from 0 to 1; none for the residual's part."""
+
+
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def score_parts(row: dict[str, Any]) -> list[ScorePart]:
+    """The parts of one ledger row's score, in the engine's order.
+
+    The weighted scorer writes one contribution per feature. The residual scorer writes the
+    weighted ones under ``baseline:<feature>`` beside its own working; those are given as
+    the features, and the difference the residual made to the score as one more part.
+    """
+    contributions = row.get("contributions")
+    if not isinstance(contributions, dict):
+        return []
+    normalized = row.get("normalized_features")
+    values = normalized if isinstance(normalized, dict) else {}
+    residual = RESIDUAL_MARK in contributions
+    parts: list[ScorePart] = []
+    for name, raw in contributions.items():
+        if residual and not str(name).startswith(_BASELINE_PREFIX):
+            continue
+        feature = str(name).removeprefix(_BASELINE_PREFIX) if residual else str(name)
+        contribution = _finite(raw)
+        if contribution is not None:
+            parts.append(ScorePart(feature, contribution, _finite(values.get(feature))))
+    if residual:
+        final = _finite(contributions.get("final_score"))
+        baseline = _finite(contributions.get("baseline_score"))
+        if final is not None and baseline is not None:
+            parts.append(ScorePart(RESIDUAL_PART, final - baseline, None))
+    return parts
+
+
+def read_score_parts(folder: Path) -> dict[str, list[ScorePart]]:
+    """What each ranked candidate's score is made of, by TMDB file name. Blocking.
+
+    Read from the run archive, which is the only place the parts are kept. They explain a
+    score and are no part of the run's record, so an archive that is gone or cannot be read
+    gives nothing rather than an error.
+    """
+    try:
+        payload = json.loads((folder / RUN_ARCHIVE).read_text(encoding="utf-8"))
+        rows = payload["diagnostic_ledger"]["candidates"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    found: dict[str, list[ScorePart]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("rank") is None:
+            continue
+        parts = score_parts(row)
+        if parts:
+            found[str(row.get("orig_filename"))] = parts
+    return found
 
 
 # ── Changing the record ───────────────────────────────────────────────────

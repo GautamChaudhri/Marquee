@@ -66,8 +66,9 @@ test('recent feedback lists answers with Undo and a link to the run', async ({ p
 	await page
 		.getByTestId('order-list')
 		.locator('[data-key="s2"]')
-		.getByRole('button', { name: /^Use / })
+		.getByTestId('open-design')
 		.click();
+	await page.getByTestId('design-dialog').getByTestId('use-this-one').click();
 	await expect(page.getByTestId('answer-result')).toBeVisible();
 
 	await page.goto('/taste');

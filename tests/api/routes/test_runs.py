@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -23,6 +24,7 @@ ROUTES = [
     ("GET", "/api/runs"),
     ("GET", "/api/runs/1"),
     ("GET", "/api/runs/1/candidates/1/image"),
+    ("GET", "/api/runs/1/candidates/1/image/large"),
     ("POST", "/api/runs/1/deploy"),
     ("GET", "/api/deployments"),
     ("POST", "/api/deployments/1/restore"),
@@ -189,6 +191,9 @@ async def test_runs_list_and_detail(
     assert (pick["stack"], pick["is_pick"], pick["rank"]) == ("1A", True, 1)
     assert pick["image_url"] == f"/api/runs/{ids['run']}/candidates/{ids['pick']}/image"
     assert never["image_url"] is None and never["sha256"] is None
+    # This run's folder holds no archive and no large copies.
+    assert all(c["score_parts"] is None for c in detail["candidates"])
+    assert all(c["large_image_url"] is None for c in detail["candidates"])
     assert detail["run_folder"] == "00000001-alpha"
     assert str(runs_dir) not in str(detail) and RADARR_ROOT not in str(detail)
     assert (await client.get("/api/runs/999", headers=headers)).status_code == 404
@@ -219,6 +224,78 @@ async def test_a_candidate_image_is_served_from_its_run_folder(
     ).status_code == 404
     (runs_dir / "00000001-alpha" / "pick.jpg").write_bytes(b"changed")
     assert (await client.get(f"{base}/{ids['pick']}/image", headers=headers)).status_code == 404
+
+
+async def test_a_run_says_what_each_ranked_score_is_made_of(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, runs_dir: Path
+) -> None:
+    ids = await _run(db_session, runs_dir)
+    rows = [
+        {
+            "orig_filename": "pick.jpg",
+            "rank": 1,
+            "contributions": {"knn_sim": 0.6, "aesthetic": 0.3},
+            "normalized_features": {"knn_sim": 1.0, "aesthetic": 0.75},
+        },
+        {"orig_filename": "other.png", "rank": 2, "contributions": {"knn_sim": 0.5}},
+        # Not ranked in the record, so its parts are not given whatever the archive says.
+        {"orig_filename": "never.jpg", "rank": 3, "contributions": {"knn_sim": 0.1}},
+    ]
+    (runs_dir / "00000001-alpha" / "pipeline_run.json").write_text(
+        json.dumps({"diagnostic_ledger": {"candidates": rows}})
+    )
+
+    detail = (await client.get(f"/api/runs/{ids['run']}", headers=headers)).json()
+
+    pick, other, never = detail["candidates"]
+    assert pick["score_parts"] == [
+        {"feature": "knn_sim", "contribution": 0.6, "value": 1.0},
+        {"feature": "aesthetic", "contribution": 0.3, "value": 0.75},
+    ]
+    assert other["score_parts"] == [{"feature": "knn_sim", "contribution": 0.5, "value": None}]
+    assert never["score_parts"] is None
+
+
+async def test_a_large_copy_is_served_when_the_run_kept_one(
+    client: AsyncClient, db_session: AsyncSession, headers: dict, runs_dir: Path, tmp_path: Path
+) -> None:
+    ids = await _run(db_session, runs_dir)
+    base = f"/api/runs/{ids['run']}/candidates"
+    folder = runs_dir / "00000001-alpha" / "large"
+    folder.mkdir()
+    (folder / "pick.jpg").write_bytes(b"\xff\xd8large pick")
+
+    detail = (await client.get(f"/api/runs/{ids['run']}", headers=headers)).json()
+    pick, other, never = detail["candidates"]
+    assert pick["large_image_url"] == f"{base}/{ids['pick']}/image/large"
+    assert other["large_image_url"] is None and never["large_image_url"] is None
+
+    image = await client.get(pick["large_image_url"], headers=headers)
+    assert image.status_code == 200 and image.content == b"\xff\xd8large pick"
+    assert image.headers["content-type"] == "image/jpeg"
+    cached = await client.get(
+        pick["large_image_url"], headers={**headers, "If-None-Match": image.headers["etag"]}
+    )
+    assert cached.status_code == 304
+
+    assert (
+        await client.get(f"{base}/{ids['other']}/image/large", headers=headers)
+    ).status_code == 404
+    assert (await client.get(f"{base}/999/image/large", headers=headers)).status_code == 404
+    assert (
+        await client.get(f"/api/runs/999/candidates/{ids['pick']}/image/large", headers=headers)
+    ).status_code == 404
+
+    # A copy that is a link out of the runs directory is neither offered nor served.
+    outside = tmp_path / "outside.jpg"
+    outside.write_bytes(b"\xff\xd8outside")
+    (folder / "pick.jpg").unlink()
+    (folder / "pick.jpg").symlink_to(outside)
+    detail = (await client.get(f"/api/runs/{ids['run']}", headers=headers)).json()
+    assert detail["candidates"][0]["large_image_url"] is None
+    assert (
+        await client.get(f"{base}/{ids['pick']}/image/large", headers=headers)
+    ).status_code == 404
 
 
 async def test_a_candidate_image_outside_the_runs_directory_is_refused(

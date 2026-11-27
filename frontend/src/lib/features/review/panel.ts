@@ -75,6 +75,35 @@ export function answerable(candidate: Pick<Candidate, 'sha256'>): boolean {
 	return candidate.sha256 !== null && candidate.sha256 !== undefined;
 }
 
+/** One poster to look at large. */
+export interface Closeup {
+	id: number;
+	/** The run's large copy when it kept one, else the 500 px file. */
+	src: string;
+	score: number | null;
+	/** Its place among its design's variants, from 1, and how many there are. */
+	place: number;
+	of: number;
+}
+
+/** A design's posters to look at large, best first. A variant never downloaded has no
+ *  picture and is left out, but the others keep their place among all the variants. */
+export function closeups(card: Card): Closeup[] {
+	return card.variants.flatMap((variant, i) => {
+		const src = variant.large_image_url ?? variant.image_url;
+		if (!src) return [];
+		return [
+			{
+				id: variant.id,
+				src,
+				score: variant.final_score ?? null,
+				place: i + 1,
+				of: card.variants.length
+			}
+		];
+	});
+}
+
 // ── The owner's order and the hate pile ───────────────────────────────────
 
 /** Card keys: the owner's order, best first, and the hate pile, in the order hated. */

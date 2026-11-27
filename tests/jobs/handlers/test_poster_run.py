@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from marquee.artwork import runs
+from marquee.artwork import large, runs
 from marquee.cancellation import JobCancelledError
 from marquee.config import settings
 from marquee.db import engine as db_engine_module
@@ -49,6 +49,19 @@ def _test_database(database_url: str, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(handler, "create_engine", lambda url=None: real(database_url))
 
 
+@pytest.fixture(autouse=True)
+def large_copies(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str]]]:
+    """No test here reaches TMDB: the fetch of large copies is recorded instead."""
+    calls: list[tuple[str, list[str]]] = []
+
+    async def fake_fetch(run_folder: str, source_files: list[str]) -> large.LargeCopies:
+        calls.append((run_folder, list(source_files)))
+        return large.LargeCopies(saved=list(source_files))
+
+    monkeypatch.setattr(large, "fetch_large", fake_fetch)
+    return calls
+
+
 async def _movie(sessions: async_sessionmaker[AsyncSession], **values: Any) -> int:
     now = datetime.now(UTC)
     defaults: dict[str, Any] = {
@@ -82,7 +95,9 @@ def _context(job_id: int, payload: dict, gpu: Any) -> JobContext:
     return JobContext(job_id, payload, threading.Event(), lambda *_: None, gpu_runner=gpu)
 
 
-def _fake_child(calls: list[dict], *, pick: str | None = "a.jpg") -> Any:
+def _fake_child(
+    calls: list[dict], *, pick: str | None = "a.jpg", ledger: list[dict] | None = None
+) -> Any:
     async def gpu(function: str, payload: dict) -> dict:
         assert function == handler.CHILD_FUNCTION
         calls.append(payload)
@@ -91,7 +106,7 @@ def _fake_child(calls: list[dict], *, pick: str | None = "a.jpg") -> Any:
         (folder / "a.jpg").write_bytes(b"poster a")
         (folder / "b.jpg").write_bytes(b"poster b")
         (folder / runs.RUN_ARCHIVE).write_text(
-            json.dumps({"diagnostic_ledger": {"candidates": LEDGER}})
+            json.dumps({"diagnostic_ledger": {"candidates": LEDGER if ledger is None else ledger}})
         )
         return {
             "status": "completed",
@@ -145,6 +160,51 @@ async def test_a_run_leaves_its_record_candidates_and_pick(
     assert result["ranked_total"] == 1 and result["status"] == "completed"
 
 
+async def test_a_run_fetches_a_large_copy_of_each_ranked_poster(
+    sessions: async_sessionmaker[AsyncSession], large_copies: list[tuple[str, list[str]]]
+) -> None:
+    """Only what was ranked and downloaded: ``b.jpg`` stopped at the text gate."""
+    movie_id = await _movie(sessions)
+    job_id = await _job(sessions, 33)
+
+    result = await handler.poster_run(_context(job_id, {"movie_id": movie_id}, _fake_child([])))
+
+    assert large_copies == [(result["run_folder"], ["a.jpg"])]
+    assert result["large"] == {"saved": 1, "failed": 0}
+
+
+async def test_a_run_with_no_ranked_poster_fetches_nothing(
+    sessions: async_sessionmaker[AsyncSession], large_copies: list[tuple[str, list[str]]]
+) -> None:
+    movie_id = await _movie(sessions)
+    job_id = await _job(sessions, 34)
+
+    result = await handler.poster_run(
+        _context(job_id, {"movie_id": movie_id}, _fake_child([], pick=None, ledger=[LEDGER[1]]))
+    )
+
+    assert large_copies == [] and result["large"] is None
+    assert result["status"] == "completed"
+
+
+async def test_failing_to_fetch_large_copies_never_fails_the_run(
+    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(run_folder: str, source_files: list[str]) -> large.LargeCopies:
+        raise RuntimeError("TMDB is away")
+
+    monkeypatch.setattr(large, "fetch_large", broken)
+    movie_id = await _movie(sessions)
+    job_id = await _job(sessions, 35)
+
+    result = await handler.poster_run(_context(job_id, {"movie_id": movie_id}, _fake_child([])))
+
+    assert result["large"] == {"saved": 0, "failed": 1}
+    async with sessions() as session:
+        run = await runs.run_for_job(session, job_id)
+    assert run is not None and run.state == "completed"
+
+
 async def test_a_second_attempt_reuses_the_row_and_folder_name(
     sessions: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -193,7 +253,7 @@ async def test_a_completed_run_is_never_run_again(
     assert again["run_id"] == first["run_id"] and again["run_folder"] == first["run_folder"]
     assert again["pick"] == first["pick"]
     assert again["ranked"] == first["ranked"] and again["ranked_total"] == first["ranked_total"]
-    assert again["deploy"] is None
+    assert again["deploy"] is None and again["large"] is None
     assert (folder / "feedback-was-here").read_text() == "kept"
     async with sessions() as session:
         after = list(await session.scalars(select(RunCandidate.id).order_by(RunCandidate.id)))
@@ -384,7 +444,9 @@ async def _masked_job(sessions: async_sessionmaker[AsyncSession], job_id: int) -
 
 
 async def test_a_masked_run_leaves_out_the_movies_exemplars_and_is_recorded_as_one(
-    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+    sessions: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    large_copies: list[tuple[str, list[str]]],
 ) -> None:
     movie_id = await _movie(sessions)
     taste = await _taste(sessions, movie_id)
@@ -406,6 +468,7 @@ async def test_a_masked_run_leaves_out_the_movies_exemplars_and_is_recorded_as_o
     }
     assert payload["residual"] is None
     assert result["masked"] is True and result["deploy"] is None
+    assert large_copies == [] and result["large"] is None  # nobody looks closely at these
     async with sessions() as session:
         run = await runs.run_for_job(session, job_id)
         assert run is not None and run.masked and run.state == "completed"

@@ -1227,6 +1227,84 @@
         }
       }
     },
+    "/api/runs/{run_id}/candidates/{candidate_id}/image/large": {
+      "get": {
+        "tags": [
+          "runs"
+        ],
+        "summary": "Get Candidate Large Image",
+        "description": "The large copy a run kept of one ranked candidate, for looking at it closely.",
+        "operationId": "get_candidate_large_image_api_runs__run_id__candidates__candidate_id__image_large_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          },
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "if-none-match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A copy up to 1500 px wide",
+            "content": {
+              "image/jpeg": {}
+            }
+          },
+          "304": {
+            "description": "Unchanged since the ETag the client holds"
+          },
+          "404": {
+            "description": "No such run or candidate, or the run kept no large copy of it"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/runs/{run_id}/deploy": {
       "post": {
         "tags": [
@@ -2667,6 +2745,33 @@
             ],
             "title": "Image Url",
             "description": "The 500 px file, with the API key"
+          },
+          "large_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Large Image Url",
+            "description": "A copy up to 1500 px wide, kept for ranked candidates of newer runs; null when the run has none"
+          },
+          "score_parts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ScorePartItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Score Parts",
+            "description": "What a ranked candidate's score is made of, from the run archive; null when it is not ranked or the archive is gone"
           }
         },
         "type": "object",
@@ -2681,7 +2786,9 @@
           "final_score",
           "stack",
           "is_pick",
-          "image_url"
+          "image_url",
+          "large_image_url",
+          "score_parts"
         ],
         "title": "CandidateItem"
       },
@@ -6359,6 +6466,39 @@
           "at_head"
         ],
         "title": "SchemaInfo"
+      },
+      "ScorePartItem": {
+        "properties": {
+          "feature": {
+            "type": "string",
+            "title": "Feature",
+            "description": "The engine's name for the part (knn_sim), or residual for what the residual changed"
+          },
+          "contribution": {
+            "type": "number",
+            "title": "Contribution",
+            "description": "What it added to the final score; a candidate's parts sum to its score"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value",
+            "description": "How the candidate did on the feature, from 0 to 1; null for residual"
+          }
+        },
+        "type": "object",
+        "required": [
+          "feature",
+          "contribution",
+          "value"
+        ],
+        "title": "ScorePartItem"
       },
       "SettingsInfo": {
         "properties": {

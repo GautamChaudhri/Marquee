@@ -5,6 +5,7 @@ import {
 	MAX_SHOWN,
 	approvalAnswer,
 	bringBack,
+	closeups,
 	differsFromEngine,
 	groupIntoCards,
 	hate,
@@ -37,7 +38,9 @@ function candidate(id: number, rank: number | null, stack: string | null, sha = 
 		final_score: rank === null ? null : 1 - rank / 100,
 		stack,
 		is_pick: rank === 1,
-		image_url: sha ? `/api/runs/1/candidates/${id}/image` : null
+		image_url: sha ? `/api/runs/1/candidates/${id}/image` : null,
+		large_image_url: null,
+		score_parts: null
 	};
 }
 
@@ -214,5 +217,37 @@ describe('one idempotency key per answer', () => {
 	it('retries only what the API may not have seen', () => {
 		for (const status of [0, 502, 503, 504]) expect(worthRetrying(status)).toBe(true);
 		for (const status of [200, 201, 400, 404, 409, 422]) expect(worthRetrying(status)).toBe(false);
+	});
+});
+
+describe('a design’s posters to look at large', () => {
+	it('uses the run’s large copy when it kept one, else the 500 px file', () => {
+		const best = {
+			...candidate(1, 1, '1A'),
+			large_image_url: '/api/runs/1/candidates/1/image/large'
+		};
+		const [card] = groupIntoCards([best, candidate(4, 4, '1B')]);
+		expect(closeups(card!)).toEqual([
+			{
+				id: 1,
+				src: '/api/runs/1/candidates/1/image/large',
+				score: 0.99,
+				place: 1,
+				of: 2
+			},
+			{ id: 4, src: '/api/runs/1/candidates/4/image', score: 0.96, place: 2, of: 2 }
+		]);
+	});
+
+	it('leaves out a variant never downloaded, and keeps the others’ places', () => {
+		const [card] = groupIntoCards([
+			candidate(1, 1, '1A', false),
+			candidate(4, 4, '1B'),
+			candidate(5, 5, '1C')
+		]);
+		expect(closeups(card!).map((item) => [item.id, item.place, item.of])).toEqual([
+			[4, 2, 3],
+			[5, 3, 3]
+		]);
 	});
 });

@@ -395,6 +395,13 @@ and keeps the database work around the GPU child's:
    run is recorded as ranked by `residual` (with the training's id) only when every ranked
    candidate's contributions in the archive carry the residual's; the engine can fall back part
    way through a run, and then the run says `weighted`.
+5. A run of the product loop (never a masked one) then fetches a large copy of each ranked
+   candidate for the web app (`artwork/large.py`): TMDB's original-size file, scaled down to
+   at most 1500 px wide and never enlarged, kept as `large/<TMDB file stem>.jpg` in the run's
+   folder. The engine never reads them and nothing is ranked with them; a deploy still fetches
+   its own original and writes those bytes untouched. It is best effort: the run is complete
+   before it starts, four files are fetched at a time for at most three minutes, and a poster
+   TMDB will not send is logged and left out. A run made before this step existed has none.
 
 A cancel that was asked for marks the run cancelled and removes its folder; a stopping worker
 puts the job back instead, and its next attempt starts the run over. A failure marks it failed
@@ -873,8 +880,9 @@ of it. `marquee api` serves it under uvicorn.
 | `POST /api/movies/{id}/run` | yes | queues a run of the movie: 202 with the job, 200 with the run already queued or running; 409 when the movie cannot be run |
 | `POST /api/runs/batch` | yes | `{"scope": "never-run"\|"no-poster"\|"all", "limit": N}` or `{"movie_ids": [...]}`: 202 with the batch's parent job and how many runs were queued; 422 names movies that cannot be run |
 | `GET /api/runs` | yes | one page of runs, newest first, with `movie_id`, `state`, and `masked` (`false` by default, `true`, `any`) filters |
-| `GET /api/runs/{id}` | yes | one run and its candidates, ranked ones first, whether it was blind, whether it is reviewed, whether it is masked, and the residual training that ranked it |
+| `GET /api/runs/{id}` | yes | one run and its candidates, ranked ones first, whether it was blind, whether it is reviewed, whether it is masked, and the residual training that ranked it. A ranked candidate carries `score_parts`, what its score is made of: each feature's `contribution` (they sum to the score) and its `value` from 0 to 1, read from the run archive on each request and null when the archive is gone. In a run the residual ranked, the parts are the weighted scorer's and one more, `residual`, holds what the residual changed. `large_image_url` is set when the run's folder holds a large copy of the candidate |
 | `GET /api/runs/{id}/candidates/{candidate_id}/image` | yes | the 500 px file the run downloaded, confined to the runs directory and checked against its recorded hash (the ETag) |
+| `GET /api/runs/{id}/candidates/{candidate_id}/image/large` | yes | the large copy the run kept of a ranked candidate (a JPEG up to 1500 px wide), confined to the run folder's `large` folder; 404 when the run kept none |
 | `POST /api/runs/{id}/deploy` | yes | `{"candidate_id": N}` optional (the pick by default): queues the owner's deploy, 202; 200 with the job when the same request is the movie's newest write and still queued; 409 when the candidate cannot be deployed |
 | `GET /api/deployments` | yes | one page of deployments, newest first, with a `movie_id` filter |
 | `POST /api/deployments/{id}/restore` | yes | queues a restore of any deployment, 202; 200 with the job when the same request is the movie's newest write and still queued |
@@ -1018,19 +1026,49 @@ page. A movie's page links its latest run to its review when that run completed.
 
 **The rank panel** (`src/lib/features/review/`). One card is one design: a run's ranked
 candidates are grouped by design stack (`3B` is stack 3, variant B), and a card shows the
-stack's best-ranked variant until the owner opens the stack and makes another variant the
-one it shows. An answer names one candidate per card, the variant the card shows; the old app
-sent every variant of a stack, and eight near-identical negatives teach less than eight
-different ones. A card whose candidate was never downloaded says it cannot be chosen or hated.
-The cards stand in the owner's order, with a hate pile below; every card has buttons (move up,
-move down, hate, and in the pile bring back), and dragging a card by its handle, with the
-pointer, by touch, or from the keyboard, does the same. A line says whether the order differs
-from the engine's. The four answers, each `POST /api/runs/{id}/feedback`:
+stack's best-ranked variant until the owner selects another in the design's popup. An answer
+names one candidate per card, the variant the card shows; the old app sent every variant of a
+stack, and eight near-identical negatives teach less than eight different ones. The cards
+stand in the owner's order, with a hate pile below, and every card has the same four rows, so
+every card is the same height: the poster, the design's place in the order (`#1`, `#2`, with
+no gaps) beside its score, the score as a bar, and the buttons (move up, move down, hate, and
+in the pile bring back). On the poster a yellow dot at the top right counts the variants of a
+design that has more than one, the pick is tagged at the top left, a handle at the bottom left
+drags the card (with the pointer, by touch, or from the keyboard, which does what the buttons
+do), and a magnifier at the bottom right shows the poster large. A line says whether the order
+differs from the engine's.
+
+*The design popup.* A card's poster opens its design: on the left the selected variant's
+score laid out part by part, and on the right a gallery of the design's variants as small
+posters, numbered within the design (`#1` is its best), each with its score, its bar, and its
+own magnifier. A design with more variants than fit scrolls its gallery while the rest of the
+popup stays put, and the page behind a popup does not scroll (`lib/ui/Modal.svelte`). On a
+phone the posters come first and the popup's body scrolls as one. This is the
+one place a poster is chosen, for a design with many variants and for a lone poster alike:
+select one, then "Use this one", which sits in the same corner either way. Selecting a variant
+also makes it the one the card shows. The popup can hate the design or bring it back, and
+says when the selected poster was never downloaded and cannot be chosen or hated.
+
+*The score bar* (`score.ts`). The API's score parts are folded into four families, Taste
+(`knn_sim`, `dino_knn`, `taste_typicality`), Look (`aesthetic`, `title_colorfulness`,
+`sharpness`, `quality_artifacts`, `resolution`), Content (`face_area`, `text_residual`), and
+Source (`provenance`, `official_family`, `lang_match`), with one more for what a residual
+changed. A bar stacks one segment per family and is as long as the score, so a longer bar is a
+better score. The popup's breakdown names every part: how the poster did on it (a bar from 0
+to 1) and what it added to the score. A run whose archive is gone shows an empty bar.
+
+*The large view.* A magnifier shows one poster whole, as large as fits the window, with
+nothing else on screen: the run's large copy when it kept one (scaled down to fit, so it is
+sharp), else the 500 px file enlarged to the same size. The caption gives the resolution of
+the file on screen (`1500 × 2250 px`). The arrows, on screen and on the keyboard, step through the variants of
+its design. Escape closes one layer at a time.
+
+The four answers, each `POST /api/runs/{id}/feedback`:
 
 | Button | `action` | Body besides the key |
 |---|---|---|
 | Keep the pick | `approval` | `shown`, `deploy` |
-| Use this one (on any card) | `override` | `candidate_id`, `shown`, `deploy` |
+| Use this one (in a design's popup) | `override` | `candidate_id`, `shown`, `deploy` |
 | Save this ranking | `rank` | `order` (the cards not hated, in the owner's order), `hated`, `shown`, `deploy` |
 | None of these | `reject` | `shown` (the API hates every shown one and keeps the best-ranked 8) |
 
@@ -1088,7 +1126,8 @@ data/
               container cuda-jit/, the CUDA driver's kernel cache (the image points the
               driver there, not Marquee)
   runs/       one folder per run, named <run id, 8 digits>-<title slug>: the candidates it
-              downloaded, ranked/ output, pipeline.log, and the run archive pipeline_run.json
+              downloaded, ranked/ output, pipeline.log, the run archive pipeline_run.json,
+              and large/: a copy up to 1500 px wide of each ranked poster, for the web app
   backups/    posters/<movie id>/<sha256>.jpg: every poster a write replaced, and db/: the
               database dumps (marquee-<UTC time>-<revision>.dump from the schedule,
               manual-... from `marquee db backup`, pre-restore-<UTC time>.dump from a restore)

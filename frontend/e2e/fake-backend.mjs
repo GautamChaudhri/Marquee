@@ -7,6 +7,7 @@
 // carried: whether the key matched and whether a cookie came through, never a value), and
 // `reset`.
 import { createServer } from 'node:http';
+import { crc32, deflateSync } from 'node:zlib';
 
 const PORT = Number(process.env.FAKE_API_PORT ?? 3199);
 const KEY = process.env.FAKE_API_KEY ?? '';
@@ -17,6 +18,31 @@ const IMAGE = Buffer.from(
 	'iVBORw0KGgoAAAANSUhEUgAAAAIAAAADCAIAAAA2iEnWAAAAFElEQVR4nGPMK6hgYGBgYmBgQFAAGawBXM4IhbAAAAAASUVORK5CYII=',
 	'base64'
 );
+/** A plain PNG of the given size, as a run's large copy is: far taller than any window. */
+function png(width, height) {
+	const chunk = (type, data) => {
+		const body = Buffer.concat([Buffer.from(type), data]);
+		const out = Buffer.alloc(8 + data.length + 4);
+		out.writeUInt32BE(data.length, 0);
+		body.copy(out, 4);
+		out.writeUInt32BE(crc32(body), 8 + data.length);
+		return out;
+	};
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(width, 0);
+	header.writeUInt32BE(height, 4);
+	header.set([8, 0, 0, 0, 0], 8); // 8-bit greyscale
+	const row = Buffer.alloc(1 + width, 0x66);
+	row[0] = 0;
+	const pixels = Buffer.concat(Array.from({ length: height }, () => row));
+	return Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		chunk('IHDR', header),
+		chunk('IDAT', deflateSync(pixels)),
+		chunk('IEND', Buffer.alloc(0))
+	]);
+}
+const LARGE_IMAGE = png(1000, 1500);
 const NOW = Date.parse('2026-11-24T12:00:00Z');
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -76,7 +102,9 @@ function initialState() {
 		final_score: 0.9 - rank / 100,
 		stack: `${rank}A`,
 		is_pick: rank === 1,
-		image_url: `/api/runs/11/candidates/${100 + rank}/image`
+		image_url: `/api/runs/11/candidates/${100 + rank}/image`,
+		large_image_url: null,
+		score_parts: null
 	}));
 	candidates.push({
 		...candidates[0],
@@ -205,7 +233,27 @@ function initialState() {
 
 // ── Review: runs to answer ────────────────────────────────────────────────
 
-function candidateRow(runId, id, rank, stack, { sha = true, pick = false } = {}) {
+/** A ranked candidate's score in parts that sum to it: taste, look, content, and source. */
+function scoreParts(score) {
+	return [
+		{ feature: 'knn_sim', contribution: score * 0.4, value: 0.9 },
+		{ feature: 'aesthetic', contribution: score * 0.2, value: 0.5 },
+		{ feature: 'face_area', contribution: score * 0.25, value: 1 },
+		{ feature: 'official_family', contribution: score * 0.15, value: 0.8 },
+		{ feature: 'lang_match', contribution: 0, value: 1 }
+	];
+}
+
+/** `large`: the run kept a large copy of it; `parts`: its archive still says what its score
+ *  is made of. */
+function candidateRow(
+	runId,
+	id,
+	rank,
+	stack,
+	{ sha = true, pick = false, large = false, parts = true } = {}
+) {
+	const score = rank === null ? null : 0.95 - rank / 50;
 	return {
 		id,
 		source_file: `r${runId}-${id}.jpg`,
@@ -214,10 +262,12 @@ function candidateRow(runId, id, rank, stack, { sha = true, pick = false } = {})
 		gate_decision: rank === null ? 'reject' : 'pass',
 		rejection_reason: rank === null ? 'text_heavy' : null,
 		rank,
-		final_score: rank === null ? null : 0.95 - rank / 50,
+		final_score: score,
 		stack,
 		is_pick: pick,
-		image_url: sha ? `/api/runs/${runId}/candidates/${id}/image` : null
+		image_url: sha ? `/api/runs/${runId}/candidates/${id}/image` : null,
+		large_image_url: sha && large ? `/api/runs/${runId}/candidates/${id}/image/large` : null,
+		score_parts: score !== null && parts ? scoreParts(score) : null
 	};
 }
 
@@ -252,21 +302,22 @@ function runRow(id, movieId, state, candidates, extra = {}) {
 }
 
 /** Run 12 (Film 05) has six designs: three stacks of two, one never downloaded, and two
- *  alone. Run 13 (Film 06) has three, and the deploy policy wrote its pick. Run 10 is Film
+ *  alone. It kept a large copy of both variants of its first design and of no other, and
+ *  its last design has no score breakdown. Run 13 (Film 06) has three, and the deploy policy wrote its pick. Run 10 is Film
  *  05's older run, 16 is still running, and 17 ranked nothing. */
 function reviewRuns() {
 	return {
 		10: runRow(10, 5, 'completed', [candidateRow(10, 1001, 1, '1A', { pick: true })]),
 		12: runRow(12, 5, 'completed', [
-			candidateRow(12, 1201, 1, '1A', { pick: true }),
+			candidateRow(12, 1201, 1, '1A', { pick: true, large: true }),
 			candidateRow(12, 1202, 2, '2A'),
-			candidateRow(12, 1203, 3, '1B'),
+			candidateRow(12, 1203, 3, '1B', { large: true }),
 			candidateRow(12, 1204, 4, '3A'),
 			candidateRow(12, 1205, 5, '2B'),
 			candidateRow(12, 1206, 6, '4A', { sha: false }),
 			candidateRow(12, 1207, 7, '5A'),
 			candidateRow(12, 1208, 8, '3B'),
-			candidateRow(12, 1209, 9, null),
+			candidateRow(12, 1209, 9, null, { parts: false }),
 			candidateRow(12, 1210, null, null)
 		]),
 		13: runRow(
@@ -1198,6 +1249,8 @@ function route(req, res, url) {
 		const run = state.runs[Number(m[1])];
 		return run ? send(res, 200, publicRun(run)) : send(res, 404, { detail: 'run not found' });
 	}
+	if (path.match(/^\/api\/runs\/\d+\/candidates\/\d+\/image\/large$/) && method === 'GET')
+		return send(res, 200, LARGE_IMAGE);
 	if (path.match(/^\/api\/runs\/\d+\/candidates\/\d+\/image$/) && method === 'GET')
 		return send(res, 200, IMAGE);
 	if (path === '/api/runs' && method === 'GET') {
@@ -1384,6 +1437,20 @@ createServer((req, res) => {
 		if (url.searchParams.get('review') === 'none') {
 			for (const id of Object.keys(state.runs)) if (Number(id) !== 11) delete state.runs[id];
 			state.runs[11].state = 'running';
+		}
+		// Run 12's last design gains 23 more variants (ranks 10 to 32), 24 in all: more than
+		// its popup can show at once.
+		if (url.searchParams.get('review') === 'many') {
+			const run = state.runs[12];
+			const rejected = run.candidates.pop();
+			run.candidates[run.candidates.length - 1].stack = '6A';
+			for (let n = 1; n <= 23; n += 1) {
+				const letter = String.fromCharCode(65 + n);
+				run.candidates.push(candidateRow(12, 1250 + n, 9 + n, `6${letter}`));
+			}
+			run.candidates.push(rejected);
+			run.ranked_count = run.candidates.filter((c) => c.rank !== null).length;
+			run.candidate_count = run.candidates.length;
 		}
 		state.systemProblems = url.searchParams.get('problems') === '1';
 		state.production = url.searchParams.get('production') === '1';

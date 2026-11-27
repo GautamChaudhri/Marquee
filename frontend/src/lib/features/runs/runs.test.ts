@@ -14,7 +14,9 @@ function candidate(id: number, rank: number | null): Candidate {
 		final_score: rank === null ? null : 1 - rank / 10,
 		stack: null,
 		is_pick: rank === 1,
-		image_url: null
+		image_url: null,
+		large_image_url: null,
+		score_parts: null
 	};
 }
 

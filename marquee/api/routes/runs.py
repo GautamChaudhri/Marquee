@@ -27,7 +27,7 @@ from marquee.api.schemas.runs import (
     RunState,
 )
 from marquee.api.sessions import Session
-from marquee.artwork import runs
+from marquee.artwork import large, runs
 from marquee.config import settings
 from marquee.db.models import Movie
 from marquee.fs.boundary import FilesystemBoundaryError, boundary_for_roots
@@ -139,12 +139,37 @@ async def get_run(session: Session, run_id: int) -> RunDetail:
     run = await runs.get_run(session, run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="run not found")
+    candidates = await runs.candidates_of(session, run_id)
+    parts, copies = await asyncio.to_thread(_from_folder, run.run_folder)
     return RunDetail.build(
         run,
-        await runs.candidates_of(session, run_id),
+        candidates,
         blind=await feedback.blind_for(session, run),
         reviewed=await agreement.run_reviewed(session, run_id),
+        parts=parts,
+        large=frozenset(
+            c.id
+            for c in candidates
+            if c.sha256 is not None and _large_name(c.source_file) in copies
+        ),
     )
+
+
+def _large_name(source_file: str) -> str | None:
+    try:
+        return large.large_name(source_file)
+    except large.LargeCopyError:
+        return None
+
+
+def _from_folder(run_folder: str) -> tuple[dict[str, list[runs.ScorePart]], frozenset[str]]:
+    """Blocking: what only the run's folder knows, the score parts and which large copies
+    it holds. A folder that is gone gives neither."""
+    try:
+        folder = runs.run_dir(run_folder)
+    except runs.RunRecordError:
+        return {}, frozenset()
+    return runs.read_score_parts(folder), large.available(run_folder)
 
 
 def _image_response(
@@ -203,6 +228,54 @@ async def get_candidate_image(
         )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="the image is gone or changed"
+        ) from exc
+
+
+def _large_response(run_folder: str, source_file: str, if_none_match: str | None) -> FileResponse:
+    """Blocking: a candidate's large copy, confined to its run folder's ``large`` folder."""
+    root = settings.runs_dir
+    boundary = boundary_for_roots({"runs": root}, access="read", purpose="runs")
+    classified = boundary.classify(
+        large.large_path(run_folder, source_file, root), require_file=True
+    )
+    if len(classified.key.parts) != 3:
+        raise FilesystemBoundaryError("a large copy is in its run folder's large folder")
+    return file_response(
+        boundary,
+        classified,
+        media_type=large.MEDIA_TYPE,
+        if_none_match=if_none_match,
+        cache_control="private, max-age=86400",
+    )
+
+
+@router.get(
+    "/runs/{run_id}/candidates/{candidate_id}/image/large",
+    response_class=FileResponse,
+    responses={
+        200: {"content": {"image/jpeg": {}}, "description": "A copy up to 1500 px wide"},
+        304: {"description": "Unchanged since the ETag the client holds"},
+        404: {"description": "No such run or candidate, or the run kept no large copy of it"},
+    },
+)
+async def get_candidate_large_image(
+    session: Session,
+    run_id: int,
+    candidate_id: int,
+    if_none_match: Annotated[str | None, Header()] = None,
+) -> FileResponse:
+    """The large copy a run kept of one ranked candidate, for looking at it closely."""
+    run = await runs.get_run(session, run_id)
+    candidate = await runs.get_candidate(session, run_id, candidate_id) if run else None
+    if run is None or candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such image")
+    try:
+        return await asyncio.to_thread(
+            _large_response, run.run_folder, candidate.source_file, if_none_match
+        )
+    except (runs.RunRecordError, large.LargeCopyError, FilesystemBoundaryError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="the run kept no large copy"
         ) from exc
 
 

@@ -127,6 +127,12 @@ body {
 	display: contents;
 }
 
+/* While a popup is open the page behind it does not scroll (lib/ui/Modal.svelte). The gutter
+   reserved below keeps the page from shifting sideways when its scrollbar goes. */
+html.mq-modal-open {
+	overflow: hidden;
+}
+
 html {
 	/* The page scrollbar appearing and vanishing changed the content width by
 	   10px, which resized anything viewport-sized (the taste map plot) and

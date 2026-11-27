@@ -8,6 +8,7 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from marquee.api.schemas.jobs import JobItem
+from marquee.artwork.runs import ScorePart
 from marquee.db.models import Deployment, PosterRun, RunCandidate
 
 RunState = Literal["running", "completed", "failed", "cancelled"]
@@ -47,6 +48,21 @@ class RunItem(BaseModel):
     )
 
 
+class ScorePartItem(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    feature: str = Field(
+        description="The engine's name for the part (knn_sim), or residual for what the "
+        "residual changed"
+    )
+    contribution: float = Field(
+        description="What it added to the final score; a candidate's parts sum to its score"
+    )
+    value: float | None = Field(
+        description="How the candidate did on the feature, from 0 to 1; null for residual"
+    )
+
+
 class CandidateItem(BaseModel):
     id: int
     source_file: str = Field(description="TMDB's file name")
@@ -59,9 +75,24 @@ class CandidateItem(BaseModel):
     stack: str | None = Field(description="Design stack and variant, e.g. 1A")
     is_pick: bool = Field(description="The run's recommendation: rank 1")
     image_url: str | None = Field(description="The 500 px file, with the API key")
+    large_image_url: str | None = Field(
+        description="A copy up to 1500 px wide, kept for ranked candidates of newer runs; "
+        "null when the run has none"
+    )
+    score_parts: list[ScorePartItem] | None = Field(
+        description="What a ranked candidate's score is made of, from the run archive; "
+        "null when it is not ranked or the archive is gone"
+    )
 
     @classmethod
-    def build(cls, run_id: int, row: RunCandidate) -> Self:
+    def build(
+        cls,
+        run_id: int,
+        row: RunCandidate,
+        *,
+        parts: list[ScorePart] | None = None,
+        large: bool = False,
+    ) -> Self:
         stack = (
             f"{row.stack_rank}{row.stack_label or ''}"
             if row.stack_rank is not None
@@ -81,6 +112,10 @@ class CandidateItem(BaseModel):
             image_url=(
                 f"/api/runs/{run_id}/candidates/{row.id}/image" if row.sha256 is not None else None
             ),
+            large_image_url=(
+                f"/api/runs/{run_id}/candidates/{row.id}/image/large" if large else None
+            ),
+            score_parts=([ScorePartItem.model_validate(part) for part in parts] if parts else None),
         )
 
 
@@ -99,13 +134,25 @@ class RunDetail(RunItem):
         *,
         blind: bool | None = None,
         reviewed: bool = False,
+        parts: dict[str, list[ScorePart]] | None = None,
+        large: frozenset[int] = frozenset(),
     ) -> Self:
+        """``parts`` is by TMDB file name; ``large`` holds the ids of the candidates whose
+        large copy is in the run's folder."""
         base = RunItem.model_validate(run).model_dump()
         return cls(
             **base,
             blind=blind,
             reviewed=reviewed,
-            candidates=[CandidateItem.build(run.id, c) for c in candidates],
+            candidates=[
+                CandidateItem.build(
+                    run.id,
+                    c,
+                    parts=(parts or {}).get(c.source_file) if c.rank is not None else None,
+                    large=c.id in large,
+                )
+                for c in candidates
+            ],
         )
 
 

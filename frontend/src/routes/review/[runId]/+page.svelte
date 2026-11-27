@@ -22,7 +22,6 @@
 		rankAnswer,
 		rankProblem,
 		rejectAnswer,
-		shownVariant,
 		withKey,
 		worthRetrying,
 		type Answer,
@@ -221,8 +220,7 @@
 	}
 
 	function useThis(candidateId: number) {
-		const rank = run?.candidates.find((c) => c.id === candidateId)?.rank;
-		const message = replaceConfirmation(`the design ranked ${rank}`, deploy, movie?.poster_origin);
+		const message = replaceConfirmation('the poster you chose', deploy, movie?.poster_origin);
 		ask(
 			overrideAnswer(cards, shown, candidateId, deploy),
 			message ? { title: 'Replace your own poster?', message, label: 'Use this one' } : null
@@ -230,11 +228,13 @@
 	}
 
 	function saveRanking() {
-		const top = cards.find((card) => card.key === ranking.order[0]);
-		const first = top ? `The design ranked ${shownVariant(top, shown).rank}` : 'The first design';
 		ask(rankAnswer(cards, shown, ranking, deploy), {
 			title: 'Save this ranking?',
-			message: rankConfirmation(first, ranking.hated.length, deploy),
+			message: rankConfirmation(
+				'The design at the top of your order',
+				ranking.hated.length,
+				deploy
+			),
 			label: 'Save this ranking'
 		});
 	}

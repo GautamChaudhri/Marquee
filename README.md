@@ -455,7 +455,8 @@ movies that share a title, `--no-wait` queues the run and returns, and `--json` 
 summary as JSON. It needs a running worker, unless `--no-wait` is given. Every run is
 recorded in the database with its candidates, and leaves a folder under `data/runs/`, named
 after the run (`00000042-die-hard`): the candidates it downloaded, the ranked posters,
-`pipeline.log`, and the run archive `pipeline_run.json`. `marquee runs list` and
+`pipeline.log`, the run archive `pipeline_run.json`, and `large/`, a copy up to 1500 px wide
+of each ranked poster for looking at one closely in the web app. `marquee runs list` and
 `marquee runs show <id>` show them, and `marquee runs batch --scope never-run|no-poster|all`
 queues runs of many movies at once (`--limit N` caps it). A movie can be run when Radarr has
 its file and the sync has fetched its TMDB details.
@@ -569,7 +570,8 @@ jobs it was running. Only one worker runs at a time. `marquee jobs list`, `show`
 `marquee api` serves a small HTTP API: `/health/live` and `/health/ready` for probes, and,
 under `/api`, the movie list (`/api/movies`, with search, filters, sorting, and paging), one
 movie, and its poster; runs (`POST /api/movies/{id}/run`, `POST /api/runs/batch`,
-`/api/runs`, one run with its candidates, and each candidate's image), deploys
+`/api/runs`, one run with its candidates and what each ranked score is made of, and each
+candidate's image and large copy), deploys
 (`POST /api/runs/{id}/deploy`), the deployments and restoring one
 (`POST /api/deployments/{id}/restore`); review (`/api/review`, `POST` and `GET`
 `/api/runs/{id}/feedback`, `/api/feedback`, `POST /api/feedback/{id}/revoke`) and taste

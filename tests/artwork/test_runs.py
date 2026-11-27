@@ -424,6 +424,74 @@ def test_the_folder_says_whether_the_residual_ranked_every_candidate(tmp_path: P
     assert runs.read_run_folder(tmp_path / "none").residual_ranked is False
 
 
+# ── What a score is made of ───────────────────────────────────────────────
+
+
+def test_a_weighted_score_is_its_features_contributions() -> None:
+    row = {
+        "contributions": {"knn_sim": 0.25, "aesthetic": 0.05, "lang_match": 0.0},
+        "normalized_features": {"knn_sim": 0.9, "aesthetic": 0.4},
+    }
+    assert runs.score_parts(row) == [
+        runs.ScorePart("knn_sim", 0.25, 0.9),
+        runs.ScorePart("aesthetic", 0.05, 0.4),
+        runs.ScorePart("lang_match", 0.0, None),
+    ]
+
+
+def test_a_residual_score_is_the_weighted_parts_and_what_the_residual_changed() -> None:
+    row = {
+        "contributions": {
+            "baseline:knn_sim": 0.3,
+            "baseline:aesthetic": 0.2,
+            "residual:knn_sim": 0.04,
+            "baseline_score": 0.5,
+            runs.RESIDUAL_MARK: 0.12,
+            "final_score": 0.53,
+        },
+        "normalized_features": {"knn_sim": 1.0, "aesthetic": 0.5},
+    }
+    parts = runs.score_parts(row)
+    assert [part.feature for part in parts] == ["knn_sim", "aesthetic", runs.RESIDUAL_PART]
+    assert parts[0] == runs.ScorePart("knn_sim", 0.3, 1.0)
+    assert parts[-1].value is None and parts[-1].contribution == pytest.approx(0.03)
+    # The parts sum to the score the residual gave.
+    assert sum(part.contribution for part in parts) == pytest.approx(0.53)
+
+
+def test_parts_that_are_not_finite_numbers_are_left_out() -> None:
+    row = {
+        "contributions": {"knn_sim": float("nan"), "aesthetic": "high", "sharpness": True},
+        "normalized_features": {"knn_sim": 0.5},
+    }
+    assert runs.score_parts(row) == []
+    assert runs.score_parts({"contributions": None}) == []
+    assert runs.score_parts({}) == []
+
+
+def test_score_parts_are_read_for_ranked_candidates_only(tmp_path: Path) -> None:
+    rows = [dict(row) for row in LEDGER]
+    for row in rows:
+        row["contributions"] = {"knn_sim": 0.3}
+        row["normalized_features"] = {"knn_sim": 1.0}
+    _write_folder(tmp_path / "run", rows, IMAGES)
+
+    found = runs.read_score_parts(tmp_path / "run")
+
+    ranked = {row["orig_filename"] for row in LEDGER if row["rank"] is not None}
+    assert set(found) == ranked and len(ranked) < len(LEDGER)
+    assert all(parts == [runs.ScorePart("knn_sim", 0.3, 1.0)] for parts in found.values())
+
+
+def test_a_run_without_a_readable_archive_has_no_score_parts(tmp_path: Path) -> None:
+    assert runs.read_score_parts(tmp_path / "gone") == {}
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / runs.RUN_ARCHIVE).write_text("{not json")
+    assert runs.read_score_parts(tmp_path / "bad") == {}
+    (tmp_path / "bad" / runs.RUN_ARCHIVE).write_text('{"diagnostic_ledger": {"candidates": 3}}')
+    assert runs.read_score_parts(tmp_path / "bad") == {}
+
+
 @pytest.mark.db
 @pytest.mark.parametrize(
     ("reported", "marked", "scorer", "residual_id"),

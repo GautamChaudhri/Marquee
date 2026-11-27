@@ -13,7 +13,7 @@ import { E2E_API_KEY, FAKE_URL } from '../playwright.config';
  *  without racing the fake's clock. */
 export async function resetBackend(
 	options: {
-		review?: 'none';
+		review?: 'none' | 'many';
 		problems?: boolean;
 		evaluations?: 'finished' | 'running' | 'stopped';
 		residual?: 'active' | 'refused';

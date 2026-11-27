@@ -41,9 +41,9 @@ async def test_every_api_route_requires_the_key(
 
 async def _every_route_answers_401(schema: dict, offline_client: AsyncClient) -> None:
     api_paths = [path for path in schema["paths"] if path.startswith("/api")]
-    assert len(api_paths) == 31
+    assert len(api_paths) == 32
     operations = [(method, path) for path in api_paths for method in schema["paths"][path]]
-    assert len(operations) == 33
+    assert len(operations) == 34
     for method, path in operations:
         operation = schema["paths"][path][method]
         assert {name for req in operation["security"] for name in req} == {

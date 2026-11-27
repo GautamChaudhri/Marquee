@@ -54,6 +54,37 @@ for (const width of [390, 1440]) {
 			.getByTestId('order-list')
 			.evaluate((zone) => getComputedStyle(zone).gridTemplateColumns.split(' ').length);
 		expect(cardColumns).toBeGreaterThanOrEqual(width < 500 ? 2 : 6);
+		// A design's popup and the large view both stay inside the window.
+		await page.getByTestId('review-card').first().getByTestId('open-design').click();
+		const dialog = page.getByTestId('design-dialog');
+		await expect(dialog.getByTestId('use-this-one')).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+		const panel = (await dialog.boundingBox())!;
+		expect(panel.x).toBeGreaterThanOrEqual(0);
+		expect(panel.x + panel.width).toBeLessThanOrEqual(width);
+		expect(panel.y + panel.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+		// Nothing in the popup is squeezed over anything else: the score details begin where
+		// the posters end (below them on a phone, beside them on a desk).
+		const variants = (await dialog.getByTestId('variants').boundingBox())!;
+		const details = (await dialog.getByTestId('design-detail').boundingBox())!;
+		if (width < 500) expect(details.y).toBeGreaterThanOrEqual(variants.y + variants.height);
+		else expect(details.x + details.width).toBeLessThanOrEqual(variants.x);
+		await dialog.getByRole('button', { name: 'Look closer at variant 1', exact: true }).click();
+		// The large copy (1000 by 1500 px) is whole, in a poster's shape, inside the window.
+		const picture = page.getByTestId('lightbox-image');
+		await expect(picture).toHaveJSProperty('naturalHeight', 1500);
+		await page
+			.getByTestId('lightbox')
+			.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+		const large = (await picture.boundingBox())!;
+		expect(large.x).toBeGreaterThanOrEqual(0);
+		expect(large.x + large.width).toBeLessThanOrEqual(width);
+		expect(large.y).toBeGreaterThanOrEqual(0);
+		expect(large.y + large.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+		expect(large.width / large.height).toBeCloseTo(2 / 3, 1);
+		await page.keyboard.press('Escape');
+		await page.keyboard.press('Escape');
+		await expect(dialog).toHaveCount(0);
 		await page.getByTestId('deploy-checkbox').uncheck();
 		await page.getByRole('button', { name: 'Keep the pick' }).click();
 		await expect(page.getByTestId('answer-result')).toBeVisible();

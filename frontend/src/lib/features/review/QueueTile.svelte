@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PendingReview } from '#lib/api/types.ts';
+	import CountDot from '#lib/ui/CountDot.svelte';
 
 	let { item }: { item: PendingReview } = $props();
 </script>
@@ -21,9 +22,7 @@
 			{:else}
 				<span class="none">No image</span>
 			{/if}
-			<span class="count" title="{item.ranked ?? 0} ranked" data-testid="ranked-count">
-				<span>{item.ranked ?? 0}</span> <span class="sr-only">ranked</span>
-			</span>
+			<CountDot count={item.ranked ?? 0} word="ranked" testid="ranked-count" />
 			{#if item.blind || item.policy_deployed}
 				<span class="marks">
 					{#if item.blind}<span class="mark blind">Blind</span>{/if}
@@ -114,27 +113,5 @@
 	.year {
 		color: var(--muted);
 		font-size: 11.5px;
-	}
-	/* How many posters the run ranked: a round dot (a short pill past two digits) with a
-	   dark ring, so it reads over light and dark artwork alike. */
-	.count {
-		position: absolute;
-		top: 6px;
-		right: 6px;
-		min-width: 22px;
-		height: 22px;
-		padding: 0 5px;
-		display: grid;
-		place-items: center;
-		border-radius: var(--radius-pill);
-		background: var(--warn);
-		color: var(--on-warn);
-		font-size: 11px;
-		font-weight: 700;
-		font-variant-numeric: tabular-nums;
-		line-height: 1;
-		box-shadow:
-			0 0 0 1.5px var(--poster-shade),
-			0 1px 4px var(--shadow);
 	}
 </style>

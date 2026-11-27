@@ -4,7 +4,8 @@ import { failNext, receivedBodies, resetBackend, signIn } from './helpers';
 
 // Run 12 (Film 05, the owner's own poster) shows six designs, in rank order:
 //   s1: 1201 (rank 1, the pick) and 1203 (1B) · s2: 1202 and 1205 · s3: 1204 and 1208
-//   s4: 1206 (never downloaded) · s5: 1207 · c1209 (no stack)
+//   s4: 1206 (never downloaded) · s5: 1207 · c1209 (no stack, no score breakdown)
+// It kept a large copy of 1201 and 1203 only.
 const RUN12_SHOWN = [1201, 1202, 1204, 1206, 1207, 1209];
 const FEEDBACK = '/api/runs/12/feedback';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -16,6 +17,17 @@ test.beforeEach(async ({ page }) => {
 
 function card(page: Page, key: string): Locator {
 	return page.getByTestId('order-list').locator(`[data-key="${key}"]`);
+}
+
+/** Choose a design the one way there is: open it from its card, then "Use this one". */
+async function useDesign(page: Page, key: string) {
+	await card(page, key).getByTestId('open-design').click();
+	await page.getByTestId('design-dialog').getByTestId('use-this-one').click();
+}
+
+/** A popup rises into place as it opens; wait until it has settled before measuring it. */
+async function settled(popup: Locator) {
+	await popup.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
 }
 
 async function lastBody(path = FEEDBACK) {
@@ -219,18 +231,73 @@ test('the panel shows one card per design, the pick marked', async ({ page }) =>
 	const cards = page.getByTestId('order-list').getByTestId('review-card');
 	await expect(cards).toHaveCount(6);
 	await expect(cards.first()).toContainText('Pick');
-	await expect(cards.first()).toContainText('2 variants');
 	await expect(page.getByTestId('ranking-line')).toHaveText('Your order is the engine’s order.');
-	// A design never downloaded cannot be chosen or hated.
+	// One rank on a card: the design's place in the order, counted from 1 with no gaps.
+	await expect(page.getByTestId('order-list').getByTestId('design-rank')).toHaveText([
+		'#1',
+		'#2',
+		'#3',
+		'#4',
+		'#5',
+		'#6'
+	]);
+	// A yellow dot counts the variants, on the designs that have more than one.
+	const dots = page.getByTestId('order-list').getByTestId('variant-count');
+	await expect(dots).toHaveCount(3);
+	await expect(cards.first().getByTestId('variant-count')).toHaveText('2 variants');
+	await expect(cards.first().getByTestId('variant-count').locator('span').first()).toHaveText('2');
+	await expect(card(page, 's5').getByTestId('variant-count')).toHaveCount(0);
+	// A design never downloaded cannot be hated, and has nothing to look at closely.
 	const never = card(page, 's4');
 	await expect(never).toContainText('Never downloaded');
-	await expect(never.getByRole('button', { name: /^Use / })).toBeDisabled();
 	await expect(never.getByRole('button', { name: /^Hate / })).toBeDisabled();
+	await expect(never.getByTestId('zoom')).toBeDisabled();
+	// No card chooses a poster by itself: that is done in the popup.
+	await expect(page.getByTestId('order-list').getByRole('button', { name: /^Use / })).toHaveCount(
+		0
+	);
 	// Images are the 500 px files, lazy, with their size set.
-	const image = cards.first().getByAltText('Candidate ranked 1');
+	const image = cards.first().locator('img');
+	await expect(image).toHaveAttribute('src', '/api/runs/12/candidates/1201/image');
 	await expect(image).toHaveAttribute('loading', 'lazy');
 	await expect(image).toHaveAttribute('width', '500');
 	await expect(image).toHaveAttribute('height', '750');
+});
+
+test('every card is the same height and carries its score as a bar', async ({ page }) => {
+	await page.goto('/review/12');
+	const cards = page.getByTestId('order-list').getByTestId('review-card');
+	await expect(cards).toHaveCount(6);
+	const boxes = await cards.evaluateAll((list) =>
+		list.map((el) => {
+			const box = el.getBoundingClientRect();
+			return { top: Math.round(box.top), height: Math.round(box.height) };
+		})
+	);
+	// With and without variants, with and without a picture: one height, one row.
+	expect(new Set(boxes.map((box) => box.height)).size).toBe(1);
+	expect(new Set(boxes.map((box) => box.top)).size).toBe(1);
+
+	// The pick's bar: four families, together as wide as its score (0.93 of the track).
+	const bar = cards.first().getByTestId('score-bar');
+	await expect(bar).toHaveAttribute(
+		'aria-label',
+		'Score parts: Taste 0.37, Look 0.19, Content 0.23, Source 0.14'
+	);
+	const filled = await bar.evaluate((el) => {
+		const track = el.getBoundingClientRect().width;
+		const segments = [...el.children].map((child) => child.getBoundingClientRect().width);
+		return { count: segments.length, share: segments.reduce((sum, w) => sum + w, 0) / track };
+	});
+	expect(filled.count).toBe(4);
+	expect(filled.share).toBeGreaterThan(0.9);
+	expect(filled.share).toBeLessThan(0.96);
+	// A run that kept no breakdown for a poster shows an empty bar, at the same height.
+	await expect(card(page, 'c1209').getByTestId('score-bar')).toHaveAttribute(
+		'aria-label',
+		'This run kept no score breakdown'
+	);
+	await expect(card(page, 'c1209').getByTestId('score-bar').locator('span')).toHaveCount(0);
 });
 
 test('Keep the pick asks before replacing the owner’s poster, then says what happened', async ({
@@ -262,7 +329,8 @@ test('Keep the pick asks before replacing the owner’s poster, then says what h
 test('Use this one sends that design; with the deploy off it does not ask', async ({ page }) => {
 	await page.goto('/review/12');
 	await page.getByTestId('deploy-checkbox').uncheck();
-	await card(page, 's2').getByRole('button', { name: /^Use / }).click();
+	await useDesign(page, 's2');
+	// The popup closes with the choice, and with the deploy off nothing asks.
 	await expect(page.getByRole('dialog')).toHaveCount(0);
 	await expect(page.getByTestId('answer-result')).toContainText('Chose r12-1202.jpg');
 	await expect(page.getByTestId('answer-folder')).toHaveText(
@@ -285,16 +353,39 @@ test('Use this one sends that design; with the deploy off it does not ask', asyn
 test('another variant of a stack can be the one its card shows and sends', async ({ page }) => {
 	await page.goto('/review/12');
 	const first = card(page, 's1');
-	await first.getByTestId('variants-toggle').click();
-	await first.getByRole('button', { name: /Show variant 1B/ }).click();
-	await expect(first).toHaveAttribute('data-candidate', '1203');
 	await page.getByTestId('deploy-checkbox').uncheck();
+	await first.getByTestId('open-design').click();
+	const dialog = page.getByTestId('design-dialog');
+	await expect(dialog.getByRole('heading', { name: 'Design 1' })).toBeVisible();
+	await expect(dialog).toContainText('2 variants, best first');
+	// Inside the popup the variants are numbered within their design.
+	const variants = dialog.getByTestId('variant');
+	await expect(variants).toHaveCount(2);
+	await expect(variants.nth(0)).toContainText('#1');
+	await expect(variants.nth(1)).toContainText('#2');
+	await expect(variants.nth(0)).toHaveAttribute('data-candidate', '1201');
+	await expect(dialog.getByRole('button', { name: 'Select variant 1' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(dialog.getByTestId('design-selection')).toHaveText('Variant 1 of 2 selected');
+	await expect(dialog.getByTestId('design-detail')).toContainText('the run’s pick');
+
+	await dialog.getByRole('button', { name: 'Select variant 2' }).click();
+	await expect(dialog.getByRole('button', { name: 'Select variant 2' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(dialog.getByTestId('design-selection')).toHaveText('Variant 2 of 2 selected');
+	await expect(dialog.getByTestId('design-detail')).toContainText('0.890');
+	// The selected variant is the one the card behind shows from now on.
+	await expect(first).toHaveAttribute('data-candidate', '1203');
 	// The proxy answers only after the backend has the body, so wait for that answer.
 	const answered = page.waitForResponse(
 		(response) =>
 			response.request().method() === 'POST' && new URL(response.url()).pathname === FEEDBACK
 	);
-	await first.getByRole('button', { name: /^Use / }).click();
+	await dialog.getByTestId('use-this-one').click();
 	await answered;
 	const body = await lastBody();
 	expect(body.candidate_id).toBe(1203);
@@ -306,11 +397,235 @@ test('choosing the pick with Use this one is recorded, and shown, as keeping it'
 }) => {
 	await page.goto('/review/12');
 	await page.getByTestId('deploy-checkbox').uncheck();
-	await card(page, 's1').getByRole('button', { name: /^Use / }).click();
+	await useDesign(page, 's1');
 	const result = page.getByTestId('answer-result');
 	await expect(result).toContainText('Kept the pick');
 	await expect(result).toContainText('recorded as keeping the pick');
 	expect((await lastBody()).action).toBe('override');
+});
+
+test('a lone poster is chosen from the same popup, with the button in the same place', async ({
+	page
+}) => {
+	await page.goto('/review/12');
+	await page.getByTestId('deploy-checkbox').uncheck();
+	const dialog = page.getByTestId('design-dialog');
+	/** Where "Use this one" sits, from the popup's bottom right corner. */
+	const corner = async () => {
+		const panel = (await dialog.boundingBox())!;
+		const button = (await dialog.getByTestId('use-this-one').boundingBox())!;
+		return {
+			right: Math.round(panel.x + panel.width - (button.x + button.width)),
+			bottom: Math.round(panel.y + panel.height - (button.y + button.height))
+		};
+	};
+
+	await card(page, 's1').getByTestId('open-design').click();
+	const withVariants = await corner();
+	await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+	await expect(dialog).toHaveCount(0);
+
+	await card(page, 's5').getByTestId('open-design').click();
+	await expect(dialog.getByRole('heading', { name: 'Design 5' })).toBeVisible();
+	await expect(dialog).toContainText('1 poster');
+	await expect(dialog.getByTestId('variant')).toHaveCount(1);
+	await expect(dialog.getByTestId('design-selection')).toHaveText('The only poster of this design');
+	expect(await corner()).toEqual(withVariants);
+	// The spare room names every part of the score, the largest first.
+	const rows = dialog.getByTestId('score-breakdown').locator('tbody tr');
+	await expect(rows).toHaveCount(4);
+	await expect(rows.first()).toContainText('Taste match');
+	await expect(rows.first()).toContainText('+0.32');
+	await expect(rows.nth(1)).toContainText('Faces');
+
+	await dialog.getByTestId('use-this-one').click();
+	await expect(dialog).toHaveCount(0);
+	await expect(page.getByTestId('answer-result')).toContainText('Chose r12-1207.jpg');
+	expect((await lastBody()).candidate_id).toBe(1207);
+});
+
+test('the popup says when a design cannot be chosen, and can hate or bring one back', async ({
+	page
+}) => {
+	await page.goto('/review/12');
+	const dialog = page.getByTestId('design-dialog');
+	// Never downloaded: it opens, but nothing in it can choose or hate it.
+	await card(page, 's4').getByTestId('open-design').click();
+	await expect(dialog.getByTestId('design-selection')).toHaveText(
+		'Never downloaded: it cannot be chosen or hated.'
+	);
+	await expect(dialog.getByTestId('use-this-one')).toBeDisabled();
+	await expect(dialog.getByRole('button', { name: 'Hate this design' })).toBeDisabled();
+	// A poster with no breakdown says so.
+	await page.keyboard.press('Escape');
+	await expect(dialog).toHaveCount(0);
+	await card(page, 'c1209').getByTestId('open-design').click();
+	await expect(dialog.getByTestId('score-breakdown-none')).toBeVisible();
+	await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+	// Hating from the popup closes it and moves the design to the hate pile.
+	await card(page, 's3').getByTestId('open-design').click();
+	await dialog.getByRole('button', { name: 'Hate this design' }).click();
+	await expect(dialog).toHaveCount(0);
+	const pile = page.getByTestId('hate-pile').getByTestId('review-card');
+	await expect(pile).toHaveCount(1);
+	await expect(pile.first()).toContainText('Hated');
+	// The order closes up: no gap is left where it stood.
+	await expect(page.getByTestId('order-list').getByTestId('design-rank')).toHaveText([
+		'#1',
+		'#2',
+		'#3',
+		'#4',
+		'#5'
+	]);
+	await pile.first().getByTestId('open-design').click();
+	await expect(dialog.getByRole('heading', { name: 'Hated design 1' })).toBeVisible();
+	await dialog.getByRole('button', { name: 'Bring back' }).click();
+	await expect(dialog).toHaveCount(0);
+	await expect(pile).toHaveCount(0);
+});
+
+test('the popup is a gallery: many variants fit, and a click on the backdrop closes it', async ({
+	page
+}) => {
+	await page.goto('/review/12');
+	await card(page, 's2').getByTestId('open-design').click();
+	const dialog = page.getByTestId('design-dialog');
+	const tiles = dialog.getByTestId('variant');
+	await expect(tiles).toHaveCount(2);
+	// Small posters, so a design with many variants shows a whole row of them at once.
+	const gallery = (await dialog.getByTestId('variants').boundingBox())!;
+	const tile = (await tiles.first().boundingBox())!;
+	expect(tile.width).toBeLessThan(200);
+	expect(Math.floor(gallery.width / tile.width)).toBeGreaterThanOrEqual(4);
+	// Every variant keeps its magnifier and its own score bar.
+	await expect(dialog.getByRole('button', { name: /^Look closer at variant/ })).toHaveCount(2);
+	await expect(tiles.getByTestId('score-bar')).toHaveCount(2);
+
+	await page.mouse.click(8, 8);
+	await expect(dialog).toHaveCount(0);
+});
+
+test('a popup holds the page still, and a long gallery scrolls inside it', async ({ page }) => {
+	await resetBackend({ review: 'many' });
+	await page.goto('/review/12');
+	const scrollY = () => page.evaluate(() => window.scrollY);
+	const viewport = page.viewportSize()!;
+	// The page itself is longer than the window and scrolls.
+	await page.mouse.move(viewport.width / 2, viewport.height / 2);
+	await page.mouse.wheel(0, 200);
+	await expect.poll(scrollY).toBeGreaterThan(0);
+	const before = await scrollY();
+
+	await card(page, 's6').getByTestId('open-design').click();
+	const dialog = page.getByTestId('design-dialog');
+	await expect(dialog.getByTestId('variant')).toHaveCount(24);
+	await expect(page.locator('html')).toHaveClass(/mq-modal-open/);
+	// The whole popup is on screen, with the button that chooses a poster.
+	await settled(dialog);
+	const panel = (await dialog.boundingBox())!;
+	expect(panel.y).toBeGreaterThanOrEqual(0);
+	expect(panel.y + panel.height).toBeLessThanOrEqual(viewport.height);
+	await expect(dialog.getByTestId('use-this-one')).toBeInViewport();
+	// The score details stand on the left, the gallery on the right.
+	const gallery = dialog.getByTestId('variants');
+	const detail = (await dialog.getByTestId('design-detail').boundingBox())!;
+	const galleryBox = (await gallery.boundingBox())!;
+	expect(detail.x + detail.width).toBeLessThanOrEqual(galleryBox.x);
+	// 24 variants do not fit: the gallery is what scrolls, and nothing else moves.
+	const scroller = () =>
+		gallery.evaluate((el) => ({ top: el.scrollTop, room: el.scrollHeight - el.clientHeight }));
+	expect((await scroller()).room).toBeGreaterThan(100);
+	await page.mouse.move(galleryBox.x + galleryBox.width / 2, galleryBox.y + galleryBox.height / 2);
+	await page.mouse.wheel(0, 400);
+	await expect.poll(async () => (await scroller()).top).toBeGreaterThan(0);
+	expect(await scrollY()).toBe(before);
+	expect((await dialog.boundingBox())!.y).toBe(panel.y);
+	await expect(dialog.getByRole('heading', { name: 'Design 6' })).toBeInViewport();
+	await expect(dialog.getByTestId('use-this-one')).toBeInViewport();
+	// Scrolled to its end, the gallery does not hand the wheel on to the page.
+	await page.mouse.wheel(0, 20_000);
+	await expect.poll(async () => (await scroller()).room - (await scroller()).top).toBeLessThan(2);
+	await page.mouse.wheel(0, 400);
+	// Nor does the wheel over the score details, or over the dimmed page.
+	await page.mouse.move(detail.x + detail.width / 2, detail.y + detail.height / 2);
+	await page.mouse.wheel(0, 400);
+	await page.mouse.move(6, viewport.height / 2);
+	await page.mouse.wheel(0, 400);
+	await page.waitForTimeout(150);
+	expect(await scrollY()).toBe(before);
+	// The last variant can be reached and chosen from.
+	await dialog.getByRole('button', { name: 'Select variant 24' }).click();
+	await expect(dialog.getByTestId('design-selection')).toHaveText('Variant 24 of 24 selected');
+
+	// Closed, the page scrolls again.
+	await page.keyboard.press('Escape');
+	await expect(dialog).toHaveCount(0);
+	await expect(page.locator('html')).not.toHaveClass(/mq-modal-open/);
+	await page.mouse.move(viewport.width / 2, viewport.height / 2);
+	await page.mouse.wheel(0, 200);
+	await expect.poll(scrollY).toBeGreaterThan(before);
+});
+
+test('the magnifier shows one poster large and steps through its design', async ({ page }) => {
+	await page.goto('/review/12');
+	const lightbox = page.getByTestId('lightbox');
+	const image = lightbox.getByTestId('lightbox-image');
+	const caption = lightbox.getByTestId('lightbox-caption');
+
+	// From a card: the run's large copy when it kept one.
+	await card(page, 's1').getByTestId('zoom').click();
+	await expect(image).toHaveAttribute('src', '/api/runs/12/candidates/1201/image/large');
+	await expect(caption).toHaveText('Design 1 · variant 1 of 2 · score 0.930 · 1000 × 1500 px');
+	// The copy is 1000 by 1500 px, far taller than the window: it is scaled down to fit, whole
+	// and in its own shape, and is still much larger than on its card.
+	await expect(image).toHaveJSProperty('naturalHeight', 1500);
+	await settled(lightbox);
+	const shown = (await image.boundingBox())!;
+	const viewport = page.viewportSize()!;
+	expect(shown.height).toBeGreaterThan(viewport.height * 0.7);
+	expect(shown.y).toBeGreaterThanOrEqual(0);
+	expect(shown.y + shown.height).toBeLessThanOrEqual(viewport.height);
+	expect(shown.x).toBeGreaterThanOrEqual(0);
+	expect(shown.x + shown.width).toBeLessThanOrEqual(viewport.width);
+	expect(shown.width / shown.height).toBeCloseTo(2 / 3, 1);
+	// The caption under it is on screen too.
+	const captionBox = (await caption.boundingBox())!;
+	expect(captionBox.y + captionBox.height).toBeLessThanOrEqual(viewport.height);
+	// The arrows, on the keyboard and on screen, go round the design's variants.
+	await page.keyboard.press('ArrowRight');
+	await expect(image).toHaveAttribute('data-candidate', '1203');
+	await expect(caption).toHaveText('Design 1 · variant 2 of 2 · score 0.890 · 1000 × 1500 px');
+	await lightbox.getByRole('button', { name: 'Next variant' }).click();
+	await expect(image).toHaveAttribute('data-candidate', '1201');
+	await page.keyboard.press('ArrowLeft');
+	await expect(image).toHaveAttribute('data-candidate', '1203');
+	await page.keyboard.press('Escape');
+	await expect(lightbox).toHaveCount(0);
+
+	// A run that kept no large copy shows its 500 px file, at the same size on screen, and
+	// the caption gives that file's own resolution.
+	await card(page, 's5').getByTestId('zoom').click();
+	await expect(image).toHaveAttribute('src', '/api/runs/12/candidates/1207/image');
+	await settled(lightbox);
+	const small = (await image.boundingBox())!;
+	expect(Math.abs(small.height - shown.height)).toBeLessThanOrEqual(1);
+	// The fake backend's small file is 2 by 3 px.
+	await expect(caption).toHaveText('Design 5 · score 0.810 · 2 × 3 px');
+	await expect(lightbox.getByRole('button', { name: 'Next variant' })).toHaveCount(0);
+	await lightbox.getByRole('button', { name: 'Close', exact: true }).click();
+	await expect(lightbox).toHaveCount(0);
+
+	// From the popup: it opens over the popup, and Escape closes one layer at a time.
+	await card(page, 's2').getByTestId('open-design').click();
+	const dialog = page.getByTestId('design-dialog');
+	await dialog.getByRole('button', { name: 'Look closer at variant 2' }).click();
+	await expect(image).toHaveAttribute('data-candidate', '1205');
+	await page.keyboard.press('Escape');
+	await expect(lightbox).toHaveCount(0);
+	await expect(dialog).toBeVisible();
+	await page.keyboard.press('Escape');
+	await expect(dialog).toHaveCount(0);
 });
 
 test('Save this ranking: reorder and hate with buttons, confirm, send the order', async ({
@@ -336,7 +651,7 @@ test('Save this ranking: reorder and hate with buttons, confirm, send the order'
 	// Bring one back and hate it again: it goes to the end of the order, then back.
 	await page
 		.getByTestId('hate-pile')
-		.getByRole('button', { name: /Bring back design ranked 7/ })
+		.getByRole('button', { name: 'Bring back hated design 2' })
 		.click();
 	await card(page, 's5')
 		.getByRole('button', { name: /^Hate / })
@@ -344,7 +659,9 @@ test('Save this ranking: reorder and hate with buttons, confirm, send the order'
 
 	await page.getByRole('button', { name: 'Save this ranking' }).click();
 	const dialog = page.getByRole('dialog');
-	await expect(dialog).toContainText('The design ranked 4 is written to the movie’s folder');
+	await expect(dialog).toContainText(
+		'The design at the top of your order is written to the movie’s folder'
+	);
 	await expect(dialog).toContainText('The 2 hated designs become examples of what you do not want');
 	await dialog.getByRole('button', { name: 'Save this ranking' }).click();
 	await expect(page.getByTestId('answer-result')).toContainText('Ranked 4 designs');
@@ -381,6 +698,13 @@ test('a design can be dragged to a new place and into the hate pile', async ({ p
 
 test('the panel works from the keyboard alone', async ({ page }) => {
 	await page.goto('/review/12');
+	// A design opens and closes from the keyboard, and focus comes back to its card.
+	await card(page, 's5').getByTestId('open-design').focus();
+	await page.keyboard.press('Enter');
+	await expect(page.getByTestId('design-dialog')).toBeFocused();
+	await page.keyboard.press('Escape');
+	await expect(page.getByTestId('design-dialog')).toHaveCount(0);
+	await expect(card(page, 's5').getByTestId('open-design')).toBeFocused();
 	await card(page, 's5')
 		.getByRole('button', { name: /^Move .* up$/ })
 		.focus();
@@ -449,7 +773,7 @@ test('a run already answered lists its answers, newest first, and can be answere
 	await page.getByTestId('deploy-checkbox').uncheck();
 	await page.getByRole('button', { name: 'Keep the pick' }).click();
 	await expect(page.getByTestId('answer-result')).toBeVisible();
-	await card(page, 's2').getByRole('button', { name: /^Use / }).click();
+	await useDesign(page, 's2');
 	await expect(page.getByTestId('answer-result')).toContainText('Recorded as answer 2');
 
 	await page.reload();
@@ -500,7 +824,7 @@ test('a request retried after a failure keeps its key; the next answer gets a ne
 	await failed.getByRole('button', { name: 'Try again' }).click();
 	await expect(page.getByTestId('answer-result')).toContainText('Recorded as answer 1');
 
-	await card(page, 's2').getByRole('button', { name: /^Use / }).click();
+	await useDesign(page, 's2');
 	await expect(page.getByTestId('answer-result')).toContainText('Recorded as answer 2');
 	const bodies = await receivedBodies(FEEDBACK);
 	expect(bodies).toHaveLength(3);

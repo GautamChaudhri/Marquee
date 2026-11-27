@@ -6,13 +6,17 @@
 		dragHandleZone,
 		type DndEvent
 	} from 'svelte-dnd-action';
+	import DesignDialog from './DesignDialog.svelte';
+	import Lightbox from './Lightbox.svelte';
 	import {
 		bringBack,
+		closeups,
 		hate,
 		moveDown,
 		moveUp,
 		rankingLine,
 		showVariant,
+		shownVariant,
 		type Card,
 		type Ranking,
 		type Shown
@@ -20,7 +24,10 @@
 	import ReviewCard from './ReviewCard.svelte';
 
 	/** The rank panel: the designs in the owner's order, and the hate pile. Every move has a
-	 *  button; dragging a card by its handle (pointer, touch, or keyboard) does the same. */
+	 *  button; dragging a card by its handle (pointer, touch, or keyboard) does the same.
+	 *
+	 *  A card's poster opens its design in a popup, where a poster is chosen; a magnifier,
+	 *  on a card or in the popup, shows one poster large. */
 	let {
 		cards,
 		shown = $bindable(),
@@ -59,6 +66,29 @@
 		ranking = next;
 	}
 
+	// The design open in the popup, and the poster shown large, each by its card's key.
+	let opened = $state<string | null>(null);
+	let closeup = $state<{ key: string; id: number } | null>(null);
+
+	/** Where a card stands: its place in the order, or in the hate pile, from 1. */
+	function standing(key: string): { position: number; hated: boolean } {
+		const hatedAt = ranking.hated.indexOf(key);
+		return hatedAt >= 0
+			? { position: hatedAt + 1, hated: true }
+			: { position: ranking.order.indexOf(key) + 1, hated: false };
+	}
+	function titleOf(key: string): string {
+		const { position, hated } = standing(key);
+		return hated ? `Hated design ${position}` : `Design ${position}`;
+	}
+
+	const openedCard = $derived(opened === null ? undefined : byKey.get(opened));
+	const closeupCard = $derived(closeup === null ? undefined : byKey.get(closeup.key));
+
+	function zoom(card: Card, candidateId: number) {
+		closeup = { key: card.key, id: candidateId };
+	}
+
 	function considerOrder(e: CustomEvent<DndEvent<Item>>) {
 		orderItems = e.detail.items;
 	}
@@ -81,6 +111,9 @@
 		dragDisabled: disabled,
 		dropTargetStyle: {},
 		dropTargetClasses: ['drop-target'],
+		// The handle sits in a corner of a tall card. Without this the card's middle decides
+		// where it lands, well away from the pointer, and the hate pile is hard to hit.
+		centreDraggedOnCursor: true,
 		delayTouchStart: true
 	});
 </script>
@@ -116,8 +149,8 @@
 						onDown={() => apply(moveDown(ranking, card.key))}
 						onHate={() => apply(hate(ranking, card.key))}
 						onBringBack={() => apply(bringBack(ranking, card.key))}
-						{onUse}
-						onShow={(id) => (shown = showVariant(shown, card, id))}
+						onOpen={() => (opened = card.key)}
+						onZoom={() => zoom(card, shownVariant(card, shown).id)}
 					/>
 				{/if}
 			</div>
@@ -136,7 +169,7 @@
 		onconsider={considerHated}
 		onfinalize={finalizeHated}
 	>
-		{#each hatedItems as item (item.id)}
+		{#each hatedItems as item, i (item.id)}
 			{@const card = byKey.get(item.id)}
 			<div
 				class="item"
@@ -147,14 +180,15 @@
 					<ReviewCard
 						{card}
 						{shown}
+						position={i + 1}
 						hated
 						{disabled}
 						onUp={() => {}}
 						onDown={() => {}}
 						onHate={() => {}}
 						onBringBack={() => apply(bringBack(ranking, card.key))}
-						{onUse}
-						onShow={(id) => (shown = showVariant(shown, card, id))}
+						onOpen={() => (opened = card.key)}
+						onZoom={() => zoom(card, shownVariant(card, shown).id)}
 					/>
 				{/if}
 			</div>
@@ -164,6 +198,43 @@
 		<p class="empty">Nothing hated. Press Hate on a design, or drag it here.</p>
 	{/if}
 </div>
+
+{#if openedCard}
+	{@const card = openedCard}
+	{@const at = standing(card.key)}
+	<DesignDialog
+		{card}
+		{shown}
+		position={at.position}
+		hated={at.hated}
+		{disabled}
+		onSelect={(id) => (shown = showVariant(shown, card, id))}
+		onUse={(id) => {
+			opened = null;
+			onUse(id);
+		}}
+		onHate={() => {
+			// The card is read before the popup closes: closing it leaves no card to read.
+			apply(hate(ranking, card.key));
+			opened = null;
+		}}
+		onBringBack={() => {
+			apply(bringBack(ranking, card.key));
+			opened = null;
+		}}
+		onZoom={(id) => zoom(card, id)}
+		onClose={() => (opened = null)}
+	/>
+{/if}
+
+{#if closeup && closeupCard}
+	<Lightbox
+		items={closeups(closeupCard)}
+		start={closeup.id}
+		title={titleOf(closeupCard.key)}
+		onClose={() => (closeup = null)}
+	/>
+{/if}
 
 <style>
 	.panel {
@@ -189,6 +260,8 @@
 	.zone {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+		/* Every card in a row is as tall as the row. */
+		align-items: stretch;
 		gap: 10px;
 		min-height: 60px;
 		padding: 6px;
