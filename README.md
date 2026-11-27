@@ -555,7 +555,6 @@ tests/          mirrors marquee/ one-to-one
 data/           runtime state: models, caches, runs, backups (not committed)
 docs/           architecture and other documentation
 frontend/       the web interface (SvelteKit)
-_salvage/       code from the earlier codebase still waiting to be re-homed
 compose.yaml    PostgreSQL for development, and the whole stack (profile app)
 Dockerfile      the application image (targets runtime and export)
 frontend/Dockerfile   the web interface's image

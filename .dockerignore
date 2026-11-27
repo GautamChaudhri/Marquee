@@ -3,8 +3,8 @@
 # the image needs (migrations, for example) must be added here.
 #
 # This keeps the local settings (.env), git history, runtime data and models (data/), the
-# local environment (.venv), agent notes, salvaged code, the frontend, and the tests out of
-# every build context.
+# local environment (.venv), agent notes, the frontend, and the tests out of every build
+# context.
 *
 
 !pyproject.toml

@@ -140,7 +140,6 @@ packages = ["marquee"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["_salvage"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
