@@ -56,7 +56,7 @@ marquee/
                    web app's types come from (app.py), API-key auth (auth.py),
                    routes/ (health, library, jobs, runs, deployments, taste, system),
                    schemas/ (response models), the system summary (system.py), file
-                   responses (files.py), and a rate limiter
+                   responses (files.py), and the limiter for wrong keys (rate_limit.py)
 ```
 
 ## Layering
