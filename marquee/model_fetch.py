@@ -16,9 +16,18 @@ face       downloaded from InsightFace (``buffalo_sc`` pack)     ``FACE_MODEL_PA
 
 What is present is left alone; what is missing (or named with ``--force``) is built. Every
 build writes to a temporary name in its destination folder and is renamed into place only
-after its check passes, so a failed export never leaves a file the engine would load. A
-download's check is its SHA-256, pinned below. The manifest (``data/models/manifest.json``)
-is then written and verified.
+after its check passes, so a failed export never leaves a file the engine would load. The
+manifest (``data/models/manifest.json``) is then written and verified.
+
+Every input is pinned, so a fresh machine builds from exactly what this project's models
+were built and measured with: each file that is downloaded is checked against a SHA-256
+written below (the CLIP weights at a fixed Hugging Face revision, the DINOv2 code at a fixed
+commit and its weights, the YOLO weights, the aesthetic head, the face detector, and the
+three OCR model folders by a digest over their files). The exported models (CLIP, DINOv2,
+YOLO, the zero-shot axes) are pinned through those inputs; the manifest records the digest
+of the file each machine produced, and the code expects none. Moving a pin is a change of
+model: the doctor's manifest check must pass again afterwards, and the measurements made
+with the old model no longer describe the new one.
 
 ``clip``, ``dino``, ``zeroshot``, and ``aesthetic`` (its ``.pth`` to ``.npz`` conversion)
 need the export tools (the ``export`` dependency group). No runtime code path imports them.
@@ -63,10 +72,50 @@ EXPORT_INSTALL_COMMAND = "uv sync --extra nvidia --group export"
 MIN_COSINE = 0.9999
 CHECK_BATCH = 4
 
+# CLIP ViT-B/32 from Hugging Face at a fixed revision (the image tower for ``clip``, the text
+# tower and its tokenizer for ``zeroshot``). Only these files are fetched; the weights are
+# checked before anything loads them. The revision's model.safetensors does not exist; the
+# conversion bot's pull request holds the same 400 tensors, value for value.
+CLIP_REPO = "openai/clip-vit-base-patch32"
+CLIP_REVISION = "3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268"
+CLIP_WEIGHTS = "pytorch_model.bin"
+CLIP_WEIGHTS_SHA256 = "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f"
+CLIP_FILES = (
+    "config.json",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "special_tokens_map.json",
+    "vocab.json",
+    "merges.txt",
+    CLIP_WEIGHTS,
+)
+
+# DINOv2-S/14: torch.hub loads the model code from the repository at a fixed commit, and the
+# pretrained weights it would download are fetched and checked here first, into the hub's
+# checkpoints folder, where it finds them.
+DINO_REPO = "facebookresearch/dinov2"
+DINO_COMMIT = "7764ea0f912e53c92e82eb78a2a1631e92725fc8"
+DINO_WEIGHTS_URL = "https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
+DINO_WEIGHTS_SHA256 = "b938bf1bc15cd2ec0feacfe3a1bb553fe8ea9ca46a7e1d8d00217f29aef60cd9"
+DINO_WEIGHTS_MAX_BYTES = 128 * 1024 * 1024
+
+# The three model folders PaddleOCR 3.6.0 downloads on its first load
+# (pipeline/ocr_filter.py::_load_ocr), each pinned by model_manifest.folder_digest.
+OCR_FOLDER_SHA256 = {
+    "PP-LCNet_x1_0_textline_ori_safetensors": "3609ec4738d5d5cc336bb2715a7c1646b021a18db464a3b3f8344d8b8b4263ca",
+    "PP-OCRv5_mobile_det_safetensors": "ac22688ac2f5d83107c5918d4324e8bbfbfc3eaf61dae13524505cc332f5247f",
+    "PP-OCRv5_server_rec_safetensors": "c66223effa3ef17133dc0e785a448241ccf95e3ca4d13fafc2d557bcf0dbe375",
+}
+
 # The YOLO exporter runs in an isolated uv tool environment: Ultralytics depends on
 # opencv-python, which would replace the OpenCV build PaddleOCR requires.
 ULTRALYTICS_VERSION = "8.4.216"
 YOLO_WEIGHTS = "yolo11n.pt"
+# Where Ultralytics 8.4.216 itself fetches them; fetched and checked here, and handed to the
+# exporter as a local file.
+YOLO_WEIGHTS_URL = "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt"
+YOLO_WEIGHTS_SHA256 = "0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1"
 YOLO_TOOL_PACKAGES = ("onnx==1.23.2", "onnxslim==0.1.99", "onnxruntime==1.26.0")
 YOLO_TOOL_PYTHON = "3.12"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
@@ -220,8 +269,8 @@ def staged(target: Path) -> Iterator[Path]:
     os.replace(partial, target)
 
 
-def download(url: str, dest: Path) -> None:
-    """Stream ``url`` into ``dest``, refusing anything larger than ``MAX_DOWNLOAD_BYTES``.
+def download(url: str, dest: Path, *, max_bytes: int = MAX_DOWNLOAD_BYTES) -> None:
+    """Stream ``url`` into ``dest``, refusing anything larger than ``max_bytes``.
 
     Unit tests replace this function; they never touch the network.
     """
@@ -235,8 +284,8 @@ def download(url: str, dest: Path) -> None:
         response.raise_for_status()
         for chunk in response.iter_bytes():
             received += len(chunk)
-            if received > MAX_DOWNLOAD_BYTES:
-                raise BuildError(f"{url} is larger than {MAX_DOWNLOAD_BYTES} bytes")
+            if received > max_bytes:
+                raise BuildError(f"{url} is larger than {max_bytes} bytes")
             out.write(chunk)
 
 
@@ -244,6 +293,52 @@ def check_sha256(path: Path, expected: str, *, name: str) -> None:
     actual = model_manifest.sha256_file(path)
     if actual != expected:
         raise BuildError(f"{name} has SHA-256 {actual}, expected {expected}")
+
+
+def fetch_pinned(
+    url: str, target: Path, expected: str, *, max_bytes: int = MAX_DOWNLOAD_BYTES
+) -> None:
+    """Put the file at ``url`` at ``target``, checked against ``expected``.
+
+    A file already there that matches is kept; one that does not is replaced. Nothing
+    unchecked is ever left at ``target``.
+    """
+    if target.is_file() and model_manifest.sha256_file(target) == expected:
+        return
+    with staged(target) as partial:
+        download(url, partial, max_bytes=max_bytes)
+        check_sha256(partial, expected, name=target.name)
+
+
+def hf_download(repo: str, filename: str, revision: str) -> Path:
+    """One file of a Hugging Face repository at ``revision``, from its cache or the hub.
+
+    Unit tests replace this function; they never touch the network.
+    """
+    from huggingface_hub import hf_hub_download
+
+    return Path(hf_hub_download(repo, filename, revision=revision))
+
+
+def fetch_clip_source() -> Path:
+    """The local folder of CLIP's files at the pinned revision, its weights checked."""
+    folder: Path | None = None
+    for name in CLIP_FILES:
+        folder = hf_download(CLIP_REPO, name, CLIP_REVISION).parent
+    assert folder is not None
+    check_sha256(
+        folder / CLIP_WEIGHTS,
+        CLIP_WEIGHTS_SHA256,
+        name=f"{CLIP_REPO}@{CLIP_REVISION[:12]} {CLIP_WEIGHTS}",
+    )
+    return folder
+
+
+def _clip_pins() -> dict[str, str]:
+    return {
+        "revision": f"{CLIP_REPO}@{CLIP_REVISION}",
+        f"{CLIP_WEIGHTS} sha256": CLIP_WEIGHTS_SHA256,
+    }
 
 
 def aesthetic_values_sha256(npz_path: Path) -> str:
@@ -334,8 +429,9 @@ def check_yolo(path: Path) -> tuple[int, ...]:
 def build_clip(paths: ModelPaths) -> Built:
     from marquee.ml.clip_export import export_vision_onnx
 
+    source = fetch_clip_source()
     with staged(paths.clip) as partial:
-        module = export_vision_onnx(partial)
+        module = export_vision_onnx(partial, source=source)
         cosine = check_against_torch(partial, module, input_size=224, dim=512)
     entry = model_manifest.describe(
         paths.data_dir,
@@ -344,30 +440,35 @@ def build_clip(paths: ModelPaths) -> Built:
         source="Hugging Face openai/clip-vit-base-patch32, image tower exported to ONNX "
         "(opset 14, dynamic batch axis)",
         tools=_tool_versions("torch", "transformers", "onnx"),
-        details={"min_cosine_vs_pytorch": f"{cosine:.6f}"},
+        details={"min_cosine_vs_pytorch": f"{cosine:.6f}", **_clip_pins()},
     )
     return Built([entry], f"ONNX matches PyTorch (min cosine {cosine:.6f}); batches of 1 and 4")
 
 
-def _dino_weights_sha256() -> str | None:
+def _dino_weights_path() -> Path:
+    """Where torch.hub looks for the DINOv2 weights before it downloads them."""
     import torch
 
-    weights = Path(torch.hub.get_dir()) / "checkpoints" / "dinov2_vits14_pretrain.pth"
-    return model_manifest.sha256_file(weights) if weights.is_file() else None
+    return Path(torch.hub.get_dir()) / "checkpoints" / Path(DINO_WEIGHTS_URL).name
 
 
 def build_dino(paths: ModelPaths) -> Built:
     from marquee.ml.dino import DINO_EMBED_DIM, DINO_INPUT_SIZE, export_dino_onnx
 
+    weights = _dino_weights_path()
+    fetch_pinned(DINO_WEIGHTS_URL, weights, DINO_WEIGHTS_SHA256, max_bytes=DINO_WEIGHTS_MAX_BYTES)
     with staged(paths.dino) as partial:
-        module = export_dino_onnx(partial)
+        module = export_dino_onnx(partial, repo=f"{DINO_REPO}:{DINO_COMMIT}")
         cosine = check_against_torch(
             partial, module, input_size=DINO_INPUT_SIZE, dim=DINO_EMBED_DIM
         )
-    details = {"min_cosine_vs_pytorch": f"{cosine:.6f}"}
-    weights_sha = _dino_weights_sha256()
-    if weights_sha:
-        details["dinov2_vits14_pretrain.pth sha256"] = weights_sha
+    # The hub found the checked file in place and did not fetch another.
+    check_sha256(weights, DINO_WEIGHTS_SHA256, name=weights.name)
+    details = {
+        "min_cosine_vs_pytorch": f"{cosine:.6f}",
+        "code": f"{DINO_REPO}@{DINO_COMMIT}",
+        f"{weights.name} sha256": DINO_WEIGHTS_SHA256,
+    }
     entry = model_manifest.describe(
         paths.data_dir,
         paths.dino,
@@ -383,8 +484,9 @@ def build_dino(paths: ModelPaths) -> Built:
 def build_zeroshot(paths: ModelPaths) -> Built:
     from marquee.ml.zeroshot import AXIS_PROMPTS, build_axes
 
+    source = fetch_clip_source()
     with staged(paths.zeroshot) as partial:
-        build_axes(partial)
+        build_axes(partial, source=source)
         check_axes(partial)
     entry = model_manifest.describe(
         paths.data_dir,
@@ -392,7 +494,7 @@ def build_zeroshot(paths: ModelPaths) -> Built:
         item="zeroshot",
         source="CLIP text tower (Hugging Face openai/clip-vit-base-patch32) over AXIS_PROMPTS",
         tools=_tool_versions("torch", "transformers"),
-        details={"axes": ", ".join(AXIS_PROMPTS)},
+        details={"axes": ", ".join(AXIS_PROMPTS), **_clip_pins()},
     )
     return Built([entry], f"{len(AXIS_PROMPTS)} unit-length axes of 512 values")
 
@@ -408,6 +510,12 @@ def build_yolo(paths: ModelPaths) -> Built:
         raise BuildError("needs uv on the PATH to run the Ultralytics exporter in its own env")
     paths.cache_dir.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix="yolo-export-", dir=paths.cache_dir))
+    try:
+        # The exporter takes a weights file it finds in its folder as it is.
+        fetch_pinned(YOLO_WEIGHTS_URL, scratch / YOLO_WEIGHTS, YOLO_WEIGHTS_SHA256)
+    except BaseException:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
     command = [
         uv,
         "tool",
@@ -446,7 +554,8 @@ def build_yolo(paths: ModelPaths) -> Built:
             tail = (result.stderr or result.stdout).strip().splitlines()[-1:] or ["no output"]
             raise BuildError(f"Ultralytics export exited {result.returncode}: {tail[0]}")
         shape = check_yolo(exported)
-        weights_sha = model_manifest.sha256_file(scratch / YOLO_WEIGHTS)
+        check_sha256(scratch / YOLO_WEIGHTS, YOLO_WEIGHTS_SHA256, name=YOLO_WEIGHTS)
+        weights_sha = YOLO_WEIGHTS_SHA256
         with staged(paths.yolo) as partial:
             shutil.copyfile(exported, partial)
     except subprocess.TimeoutExpired as exc:
@@ -464,7 +573,7 @@ def build_yolo(paths: ModelPaths) -> Built:
             **dict(package.split("==") for package in YOLO_TOOL_PACKAGES),
             "uv": _uv_version(uv),
         },
-        details={f"{YOLO_WEIGHTS} sha256": weights_sha},
+        details={f"{YOLO_WEIGHTS} sha256": weights_sha, "weights from": YOLO_WEIGHTS_URL},
     )
     return Built([entry], f"640x640 input gives output {shape}")
 
@@ -535,6 +644,22 @@ def _ocr_probe() -> dict[str, object]:
     }
 
 
+def check_ocr_folders(official: Path, folders: list[str]) -> None:
+    """The folders PaddleOCR opened must be the pinned ones, each with its pinned digest."""
+    if sorted(folders) != sorted(OCR_FOLDER_SHA256):
+        raise BuildError(
+            f"PaddleOCR opened {', '.join(sorted(folders))}; the pinned folders are "
+            f"{', '.join(sorted(OCR_FOLDER_SHA256))}"
+        )
+    for folder in folders:
+        digest, _ = model_manifest.folder_digest(official / folder)
+        if digest != OCR_FOLDER_SHA256[folder]:
+            raise BuildError(
+                f"{folder} has digest {digest}, expected {OCR_FOLDER_SHA256[folder]}; "
+                "delete the folder to fetch it again"
+            )
+
+
 def build_ocr(paths: ModelPaths) -> Built:
     with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as pool:
         probe = pool.submit(_ocr_probe).result()
@@ -547,6 +672,7 @@ def build_ocr(paths: ModelPaths) -> Built:
     folders = list(probe["folders"])  # type: ignore[call-overload]
     if not folders:
         raise BuildError("could not tell which model folders PaddleOCR opened")
+    check_ocr_folders(cache_dir / "official_models", folders)
     versions = dict(probe["versions"])  # type: ignore[call-overload]
     device = str(probe["device"])
     entries = [
@@ -557,7 +683,7 @@ def build_ocr(paths: ModelPaths) -> Built:
             source="PaddleX official model, downloaded by PaddleOCR on first load "
             "(pipeline/ocr_filter.py::_load_ocr)",
             tools=versions,
-            details={"device": device},
+            details={"device": device, "pinned digest": OCR_FOLDER_SHA256[folder]},
         )
         for folder in folders
     ]

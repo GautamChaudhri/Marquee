@@ -13,8 +13,11 @@
 #   docker build --target runtime -t marquee:runtime .
 #   docker build --target export -t marquee:export .
 
-ARG PYTHON_IMAGE=python:3.12.16-slim-trixie
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.9
+# Base images by tag and digest: the digest is the registry's manifest list for that tag
+# (docker buildx imagetools inspect <tag>, 2026-11-27), so a rebuild gets the same bytes
+# even when the tag is republished. To move one, put the new tag's digest here and rebuild.
+ARG PYTHON_IMAGE=python:3.12.16-slim-trixie@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d
 
 FROM ${UV_IMAGE} AS uv
 

@@ -137,14 +137,16 @@ class ZeroShotAxes:
 # ---------------------------------------------------------------------------
 
 
-def build_axes(output: Path | None = None) -> Path:
+def build_axes(output: Path | None = None, source: str | Path = _HF_MODEL_ID) -> Path:
+    """Build the axes from CLIP's text tower; ``source`` is the model's Hugging Face id or a
+    local folder of its files (``marquee models fetch`` passes the pinned revision's)."""
     import torch
     from transformers import CLIPModel, CLIPProcessor
 
     output_path = Path(output or pipeline_settings.ZEROSHOT_AXES_PATH)
-    logger.info("Loading %s text tower ...", _HF_MODEL_ID)
-    model = CLIPModel.from_pretrained(_HF_MODEL_ID, dtype=torch.float32).eval()
-    processor = CLIPProcessor.from_pretrained(_HF_MODEL_ID)
+    logger.info("Loading %s text tower ...", source)
+    model = CLIPModel.from_pretrained(str(source), dtype=torch.float32).eval()
+    processor = CLIPProcessor.from_pretrained(str(source))
 
     def embed_prompts(prompts: list[str]) -> np.ndarray:
         inputs = processor(text=prompts, return_tensors="pt", padding=True)

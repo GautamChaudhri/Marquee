@@ -9,11 +9,12 @@
 # MARQUEE_API_KEY, ORIGIN, HOST, PORT, and BODY_SIZE_LIMIT from its environment when it
 # starts, so the image holds no secret.
 #
-#   docker build -t marquee-web:latest frontend
+#   docker build -t marquee:web frontend
 
-# Node 26, the version in .node-version, on Debian 13. Digest when pinned (2026-11-26):
-# sha256:abe7e5a82b61a8ef67b315b85497c9e65173387ccf2f4a029248184b8e020be5
-ARG NODE_IMAGE=node:26.13.1-trixie-slim
+# Node 26, the version in .node-version, on Debian 13, by tag and digest: the registry's
+# manifest list for that tag (docker buildx imagetools inspect <tag>, 2026-11-27). To move
+# it, put the new tag's digest here and rebuild.
+ARG NODE_IMAGE=node:26.13.1-trixie-slim@sha256:abe7e5a82b61a8ef67b315b85497c9e65173387ccf2f4a029248184b8e020be5
 
 # ── build ───────────────────────────────────────────────────────────────────
 FROM ${NODE_IMAGE} AS build

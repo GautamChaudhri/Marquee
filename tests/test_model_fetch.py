@@ -304,7 +304,11 @@ def served(monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
     """What the fake download serves, by URL. Unit tests never touch the network."""
     files: dict[str, bytes] = {}
 
-    def fake_download(url: str, dest: Path) -> None:
+    def fake_download(
+        url: str, dest: Path, *, max_bytes: int = model_fetch.MAX_DOWNLOAD_BYTES
+    ) -> None:
+        if len(files[url]) > max_bytes:
+            raise model_fetch.BuildError(f"{url} is larger than {max_bytes} bytes")
         dest.write_bytes(files[url])
 
     monkeypatch.setattr(model_fetch, "download", fake_download)
@@ -461,3 +465,130 @@ def test_the_ocr_probe_keeps_every_download_request_out_of_the_console() -> None
         for name, level in saved.items():
             logging.getLogger(name).setLevel(level)
         root.setLevel(saved_root)
+
+
+# ── Pinned inputs ─────────────────────────────────────────────────────────
+
+
+def test_a_pinned_file_is_kept_when_it_matches_and_replaced_when_not(
+    tmp_path: Path, served: dict[str, bytes]
+) -> None:
+    url = "https://models.example/w.pt"
+    served[url] = b"the right weights"
+    target = tmp_path / "checkpoints" / "w.pt"
+
+    model_fetch.fetch_pinned(url, target, _sha256(b"the right weights"))
+    assert target.read_bytes() == b"the right weights"
+
+    # Matching and already there: no download (the URL now serves something else).
+    served[url] = b"something else"
+    model_fetch.fetch_pinned(url, target, _sha256(b"the right weights"))
+    assert target.read_bytes() == b"the right weights"
+
+    # A cached file that does not match is replaced by the pinned bytes, or not at all.
+    target.write_bytes(b"tampered")
+    served[url] = b"the right weights"
+    model_fetch.fetch_pinned(url, target, _sha256(b"the right weights"))
+    assert target.read_bytes() == b"the right weights"
+
+    served[url] = b"a different model"
+    target.unlink()
+    with pytest.raises(model_fetch.BuildError, match="has SHA-256"):
+        model_fetch.fetch_pinned(url, target, _sha256(b"the right weights"))
+    assert list(target.parent.iterdir()) == []
+
+
+def test_the_clip_files_come_from_the_pinned_revision_and_its_weights_are_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    snapshot = tmp_path / "snapshots" / model_fetch.CLIP_REVISION
+    asked: list[tuple[str, str, str]] = []
+    weights = {"bytes": b"clip weights"}
+
+    def fake_hf_download(repo: str, filename: str, revision: str) -> Path:
+        asked.append((repo, filename, revision))
+        snapshot.mkdir(parents=True, exist_ok=True)
+        path = snapshot / filename
+        path.write_bytes(weights["bytes"] if filename == model_fetch.CLIP_WEIGHTS else b"{}")
+        return path
+
+    monkeypatch.setattr(model_fetch, "hf_download", fake_hf_download)
+    monkeypatch.setattr(model_fetch, "CLIP_WEIGHTS_SHA256", _sha256(b"clip weights"))
+    assert model_fetch.fetch_clip_source() == snapshot
+    assert {repo for repo, _, _ in asked} == {"openai/clip-vit-base-patch32"}
+    assert {revision for _, _, revision in asked} == {model_fetch.CLIP_REVISION}
+    assert [name for _, name, _ in asked] == list(model_fetch.CLIP_FILES)
+    assert "pytorch_model.bin" in model_fetch.CLIP_FILES
+
+    weights["bytes"] = b"other weights"
+    with pytest.raises(model_fetch.BuildError, match=r"clip-vit-base-patch32@3d74acf9a28c"):
+        model_fetch.fetch_clip_source()
+
+
+def _ocr_folder(official: Path, name: str, content: bytes) -> str:
+    folder = official / name
+    folder.mkdir(parents=True)
+    (folder / "inference.safetensors").write_bytes(content)
+    return model_manifest.folder_digest(folder)[0]
+
+
+def test_the_ocr_folders_must_be_the_pinned_ones_with_their_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    official = tmp_path / "official_models"
+    pins = {
+        "det": _ocr_folder(official, "det", b"det"),
+        "rec": _ocr_folder(official, "rec", b"rec"),
+    }
+    monkeypatch.setattr(model_fetch, "OCR_FOLDER_SHA256", pins)
+    model_fetch.check_ocr_folders(official, ["rec", "det"])
+
+    with pytest.raises(model_fetch.BuildError, match="the pinned folders are det, rec"):
+        model_fetch.check_ocr_folders(official, ["det"])
+    _ocr_folder(official, "rec_v6", b"rec")
+    with pytest.raises(model_fetch.BuildError, match="PaddleOCR opened det, rec_v6"):
+        model_fetch.check_ocr_folders(official, ["det", "rec_v6"])
+    (official / "rec" / "inference.safetensors").write_bytes(b"another recognizer")
+    with pytest.raises(model_fetch.BuildError, match="rec has digest"):
+        model_fetch.check_ocr_folders(official, ["det", "rec"])
+
+
+def test_the_yolo_weights_are_checked_before_the_exporter_runs(
+    paths: ModelPaths, served: dict[str, bytes], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    served[model_fetch.YOLO_WEIGHTS_URL] = b"not the pinned yolo11n.pt"
+    ran: list[object] = []
+    monkeypatch.setattr(model_fetch.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(model_fetch.subprocess, "run", lambda *a, **k: ran.append(a))
+    with pytest.raises(model_fetch.BuildError, match="yolo11n.pt has SHA-256"):
+        model_fetch.build_yolo(paths)
+    assert ran == []
+    assert not paths.yolo.exists()
+    assert list(paths.cache_dir.iterdir()) == []
+
+
+def test_the_dino_weights_are_checked_before_the_export_and_the_code_is_a_commit(
+    paths: ModelPaths, served: dict[str, bytes], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from marquee.ml import dino
+
+    weights = tmp_path / "hub" / "checkpoints" / "dinov2_vits14_pretrain.pth"
+    monkeypatch.setattr(model_fetch, "_dino_weights_path", lambda: weights)
+    exported: list[str] = []
+
+    def fake_export(output: Path, repo: str) -> None:
+        exported.append(repo)
+        raise model_fetch.BuildError("stop after the export was asked for")
+
+    monkeypatch.setattr(dino, "export_dino_onnx", fake_export)
+    served[model_fetch.DINO_WEIGHTS_URL] = b"not the pinned weights"
+    with pytest.raises(model_fetch.BuildError, match="dinov2_vits14_pretrain.pth has SHA-256"):
+        model_fetch.build_dino(paths)
+    assert exported == [] and not weights.exists()
+
+    served[model_fetch.DINO_WEIGHTS_URL] = b"the pinned weights"
+    monkeypatch.setattr(model_fetch, "DINO_WEIGHTS_SHA256", _sha256(b"the pinned weights"))
+    with pytest.raises(model_fetch.BuildError, match="stop after"):
+        model_fetch.build_dino(paths)
+    assert exported == [f"facebookresearch/dinov2:{model_fetch.DINO_COMMIT}"]
+    assert weights.read_bytes() == b"the pinned weights"

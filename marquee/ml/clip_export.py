@@ -38,14 +38,18 @@ def _make_vision_wrapper() -> type:
     return CLIPVisionWrapper
 
 
-def export_vision_onnx(output_path: Path) -> torch.nn.Module:
-    """Export CLIP's image tower to ``output_path``; return the PyTorch module exported."""
+def export_vision_onnx(output_path: Path, source: str | Path = _HF_MODEL_ID) -> torch.nn.Module:
+    """Export CLIP's image tower to ``output_path``; return the PyTorch module exported.
+
+    ``source`` is the model's Hugging Face id or a local folder of its files (``marquee
+    models fetch`` passes the pinned revision's folder).
+    """
     import torch
     from transformers import CLIPModel
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Loading %s ...", _HF_MODEL_ID)
-    model = CLIPModel.from_pretrained(_HF_MODEL_ID, dtype=torch.float32).cpu().eval()
+    logger.info("Loading %s ...", source)
+    model = CLIPModel.from_pretrained(str(source), dtype=torch.float32).cpu().eval()
     wrapper_class = _make_vision_wrapper()
     wrapper = wrapper_class(model.vision_model, model.visual_projection).cpu().eval()
 

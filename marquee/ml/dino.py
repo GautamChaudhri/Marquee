@@ -153,16 +153,23 @@ class DinoImageEncoder:
 # ---------------------------------------------------------------------------
 
 
-def export_dino_onnx(output: Path | None = None) -> torch.nn.Module:
-    """Export DINOv2-S/14 to ``output``; return the PyTorch module exported."""
+def export_dino_onnx(
+    output: Path | None = None, repo: str = "facebookresearch/dinov2"
+) -> torch.nn.Module:
+    """Export DINOv2-S/14 to ``output``; return the PyTorch module exported.
+
+    ``repo`` is the torch.hub repository, ``owner/name[:ref]``; ``marquee models fetch``
+    passes a fixed commit.
+    """
     import torch
 
     output_path = Path(output or pipeline_settings.DINO_MODEL_PATH)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading dinov2_vits14 via torch.hub (downloads ~88MB once) ...")
-    # trust_repo answers torch.hub's interactive "trust this repository?" prompt.
-    model = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14", trust_repo=True)
+    logger.info("Loading dinov2_vits14 from %s via torch.hub ...", repo)
+    # trust_repo answers torch.hub's interactive "trust this repository?" prompt. A commit is
+    # not a branch or tag, which torch.hub's validation looks for; the commit pins the code.
+    model = torch.hub.load(repo, "dinov2_vits14", trust_repo=True, skip_validation=":" in repo)
     model = model.cpu().eval()
 
     class _CLSWrapper(torch.nn.Module):
