@@ -80,3 +80,27 @@ test('System says the paths are the containers’ in the Compose stack', async (
 		'Paths inside Marquee’s containers. On the host they are the folders named in the settings file (.env): MOVIE_LIBRARY_HOST_PATH for the movies, MARQUEE_DATA_HOST_PATH for the data.'
 	);
 });
+
+test('System credits TMDB with its logo and the notice its terms ask for', async ({ page }) => {
+	await resetBackend();
+	await signIn(page);
+	await page.goto('/system');
+	const credits = page.getByTestId('credits');
+	await expect(credits).toContainText(
+		'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.'
+	);
+	const logo = credits.getByAltText('TMDB');
+	await expect(logo).toHaveAttribute('src', '/tmdb-logo.svg');
+	// The logo is served by the web app itself, and it loads.
+	await expect
+		.poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth))
+		.toBeGreaterThan(0);
+	// Smaller than Marquee's own name in the navigation.
+	const logoHeight = (await logo.boundingBox())!.height;
+	const brandHeight = (await page
+		.getByRole('link', { name: /marquee/i })
+		.first()
+		.boundingBox())!.height;
+	expect(logoHeight).toBeLessThan(brandHeight);
+	await expect(credits).toContainText('personal, non-commercial use');
+});

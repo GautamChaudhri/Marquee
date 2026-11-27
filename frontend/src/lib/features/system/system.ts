@@ -48,6 +48,11 @@ export function problems(system: SystemInfo, worker: WorkerInfo | null): string[
 	return found;
 }
 
+/** The notice TMDB's API terms (section 3, "Attribution") ask every application to show
+ *  with the TMDB logo, in the terms' own words. */
+export const TMDB_NOTICE =
+	'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.';
+
 /** Whose paths the settings table shows. In production (the Compose stack) the API reports
  *  the paths inside its container; the host's folders are the ones the settings file names. */
 export function pathsNote(environment: string): string | null {

@@ -7,6 +7,7 @@
 		backupLine,
 		backupSettingLine,
 		countsLine,
+		TMDB_NOTICE,
 		deployPolicyLine,
 		pathsNote,
 		problems,
@@ -240,6 +241,19 @@
 	</section>
 {/if}
 
+<section class="credits" data-testid="credits">
+	<h2>Credits</h2>
+	<p class="tmdb">
+		<img src="/tmdb-logo.svg" alt="TMDB" width="91" height="12" />
+		<span>{TMDB_NOTICE} Movie details and posters come from TMDB.</span>
+	</p>
+	<p>
+		Marquee is free software under the GNU GPL v3. The models it downloads come under their own
+		licences; with the default models an installation is for personal, non-commercial use (see
+		docs/third-party.md in the source).
+	</p>
+</section>
+
 <style>
 	.problems {
 		margin-bottom: 18px;
@@ -314,6 +328,20 @@
 	}
 	.models {
 		margin-top: 22px;
+	}
+	.credits {
+		margin-top: 22px;
+		font-size: 12px;
+		color: var(--muted);
+	}
+	.credits p {
+		margin: 0 0 6px;
+	}
+	.tmdb {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		flex-wrap: wrap;
 	}
 	@media (max-width: 900px) {
 		.tables {
