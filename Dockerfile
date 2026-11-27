@@ -12,12 +12,17 @@
 #
 #   docker build --target runtime -t marquee:runtime .
 #   docker build --target export -t marquee:export .
+#
+# MARQUEE_EXTRA picks the dependency set: nvidia (the default, and the only supported one) or
+# cpu. The CPU build exists so CI can build and smoke-test the image on a runner without a
+# GPU (the NVIDIA image is 18 GB); it is not a way to run Marquee.
 
 # Base images by tag and digest: the digest is the registry's manifest list for that tag
 # (docker buildx imagetools inspect <tag>, 2026-11-27), so a rebuild gets the same bytes
 # even when the tag is republished. To move one, put the new tag's digest here and rebuild.
 ARG PYTHON_IMAGE=python:3.12.16-slim-trixie@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d
+ARG MARQUEE_EXTRA=nvidia
 
 FROM ${UV_IMAGE} AS uv
 
@@ -59,16 +64,18 @@ ENV CUDA_CACHE_PATH=/data/cache/cuda-jit
 
 # ── Dependencies: from the lockfile only, before any source, so a code change reuses them
 FROM base AS deps
+ARG MARQUEE_EXTRA
 WORKDIR /src
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=.python-version,target=.python-version \
-    uv sync --locked --extra nvidia --no-dev --no-install-project
+    uv sync --locked --extra "${MARQUEE_EXTRA}" --no-dev --no-install-project
 
 # ── runtime ─────────────────────────────────────────────────────────────────
 FROM deps AS runtime
+ARG MARQUEE_EXTRA
 # The PostgreSQL client tools (pg_dump, pg_restore, psql) for the scheduled database dump and
 # `marquee db restore`. They must be the database server's major version or newer, which
 # Debian does not carry, so they come from the PostgreSQL project's own apt repository, as
@@ -100,7 +107,7 @@ ENV PATH=/usr/lib/postgresql/${PG_CLIENT_MAJOR}/bin:${PATH}
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,target=/src,rw \
-    uv sync --locked --extra nvidia --no-dev --no-editable
+    uv sync --locked --extra "${MARQUEE_EXTRA}" --no-dev --no-editable
 # The build ran in /src (the dependency stage's folder and the bind mount above); the image
 # keeps no empty folder of it.
 WORKDIR /home/marquee
@@ -110,16 +117,17 @@ CMD ["marquee", "doctor"]
 
 # ── export ──────────────────────────────────────────────────────────────────
 FROM deps AS export
+ARG MARQUEE_EXTRA
 # The YOLO export runs the Ultralytics exporter through `uv tool run`.
 COPY --from=uv /uv /uvx /usr/local/bin/
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     --mount=type=bind,source=.python-version,target=.python-version \
-    uv sync --locked --extra nvidia --no-dev --group export --no-install-project
+    uv sync --locked --extra "${MARQUEE_EXTRA}" --no-dev --group export --no-install-project
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,target=/src,rw \
-    uv sync --locked --extra nvidia --no-dev --group export --no-editable
+    uv sync --locked --extra "${MARQUEE_EXTRA}" --no-dev --group export --no-editable
 WORKDIR /home/marquee
 RUN rmdir /src
 USER marquee

@@ -148,9 +148,9 @@ jobs:
         run: npm run test:e2e
 
   docker:
-    name: Compose file and web image
+    name: Compose file and images
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Check out repository
@@ -184,3 +184,63 @@ jobs:
           docker logs web
           docker rm -f web
           test "$code" = 200
+
+      - name: Build the runtime image (CPU build)
+        # The NVIDIA image is 18 GB, more than a hosted runner can build. The same Dockerfile
+        # with the cpu extra checks everything else the image does; it exists for CI only.
+        run: docker build --target runtime --build-arg MARQUEE_EXTRA=cpu -t marquee:runtime .
+
+      - name: Smoke test the runtime image
+        run: |
+          docker image ls marquee:runtime
+          docker run --rm marquee:runtime id
+          test "$(docker run --rm marquee:runtime id -u)" != 0
+          docker run --rm marquee:runtime marquee --help > /dev/null
+          docker run --rm marquee:runtime pg_dump --version | tee /dev/stderr | grep -Eq ' 19(\.|$| )'
+          docker run --rm marquee:runtime sh -c 'test ! -e /src'
+
+      - name: The stack starts from the images CI built
+        # db, migrate, api, and web from a throwaway settings file made from .env.example (no
+        # worker: it needs a GPU). The API's health check passes, and a sign-in through the
+        # web app (a form post, as a browser sends it: 303 and a session cookie) followed by a
+        # request to /api/system answers 200. The password and key are made here and never
+        # printed.
+        run: |
+          cp .env.example .env
+          key=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+          password=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")
+          mkdir -p data library
+          sudo chown 1000:1000 data
+          sed -i -e "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${password}|" \
+            -e "s|^API_KEY=.*|API_KEY=${key}|" \
+            -e "s|^MOVIE_LIBRARY_HOST_PATH=.*|MOVIE_LIBRARY_HOST_PATH=${PWD}/library|" \
+            -e "s|^MOVIE_ROOTS=.*|MOVIE_ROOTS=${PWD}/library|" \
+            -e "s|^MARQUEE_WEB_ORIGIN=.*|MARQUEE_WEB_ORIGIN=http://127.0.0.1:3000|" \
+            -e "s|^MARQUEE_WEB_BIND=.*|MARQUEE_WEB_BIND=127.0.0.1|" .env
+          docker compose --profile app up -d --no-build db migrate api web
+          health=starting
+          for attempt in $(seq 1 60); do
+            health=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose --profile app ps -q api)")
+            [ "$health" = healthy ] && break
+            sleep 2
+          done
+          docker compose --profile app ps
+          echo "api: $health"
+          signin=000
+          for attempt in $(seq 1 30); do
+            signin=$(curl -s -o /dev/null -w '%{http_code}' -c cookies.txt -X POST \
+              http://127.0.0.1:3000/signin -H 'Origin: http://127.0.0.1:3000' \
+              -H 'Accept: text/html' -H 'Content-Type: application/x-www-form-urlencoded' \
+              --data-urlencode "key=${key}") || true
+            [ "$signin" = 303 ] && break
+            sleep 1
+          done
+          system=$(curl -s -o system.json -w '%{http_code}' -b cookies.txt \
+            http://127.0.0.1:3000/api/system) || true
+          echo "sign-in: $signin; /api/system: $system"
+          python3 -c "import json; d = json.load(open('system.json')); print('schema', d['schema'], 'environment', d['environment'])" || true
+          docker compose --profile app logs --no-color
+          docker compose --profile app down -v
+          test "$health" = healthy
+          test "$signin" = 303
+          test "$system" = 200
