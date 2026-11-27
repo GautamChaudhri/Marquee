@@ -33,6 +33,18 @@ for (const width of [390, 1440]) {
 		await page.goto('/review');
 		await expect(page.getByTestId('review-row').first()).toBeVisible();
 		expect(await overflowsSideways(page)).toBe(false);
+		const queueColumns = await page
+			.getByTestId('review-queue')
+			.evaluate((list) => getComputedStyle(list).gridTemplateColumns.split(' ').length);
+		expect(queueColumns).toBe(width < 500 ? 1 : 2);
+		await page.getByRole('button', { name: 'Gallery' }).click();
+		await expect(page.getByTestId('review-tile').first()).toBeVisible();
+		expect(await overflowsSideways(page)).toBe(false);
+		const galleryColumns = await page
+			.getByTestId('review-gallery')
+			.evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.split(' ').length);
+		expect(galleryColumns).toBeGreaterThanOrEqual(width < 500 ? 2 : 6);
+		await page.getByRole('button', { name: 'List' }).click();
 
 		await page.goto('/review/12');
 		await expect(page.getByTestId('review-card').first()).toBeVisible();

@@ -50,6 +50,10 @@ test('the queue lists the runs waiting, with their pictures and marks', async ({
 		'src',
 		/\/api\/movies\/5\/poster\?width=160&v=/
 	);
+	await expect(film05.getByAltText('The poster in the folder now')).toHaveAttribute(
+		'srcset',
+		/\/api\/movies\/5\/poster\?width=160&v=\S+ 160w, \/api\/movies\/5\/poster\?width=320&v=\S+ 320w/
+	);
 	await expect(film05.getByAltText('The run’s pick')).toHaveAttribute(
 		'src',
 		'/api/runs/12/candidates/1201/image'
@@ -59,6 +63,149 @@ test('the queue lists the runs waiting, with their pictures and marks', async ({
 	await film05.getByRole('link', { name: 'Review', exact: true }).click();
 	await expect(page).toHaveURL(/\/review\/12$/);
 	await expect(page.getByRole('heading', { name: /Film 05/ })).toBeVisible();
+});
+
+test('the queue’s cards stand in two columns, facts on top, and every part opens the run', async ({
+	page
+}) => {
+	await page.goto('/review');
+	const rows = page.getByTestId('review-row');
+	const first = (await rows.nth(0).boundingBox())!;
+	const second = (await rows.nth(1).boundingBox())!;
+	expect(Math.abs(first.y - second.y)).toBeLessThan(1);
+	expect(second.x).toBeGreaterThan(first.x + first.width - 1);
+
+	// The Review button sits on the title's line, at the card's right.
+	const film05 = rows.filter({ hasText: 'Film 05' });
+	const heading = film05.getByRole('heading', { name: /Film 05/ });
+	const button = film05.getByRole('link', { name: 'Review', exact: true });
+	const title = (await heading.boundingBox())!;
+	const go = (await button.boundingBox())!;
+	expect(go.y).toBeLessThan(title.y + title.height);
+	expect(go.x).toBeGreaterThan(title.x + title.width);
+
+	// Below the facts, one row of small posters from the left: the current poster, then the
+	// run's best designs in rank order (one poster a design, as the review page shows them).
+	// Run 12 ranks six designs; the fourth was never downloaded. A card this narrow (1280 px
+	// window) has six slots, so the sixth design waits for a wider card.
+	const current = film05.getByTestId('queue-current');
+	await expect(current.locator('figcaption')).toHaveText('Current');
+	const designs = film05.getByTestId('queue-design');
+	await expect(designs).toHaveCount(6);
+	await expect(designs.locator('figcaption')).toHaveText(['Pick', '#2', '#3', '#4', '#5', '#6']);
+	const images = ['1201', '1202', '1204', null, '1207', '1209'];
+	for (const [i, id] of images.entries()) {
+		if (id === null) await expect(designs.nth(i)).toContainText('No image');
+		else
+			await expect(designs.nth(i).locator('img')).toHaveAttribute(
+				'src',
+				`/api/runs/12/candidates/${id}/image`
+			);
+	}
+	await expect(designs.filter({ visible: true })).toHaveCount(5);
+	await expect(designs.nth(5)).toBeHidden();
+	const card = (await film05.boundingBox())!;
+	const now = (await current.boundingBox())!;
+	expect(now.y).toBeGreaterThan(go.y + go.height);
+	expect(now.x - card.x).toBeLessThan(20);
+	expect(now.width).toBeLessThan(card.width / 5);
+	for (let i = 0; i < 5; i++) {
+		const box = (await designs.nth(i).boundingBox())!;
+		expect(Math.abs(box.width - now.width)).toBeLessThan(1);
+		expect(Math.abs(box.y - now.y)).toBeLessThan(1);
+		expect(box.x).toBeGreaterThan(now.x + now.width);
+	}
+	const fifth = (await designs.nth(4).boundingBox())!;
+	expect(fifth.x + fifth.width).toBeLessThanOrEqual(card.x + card.width);
+
+	// A run with fewer designs shows what it has, the same size, from the same left edge; one
+	// with none ranked shows that it has no pick to show.
+	const film06 = rows.filter({ hasText: 'Film 06' });
+	await expect(film06.getByTestId('queue-design')).toHaveCount(3);
+	const card06 = (await film06.boundingBox())!;
+	const now06 = (await film06.getByAltText('The poster in the folder now').boundingBox())!;
+	const last06 = (await film06.getByTestId('queue-design').nth(2).boundingBox())!;
+	expect(Math.abs(now06.x - card06.x - (now.x - card.x))).toBeLessThan(1);
+	expect(Math.abs(last06.width - now.width)).toBeLessThan(1);
+	// Two designs short of five: their two slots stay empty at the right.
+	expect(card06.x + card06.width - (last06.x + last06.width)).toBeGreaterThan(2 * now.width);
+	const film08 = rows.filter({ hasText: 'Film 08' });
+	await expect(film08.getByTestId('queue-design')).toHaveCount(1);
+	await expect(film08.getByTestId('queue-design')).toContainText('No image');
+
+	// A wider card has room for seven slots: the sixth design shows, every poster the same
+	// size, still in one row inside the card.
+	await page.setViewportSize({ width: 1920, height: 900 });
+	await expect(designs.filter({ visible: true })).toHaveCount(6);
+	const wide = (await film05.boundingBox())!;
+	const wideNow = (await current.boundingBox())!;
+	const sixth = (await designs.nth(5).boundingBox())!;
+	expect(Math.abs(sixth.width - wideNow.width)).toBeLessThan(1);
+	expect(Math.abs(sixth.y - wideNow.y)).toBeLessThan(1);
+	expect(sixth.x + sixth.width).toBeLessThanOrEqual(wide.x + wide.width);
+	await page.setViewportSize({ width: 1280, height: 720 });
+
+	for (const part of [
+		film05.getByAltText('The poster in the folder now'),
+		film05.getByAltText('The run’s pick'),
+		film05.getByAltText('The design ranked 3'),
+		heading.getByRole('link'),
+		button
+	]) {
+		await page.goto('/review');
+		await part.click();
+		await expect(page).toHaveURL(/\/review\/12$/);
+	}
+});
+
+test('the gallery shows each run’s pick alone, opens its review, and is remembered', async ({
+	page
+}) => {
+	await page.goto('/review');
+	const views = page.getByRole('group', { name: 'Show the queue as' });
+	await expect(views.getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'true');
+	await views.getByRole('button', { name: 'Gallery' }).click();
+	await expect(views.getByRole('button', { name: 'Gallery' })).toHaveAttribute(
+		'aria-pressed',
+		'true'
+	);
+	await expect(page.getByTestId('review-row')).toHaveCount(0);
+	const tiles = page.getByTestId('review-tile');
+	await expect(tiles).toHaveCount(4);
+	await expect(tiles.first()).toContainText('Film 06');
+	await expect(tiles.first()).toContainText('Written by policy');
+	const film05 = tiles.filter({ hasText: 'Film 05' });
+	await expect(film05).toContainText('Blind');
+	await expect(film05.locator('img')).toHaveCount(1);
+	await expect(film05.locator('img')).toHaveAttribute('src', '/api/runs/12/candidates/1201/image');
+	await expect(tiles.filter({ hasText: 'Film 08' })).toContainText('No image');
+
+	// How many posters each run ranked: the number alone in a round dot at the poster's top
+	// right (screen readers hear "9 ranked").
+	const count = film05.getByTestId('ranked-count');
+	await expect(count).toHaveText('9 ranked');
+	await expect(count).toHaveAttribute('title', '9 ranked');
+	await expect(count.locator(':scope > span:not(.sr-only)')).toHaveText('9');
+	await expect(tiles.filter({ hasText: 'Film 08' }).getByTestId('ranked-count')).toHaveText(
+		'0 ranked'
+	);
+	const dot = (await count.boundingBox())!;
+	const frame = (await film05.locator('img').boundingBox())!;
+	expect(Math.abs(dot.width - dot.height)).toBeLessThan(1);
+	expect(frame.x + frame.width - (dot.x + dot.width)).toBeLessThan(10);
+	expect(dot.y - frame.y).toBeLessThan(10);
+	expect(dot.y).toBeGreaterThanOrEqual(frame.y);
+
+	await page.reload();
+	await expect(page.getByTestId('review-tile')).toHaveCount(4);
+	await film05.click();
+	await expect(page).toHaveURL(/\/review\/12$/);
+
+	await page.goto('/review');
+	await page.getByRole('button', { name: 'List' }).click();
+	await expect(page.getByTestId('review-row')).toHaveCount(4);
+	await page.reload();
+	await expect(page.getByTestId('review-row')).toHaveCount(4);
 });
 
 test('an empty queue says so', async ({ page }) => {
