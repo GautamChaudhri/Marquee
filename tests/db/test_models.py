@@ -18,9 +18,6 @@ from marquee.db.models import (
     TasteProfile,
 )
 
-# taste/profile_enrich.py queries these by name.
-TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
-
 
 def test_only_the_library_job_run_taste_and_learning_tables_exist() -> None:
     assert set(Base.metadata.tables) == {
@@ -39,10 +36,6 @@ def test_only_the_library_job_run_taste_and_learning_tables_exist() -> None:
         "evaluations",
         "evaluation_results",
     }
-
-
-def test_taste_code_column_names_exist() -> None:
-    assert set(Movie.__table__.columns.keys()) >= TASTE_COLUMNS
 
 
 def test_no_column_holds_a_local_path() -> None:

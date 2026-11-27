@@ -184,14 +184,3 @@ def job_dict(job: Job) -> dict[str, Any]:
         "started_at": _iso(job.started_at),
         "finished_at": _iso(job.finished_at),
     }
-
-
-def event_dict(event: JobEvent) -> dict[str, Any]:
-    return {
-        "id": event.id,
-        "job_id": event.job_id,
-        "at": _iso(event.at),
-        "type": event.type,
-        "message": event.message,
-        "data": event.data,
-    }

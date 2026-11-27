@@ -22,7 +22,7 @@ marquee/
                    migrate.py, which applies them
   fs/              filesystem safety: confined roots, symlink rejection, download validation,
                    and paths.py, the only place a path from Radarr becomes a local path
-  integrations/    thin HTTP clients: arr/ (Radarr), tmdb/, URL validation
+  integrations/    thin HTTP clients: arr/ (Radarr), tmdb/
   ml/              model wrappers (CLIP, aesthetic head, faces, people, DINOv2, zero-shot axes),
                    hardware and execution-provider selection, the taste store, calibration,
                    the residual learner, geometry types, the model checksum manifest
@@ -36,7 +36,7 @@ marquee/
                    (backup.py), the one path that writes poster.jpg into a movie folder,
                    for a deploy and for a restore (deploy.py), and the small copies of
                    library posters the web app shows (thumbnails.py)
-  taste/           building and enriching the taste profile (trainer, profile enrichment),
+  taste/           building the taste profile (trainer.py),
                    the first profile seeded from the library's posters and its import as
                    records (seed.py), exemplar records and their kept images (exemplars.py),
                    feedback (feedback.py), the profile registry and how a rebuild is published
