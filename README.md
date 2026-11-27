@@ -565,4 +565,16 @@ rule, and how to add a module.
 
 ## License
 
-[GNU GPL v3](LICENSE).
+Marquee is free software under the [GNU General Public License, version 3 only](LICENSE).
+
+The models `marquee models fetch` downloads come under their own licences, listed with
+everything else Marquee uses in [docs/third-party.md](docs/third-party.md). **The YOLO11
+weights are AGPL-3.0, and the face detector (SCRFD, from InsightFace's `buffalo_sc` pack) is
+published for non-commercial research use only, so a Marquee installation with the default
+models is for personal, non-commercial use.** NVIDIA's CUDA libraries are installed on your
+machine under NVIDIA's terms. The project publishes no image and no model: you build both
+on your own machine.
+
+Movie details and posters come from [TMDB](https://www.themoviedb.org/). This product uses
+TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB. The
+web app's System page shows TMDB's logo with this notice, as TMDB's terms ask.
