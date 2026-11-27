@@ -17,7 +17,6 @@ from marquee.ml.artifact_codec import (
 )
 from marquee.ml.taste_store import NumpyTasteStore
 from marquee.ml.zeroshot import ZeroShotAxes
-from marquee.taste.map import load_map
 
 
 def test_codec_roundtrip_helpers():
@@ -74,18 +73,9 @@ def test_legacy_zeroshot_axes_migrates_and_loads(tmp_path):
     assert loaded.axis_names == ["axis_one", "axis_two"]
 
 
-def test_legacy_taste_map_migrates_and_loads(tmp_path, monkeypatch):
-    profile_path = tmp_path / "taste_profile.clip-vit-b-32.npz"
-    embeddings = np.eye(3, 512, dtype=np.float32)
-    centroid = embeddings.mean(axis=0)
-    centroid /= np.linalg.norm(centroid)
-    np.savez(
-        profile_path,
-        embeddings=embeddings,
-        poster_names=unicode_array(["a.jpg", "b.jpg", "c.jpg"]),
-        centroid_emb=centroid.astype(np.float32),
-        model_name=unicode_scalar("clip-vit-b-32"),
-    )
+def test_legacy_taste_map_migrates_and_loads(tmp_path):
+    """The codec still reads an old taste-map file (the map module that wrote and read one is
+    gone; the codec keeps the kind for files already on disk)."""
     map_path = tmp_path / "cache" / "taste_map.clip-vit-b-32.npz"
     map_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
@@ -96,23 +86,19 @@ def test_legacy_taste_map_migrates_and_loads(tmp_path, monkeypatch):
         self_knn=np.asarray([0.9, 0.8, 0.7], dtype=np.float64),
         projection_method=np.asarray("pca"),
         computed_at=np.asarray("2026-06-17T00:00:00+00:00"),
-        profile_mtime=np.float64(profile_path.stat().st_mtime),
+        profile_mtime=np.float64(0.0),
         cluster_names=np.asarray(["0:Cluster 0 (3)"], dtype=object),
         genres=np.asarray([["Action"], [], ["Drama"]], dtype=object),
         years=np.asarray([2000, 2001, 2002], dtype=np.int64),
     )
 
-    from marquee.config import settings
-    from marquee.config.pipeline import pipeline_settings
-
-    monkeypatch.setattr(pipeline_settings, "TASTE_PROFILE_PATH", profile_path)
-    monkeypatch.setattr(
-        type(settings), "poster_cache_dir", property(lambda self: tmp_path / "cache" / "posters")
-    )
-
-    result = load_map()
-    assert len(result["points"]) == 3
-    assert result["points"][0]["genres"] == ["Action"]
+    assert ensure_safe_artifact(map_path, "taste_map").migrated is True
+    with load_npz_safe(map_path) as data:
+        assert decode_unicode_list(data["poster_names"]) == ["a.jpg", "b.jpg", "c.jpg"]
+        assert decode_json_string_array(data[GENRES_JSON_KEY]) == [["Action"], [], ["Drama"]]
+        assert decode_unicode_list(data["cluster_names"]) == ["0:Cluster 0 (3)"]
+        assert data["years"].tolist() == [2000, 2001, 2002]
+    assert ensure_safe_artifact(map_path, "taste_map").migrated is False
 
 
 def test_failed_migration_leaves_original_untouched(tmp_path):

@@ -18,7 +18,7 @@ from marquee.db.models import (
     TasteProfile,
 )
 
-# taste/map.py and taste/profile_enrich.py query these by name.
+# taste/profile_enrich.py queries these by name.
 TASTE_COLUMNS = {"id", "title", "year", "tmdb_id", "genres"}
 
 

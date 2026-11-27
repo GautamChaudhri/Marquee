@@ -36,7 +36,7 @@ marquee/
                    (backup.py), the one path that writes poster.jpg into a movie folder,
                    for a deploy and for a restore (deploy.py), and the small copies of
                    library posters the web app shows (thumbnails.py)
-  taste/           building and enriching the taste profile (trainer, map, profile enrichment),
+  taste/           building and enriching the taste profile (trainer, profile enrichment),
                    the first profile seeded from the library's posters and its import as
                    records (seed.py), exemplar records and their kept images (exemplars.py),
                    feedback (feedback.py), the profile registry and how a rebuild is published
