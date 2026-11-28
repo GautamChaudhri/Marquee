@@ -16,7 +16,6 @@
 		moveUp,
 		rankingLine,
 		showVariant,
-		shownVariant,
 		type Card,
 		type Ranking,
 		type Shown
@@ -26,8 +25,8 @@
 	/** The rank panel: the designs in the owner's order, and the hate pile. Every move has a
 	 *  button; dragging a card by its handle (pointer, touch, or keyboard) does the same.
 	 *
-	 *  A card's poster opens its design in a popup, where a poster is chosen; a magnifier,
-	 *  on a card or in the popup, shows one poster large. */
+	 *  A card's poster opens its design in a popup, where a poster is chosen; a magnifier
+	 *  in the popup shows one poster large. */
 	let {
 		cards,
 		shown = $bindable(),
@@ -150,7 +149,6 @@
 						onHate={() => apply(hate(ranking, card.key))}
 						onBringBack={() => apply(bringBack(ranking, card.key))}
 						onOpen={() => (opened = card.key)}
-						onZoom={() => zoom(card, shownVariant(card, shown).id)}
 					/>
 				{/if}
 			</div>
@@ -188,7 +186,6 @@
 						onHate={() => {}}
 						onBringBack={() => apply(bringBack(ranking, card.key))}
 						onOpen={() => (opened = card.key)}
-						onZoom={() => zoom(card, shownVariant(card, shown).id)}
 					/>
 				{/if}
 			</div>

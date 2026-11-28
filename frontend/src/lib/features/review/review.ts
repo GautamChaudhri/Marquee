@@ -21,7 +21,7 @@ export function eventLine(event: EventLike): string {
 	const hated = list(event.context ?? {}, 'hated').length;
 	switch (event.action) {
 		case 'approval':
-			return `Kept the pick (${chosen})`;
+			return `Kept the top pick (${chosen})`;
 		case 'override':
 			return `Chose ${chosen}`;
 		case 'rank': {
@@ -48,7 +48,7 @@ export function recordedLine(
 ): string[] {
 	const lines = [`Recorded as answer ${event.id}: ${eventLine({ ...blank, ...event })}.`];
 	if (asked === 'override' && event.action === 'approval') {
-		lines.push('The poster you chose is the pick, so it was recorded as keeping the pick.');
+		lines.push('The poster you chose is the top pick, so it was recorded as keeping the top pick.');
 	}
 	if (status === 200) lines.push('This answer had already been recorded; nothing changed.');
 	return lines;
@@ -93,7 +93,7 @@ export function rejectConfirmation(shown: number): string {
 	return `Nothing is written to the movie’s folder. The ${plural(shown, 'design')} shown become examples of what you do not want (the best-ranked 8 of those ranked 10 or better).`;
 }
 
-/** The confirmation for "Keep the pick" or "Use this one" when it replaces the owner's own
+/** The confirmation for "Keep the top pick" or "Use this one" when it replaces the owner's own
  *  poster; null when no confirmation is needed. */
 export function replaceConfirmation(
 	chosen: string,

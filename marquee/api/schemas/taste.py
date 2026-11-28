@@ -231,6 +231,9 @@ class PendingItem(BaseModel):
     year: int | None
     run_id: int
     ranked: int | None
+    designs: int = Field(
+        description="How many designs the ranked posters make (the cards of the review page)"
+    )
     finished_at: datetime | None
     policy_deployed: bool = Field(description="The deploy policy deployed this run's pick")
     blind: bool | None

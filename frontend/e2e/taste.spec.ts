@@ -11,7 +11,7 @@ test.beforeEach(async ({ page }) => {
 async function keepPick(page: Page, runId: number) {
 	await page.goto(`/review/${runId}`);
 	await page.getByTestId('deploy-checkbox').uncheck();
-	await page.getByRole('button', { name: 'Keep the pick' }).click();
+	await page.getByRole('button', { name: 'Keep the top pick' }).click();
 	await expect(page.getByTestId('answer-result')).toBeVisible();
 }
 
@@ -52,7 +52,7 @@ test('agreement counts blind reviews and keeps the others apart', async ({ page 
 	await keepPick(page, 13); // not blind
 	await page.goto('/taste');
 	const agreement = page.getByTestId('agreement');
-	await expect(agreement).toContainText('You kept the pick in 1 of 1 blind review.');
+	await expect(agreement).toContainText('You kept the top pick in 1 of 1 blind review.');
 	await expect(agreement).toContainText('Your choice was in the top 3 in 1 of 1.');
 	await expect(agreement).toContainText(
 		'1 review (pick kept in 1) of runs that were not blind, counted apart and never in the percentage.'

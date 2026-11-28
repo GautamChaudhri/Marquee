@@ -30,8 +30,8 @@
 			? designs.map((design, i) => ({
 					key: `c${design.id}`,
 					url: design.image_url ?? null,
-					alt: i === 0 ? 'The run’s pick' : `The design ranked ${i + 1}`,
-					label: i === 0 ? 'Pick' : `#${i + 1}`,
+					alt: i === 0 ? 'The run’s top pick' : `The design ranked ${i + 1}`,
+					label: i === 0 ? 'Top pick' : `#${i + 1}`,
 					// The sixth design shows only on a card wide enough for seven posters.
 					extra: i >= 5
 				}))
@@ -39,8 +39,8 @@
 					{
 						key: 'pick',
 						url: item.pick_image_url ?? null,
-						alt: 'The run’s pick',
-						label: 'Pick',
+						alt: 'The run’s top pick',
+						label: 'Top pick',
 						extra: false
 					}
 				]
@@ -63,7 +63,7 @@
 				<p class="marks">
 					{#if item.blind}<span class="mark blind">Blind</span>{/if}
 					{#if item.policy_deployed}
-						<span class="mark policy">The deploy policy already wrote the pick</span>
+						<span class="mark policy">The deploy policy already wrote the top pick</span>
 					{/if}
 				</p>
 			{/if}
@@ -105,7 +105,7 @@
 				{:else}
 					<div class="none">No image</div>
 				{/if}
-				<figcaption class:pick={design.label === 'Pick'}>{design.label}</figcaption>
+				<figcaption class:pick={design.label === 'Top pick'}>{design.label}</figcaption>
 			</figure>
 		{/each}
 	</a>

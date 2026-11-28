@@ -70,7 +70,7 @@ test('a movie page shows its poster, facts, latest run, and history', async ({ p
 	const candidates = page.getByTestId('candidates').locator('li');
 	await expect(candidates).toHaveCount(4);
 	await expect(candidates.first()).toContainText('#1');
-	await expect(candidates.first()).toContainText('Pick');
+	await expect(candidates.first()).toContainText('Top pick');
 	await expect(page.getByTestId('poster-history').locator('li')).toHaveCount(2);
 	// Read-only: nothing on this page deploys or gives feedback.
 	await expect(page.getByRole('button', { name: /deploy|approve|pick|reject/i })).toHaveCount(0);

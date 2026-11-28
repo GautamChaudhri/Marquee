@@ -75,7 +75,7 @@ test('the results page lists every poster, filters, and opens a masked run', asy
 	await expect(
 		page.getByText('This is a masked run of a blind evaluation', { exact: false })
 	).toBeVisible();
-	await expect(page.getByRole('button', { name: 'Keep the pick' })).toHaveCount(0);
+	await expect(page.getByRole('button', { name: 'Keep the top pick' })).toHaveCount(0);
 	await expect(page.getByTestId('answers')).toHaveCount(0);
 });
 

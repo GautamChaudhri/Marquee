@@ -664,6 +664,14 @@ function standing(runId) {
 	);
 }
 
+/** How many designs a run's ranked candidates make: one per stack, one per poster in none. */
+function designsOf(run) {
+	const keys = run.candidates
+		.filter((c) => c.rank !== null)
+		.map((c) => /^(\d+)/.exec(c.stack ?? '')?.[1] ?? `c${c.id}`);
+	return new Set(keys).size;
+}
+
 function pendingReviews() {
 	const movieIds = [...new Set(Object.values(state.runs).map((r) => r.movie_id))];
 	return movieIds
@@ -679,6 +687,7 @@ function pendingReviews() {
 				year: movie.year,
 				run_id: run.id,
 				ranked: run.ranked_count,
+				designs: designsOf(run),
 				finished_at: run.finished_at,
 				policy_deployed: run.policy_deployed,
 				blind: run.blind,

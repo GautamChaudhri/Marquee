@@ -886,7 +886,7 @@ of it. `marquee api` serves it under uvicorn.
 | `POST /api/runs/{id}/deploy` | yes | `{"candidate_id": N}` optional (the pick by default): queues the owner's deploy, 202; 200 with the job when the same request is the movie's newest write and still queued; 409 when the candidate cannot be deployed |
 | `GET /api/deployments` | yes | one page of deployments, newest first, with a `movie_id` filter |
 | `POST /api/deployments/{id}/restore` | yes | queues a restore of any deployment, 202; 200 with the job when the same request is the movie's newest write and still queued |
-| `GET /api/review` | yes | movies whose latest completed run has no feedback that stands, policy deploys first, each with the movie's `poster` (as a movie item has it) and `pick_image_url`, the pick's 500 px file when it was downloaded |
+| `GET /api/review` | yes | movies whose latest completed run has no feedback that stands, policy deploys first, each with `ranked` and `designs` (how many posters the run ranked and how many designs they make), the movie's `poster` (as a movie item has it) and `pick_image_url`, the pick's 500 px file when it was downloaded |
 | `POST /api/runs/{id}/feedback` | yes | `{"action", "candidate_id", "order", "hated", "shown", "deploy" (default true), "idempotency_key" (required)}`: 201 with the event, the exemplar changes, and the job ids; 200 with the same body when the key was used before; 404 for an unknown run or candidate; 409 with the reason when refused; 422 for a malformed body |
 | `GET /api/runs/{id}/feedback` | yes | the run's events and the revokes of them |
 | `GET /api/feedback` | yes | every act of feedback, revokes included, newest first and paged, with an optional `movie_id`; each with its movie's title and year, how many candidates were shown (not the copy itself), and `revoked_by` |
@@ -1011,7 +1011,7 @@ it sends one.
 |---|---|---|
 | `/` Library | the grid of movies with a file, width-320 thumbnails with their `version`, title and year, a mark for no poster and for Marquee's poster; search, filters (poster, whose, runs), and sort, kept in the address; more load as the owner scrolls | Sync now (`POST /api/sync`), then follows the job |
 | `/movies/[id]` | the poster at width 640, the facts, the latest run (when, blind, reviewed, the ranked candidates with rank, score, stack, and the pick, read-only), and the poster history, newest first | Run (`POST /api/movies/{id}/run`, then follows the job and shows the new run); put back what was there before a deployment, behind a confirmation |
-| `/review` | the runs waiting for an answer, as a list or a gallery (a switch, remembered in the browser). The list is two columns of cards (one on a narrow screen): title and year, how many were ranked, a Blind mark, and a mark when the deploy policy already wrote the pick, with the Review button on the title's line, then one row of small posters from the left, at most 96 px wide: the movie's current poster (captioned Current) and, after a thin rule, the run's best designs in rank order (each design's best-ranked variant, as the review page groups them, read from `GET /api/runs/{id}`; the pick alone until that answers): six on a card at least 580 px wide inside, five on a narrower one. The gallery shows each run's pick alone, with its title and year, the same two marks, and a yellow dot at the poster's top right holding the number of posters the run ranked | opens a run's review from its title, any poster, the Review button, or a gallery tile |
+| `/review` | the runs waiting for an answer, as a list or a gallery (a switch, remembered in the browser). The list is two columns of cards (one on a narrow screen): title and year, how many were ranked, a Blind mark, and a mark when the deploy policy already wrote the top pick, with the Review button on the title's line, then one row of small posters from the left, at most 96 px wide: the movie's current poster (captioned Current) and, after a thin rule, the run's best designs in rank order (each design's best-ranked variant, as the review page groups them, read from `GET /api/runs/{id}`; the pick alone until that answers): six on a card at least 580 px wide inside, five on a narrower one. The gallery shows each run's pick alone, with its title and year, the same two marks, and between the poster and the title a quiet line in two tints, `6 groups · 9 posters`: the designs the run's ranked posters make (`designs`) and the posters it ranked | opens a run's review from its title, any poster, the Review button, or a gallery tile |
 | `/review/[runId]` | the movie, its poster now and whose it is, the run's line, the run's earlier answers (newest first), and the rank panel | the four answers, Undo, Next (below) |
 | `/taste` | the active profile, the exemplars by state and whether a rebuild is due, agreement over blind reviews (a percentage from 10; the others apart), the residual (in use or not and why, in one plain sentence that says each fact once and never shows an engine identifier, held-out accuracy before and after, the features it leans on, the last training, what is missing), the blind evaluation (the latest headline in a sentence, the one before, and one running with its progress), recent feedback, and a paged grid of exemplars filtered by polarity and state, each saying what ended it | Rebuild now (followed to its end); Run a blind evaluation, behind a confirmation that says how long it takes and that it changes nothing in the library (followed to its end); Undo on a recent answer |
 | `/taste/evaluations/[id]` | one evaluation's summary, then a row per movie: the owner's poster, the blind pick, the outcome in words ("Your design was 4th of 16", "Removed by the text gate: text_heavy", "Not among TMDB's candidates"), how the poster was found, filtered by outcome and by seed or feedback, paged | opens a result's masked run on its review page, read-only |
@@ -1033,17 +1033,22 @@ stand in the owner's order, with a hate pile below, and every card has the same 
 every card is the same height: the poster, the design's place in the order (`#1`, `#2`, with
 no gaps) beside its score, the score as a bar, and the buttons (move up, move down, hate, and
 in the pile bring back). On the poster a yellow dot at the top right counts the variants of a
-design that has more than one, the pick is tagged at the top left, a handle at the bottom left
-drags the card (with the pointer, by touch, or from the keyboard, which does what the buttons
-do), and a magnifier at the bottom right shows the poster large. A line says whether the order
+design that has more than one, the top pick is tagged "Top pick" at the top left, and a handle at the bottom
+right drags the card (with the pointer, by touch, or from the keyboard, which does what the
+buttons do). With a mouse the handle shows only while the pointer is on the
+poster (it fades in and out), as the popup's magnifiers do; on a touch screen they stay. A card has no magnifier; that is in the popup. A line says whether the order
 differs from the engine's.
 
-*The design popup.* A card's poster opens its design: on the left the selected variant's
-score laid out part by part, and on the right a gallery of the design's variants as small
+*The design popup.* A card's poster opens its design: on the left the selected variant,
+larger (the run's large copy when it kept one), with its own magnifier, the resolution of
+its file under it in faint type, and below that its
+score laid out part by part; on the right a gallery of the design's variants as small
 posters, numbered within the design (`#1` is its best), each with its score, its bar, and its
 own magnifier. A design with more variants than fit scrolls its gallery while the rest of the
 popup stays put, and the page behind a popup does not scroll (`lib/ui/Modal.svelte`). On a
-phone the posters come first and the popup's body scrolls as one. This is the
+phone the selected poster comes first, then the variants, then the score, and the popup's
+body scrolls as one. A lone poster has no gallery: it stands on the left at the same size,
+with its score to its right. This is the
 one place a poster is chosen, for a design with many variants and for a lone poster alike:
 select one, then "Use this one", which sits in the same corner either way. Selecting a variant
 also makes it the one the card shows. The popup can hate the design or bring it back, and
@@ -1067,7 +1072,7 @@ The four answers, each `POST /api/runs/{id}/feedback`:
 
 | Button | `action` | Body besides the key |
 |---|---|---|
-| Keep the pick | `approval` | `shown`, `deploy` |
+| Keep the top pick | `approval` | `shown`, `deploy` |
 | Use this one (in a design's popup) | `override` | `candidate_id`, `shown`, `deploy` |
 | Save this ranking | `rank` | `order` (the cards not hated, in the owner's order), `hated`, `shown`, `deploy` |
 | None of these | `reject` | `shown` (the API hates every shown one and keeps the best-ranked 8) |
@@ -1076,7 +1081,7 @@ The four answers, each `POST /api/runs/{id}/feedback`:
 order), at most 100. `deploy` comes from a checkbox, "Write the chosen poster to the movie's
 folder", on by default. Saving a ranking and refusing all ask first, saying which poster is
 written (or that none is) and that the hated designs become examples of what the owner does
-not want; keeping the pick and using another ask only when the deploy is on and the folder
+not want; keeping the top pick and using another ask only when the deploy is on and the folder
 holds the owner's own poster. Each answer gets its own idempotency key when the button is
 pressed, kept while that request is retried after a network failure (no answer, 502, 503,
 504) and replaced for the next answer; a 200 instead of a 201 means the key was used before,

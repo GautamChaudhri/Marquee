@@ -21,7 +21,7 @@ export function agreementLines(agreement: TasteStatus['agreement']): {
 		const share =
 			t.percent !== null && t.percent !== undefined ? ` (${Math.round(t.percent)}%)` : '';
 		blind.push(
-			`You kept the pick in ${t.agreed} of ${plural(t.reviewed, 'blind review')}${share}.`
+			`You kept the top pick in ${t.agreed} of ${plural(t.reviewed, 'blind review')}${share}.`
 		);
 		blind.push(`Your choice was in the top 3 in ${t.top3} of ${t.reviewed}.`);
 	}

@@ -7,7 +7,14 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from marquee.db.models import Deployment, Movie, PosterRun, PreferenceEvent, TasteProfile
+from marquee.db.models import (
+    Deployment,
+    Movie,
+    PosterRun,
+    PreferenceEvent,
+    RunCandidate,
+    TasteProfile,
+)
 from marquee.taste import agreement
 
 pytestmark = pytest.mark.db
@@ -196,3 +203,21 @@ async def test_a_masked_run_never_enters_the_review_queue(db_session: AsyncSessi
     assert [p.run_id for p in pending] == [normal]
     await _event(db_session, movie_id, normal, chosen_rank=1)
     assert await agreement.pending_reviews(db_session) == []
+
+
+@pytest.mark.db
+async def test_a_pending_review_counts_its_designs(db_session: AsyncSession) -> None:
+    session = db_session
+    stacked, bare = await _movie(session, 1), await _movie(session, 2)
+    run = await _run(session, stacked)
+    await _run(session, bare)
+    # Two posters of stack 1, one of stack 2, two ranked in no stack, and one never ranked.
+    rows = [(1, 1), (2, 1), (3, 2), (4, None), (5, None), (None, None)]
+    for n, (rank, stack) in enumerate(rows):
+        session.add(RunCandidate(run_id=run, source_file=f"c{n}.jpg", rank=rank, stack_rank=stack))
+    await session.flush()
+
+    pending = {p.movie_id: p for p in await agreement.pending_reviews(session)}
+
+    assert pending[stacked].designs == 4
+    assert pending[bare].designs == 0

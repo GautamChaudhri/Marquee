@@ -29,19 +29,19 @@ describe('agreement', () => {
 
 	it('gives counts, and a percentage only when the API gives one', () => {
 		expect(agreementLines(agreement(tally(4, 1, 3))).blind).toEqual([
-			'You kept the pick in 1 of 4 blind reviews.',
+			'You kept the top pick in 1 of 4 blind reviews.',
 			'Your choice was in the top 3 in 3 of 4.',
 			'Not enough reviews yet for a percentage (4 of 10).'
 		]);
 		expect(agreementLines(agreement(tally(12, 9, 11, 75))).blind).toEqual([
-			'You kept the pick in 9 of 12 blind reviews (75%).',
+			'You kept the top pick in 9 of 12 blind reviews (75%).',
 			'Your choice was in the top 3 in 11 of 12.'
 		]);
 	});
 
 	it('keeps reviews that were not blind apart, never in the percentage', () => {
 		const lines = agreementLines(agreement(tally(1, 1, 1), tally(3, 3, 3), tally(1, 0, 0)));
-		expect(lines.blind[0]).toBe('You kept the pick in 1 of 1 blind review.');
+		expect(lines.blind[0]).toBe('You kept the top pick in 1 of 1 blind review.');
 		expect(lines.apart).toEqual([
 			'3 reviews (pick kept in 3) of runs that were not blind, counted apart and never in the percentage.',
 			'1 review (pick kept in 0) of runs whose profile is not registered, counted apart.'

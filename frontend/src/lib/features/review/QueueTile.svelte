@@ -1,12 +1,14 @@
 <script lang="ts">
 	import type { PendingReview } from '#lib/api/types.ts';
-	import CountDot from '#lib/ui/CountDot.svelte';
 
 	let { item }: { item: PendingReview } = $props();
+
+	const count = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 </script>
 
-<!-- One run in the gallery: only its pick, the top-ranked poster, with the title under it and,
-     in a dot at the poster's top right, how many posters the run ranked. -->
+<!-- One run in the gallery: only its pick, the top-ranked poster. Under it a quiet line says
+     how many groups (designs) the run's ranked posters make and how many posters there are,
+     then the title and year. -->
 <li data-testid="review-tile">
 	<a class="tile" href="/review/{item.run_id}">
 		<span class="frame">
@@ -22,17 +24,21 @@
 			{:else}
 				<span class="none">No image</span>
 			{/if}
-			<CountDot count={item.ranked ?? 0} word="ranked" testid="ranked-count" />
 			{#if item.blind || item.policy_deployed}
 				<span class="marks">
 					{#if item.blind}<span class="mark blind">Blind</span>{/if}
 					{#if item.policy_deployed}
-						<span class="mark policy" title="The deploy policy already wrote the pick">
+						<span class="mark policy" title="The deploy policy already wrote the top pick">
 							Written by policy
 						</span>
 					{/if}
 				</span>
 			{/if}
+		</span>
+		<span class="counts" data-testid="tile-counts">
+			<span class="groups">{count(item.designs, 'group')}</span>
+			<span class="sep" aria-hidden="true">·</span>
+			<span class="posters">{count(item.ranked ?? 0, 'poster')}</span>
 		</span>
 		<span class="caption">
 			<span class="name">{item.title}</span>
@@ -97,6 +103,24 @@
 	.mark.policy {
 		color: var(--warn-copy);
 		border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+	}
+	/* Two quiet tints, so the two numbers read apart without pulling the eye off the poster. */
+	.counts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0 6px;
+		font-size: 11.5px;
+		line-height: 1.3;
+		font-variant-numeric: tabular-nums;
+	}
+	.groups {
+		color: color-mix(in srgb, var(--gold) 62%, var(--muted));
+	}
+	.posters {
+		color: color-mix(in srgb, var(--info) 62%, var(--muted));
+	}
+	.sep {
+		color: var(--faint);
 	}
 	.caption {
 		display: flex;

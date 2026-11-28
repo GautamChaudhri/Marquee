@@ -36,8 +36,8 @@
 <h1 class="sr-only">Review</h1>
 
 <p class="intro">
-	Runs whose pick nobody has answered yet. Answering one teaches Marquee your taste: keep the pick,
-	choose another design, rank them, or refuse them all.
+	Runs whose top pick nobody has answered yet. Answering one teaches Marquee your taste: keep the
+	top pick, choose another design, rank them, or refuse them all.
 </p>
 
 {#if error}

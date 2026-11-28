@@ -91,11 +91,11 @@ export function retentionSettingLine(retention: Retention): string {
 export function deployPolicyLine(policy: SystemInfo['settings']['deploy_policy']): string {
 	switch (policy) {
 		case 'off':
-			return 'Off: a run’s pick is written only when you choose it';
+			return 'Off: a run’s top pick is written only when you choose it';
 		case 'missing':
-			return 'Missing: a run’s pick is written where there is no poster, or over its own earlier pick; never over a poster you chose';
+			return 'Missing: a run’s top pick is written where there is no poster, or over its own earlier pick; never over a poster you chose';
 		case 'all':
-			return 'All: a run’s pick is written over any poster, yours included';
+			return 'All: a run’s top pick is written over any poster, yours included';
 	}
 }
 

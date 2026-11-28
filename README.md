@@ -17,7 +17,7 @@ Marquee works on movies managed by Radarr, and it needs an NVIDIA GPU.
 > rebuilt from your feedback. Nothing is written to your library unless you ask for it or turn
 > on `DEPLOY_POLICY`, and your own choice always beats the policy's. A web interface shows
 > the library, each movie's latest run and poster history, and the job queue; its review page
-> answers a run (keep the pick, use another, rank the designs with a hate pile, or refuse them
+> answers a run (keep the top pick, use another, rank the designs with a hate pile, or refuse them
 > all, then undo it), its taste page shows the profile, the agreement, and the exemplars, and
 > its system page shows how the installation is set. A learned correction to the score turns
 > on once there is enough feedback. All of it runs as a Docker Compose stack that dumps its
@@ -488,7 +488,7 @@ deploy policy deployed first, and `marquee review show <run>` shows a run's rank
 with their ids. Each act of feedback goes to a movie's latest run and is recorded once, with
 a copy of everything you were shown:
 
-- `review approve <run>`: you keep the pick. It becomes the movie's exemplar at weight 0.75,
+- `review approve <run>`: you keep the top pick. It becomes the movie's exemplar at weight 0.75,
   unless the movie already has one.
 - `review pick <run> --candidate <id>`: you choose another poster. It replaces the movie's
   exemplar at full weight.
@@ -631,7 +631,7 @@ waiting is in the navigation), **Taste** (the profile, the agreement, the residu
 evaluation with a button that runs one and a page of every poster's result, recent feedback,
 and the exemplars), **Activity** (the job queue), and **System** (what the installation is and how it
 is set, read-only). On a run's review page each card is one design, its variants folded
-under it; keep the pick, use another design, put them in your order with a hate pile (with
+under it; keep the top pick, use another design, put them in your order with a hate pile (with
 the buttons on each card, or by dragging), or refuse them all. "Write the chosen poster to
 the movie's folder" is on by default; the page asks first before anything replaces your own
 poster, and Undo takes an answer back without touching the folder (put the poster back from

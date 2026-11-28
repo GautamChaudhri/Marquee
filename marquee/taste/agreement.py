@@ -157,6 +157,8 @@ class Pending:
     finished_at: datetime | None
     policy_deployed: bool
     blind: bool | None
+    designs: int = 0
+    """How many designs the ranked posters make: one per stack, and one per poster in none."""
     poster: Artwork | None = None
     """The movie's poster row now, if it has one."""
     pick_id: int | None = None
@@ -201,6 +203,7 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
     rows = (await session.execute(statement)).all()
     posters = await posters_of(session, [movie.id for movie, _, _ in rows])
     picks: dict[int, int] = {}
+    designs: dict[int, int] = {}
     if rows:
         found = await session.execute(
             select(RunCandidate.run_id, RunCandidate.id).where(
@@ -210,6 +213,21 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
             )
         )
         picks = {row.run_id: row.id for row in found}
+        counted = await session.execute(
+            select(
+                RunCandidate.run_id,
+                (
+                    func.count(func.distinct(RunCandidate.stack_rank))
+                    + func.count().filter(RunCandidate.stack_rank.is_(None))
+                ).label("designs"),
+            )
+            .where(
+                RunCandidate.run_id.in_([run.id for _, run, _ in rows]),
+                RunCandidate.rank.is_not(None),
+            )
+            .group_by(RunCandidate.run_id)
+        )
+        designs = {row.run_id: int(row.designs) for row in counted}
     out = []
     for movie, run, deployed in rows:
         out.append(
@@ -222,6 +240,7 @@ async def pending_reviews(session: AsyncSession, *, limit: int | None = None) ->
                 finished_at=run.finished_at,
                 policy_deployed=bool(deployed),
                 blind=await feedback.blind_for(session, run),
+                designs=designs.get(run.id, 0),
                 poster=posters.get(movie.id),
                 pick_id=picks.get(run.id),
             )

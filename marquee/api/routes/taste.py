@@ -126,6 +126,7 @@ async def review_list(session: Session) -> PendingList:
                 year=row.year,
                 run_id=row.run_id,
                 ranked=row.ranked,
+                designs=row.designs,
                 finished_at=row.finished_at,
                 policy_deployed=row.policy_deployed,
                 blind=row.blind,

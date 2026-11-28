@@ -127,7 +127,7 @@ describe('the four answers', () => {
 	const cards = groupIntoCards(RUN);
 	const shown = showVariant(initialShown(cards), cards[1]!, 15);
 
-	it('Keep the pick sends approval with what was shown', () => {
+	it('Keep the top pick sends approval with what was shown', () => {
 		expect(withKey(approvalAnswer(cards, shown, true), 'k1')).toEqual({
 			action: 'approval',
 			shown: [11, 15, 13, 16],

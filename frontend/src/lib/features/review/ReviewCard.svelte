@@ -2,7 +2,6 @@
 	import { dragHandle } from 'svelte-dnd-action';
 	import { formatScore } from '#lib/format.ts';
 	import CountDot from '#lib/ui/CountDot.svelte';
-	import Icon from '#lib/ui/Icon.svelte';
 	import { answerable, shownVariant, type Card, type Shown } from './panel';
 	import ScoreBar from './ScoreBar.svelte';
 
@@ -10,9 +9,8 @@
 	 *  so every card is the same height: the poster, the design's place and score, what the
 	 *  score is made of, and the buttons that move, hate, or bring it back.
 	 *
-	 *  The poster opens the design (its variants, its score, and the button that chooses it);
-	 *  the magnifier shows the poster large. Dragging uses the handle; every move also has a
-	 *  button. */
+	 *  The poster opens the design (its variants, its score, a larger view, and the button
+	 *  that chooses it). Dragging uses the handle; every move also has a button. */
 	let {
 		card,
 		shown,
@@ -25,8 +23,7 @@
 		onDown,
 		onHate,
 		onBringBack,
-		onOpen,
-		onZoom
+		onOpen
 	}: {
 		card: Card;
 		shown: Shown;
@@ -41,7 +38,6 @@
 		onHate: () => void;
 		onBringBack: () => void;
 		onOpen: () => void;
-		onZoom: () => void;
 	} = $props();
 
 	const variant = $derived(shownVariant(card, shown));
@@ -77,11 +73,11 @@
 				<CountDot count={card.variants.length} word="variants" testid="variant-count" />
 			{/if}
 		</button>
-		{#if variant.is_pick}<span class="mark">Pick</span>{/if}
+		{#if variant.is_pick}<span class="mark">Top pick</span>{/if}
 		<!-- A span, not a button: the drag library will not start a drag from an element that
 		     has a value, which every button does. The action gives it its role and tab stop. -->
 		<span
-			class="corner grip"
+			class="grip"
 			class:off={disabled}
 			role="button"
 			tabindex="0"
@@ -89,16 +85,6 @@
 			aria-label="Drag {name}"
 			title="Drag to reorder, or to the other list">⠿</span
 		>
-		<button
-			class="corner zoom"
-			onclick={onZoom}
-			disabled={!variant.image_url}
-			aria-label="Look closer at {name}"
-			title="Look closer"
-			data-testid="zoom"
-		>
-			<Icon name="zoom-in" size={15} />
-		</button>
 	</div>
 	<div class="facts">
 		{#if hated}
@@ -208,8 +194,9 @@
 		font-weight: 700;
 		pointer-events: none;
 	}
-	.corner {
+	.grip {
 		position: absolute;
+		right: 6px;
 		bottom: 6px;
 		width: 30px;
 		height: 30px;
@@ -217,12 +204,8 @@
 		border-radius: var(--radius-sm);
 		border: 1px solid var(--line2);
 		background: color-mix(in srgb, var(--panel) 88%, transparent);
-		color: var(--text);
 		display: grid;
 		place-items: center;
-	}
-	.grip {
-		left: 6px;
 		color: var(--muted);
 		cursor: grab;
 		font-size: 15px;
@@ -233,13 +216,21 @@
 	.grip.off {
 		opacity: 0.45;
 	}
-	.zoom {
-		right: 6px;
-		cursor: zoom-in;
-	}
-	.zoom:hover:not(:disabled) {
-		border-color: var(--gold-deep);
-		color: var(--gold-copy);
+	/* With a mouse the handle shows only while the pointer is on the poster, or while the
+	   handle has the keyboard's focus. A touch screen has no hover, so there it stays. */
+	@media (hover: hover) {
+		.grip {
+			opacity: 0;
+			transition: opacity 0.18s ease;
+		}
+		.frame:hover .grip,
+		.grip:focus-visible {
+			opacity: 1;
+		}
+		.frame:hover .grip.off,
+		.grip.off:focus-visible {
+			opacity: 0.45;
+		}
 	}
 	.facts {
 		display: flex;
@@ -287,8 +278,7 @@
 	.buttons .hate {
 		color: var(--bad);
 	}
-	.buttons button:disabled,
-	.zoom:disabled {
+	.buttons button:disabled {
 		opacity: 0.45;
 		cursor: not-allowed;
 	}

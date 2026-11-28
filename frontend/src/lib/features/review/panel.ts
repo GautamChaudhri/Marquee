@@ -203,7 +203,7 @@ function idsOf(keys: string[], cards: Card[], shown: Shown): number[] {
 		.map((card) => shownVariant(card, shown).id);
 }
 
-/** "Keep the pick". */
+/** "Keep the top pick". */
 export function approvalAnswer(cards: Card[], shown: Shown, deploy: boolean): Answer {
 	return { action: 'approval', shown: shownIds(cards, shown), deploy };
 }

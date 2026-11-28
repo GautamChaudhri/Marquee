@@ -17,7 +17,7 @@
 				{:else}
 					<div class="none">No image</div>
 				{/if}
-				{#if candidate.is_pick}<span class="mark">Pick</span>{/if}
+				{#if candidate.is_pick}<span class="mark">Top pick</span>{/if}
 			</div>
 			<div class="facts">
 				<span class="rank">#{candidate.rank}</span>

@@ -48,7 +48,7 @@ for (const width of [390, 1440]) {
 
 		await page.goto('/review/12');
 		await expect(page.getByTestId('review-card').first()).toBeVisible();
-		await expect(page.getByRole('button', { name: 'Keep the pick' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Keep the top pick' })).toBeVisible();
 		expect(await overflowsSideways(page)).toBe(false);
 		const cardColumns = await page
 			.getByTestId('order-list')
@@ -66,9 +66,16 @@ for (const width of [390, 1440]) {
 		// Nothing in the popup is squeezed over anything else: the score details begin where
 		// the posters end (below them on a phone, beside them on a desk).
 		const variants = (await dialog.getByTestId('variants').boundingBox())!;
-		const details = (await dialog.getByTestId('design-detail').boundingBox())!;
-		if (width < 500) expect(details.y).toBeGreaterThanOrEqual(variants.y + variants.height);
-		else expect(details.x + details.width).toBeLessThanOrEqual(variants.x);
+		const selected = (await dialog.getByTestId('selected-poster').boundingBox())!;
+		const scores = (await dialog.getByTestId('design-scores').boundingBox())!;
+		if (width < 500) {
+			expect(selected.y + selected.height).toBeLessThanOrEqual(variants.y);
+			expect(scores.y).toBeGreaterThanOrEqual(variants.y + variants.height);
+		} else {
+			expect(selected.x + selected.width).toBeLessThanOrEqual(variants.x);
+			expect(scores.x + scores.width).toBeLessThanOrEqual(variants.x);
+			expect(scores.y).toBeGreaterThanOrEqual(selected.y + selected.height);
+		}
 		await dialog.getByRole('button', { name: 'Look closer at variant 1', exact: true }).click();
 		// The large copy (1000 by 1500 px) is whole, in a poster's shape, inside the window.
 		const picture = page.getByTestId('lightbox-image');
@@ -86,7 +93,7 @@ for (const width of [390, 1440]) {
 		await page.keyboard.press('Escape');
 		await expect(dialog).toHaveCount(0);
 		await page.getByTestId('deploy-checkbox').uncheck();
-		await page.getByRole('button', { name: 'Keep the pick' }).click();
+		await page.getByRole('button', { name: 'Keep the top pick' }).click();
 		await expect(page.getByTestId('answer-result')).toBeVisible();
 		expect(await overflowsSideways(page)).toBe(false);
 

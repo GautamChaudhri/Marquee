@@ -212,10 +212,10 @@
 	const problem = $derived(rankProblem(cards, shown, ranking));
 
 	function keepPick() {
-		const message = replaceConfirmation('the pick', deploy, movie?.poster_origin);
+		const message = replaceConfirmation('the top pick', deploy, movie?.poster_origin);
 		ask(
 			approvalAnswer(cards, shown, deploy),
-			message ? { title: 'Replace your own poster?', message, label: 'Keep the pick' } : null
+			message ? { title: 'Replace your own poster?', message, label: 'Keep the top pick' } : null
 		);
 	}
 
@@ -411,7 +411,7 @@
 						variant="primary"
 						busy={sending === 'approval'}
 						disabled={sending !== null || !pickCard}
-						onclick={keepPick}>Keep the pick</Button
+						onclick={keepPick}>Keep the top pick</Button
 					>
 					<Button
 						busy={sending === 'rank'}

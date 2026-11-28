@@ -16,7 +16,9 @@ const base = { chosen_source_file: 'a.jpg', revokes_event_id: null, revoked_by: 
 
 describe('events', () => {
 	it('says what each act did', () => {
-		expect(eventLine({ ...base, action: 'approval', context: {} })).toBe('Kept the pick (a.jpg)');
+		expect(eventLine({ ...base, action: 'approval', context: {} })).toBe(
+			'Kept the top pick (a.jpg)'
+		);
 		expect(eventLine({ ...base, action: 'override', context: {} })).toBe('Chose a.jpg');
 		expect(
 			eventLine({ ...base, action: 'rank', context: { order: ['a.jpg', 'b.jpg'], hated: ['c'] } })
@@ -38,10 +40,10 @@ describe('events', () => {
 	it('shows the event the API returned, and a key used before', () => {
 		const event = { ...base, id: 12, action: 'approval' as const, context: {} };
 		expect(recordedLine(event, 201, 'approval')).toEqual([
-			'Recorded as answer 12: Kept the pick (a.jpg).'
+			'Recorded as answer 12: Kept the top pick (a.jpg).'
 		]);
 		expect(recordedLine(event, 201, 'override')).toContain(
-			'The poster you chose is the pick, so it was recorded as keeping the pick.'
+			'The poster you chose is the top pick, so it was recorded as keeping the top pick.'
 		);
 		expect(recordedLine(event, 200, 'approval')).toContain(
 			'This answer had already been recorded; nothing changed.'
@@ -76,10 +78,10 @@ describe('confirmations', () => {
 	});
 
 	it('asks before replacing the owner’s own poster, and only then', () => {
-		expect(replaceConfirmation('the pick', true, 'library')).toMatch(/over your own poster/);
-		expect(replaceConfirmation('the pick', false, 'library')).toBeNull();
-		expect(replaceConfirmation('the pick', true, 'marquee')).toBeNull();
-		expect(replaceConfirmation('the pick', true, null)).toBeNull();
+		expect(replaceConfirmation('the top pick', true, 'library')).toMatch(/over your own poster/);
+		expect(replaceConfirmation('the top pick', false, 'library')).toBeNull();
+		expect(replaceConfirmation('the top pick', true, 'marquee')).toBeNull();
+		expect(replaceConfirmation('the top pick', true, null)).toBeNull();
 	});
 });
 

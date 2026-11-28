@@ -5375,6 +5375,11 @@
             ],
             "title": "Ranked"
           },
+          "designs": {
+            "type": "integer",
+            "title": "Designs",
+            "description": "How many designs the ranked posters make (the cards of the review page)"
+          },
           "finished_at": {
             "anyOf": [
               {
@@ -5434,6 +5439,7 @@
           "year",
           "run_id",
           "ranked",
+          "designs",
           "finished_at",
           "policy_deployed",
           "blind",

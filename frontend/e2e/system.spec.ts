@@ -9,7 +9,7 @@ test('System shows the installation in plain tables, and nothing is wrong', asyn
 	await expect(page.getByTestId('schema')).toContainText('0005 (the newest)');
 	await expect(page.getByTestId('worker')).toContainText('Running since');
 	const settings = page.getByTestId('settings');
-	await expect(settings).toContainText('Off: a run’s pick is written only when you choose it');
+	await expect(settings).toContainText('Off: a run’s top pick is written only when you choose it');
 	await expect(settings).toContainText('Every 6 h');
 	await expect(settings).toContainText('/srv/media/movies/4K');
 	await expect(settings).toContainText('/srv/marquee/data');
